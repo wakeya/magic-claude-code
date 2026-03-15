@@ -117,6 +117,14 @@ sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keyc
 # 2. 设置 Node.js 使用系统证书库（需要 Node.js 16+）
 echo 'export NODE_OPTIONS="--use-system-ca"' >> ~/.bashrc
 source ~/.bashrc
+
+# 3. 配置桌面环境变量（让 GUI 应用也能使用证书）
+# macOS 使用 launchd 设置环境变量
+launchctl setenv NODE_OPTIONS "--use-system-ca"
+
+# 要使配置永久生效，创建或编辑 ~/.MacOSX/environment.plist（已过时）
+# 或在 ~/.zshrc 或 ~/.bash_profile 中添加（推荐）
+echo 'export NODE_OPTIONS="--use-system-ca"' >> ~/.zshrc  # 如果使用 zsh
 ```
 
 **Linux (Ubuntu/Debian)：**
@@ -133,6 +141,14 @@ sudo update-ca-certificates
 # 3. 设置 Node.js 使用系统证书库（需要 Node.js 16+）
 echo 'export NODE_OPTIONS="--use-system-ca"' >> ~/.bashrc
 source ~/.bashrc
+
+# 4. 配置桌面环境变量（让 GUI 应用也能使用证书）
+cat >> ~/.xprofile << 'EOF'
+# Claude Code 代理证书
+export NODE_OPTIONS="--use-system-ca"
+EOF
+
+# 注销并重新登录桌面环境，或重启系统使 .xprofile 生效
 ```
 
 **优点：**
@@ -144,6 +160,17 @@ source ~/.bashrc
 **注意：**
 - 需要 Node.js 16 或更高版本
 - 仍需配置 `NODE_OPTIONS` 环境变量
+- **桌面应用需要额外配置**：从桌面环境启动的应用（如 VS Code）不会加载 `~/.bashrc`，需要配置 `~/.xprofile`
+
+**为什么需要 .xprofile？**
+
+| 文件 | 加载时机 | 作用范围 | 适用场景 |
+|------|---------|---------|---------|
+| `~/.bashrc` | 打开终端时 | 仅终端会话 | 命令行工具、脚本 |
+| `~/.profile` | 登录 Shell 时 | 登录会话 | SSH、TTY 登录 |
+| `~/.xprofile` | **桌面登录时** | **整个桌面环境** | GUI 应用（VS Code、浏览器等） |
+
+从桌面环境启动的 GUI 应用不会继承 `~/.bashrc` 的环境变量，因此需要通过 `~/.xprofile` 在桌面登录时设置环境变量，确保所有桌面应用都能正确使用证书。
 
 **方式三：仅系统级信任（不推荐单独使用）**
 
