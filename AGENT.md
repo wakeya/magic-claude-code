@@ -2,7 +2,7 @@
 
 ## 环境要求
 
-- Go 1.23+
+- Go 1.26+
 - Docker (可选，用于部署)
 - Make
 
@@ -45,6 +45,7 @@ sudo go run ./cmd/server -data ./data
 ### internal/config
 
 配置管理模块，负责：
+
 - 加载和保存配置到 JSON 文件
 - 配置验证
 - 默认配置管理
@@ -52,6 +53,7 @@ sudo go run ./cmd/server -data ./data
 ### internal/cert
 
 证书管理模块，负责：
+
 - CA 证书生成（10年有效期）
 - 服务器证书签发（api.anthropic.com）
 - 证书加载和保存
@@ -59,6 +61,7 @@ sudo go run ./cmd/server -data ./data
 ### internal/proxy
 
 代理服务模块，负责：
+
 - TLS 终结
 - HTTP 请求转发
 - Header 透传
@@ -67,6 +70,7 @@ sudo go run ./cmd/server -data ./data
 ### internal/admin
 
 配置服务模块，负责：
+
 - REST API
 - 密码认证
 - Session 管理
@@ -124,4 +128,5 @@ docker run -d \
   -v ./data:/app/data \
   -e ADMIN_PASSWORD=your-password \
   claude-proxy:latest
+
 ```

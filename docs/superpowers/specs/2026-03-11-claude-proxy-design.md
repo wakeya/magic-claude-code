@@ -15,6 +15,7 @@
 ### 1.2 目标
 
 构建透明代理系统，让 Claude Code 误以为在与官方 API 通信，从而：
+
 - 启用所有优化功能
 - 统一处理所有 API 请求
 - 提供可配置的后端地址管理
@@ -264,6 +265,7 @@ type PasswordChangeRequest struct {
 ### 5.3 代理服务 (:443)
 
 所有请求透明转发到配置的后端地址：
+
 - HTTP Headers 完整透传（包括 `x-api-key`, `anthropic-version`, `Authorization` 等）
 - Request Body 流式传输
 - Response Body 流式传输
@@ -319,7 +321,7 @@ type PasswordChangeRequest struct {
 
 ### 7.1 Docker 配置
 
-**docker-compose.yml**
+#### docker-compose.yml
 
 ```yaml
 version: '3.8'
@@ -337,7 +339,7 @@ services:
     restart: unless-stopped
 ```
 
-**Dockerfile**
+#### Dockerfile
 
 ```dockerfile
 FROM golang:1.26-alpine AS builder
@@ -418,20 +420,23 @@ source ~/.bashrc
 
 ### 9.2 测试用例
 
-**单元测试**
+#### 单元测试
+
 - CA 证书生成（有效期 10 年）
 - 域名证书签发（CN=api.anthropic.com）
 - 配置保存和加载
 - 密码验证和锁定机制
 
-**集成测试**
+#### 集成测试
+
 - 请求转发正确性
 - Header 完整透传
 - 后端错误透传
 - 登录/登出流程
 - 配置热更新
 
-**E2E 测试**
+#### E2E 测试
+
 - Claude Code 完整请求流程
 - 配置页面功能验证
 
@@ -484,5 +489,5 @@ source ~/.bashrc
 ## 12. 参考资料
 
 - Claude Code 源码: `/home/www/workspace/github/claude-code`
-- Claude Code GitHub: https://github.com/anthropics/claude-code
-- ACME.sh: https://github.com/acmesh-official/acme.sh
+- Claude Code GitHub: `<https://github.com/anthropics/claude-code>`
+- ACME.sh: `<https://github.com/acmesh-official/acme.sh>`
