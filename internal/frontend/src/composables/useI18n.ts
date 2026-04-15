@@ -48,6 +48,7 @@ const messages: Record<Locale, Record<string, string>> = {
     'providers.disable': '禁用',
     'providers.enable': '启用',
     'providers.delete': '删除',
+    'providers.duplicate': '复制',
     'providers.not_set': '未设置',
     'providers.confirm_delete': '确定要删除这个供应商吗？',
 
@@ -121,6 +122,7 @@ const messages: Record<Locale, Record<string, string>> = {
     'providers.disable': 'Disable',
     'providers.enable': 'Enable',
     'providers.delete': 'Delete',
+    'providers.duplicate': 'Duplicate',
     'providers.not_set': 'Not set',
     'providers.confirm_delete': 'Are you sure you want to delete this provider?',
 

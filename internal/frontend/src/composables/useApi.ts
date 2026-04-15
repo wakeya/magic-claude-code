@@ -109,6 +109,16 @@ export function useApi() {
     return res.json()
   }
 
+  async function duplicateProvider(id: string): Promise<{ success: boolean; provider: Provider }> {
+    const res = await fetch(`/api/providers/${id}/duplicate`, { method: 'POST' })
+    return res.json()
+  }
+
+  async function revealProviderToken(id: string): Promise<{ api_token: string }> {
+    const res = await fetch(`/api/providers/${id}/reveal-token`, { method: 'POST' })
+    return res.json()
+  }
+
   async function testProvider(id: string): Promise<TestResult> {
     const res = await fetch(`/api/providers/${id}/test`, { method: 'POST' })
     return res.json()
@@ -142,6 +152,8 @@ export function useApi() {
     deleteProvider,
     activateProvider,
     toggleProvider,
+    duplicateProvider,
+    revealProviderToken,
     testProvider,
     testProviderConnection,
     getCertificates,

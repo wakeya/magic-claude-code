@@ -479,6 +479,18 @@ func (s *Server) handleProviderRoutes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 检查是否是复制路由
+	if strings.HasSuffix(path, "/duplicate") {
+		s.handleProviderDuplicate(w, r)
+		return
+	}
+
+	// 检查是否是查看原文路由
+	if strings.HasSuffix(path, "/reveal-token") {
+		s.handleProviderRevealToken(w, r)
+		return
+	}
+
 	// 检查是否是测试路由
 	if strings.HasSuffix(path, "/test") {
 		s.handleTestProviderByID(w, r)
@@ -574,6 +586,82 @@ func (s *Server) handleTestProviderByID(w http.ResponseWriter, r *http.Request) 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success":     true,
 		"status_code": resp.StatusCode,
+	})
+}
+
+// handleProviderRevealToken 获取供应商 API Token 原文
+func (s *Server) handleProviderRevealToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error": "method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	path := strings.TrimSuffix(r.URL.Path, "/reveal-token")
+	id := strings.TrimPrefix(path, "/api/providers/")
+
+	cfg, err := s.configStore.Load()
+	if err != nil {
+		http.Error(w, `{"error": "failed to load config"}`, http.StatusInternalServerError)
+		return
+	}
+
+	provider := cfg.GetProviderByID(id)
+	if provider == nil {
+		http.Error(w, `{"error": "provider not found"}`, http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"api_token": provider.APIToken,
+	})
+}
+
+// handleProviderDuplicate 复制供应商配置
+func (s *Server) handleProviderDuplicate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error": "method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	// 从 URL 提取 ID: /api/providers/{id}/duplicate
+	path := strings.TrimSuffix(r.URL.Path, "/duplicate")
+	id := strings.TrimPrefix(path, "/api/providers/")
+
+	cfg, err := s.configStore.Load()
+	if err != nil {
+		http.Error(w, `{"error": "failed to load config"}`, http.StatusInternalServerError)
+		return
+	}
+
+	provider := cfg.GetProviderByID(id)
+	if provider == nil {
+		http.Error(w, `{"error": "provider not found"}`, http.StatusNotFound)
+		return
+	}
+
+	now := time.Now()
+	newProvider := config.Provider{
+		ID:            generateProviderID(),
+		Name:          provider.Name + " 复制",
+		APIURL:        provider.APIURL,
+		APIToken:      provider.APIToken,
+		ModelMappings: provider.ModelMappings,
+		Enabled:       true,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	cfg.Providers = append(cfg.Providers, newProvider)
+
+	if err := s.configStore.Save(cfg); err != nil {
+		http.Error(w, `{"error": "failed to save config"}`, http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":  true,
+		"provider": newProvider,
 	})
 }
 

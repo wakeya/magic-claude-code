@@ -70,7 +70,7 @@
 
         <div v-if="providers.length === 0" class="text-center py-12 text-text-secondary">{{ t('providers.empty') }}</div>
 
-        <ProviderCard v-for="p in providers" :key="p.id" :provider="p" @edit="openEditModal(p)" @delete="handleDelete(p.id)" @activate="handleActivate(p.id)" @toggle="handleToggle(p.id)" @test="handleTest(p.id)" />
+        <ProviderCard v-for="p in providers" :key="p.id" :provider="p" @edit="openEditModal(p)" @delete="handleDelete(p.id)" @activate="handleActivate(p.id)" @toggle="handleToggle(p.id)" @test="handleTest(p.id)" @duplicate="handleDuplicate" />
       </div>
 
       <!-- Certificates -->
@@ -171,6 +171,11 @@ async function handleTest(id: string) {
   } else {
     alert(t('modal.connection_failed', { error: res.error }))
   }
+}
+
+async function handleDuplicate(id: string) {
+  await api.duplicateProvider(id)
+  await loadProviders()
 }
 
 async function loadStatus() { try { status.value = await api.getStatus() } catch { /* */ } }

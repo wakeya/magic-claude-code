@@ -15,7 +15,8 @@
     </div>
 
     <div class="flex gap-2 flex-wrap">
-      <button class="px-3.5 py-1.5 border-none rounded-md text-xs font-semibold cursor-pointer transition-all duration-150 hover:scale-105 bg-transparent text-text-secondary hover:bg-muted">{{ t('providers.edit') }}</button>
+      <button class="px-3.5 py-1.5 border-none rounded-md text-xs font-semibold cursor-pointer transition-all duration-150 hover:scale-105 bg-transparent text-text-secondary hover:bg-muted" @click="$emit('edit')">{{ t('providers.edit') }}</button>
+      <button class="px-3.5 py-1.5 border-none rounded-md text-xs font-semibold cursor-pointer transition-all duration-150 hover:scale-105 bg-transparent text-text-secondary hover:bg-muted" @click="$emit('duplicate', provider.id)">{{ t('providers.duplicate') }}</button>
       <button class="px-3.5 py-1.5 border-none rounded-md text-xs font-semibold cursor-pointer transition-all duration-150 hover:scale-105 bg-transparent text-text-secondary hover:bg-muted" @click="$emit('test')">{{ t('providers.test') }}</button>
       <button v-if="provider.enabled && !provider.active" class="px-3.5 py-1.5 border-none rounded-md text-xs font-semibold cursor-pointer transition-all duration-150 hover:scale-105 bg-primary text-white" @click="$emit('activate')">{{ t('providers.set_active') }}</button>
       <button :class="['px-3.5 py-1.5 border-none rounded-md text-xs font-semibold cursor-pointer transition-all duration-150 hover:scale-105 text-white', provider.enabled ? 'bg-accent' : 'bg-secondary']" @click="$emit('toggle')">{{ provider.enabled ? t('providers.disable') : t('providers.enable') }}</button>
@@ -29,7 +30,7 @@ import type { Provider } from '@/composables/useApi'
 import { useI18n } from '@/composables/useI18n'
 
 defineProps<{ provider: Provider }>()
-defineEmits<{ edit: []; delete: [id: string]; activate: [id: string]; toggle: [id: string]; test: [id: string] }>()
+defineEmits<{ edit: []; delete: [id: string]; activate: [id: string]; toggle: [id: string]; test: [id: string]; duplicate: [id: string] }>()
 
 const { t } = useI18n()
 </script>
