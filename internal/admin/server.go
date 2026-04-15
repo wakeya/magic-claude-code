@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"claude_code_proxy_dns/internal/config"
@@ -91,28 +92,23 @@ func (s *Server) Stop(ctx context.Context) error {
 	return nil
 }
 
-// authMiddleware 认证中间件（用于静态文件）
+// authMiddleware 认证中间件（用于静态文件和 SPA 路由）
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 登录页面不需要认证
-		if r.URL.Path == "/login.html" || r.URL.Path == "/login" {
-			next.ServeHTTP(w, r)
-			return
-		}
-
 		// API 路由单独处理
-		if len(r.URL.Path) >= 4 && r.URL.Path[:4] == "/api" {
+		if strings.HasPrefix(r.URL.Path, "/api") {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		// 检查 session cookie
-		cookie, err := r.Cookie("session")
-		if err != nil || !s.auth.ValidateToken(cookie.Value) {
-			http.Redirect(w, r, "/login.html", http.StatusFound)
+		// 静态资源（/assets/*）无需认证，直接放行
+		if strings.HasPrefix(r.URL.Path, "/assets/") {
+			next.ServeHTTP(w, r)
 			return
 		}
 
+		// 所有页面路由返回 index.html，由 Vue Router 处理客户端路由和认证跳转
+		r.URL.Path = "/"
 		next.ServeHTTP(w, r)
 	})
 }

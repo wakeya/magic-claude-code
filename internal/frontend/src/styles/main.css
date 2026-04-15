@@ -1,0 +1,24 @@
+@import 'tailwindcss';
+@import './fonts/outfit.css';
+
+@theme {
+  --font-outfit: 'Outfit', sans-serif;
+  --color-primary: #3B82F6;
+  --color-primary-hover: #2563EB;
+  --color-primary-light: #EFF6FF;
+  --color-secondary: #10B981;
+  --color-secondary-light: #ECFDF5;
+  --color-accent: #F59E0B;
+  --color-accent-light: #FFFBEB;
+  --color-danger: #EF4444;
+  --color-danger-light: #FEF2F2;
+  --color-muted: #F3F4F6;
+  --color-border: #E5E7EB;
+  --color-text-secondary: #6B7280;
+}
+
+body {
+  font-family: 'Outfit', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
