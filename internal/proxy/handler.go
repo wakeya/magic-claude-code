@@ -159,11 +159,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 设置状态码
 	w.WriteHeader(resp.StatusCode)
 
-	// 流式复制响应体
-	_, err = io.Copy(w, resp.Body)
-	if err != nil {
-		// 流式响应中断是常见的（客户端断开连接），使用更详细的日志
-		log.Printf("Stream interrupted for %s: %v (this is normal if client disconnected)", backendURL, err)
+	// 检查是否为 SSE 流式响应，如果是则注入心跳
+	if isSSEStream(resp) {
+		log.Printf("[Stream] SSE stream detected for %s, enabling heartbeat injection", backendURL)
+		hw := newHeartbeatWriter(w)
+		if err := copyWithHeartbeat(hw, resp.Body); err != nil {
+			log.Printf("Stream interrupted for %s: %v (this is normal if client disconnected)", backendURL, err)
+		}
+	} else {
+		// 非 SSE 响应，直接复制
+		_, err = io.Copy(w, resp.Body)
+		if err != nil {
+			log.Printf("Stream interrupted for %s: %v (this is normal if client disconnected)", backendURL, err)
+		}
 	}
 }
 
