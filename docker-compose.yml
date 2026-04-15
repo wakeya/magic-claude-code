@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   claude_code_proxy_dns:
     build: .
