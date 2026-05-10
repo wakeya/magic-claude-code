@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+<<<<<<< HEAD
 	"crypto/rand"
 	"encoding/hex"
 	"flag"
 	"fmt"
+=======
+	"flag"
+>>>>>>> gitlab/main
 	"log"
 	"os"
 	"os/signal"
@@ -20,6 +24,7 @@ import (
 	"claude_code_proxy_dns/internal/proxy"
 )
 
+<<<<<<< HEAD
 // generateRandomPassword 生成随机密码
 func generateRandomPassword() string {
 	b := make([]byte, 16)
@@ -44,10 +49,17 @@ func main() {
 	}
 
 	// 确保数据目录存在
+=======
+func main() {
+	dataDir := flag.String("data", "./data", "data directory")
+	flag.Parse()
+
+>>>>>>> gitlab/main
 	if err := os.MkdirAll(*dataDir, 0755); err != nil {
 		log.Fatalf("Failed to create data directory: %v", err)
 	}
 
+<<<<<<< HEAD
 	// 加载配置
 	configPath := filepath.Join(*dataDir, "config.json")
 	configStore := config.NewStore(configPath)
@@ -117,11 +129,62 @@ func main() {
 	}()
 
 	// 优雅关闭
+=======
+	// Config
+	configStore := config.NewStore(filepath.Join(*dataDir, "config.json"))
+
+	// Certificates
+	certMgr := cert.NewManager(*dataDir)
+	caCert, caKey, err := certMgr.EnsureCA()
+	if err != nil {
+		log.Fatalf("Failed to initialize CA: %v", err)
+	}
+	if _, _, err := certMgr.EnsureServerCert(caCert, caKey); err != nil {
+		log.Fatalf("Failed to initialize server certificate: %v", err)
+	}
+
+	certFile := certMgr.GetServerCertPath()
+	keyFile := filepath.Join(*dataDir, "server.key")
+
+	password := os.Getenv("ADMIN_PASSWORD")
+	if password == "" {
+		password = "admin123"
+	}
+
+	// Proxy server
+	proxyServer := proxy.NewServer(configStore)
+	go func() {
+		if err := proxyServer.Start(":443", certFile, keyFile); err != nil {
+			log.Fatalf("Proxy server error: %v", err)
+		}
+	}()
+
+	// Admin server
+	adminServer := admin.NewServer(&admin.AdminConfig{
+		Password:   password,
+		CertFile:   certFile,
+		KeyFile:    keyFile,
+		ConfigPath: filepath.Join(*dataDir, "config.json"),
+	}, configStore, proxyServer)
+
+	go func() {
+		if err := adminServer.Start(":8442", frontend.DistFS); err != nil {
+			log.Fatalf("Admin server error: %v", err)
+		}
+	}()
+
+	log.Println("Claude Code Proxy DNS started")
+	log.Printf("  Proxy:  https://localhost:443")
+	log.Printf("  Admin:  https://localhost:8442")
+	log.Printf("  CA cert: %s", certMgr.GetCACertPath())
+
+>>>>>>> gitlab/main
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
 	log.Println("Shutting down...")
+<<<<<<< HEAD
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -131,3 +194,17 @@ func main() {
 
 	log.Println("Server stopped")
 }
+=======
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := proxyServer.Stop(ctx); err != nil {
+		log.Printf("Proxy shutdown error: %v", err)
+	}
+	if err := adminServer.Stop(ctx); err != nil {
+		log.Printf("Admin shutdown error: %v", err)
+	}
+
+	log.Println("Server stopped")
+}
+>>>>>>> gitlab/main
