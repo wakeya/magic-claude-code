@@ -14,19 +14,64 @@ func TestIsHardcodedEndpoint(t *testing.T) {
 		path     string
 		expected bool
 	}{
+		// 精确匹配
 		{"/api/claude_cli_feedback", true},
-		{"/api/claude_code/metric", true},
-		{"/api/claude_code/metrics", true}, // metrics 匹配 metric 前缀
-		{"/api/claude_code/organization", true},
-		{"/api/claude_code/organizations/metrics_enabled", true},
 		{"/api/claude_code_shared_session_transcripts", true},
-		{"/api/web/domain_info", true},
 		{"/api/oauth/claude_cli/create_api_key", true},
-		{"/api/oauth/claude_cli/role", true},
+		{"/api/oauth/claude_cli/roles", true},
+		{"/api/claude_code/organizations/metrics_enabled", true},
+		{"/api/event_logging/batch", true},
+		{"/api/claude_cli/bootstrap", true},
+		{"/v1/mcp_servers", true},
+		{"/api/claude_code_penguin_mode", true},
 		{"/v1/me", true},
+		// 新增低优先级精确匹配
+		{"/api/oauth/profile", true},
+		{"/api/claude_cli_profile", true},
+		{"/api/oauth/usage", true},
+		{"/api/claude_code/policy_limits", true},
+		{"/api/claude_code/settings", true},
+		{"/api/claude_code/user_settings", true},
+		// 前缀匹配
+		{"/api/claude_code/metric", true},
+		{"/api/claude_code/metrics", true},
+		{"/api/claude_code/organization", true},
+		{"/api/web/domain_info", true},
+		{"/api/feature/abc123", true},
+		{"/api/feature/", true},
+		{"/mcp-registry/v0/servers", true},
+		{"/mcp-registry/", true},
+		// 新增低优先级前缀匹配
+		{"/api/oauth/account/settings", true},
+		{"/api/oauth/account/grove_notice_viewed", true},
+		// v1.1 新增精确匹配
+		{"/api/claude_code_grove", true},
+		{"/api/organization/claude_code_first_token_date", true},
+		{"/v1/ultrareview/quota", true},
+		// v1.1 新增前缀匹配
+		{"/v1/session_ingress/session/abc-123", true},
+		{"/v1/session_ingress/session/x-y-z", true},
+		// v1.2 新增精确匹配
+		{"/api/claude_code/team_memory", true},
+		// v1.2 新增前缀匹配
+		{"/api/oauth/organizations/org-123/referral/eligibility", true},
+		{"/api/oauth/organizations/org-123/admin_requests", true},
+		{"/api/oauth/organizations/org-123/overage_credit_grant", true},
+		{"/v1/code/sessions/sess-123/teleport-events", true},
+		// v1.3 新增精确匹配
+		{"/api/auth/trusted_devices", true},
+		{"/api/oauth/file_upload", true},
+		// 不匹配
 		{"/v1/messages", false},
 		{"/v1/complete", false},
 		{"/some/other/path", false},
+		{"/api/oauth/claude_cli/role", false},   // 单数 role 不应匹配
+		{"/api/feature", false},                  // 无尾部斜杠不应匹配
+		{"/mcp-registry", false},                 // 无尾部斜杠不应匹配
+		{"/api/oauth/account", false},             // 无尾部斜杠不应匹配
+		{"/v1/session_ingress/session", false},     // 无尾部斜杠不应匹配
+		{"/api/oauth/organizations", false},       // 无尾部斜杠不应匹配
+		{"/v1/code/sessions", false},              // 无尾部斜杠不应匹配
 	}
 
 	for _, tt := range tests {
@@ -99,6 +144,164 @@ func TestHandleOrganization(t *testing.T) {
 	}
 }
 
+func TestHandleMetricsEnabled(t *testing.T) {
+	handler := NewHandler(config.NewMockStore(nil), nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/claude_code/organizations/metrics_enabled", nil)
+	rec := httptest.NewRecorder()
+
+	handler.handleMetricsEnabled(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "metrics_logging_enabled") {
+		t.Error("Response should contain 'metrics_logging_enabled'")
+	}
+	if strings.Contains(body, `"metrics_enabled"`) {
+		t.Error("Response should NOT contain old field 'metrics_enabled'")
+	}
+}
+
+func TestHandleEventLogging(t *testing.T) {
+	handler := NewHandler(config.NewMockStore(nil), nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/event_logging/batch", nil)
+	rec := httptest.NewRecorder()
+
+	handler.handleEventLogging(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+}
+
+func TestHandleGrowthBookFeature(t *testing.T) {
+	handler := NewHandler(config.NewMockStore(nil), nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/feature/some-client-key", nil)
+	rec := httptest.NewRecorder()
+
+	handler.handleGrowthBookFeature(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "features") {
+		t.Error("Response should contain 'features'")
+	}
+}
+
+func TestHandleBootstrap(t *testing.T) {
+	handler := NewHandler(config.NewMockStore(nil), nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/claude_cli/bootstrap", nil)
+	rec := httptest.NewRecorder()
+
+	handler.handleBootstrap(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+}
+
+func TestHandleMCPRegistry(t *testing.T) {
+	handler := NewHandler(config.NewMockStore(nil), nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/mcp-registry/v0/servers?version=latest", nil)
+	rec := httptest.NewRecorder()
+
+	handler.handleMCPRegistry(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "servers") {
+		t.Error("Response should contain 'servers'")
+	}
+}
+
+func TestHandleMCPServers(t *testing.T) {
+	handler := NewHandler(config.NewMockStore(nil), nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/mcp_servers?limit=1000", nil)
+	rec := httptest.NewRecorder()
+
+	handler.handleMCPServers(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "data") || !strings.Contains(body, "has_more") {
+		t.Error("Response should contain 'data' and 'has_more'")
+	}
+}
+
+func TestHandlePenguinMode(t *testing.T) {
+	handler := NewHandler(config.NewMockStore(nil), nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/claude_code_penguin_mode", nil)
+	rec := httptest.NewRecorder()
+
+	handler.handlePenguinMode(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+}
+
+func TestHandleEmptyResponse(t *testing.T) {
+	handler := NewHandler(config.NewMockStore(nil), nil)
+
+	endpoints := []struct {
+		path string
+	}{
+		{"/api/oauth/profile"},
+		{"/api/claude_cli_profile"},
+		{"/api/oauth/usage"},
+		{"/api/claude_code/policy_limits"},
+		{"/api/claude_code/settings"},
+		{"/api/claude_code/user_settings"},
+		{"/api/oauth/account/settings"},
+			{"/api/claude_code_grove"},
+			{"/api/organization/claude_code_first_token_date"},
+			{"/v1/ultrareview/quota"},
+			{"/v1/session_ingress/session/test-id"},
+			{"/api/claude_code/team_memory"},
+			{"/api/oauth/organizations/org-123/referral/eligibility"},
+			{"/api/oauth/organizations/org-123/overage_credit_grant"},
+			{"/v1/code/sessions/sess-123/teleport-events"},
+			{"/api/auth/trusted_devices"},
+			{"/api/oauth/file_upload"},
+	}
+
+	for _, tt := range endpoints {
+		t.Run(tt.path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			rec := httptest.NewRecorder()
+
+			handler.handleEmptyResponse(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Errorf("Expected status %d, got %d", http.StatusOK, rec.Code)
+			}
+
+			body := strings.TrimSpace(rec.Body.String())
+			if body != "{}" {
+				t.Errorf("Expected '{}', got %q", body)
+			}
+		})
+	}
+}
+
 func TestHandleMe(t *testing.T) {
 	handler := NewHandler(config.NewMockStore(nil), nil)
 
@@ -145,7 +348,33 @@ func TestHandleHardcodedEndpoint(t *testing.T) {
 		{"/api/claude_code/metric"},
 		{"/api/claude_code/organization"},
 		{"/api/web/domain_info?domain=test.com"},
+		{"/api/oauth/claude_cli/roles"},
+		{"/api/claude_code/organizations/metrics_enabled"},
+		{"/api/claude_code_shared_session_transcripts"},
 		{"/v1/me"},
+		{"/api/event_logging/batch"},
+		{"/api/feature/some-key"},
+		{"/api/claude_cli/bootstrap"},
+		{"/mcp-registry/v0/servers"},
+		{"/v1/mcp_servers"},
+		{"/api/claude_code_penguin_mode"},
+		{"/api/oauth/profile"},
+		{"/api/claude_cli_profile"},
+		{"/api/oauth/usage"},
+		{"/api/claude_code/policy_limits"},
+		{"/api/claude_code/settings"},
+		{"/api/claude_code/user_settings"},
+		{"/api/oauth/account/settings"},
+			{"/api/claude_code_grove"},
+			{"/api/organization/claude_code_first_token_date"},
+			{"/v1/ultrareview/quota"},
+			{"/v1/session_ingress/session/test-id"},
+			{"/api/claude_code/team_memory"},
+			{"/api/oauth/organizations/org-123/referral/eligibility"},
+			{"/api/auth/trusted_devices"},
+			{"/api/oauth/file_upload"},
+			{"/api/oauth/organizations/org-123/admin_requests"},
+			{"/v1/code/sessions/sess-123/teleport-events"},
 	}
 
 	for _, tt := range tests {

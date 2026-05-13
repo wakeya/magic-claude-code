@@ -22,8 +22,24 @@ func isHardcodedEndpoint(path string) bool {
 		"/api/claude_cli_feedback",
 		"/api/claude_code_shared_session_transcripts",
 		"/api/oauth/claude_cli/create_api_key",
-		"/api/oauth/claude_cli/role",
+		"/api/oauth/claude_cli/roles",
 		"/api/claude_code/organizations/metrics_enabled",
+		"/api/event_logging/batch",
+		"/api/claude_cli/bootstrap",
+		"/v1/mcp_servers",
+		"/api/claude_code_penguin_mode",
+		"/api/oauth/profile",
+		"/api/claude_cli_profile",
+		"/api/oauth/usage",
+		"/api/claude_code/policy_limits",
+		"/api/claude_code/settings",
+		"/api/claude_code/user_settings",
+		"/api/claude_code_grove",
+		"/api/organization/claude_code_first_token_date",
+		"/v1/ultrareview/quota",
+		"/api/claude_code/team_memory",
+		"/api/auth/trusted_devices",
+		"/api/oauth/file_upload",
 	}
 
 	for _, match := range exactMatches {
@@ -37,6 +53,12 @@ func isHardcodedEndpoint(path string) bool {
 		"/api/claude_code/metric",
 		"/api/claude_code/organization",
 		"/api/web/domain_info",
+		"/api/feature/",
+		"/mcp-registry/",
+		"/api/oauth/account/",
+		"/v1/session_ingress/session/",
+		"/api/oauth/organizations/",
+		"/v1/code/sessions/",
 	}
 
 	for _, prefix := range prefixMatches {
@@ -96,8 +118,8 @@ func (h *Handler) handleHardcodedEndpoint(w http.ResponseWriter, r *http.Request
 		h.handleCreateAPIKey(w, r)
 		return true
 
-	// 角色信息 - GET /api/oauth/claude_cli/role
-	case path == "/api/oauth/claude_cli/role":
+	// 角色信息 - GET /api/oauth/claude_cli/roles
+	case path == "/api/oauth/claude_cli/roles":
 		h.handleRole(w, r)
 		return true
 
@@ -105,6 +127,56 @@ func (h *Handler) handleHardcodedEndpoint(w http.ResponseWriter, r *http.Request
 	case path == "/v1/me":
 		h.handleMe(w, r)
 		return true
+
+	// 第一方事件批量上报 - POST /api/event_logging/batch
+	case path == "/api/event_logging/batch":
+		h.handleEventLogging(w, r)
+		return true
+
+	// GrowthBook 特性开关 - GET /api/feature/*
+	case strings.HasPrefix(path, "/api/feature/"):
+		h.handleGrowthBookFeature(w, r)
+		return true
+
+	// 启动引导配置 - GET /api/claude_cli/bootstrap
+	case path == "/api/claude_cli/bootstrap":
+		h.handleBootstrap(w, r)
+		return true
+
+	// MCP 注册表 - GET /mcp-registry/*
+	case strings.HasPrefix(path, "/mcp-registry/"):
+		h.handleMCPRegistry(w, r)
+		return true
+
+	// claude.ai MCP 服务器列表 - GET /v1/mcp_servers
+	case path == "/v1/mcp_servers":
+		h.handleMCPServers(w, r)
+		return true
+
+	// Fast Mode 配置 - GET /api/claude_code_penguin_mode
+	case path == "/api/claude_code_penguin_mode":
+		h.handlePenguinMode(w, r)
+		return true
+
+		// 低优先级端点 - 统一返回空 JSON
+		case path == "/api/oauth/profile",
+			path == "/api/claude_cli_profile",
+			path == "/api/oauth/usage",
+			path == "/api/claude_code/policy_limits",
+			path == "/api/claude_code/settings",
+			path == "/api/claude_code/user_settings",
+			strings.HasPrefix(path, "/api/oauth/account/"),
+			path == "/api/claude_code_grove",
+			path == "/api/organization/claude_code_first_token_date",
+			path == "/v1/ultrareview/quota",
+			strings.HasPrefix(path, "/v1/session_ingress/session/"),
+			path == "/api/claude_code/team_memory",
+			path == "/api/auth/trusted_devices",
+			path == "/api/oauth/file_upload",
+			strings.HasPrefix(path, "/api/oauth/organizations/"),
+			strings.HasPrefix(path, "/v1/code/sessions/"):
+			h.handleEmptyResponse(w, r)
+			return true
 	}
 
 	return false
@@ -135,12 +207,12 @@ func (h *Handler) handleMetric(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleMetricsEnabled 处理组织指标开关请求
-// 响应格式: { "metrics_enabled": false }
+// 源码期望字段名: metrics_logging_enabled (不是 metrics_enabled)
 func (h *Handler) handleMetricsEnabled(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[Hardcoded] Handling metrics_enabled request: %s", r.URL.Path)
 
 	response := map[string]any{
-		"metrics_enabled": false,
+		"metrics_logging_enabled": false,
 	}
 
 	writeJSONResponse(w, http.StatusOK, response)
@@ -236,6 +308,61 @@ func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSONResponse(w, http.StatusOK, response)
+}
+
+// handleEmptyResponse 低优先级端点通用处理，返回空 JSON
+func (h *Handler) handleEmptyResponse(w http.ResponseWriter, r *http.Request) {
+	log.Printf("[Hardcoded] Handling request: %s %s", r.Method, r.URL.Path)
+	writeJSONResponse(w, http.StatusOK, map[string]any{})
+}
+
+// handleEventLogging 处理第一方事件批量上报
+// 源码只检查 HTTP 状态码，不检查响应体
+func (h *Handler) handleEventLogging(w http.ResponseWriter, r *http.Request) {
+	log.Printf("[Hardcoded] Handling event_logging/batch request: %s %s", r.Method, r.URL.Path)
+	writeJSONResponse(w, http.StatusOK, map[string]any{})
+}
+
+// handleGrowthBookFeature 处理 GrowthBook 特性开关请求
+// 源码期望 GrowthBook SDK 标准响应格式，空 features 触发 fallback 到默认值
+func (h *Handler) handleGrowthBookFeature(w http.ResponseWriter, r *http.Request) {
+	log.Printf("[Hardcoded] Handling GrowthBook feature request: %s", r.URL.Path)
+	writeJSONResponse(w, http.StatusOK, map[string]any{
+		"features": map[string]any{},
+	})
+}
+
+// handleBootstrap 处理启动引导配置
+// 源码期望 client_data + additional_model_options，空响应静默跳过
+func (h *Handler) handleBootstrap(w http.ResponseWriter, r *http.Request) {
+	log.Printf("[Hardcoded] Handling bootstrap request: %s", r.URL.Path)
+	writeJSONResponse(w, http.StatusOK, map[string]any{})
+}
+
+// handleMCPRegistry 处理 MCP 注册表请求
+// 源码期望 servers 列表，空数组使 isOfficialMcpUrl 返回 false
+func (h *Handler) handleMCPRegistry(w http.ResponseWriter, r *http.Request) {
+	log.Printf("[Hardcoded] Handling MCP registry request: %s", r.URL.Path)
+	writeJSONResponse(w, http.StatusOK, map[string]any{
+		"servers": []any{},
+	})
+}
+
+// handleMCPServers 处理 claude.ai MCP 服务器列表
+// 源码期望 data + has_more，空数组使无 claude.ai 连接器加载
+func (h *Handler) handleMCPServers(w http.ResponseWriter, r *http.Request) {
+	log.Printf("[Hardcoded] Handling MCP servers request: %s", r.URL.Path)
+	writeJSONResponse(w, http.StatusOK, map[string]any{
+		"data":     []any{},
+		"has_more": false,
+	})
+}
+
+// handlePenguinMode 处理 Fast Mode 配置
+// 源码期望配置对象，空响应使 Fast Mode 不可用
+func (h *Handler) handlePenguinMode(w http.ResponseWriter, r *http.Request) {
+	log.Printf("[Hardcoded] Handling penguin mode request: %s", r.URL.Path)
+	writeJSONResponse(w, http.StatusOK, map[string]any{})
 }
 
 // writeJSONResponse 写入 JSON 响应
