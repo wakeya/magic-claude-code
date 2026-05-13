@@ -42,6 +42,7 @@ func (s *Server) listProviders(w http.ResponseWriter, _ *http.Request) {
 			"name":            p.Name,
 			"api_url":         p.APIURL,
 			"api_token_mask":  maskToken(p.APIToken),
+			"supports_thinking": p.SupportsThinking,
 			"model_mappings":  p.ModelMappings,
 			"enabled":         p.Enabled,
 			"active":          p.ID == cfg.ActiveProviderID,
@@ -63,6 +64,7 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 		APIURL        string            `json:"api_url"`
 		APIToken      string            `json:"api_token"`
 		ModelMappings map[string]string `json:"model_mappings"`
+		SupportsThinking bool              `json:"supports_thinking"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -106,6 +108,7 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 		APIURL:        req.APIURL,
 		APIToken:      req.APIToken,
 		ModelMappings: req.ModelMappings,
+		SupportsThinking: req.SupportsThinking,
 		Enabled:       true,
 		CreatedAt:     now,
 		UpdatedAt:     now,
@@ -175,6 +178,7 @@ func (s *Server) getProvider(w http.ResponseWriter, _ *http.Request, id string) 
 		"api_url":        provider.APIURL,
 		"api_token_mask": maskToken(provider.APIToken),
 		"model_mappings": provider.ModelMappings,
+		"supports_thinking": provider.SupportsThinking,
 		"enabled":        provider.Enabled,
 		"active":         provider.ID == cfg.ActiveProviderID,
 		"created_at":     provider.CreatedAt,
@@ -188,8 +192,9 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request, id strin
 		Name          string            `json:"name"`
 		APIURL        string            `json:"api_url"`
 		APIToken      string            `json:"api_token"`
-		ModelMappings map[string]string `json:"model_mappings"`
-		Enabled       *bool             `json:"enabled"`
+		ModelMappings    map[string]string `json:"model_mappings"`
+		SupportsThinking bool              `json:"supports_thinking"`
+		Enabled          *bool             `json:"enabled"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -235,6 +240,7 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request, id strin
 	if req.Enabled != nil {
 		provider.Enabled = *req.Enabled
 	}
+		provider.SupportsThinking = req.SupportsThinking
 	provider.UpdatedAt = time.Now()
 
 	if err := s.configStore.Save(cfg); err != nil {
@@ -642,14 +648,15 @@ func (s *Server) handleProviderDuplicate(w http.ResponseWriter, r *http.Request)
 
 	now := time.Now()
 	newProvider := config.Provider{
-		ID:            generateProviderID(),
-		Name:          provider.Name + " 复制",
-		APIURL:        provider.APIURL,
-		APIToken:      provider.APIToken,
-		ModelMappings: provider.ModelMappings,
-		Enabled:       true,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		ID:               generateProviderID(),
+		Name:             provider.Name + " 复制",
+		APIURL:           provider.APIURL,
+		APIToken:         provider.APIToken,
+		ModelMappings:    provider.ModelMappings,
+		SupportsThinking: provider.SupportsThinking,
+		Enabled:          true,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 	cfg.Providers = append(cfg.Providers, newProvider)
 

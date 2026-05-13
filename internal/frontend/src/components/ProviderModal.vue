@@ -28,6 +28,14 @@
       </div>
 
       <div class="mb-5">
+        <label class="block text-[13px] font-semibold mb-2">{{ t('modal.supports_thinking') }}</label>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input v-model="form.supports_thinking" type="checkbox" class="w-4 h-4 accent-primary cursor-pointer" />
+          <span class="text-sm text-text-secondary">{{ t('modal.supports_thinking_hint') }}</span>
+        </label>
+      </div>
+
+      <div class="mb-5">
         <label class="block text-[13px] font-semibold mb-2">{{ t('modal.model_mappings') }}</label>
         <div class="space-y-2.5">
           <div v-for="(_, i) in mappings" :key="i" class="flex gap-2.5 items-center">
@@ -72,6 +80,7 @@ const form = reactive({
   name: '',
   api_url: '',
   api_token: '',
+  supports_thinking: false,
 })
 
 const mappings = ref<{ from: string; to: string }[]>([{ from: '', to: '' }])
@@ -84,6 +93,7 @@ onMounted(() => {
     form.name = props.provider.name
     form.api_url = props.provider.api_url
     form.api_token = props.provider.api_token_mask || ''
+    form.supports_thinking = props.provider.supports_thinking || false
     const entries = Object.entries(props.provider.model_mappings || {})
     mappings.value = entries.length > 0 ? entries.map(([from, to]) => ({ from, to })) : [{ from: '', to: '' }]
   }
@@ -111,6 +121,7 @@ async function save() {
     api_url: form.api_url,
     api_token: token,
     model_mappings: collectMappings(),
+    supports_thinking: form.supports_thinking,
   }
 
   try {

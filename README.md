@@ -81,7 +81,19 @@ curl -k https://localhost:8442
 docker compose ps
 ```
 
-### 3. 安装 CA 证书
+### 3. 重新打包部署
+
+代码更新后，重新构建镜像并重启容器：
+
+```bash
+# 一键重新构建并部署
+docker compose up -d --build
+
+# 查看启动日志
+docker compose logs -f
+```
+
+### 4. 安装 CA 证书
 
 代理使用自签名 CA 证书，需要在客户端机器上安装信任。有以下三种方式：
 
@@ -200,7 +212,7 @@ sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keyc
 - ⚠️ Node.js 默认不会读取系统证书库
 - 需要配合方式一或方式二的 `NODE_OPTIONS` 使用
 
-### 4. 浏览器证书导入
+### 5. 浏览器证书导入
 
 系统证书库安装的 CA 证书只对命令行工具（curl、wget）生效。Chrome 和 Firefox 使用独立的 NSS 证书数据库，不读取系统 CA，需要单独导入。
 
@@ -288,14 +300,14 @@ sudo apt install firefox -y
 
 snap 版 Firefox 因为沙盒限制，即便 certutil 写入成功，Firefox 进程也可能读不到。因此 snap 版推荐 **通过 Firefox 界面导入** 或 **改用 apt 版**。
 
-### 5. 配置系统
+### 6. 配置系统
 
 ```bash
 # 添加 hosts 映射（将 api.anthropic.com 指向代理服务器）
 echo "127.0.0.1 api.anthropic.com" | sudo tee -a /etc/hosts
 ```
 
-### 6. 访问配置页面
+### 7. 访问配置页面
 
 打开浏览器访问: `https://localhost:8442`
 

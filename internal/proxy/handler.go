@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -93,7 +94,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 创建后端请求
-	backendURL = backendURL + r.URL.Path
+	backendURL = strings.TrimSuffix(backendURL, "/") + r.URL.Path
 	if r.URL.RawQuery != "" {
 		backendURL += "?" + r.URL.RawQuery
 	}
@@ -107,10 +108,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// 复制所有 header（跳过 Host，让 Go 自动设置）
 	// 如果有供应商配置的 Token，替换 Authorization
+	// 非 Anthropic 后端过滤 Anthropic 专有 header
+	isAnthropicBackend := strings.Contains(backendURL, "anthropic.com")
+	anthropicOnlyHeaders := map[string]bool{
+		"Anthropic-Beta":    true,
+		"Anthropic-Version": true,
+	}
 	hasAuth := false
 	for key, values := range r.Header {
 		if strings.EqualFold(key, "Host") {
 			continue
+		}
+		// 非官方 Anthropic 后端过滤专有 header
+		if !isAnthropicBackend {
+			if _, skip := anthropicOnlyHeaders[key]; skip {
+				continue
+			}
 		}
 		// 如果有供应商配置的 Token，替换认证头
 		if apiToken != "" && (strings.EqualFold(key, "Authorization") || strings.EqualFold(key, "X-Api-Key")) {
@@ -149,6 +162,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
+	// 非 2xx 响应记录详细错误信息
+	if resp.StatusCode >= 400 {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		log.Printf("[Proxy] Error %d %s | params: %s | resp: %s",
+			resp.StatusCode, backendURL, summarizeRequestParams(modifiedBody), string(respBody))
+		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+	}
+
 	// 复制响应 header
 	for key, values := range resp.Header {
 		for _, value := range values {
@@ -175,28 +196,90 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// transformRequest 转换请求体（模型映射）
+// transformRequest 转换请求体（模型映射 + 剥离第三方不兼容字段）
 func (h *Handler) transformRequest(body []byte, provider *config.Provider) ([]byte, error) {
-	// 尝试解析为 JSON
-	var req map[string]interface{}
+	var req map[string]any
 	if err := json.Unmarshal(body, &req); err != nil {
-		// 不是 JSON，原样返回
 		return body, nil
 	}
 
-	// 检查是否有 model 字段
-	model, ok := req["model"].(string)
-	if !ok {
-		return body, nil
+	changed := false
+
+	// 模型映射
+	if model, ok := req["model"].(string); ok {
+		if mapped := provider.MapModel(model); mapped != model {
+			log.Printf("Model mapping: %s -> %s (provider: %s)", model, mapped, provider.Name)
+			req["model"] = mapped
+			changed = true
+		}
 	}
 
-	// 查找模型映射
-	mappedModel := provider.MapModel(model)
-	if mappedModel != model {
-		log.Printf("Model mapping: %s -> %s (provider: %s)", model, mappedModel, provider.Name)
-		req["model"] = mappedModel
-		return json.Marshal(req)
+	// 剥离 Anthropic 专有字段（第三方兼容 API 不支持）
+	// thinking 字段：仅在 SupportsThinking=true 时保留
+	stripFields := []string{
+		"context_management",
+		"metadata",
+		"output_config",
+	}
+	if !provider.SupportsThinking {
+		stripFields = append(stripFields, "thinking")
+	}
+	for _, f := range stripFields {
+		if _, ok := req[f]; ok {
+			log.Printf("[Compat] Stripping %s", f)
+			delete(req, f)
+			changed = true
+		}
 	}
 
+	// 清理 system 数组中每个元素的 cache_control（提示缓存标记）
+	if arr, ok := req["system"].([]any); ok {
+		for i, item := range arr {
+			if obj, ok := item.(map[string]any); ok {
+				if _, has := obj["cache_control"]; has {
+					delete(obj, "cache_control")
+					arr[i] = obj
+					changed = true
+				}
+			}
+		}
+		if changed {
+			log.Printf("[Compat] Stripped cache_control from system array")
+		}
+	}
+
+	// 非流式请求也尝试转换（兼容性兜底）
+	if changed {
+		out, err := json.Marshal(req)
+		if err != nil {
+			return body, nil
+		}
+		return out, nil
+	}
 	return body, nil
+}
+
+// summarizeRequestParams 生成请求参数摘要（用于错误日志）
+func summarizeRequestParams(body []byte) string {
+	var req map[string]any
+	if json.Unmarshal(body, &req) != nil {
+		return fmt.Sprintf("<%d bytes, not JSON>", len(body))
+	}
+	summary := make(map[string]any)
+	for k, v := range req {
+		switch k {
+		case "messages":
+			if arr, ok := v.([]any); ok {
+				summary[k] = fmt.Sprintf("[%d items]", len(arr))
+			}
+		case "tools":
+			if arr, ok := v.([]any); ok {
+				summary[k] = fmt.Sprintf("[%d items]", len(arr))
+			}
+		default:
+			summary[k] = v
+		}
+	}
+	out, _ := json.Marshal(summary)
+	return string(out)
 }

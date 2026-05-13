@@ -12,6 +12,7 @@ export interface Provider {
   api_url: string
   api_token_mask: string
   model_mappings: Record<string, string>
+  supports_thinking: boolean
   enabled: boolean
   active: boolean
   created_at: string
@@ -67,12 +68,17 @@ export function useApi() {
     api_url: string
     api_token: string
     model_mappings: Record<string, string>
+    supports_thinking?: boolean
   }): Promise<{ success: boolean; provider: Provider }> {
     const res = await fetch('/api/providers', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'request failed' }))
+      throw new Error(err.error || `HTTP ${res.status}`)
+    }
     return res.json()
   }
 
@@ -83,6 +89,7 @@ export function useApi() {
       api_url?: string
       api_token?: string
       model_mappings?: Record<string, string>
+      supports_thinking?: boolean
       enabled?: boolean
     }
   ): Promise<{ success: boolean; provider: Provider }> {
@@ -91,6 +98,10 @@ export function useApi() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'request failed' }))
+      throw new Error(err.error || `HTTP ${res.status}`)
+    }
     return res.json()
   }
 

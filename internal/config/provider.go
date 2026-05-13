@@ -27,6 +27,9 @@ type Provider struct {
 	// value: 实际转发到后端的模型名（如 glm-5）
 	ModelMappings map[string]string `json:"model_mappings"`
 
+	// SupportsThinking 后端是否支持 thinking 字段
+	SupportsThinking bool `json:"supports_thinking"`
+
 	// Enabled 是否启用
 	Enabled bool `json:"enabled"`
 
