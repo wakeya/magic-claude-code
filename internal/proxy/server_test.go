@@ -96,6 +96,25 @@ func TestProxyBackendError(t *testing.T) {
 	}
 }
 
+func TestProxyRootPathReturnsOK(t *testing.T) {
+	cfg := &config.Config{
+		BackendURL: "https://example.com/anthropic",
+	}
+	handler := NewHandler(config.NewMockStore(cfg), nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	if rec.Body.String() == "" {
+		t.Fatal("expected non-empty response body")
+	}
+}
+
 func TestTransformRequestPreservesClaudeCodeContextFields(t *testing.T) {
 	provider := config.NewProvider("compatible", "https://example.com/anthropic", "provider-token")
 	provider.ModelMappings["claude-sonnet-4-5"] = "provider-model"

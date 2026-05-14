@@ -32,6 +32,13 @@ func NewHandler(store config.ConfigStore, transport *http.Transport) *Handler {
 
 // ServeHTTP 处理 HTTP 请求
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/" {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK\n"))
+		return
+	}
+
 	// 检查是否为硬编码端点
 	if h.handleHardcodedEndpoint(w, r) {
 		return
