@@ -82,9 +82,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 转换请求体（模型映射）
+	// 转换请求体（模型映射 + 按供应商能力调整）
 	modifiedBody := body
-	if activeProvider != nil && len(activeProvider.ModelMappings) > 0 {
+	if activeProvider != nil {
 		modifiedBody, err = h.transformRequest(body, activeProvider)
 		if err != nil {
 			log.Printf("Error transforming request: %v", err)
@@ -108,22 +108,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// 复制所有 header（跳过 Host，让 Go 自动设置）
 	// 如果有供应商配置的 Token，替换 Authorization
-	// 非 Anthropic 后端过滤 Anthropic 专有 header
-	isAnthropicBackend := strings.Contains(backendURL, "anthropic.com")
-	anthropicOnlyHeaders := map[string]bool{
-		"Anthropic-Beta":    true,
-		"Anthropic-Version": true,
-	}
 	hasAuth := false
 	for key, values := range r.Header {
-		if strings.EqualFold(key, "Host") {
+		if !shouldForwardRequestHeader(key) {
 			continue
-		}
-		// 非官方 Anthropic 后端过滤专有 header
-		if !isAnthropicBackend {
-			if _, skip := anthropicOnlyHeaders[key]; skip {
-				continue
-			}
 		}
 		// 如果有供应商配置的 Token，替换认证头
 		if apiToken != "" && (strings.EqualFold(key, "Authorization") || strings.EqualFold(key, "X-Api-Key")) {
@@ -196,7 +184,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// transformRequest 转换请求体（模型映射 + 剥离第三方不兼容字段）
+// transformRequest 转换请求体（模型映射 + 按供应商能力剥离 thinking）
 func (h *Handler) transformRequest(body []byte, provider *config.Provider) ([]byte, error) {
 	var req map[string]any
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -214,37 +202,11 @@ func (h *Handler) transformRequest(body []byte, provider *config.Provider) ([]by
 		}
 	}
 
-	// 剥离 Anthropic 专有字段（第三方兼容 API 不支持）
-	// thinking 字段：仅在 SupportsThinking=true 时保留
-	stripFields := []string{
-		"context_management",
-		"metadata",
-		"output_config",
-	}
 	if !provider.SupportsThinking {
-		stripFields = append(stripFields, "thinking")
-	}
-	for _, f := range stripFields {
-		if _, ok := req[f]; ok {
-			log.Printf("[Compat] Stripping %s", f)
-			delete(req, f)
+		if _, ok := req["thinking"]; ok {
+			log.Printf("[Compat] Stripping thinking")
+			delete(req, "thinking")
 			changed = true
-		}
-	}
-
-	// 清理 system 数组中每个元素的 cache_control（提示缓存标记）
-	if arr, ok := req["system"].([]any); ok {
-		for i, item := range arr {
-			if obj, ok := item.(map[string]any); ok {
-				if _, has := obj["cache_control"]; has {
-					delete(obj, "cache_control")
-					arr[i] = obj
-					changed = true
-				}
-			}
-		}
-		if changed {
-			log.Printf("[Compat] Stripped cache_control from system array")
 		}
 	}
 
@@ -257,6 +219,10 @@ func (h *Handler) transformRequest(body []byte, provider *config.Provider) ([]by
 		return out, nil
 	}
 	return body, nil
+}
+
+func shouldForwardRequestHeader(key string) bool {
+	return !strings.EqualFold(key, "Host")
 }
 
 // summarizeRequestParams 生成请求参数摘要（用于错误日志）

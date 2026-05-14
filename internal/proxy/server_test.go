@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"crypto/tls"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -92,5 +93,68 @@ func TestProxyBackendError(t *testing.T) {
 	// 应透传错误状态码
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("expected status 500, got %d", rec.Code)
+	}
+}
+
+func TestTransformRequestPreservesClaudeCodeContextFields(t *testing.T) {
+	provider := config.NewProvider("compatible", "https://example.com/anthropic", "provider-token")
+	provider.ModelMappings["claude-sonnet-4-5"] = "provider-model"
+	provider.SupportsThinking = true
+
+	body := `{
+		"model":"claude-sonnet-4-5",
+		"messages":[{"role":"user","content":"use tools"}],
+		"context_management":{"edits":[{"type":"clear_tool_uses_20250919"}]},
+		"metadata":{"user_id":"test"},
+		"output_config":{"effort":"medium"},
+		"thinking":{"type":"enabled","budget_tokens":1024}
+	}`
+	handler := NewHandler(config.NewMockStore(nil), nil)
+	modified, err := handler.transformRequest([]byte(body), provider)
+	if err != nil {
+		t.Fatalf("transform request: %v", err)
+	}
+
+	var capturedBody map[string]any
+	if err := json.Unmarshal(modified, &capturedBody); err != nil {
+		t.Fatalf("decode transformed request body: %v", err)
+	}
+
+	if got := capturedBody["model"]; got != "provider-model" {
+		t.Fatalf("expected mapped model, got %v", got)
+	}
+	for _, field := range []string{"context_management", "metadata", "output_config", "thinking"} {
+		if _, ok := capturedBody[field]; !ok {
+			t.Fatalf("expected %s to be preserved", field)
+		}
+	}
+}
+
+func TestTransformRequestStripsThinkingWithoutModelMappings(t *testing.T) {
+	provider := config.NewProvider("no-thinking", "https://example.com/anthropic", "provider-token")
+	provider.SupportsThinking = false
+	handler := NewHandler(config.NewMockStore(nil), nil)
+
+	modified, err := handler.transformRequest(
+		[]byte(`{"model":"claude-sonnet-4-5","thinking":{"type":"enabled","budget_tokens":1024}}`),
+		provider,
+	)
+	if err != nil {
+		t.Fatalf("transform request: %v", err)
+	}
+	var capturedBody map[string]any
+	if err := json.Unmarshal(modified, &capturedBody); err != nil {
+		t.Fatalf("decode transformed request body: %v", err)
+	}
+	if _, ok := capturedBody["thinking"]; ok {
+		t.Fatal("expected thinking to be stripped when provider does not support it")
+	}
+}
+
+func TestShouldForwardAnthropicProtocolHeadersToCompatibleProviders(t *testing.T) {
+	for _, header := range []string{"Anthropic-Version", "Anthropic-Beta"} {
+		if !shouldForwardRequestHeader(header) {
+			t.Fatalf("expected %s to be forwarded to Anthropic-compatible provider", header)
+		}
 	}
 }
