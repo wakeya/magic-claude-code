@@ -50,7 +50,13 @@ func main() {
 
 	// 加载配置
 	configPath := filepath.Join(*dataDir, "config.json")
-	configStore := config.NewStore(configPath)
+	dbPath := filepath.Join(*dataDir, "proxy.db")
+	configStore, err := config.NewSQLiteStore(dbPath, configPath)
+	if err != nil {
+		log.Fatalf("Failed to initialize config store: %v", err)
+	}
+	defer configStore.Close()
+
 	cfg, err := configStore.Load()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
