@@ -26,7 +26,7 @@ func newTestStore(t *testing.T) *Store {
 func TestStoreMigratesUsageSchema(t *testing.T) {
 	store := newTestStore(t)
 
-	for _, table := range []string{"usage_requests", "usage_tokens"} {
+	for _, table := range []string{"usage_requests", "usage_tokens", "session_log_sync"} {
 		if !sqliteTableExists(t, store.db, table) {
 			t.Fatalf("expected table %s to exist", table)
 		}
@@ -47,6 +47,7 @@ func TestStoreMigratesUsageSchema(t *testing.T) {
 		"idx_usage_requests_status",
 		"idx_usage_tokens_source",
 		"idx_usage_tokens_parse_status",
+		"idx_session_log_sync_synced_at",
 	} {
 		if !sqliteIndexExists(t, store.db, index) {
 			t.Fatalf("expected index %s to exist", index)

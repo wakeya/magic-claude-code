@@ -3,8 +3,9 @@ package usage
 import "time"
 
 const (
-	UsageSourceProvider = "provider"
-	UsageSourceNone     = "none"
+	UsageSourceProvider   = "provider"
+	UsageSourceSessionLog = "session_log"
+	UsageSourceNone       = "none"
 
 	ParseStatusOK                = "ok"
 	ParseStatusMissing           = "missing"

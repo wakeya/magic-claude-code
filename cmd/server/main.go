@@ -63,6 +63,9 @@ func main() {
 		log.Fatalf("Failed to initialize usage store: %v", err)
 	}
 	usageHandler := usage.NewHandler(usageStore)
+	usageSyncCtx, stopUsageSync := context.WithCancel(context.Background())
+	defer stopUsageSync()
+	usage.StartClaudeSessionSync(usageSyncCtx, usageStore, usage.DefaultClaudeProjectsDir(), time.Minute)
 
 	cfg, err := configStore.Load()
 	if err != nil {
@@ -135,6 +138,7 @@ func main() {
 	<-quit
 
 	log.Println("Shutting down...")
+	stopUsageSync()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

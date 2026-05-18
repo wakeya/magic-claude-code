@@ -59,6 +59,12 @@ func (s *Store) Migrate() error {
 			usage_parse_error TEXT NOT NULL DEFAULT '',
 			FOREIGN KEY (request_id) REFERENCES usage_requests(id) ON DELETE CASCADE
 		);`,
+		`CREATE TABLE IF NOT EXISTS session_log_sync (
+			file_path TEXT PRIMARY KEY,
+			last_modified INTEGER NOT NULL DEFAULT 0,
+			last_line_offset INTEGER NOT NULL DEFAULT 0,
+			last_synced_at TEXT NOT NULL DEFAULT ''
+		);`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_requests_started_at ON usage_requests(started_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_requests_provider ON usage_requests(provider_id, started_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_requests_provider_url ON usage_requests(provider_api_url, started_at);`,
@@ -69,6 +75,7 @@ func (s *Store) Migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_usage_requests_status ON usage_requests(status_code, error_type, started_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_tokens_source ON usage_tokens(usage_source);`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_tokens_parse_status ON usage_tokens(usage_parse_status);`,
+		`CREATE INDEX IF NOT EXISTS idx_session_log_sync_synced_at ON session_log_sync(last_synced_at);`,
 		`INSERT OR IGNORE INTO settings(key, value) VALUES ('usage_retention_days', '90');`,
 	}
 	for _, stmt := range stmts {
@@ -143,6 +150,17 @@ func (s *Store) Record(req RequestRecord, tok TokenRecord) error {
 	return tx.Commit()
 }
 
+func (s *Store) recordIfAbsent(req RequestRecord, tok TokenRecord) (bool, error) {
+	var exists int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM usage_requests WHERE id = ?`, req.ID).Scan(&exists); err != nil {
+		return false, err
+	}
+	if exists > 0 {
+		return false, nil
+	}
+	return true, s.Record(req, tok)
+}
+
 func (s *Store) Summary(filter Filter) (Summary, error) {
 	rows, err := s.queryRows(filter, false)
 	if err != nil {
@@ -157,7 +175,7 @@ func (s *Store) Summary(filter Filter) (Summary, error) {
 	var withUsage int64
 	for _, row := range rows {
 		summary.ProviderRequestsTotal++
-		if row.UsageSource == UsageSourceProvider {
+		if hasUsage(row.TokenRecord) {
 			withUsage++
 			summary.TokenConsumptionTotal += tokenTotal(row.TokenRecord)
 		}
@@ -170,7 +188,7 @@ func (s *Store) Summary(filter Filter) (Summary, error) {
 		}
 		if !row.StartedAt.Before(startOfToday) && row.StartedAt.Before(endOfToday) {
 			summary.TodayProviderRequests++
-			if row.UsageSource == UsageSourceProvider {
+			if hasUsage(row.TokenRecord) {
 				summary.TodayTokenConsumption += tokenTotal(row.TokenRecord)
 			}
 		}
@@ -449,7 +467,7 @@ func (a *trendAccumulator) add(row RequestRow) {
 	if isFailed(row.RequestRecord) {
 		a.point.FailedRequests++
 	}
-	if row.UsageSource == UsageSourceProvider {
+	if hasUsage(row.TokenRecord) {
 		a.withUsage++
 		a.point.InputTokens += row.InputTokens
 		a.point.OutputTokens += row.OutputTokens
@@ -470,7 +488,7 @@ func (a *aggregateAccumulator) add(row RequestRow) {
 	if isFailed(row.RequestRecord) {
 		a.row.FailedRequests++
 	}
-	if row.UsageSource == UsageSourceProvider {
+	if hasUsage(row.TokenRecord) {
 		a.withUsage++
 		a.row.TokenConsumptionTotal += tokenTotal(row.TokenRecord)
 	}
@@ -486,7 +504,7 @@ func (a *coverageAccumulator) add(row RequestRow) {
 	} else {
 		a.row.SuccessRequests++
 	}
-	if row.UsageSource == UsageSourceProvider {
+	if hasUsage(row.TokenRecord) {
 		a.row.WithUsageRequests++
 	} else {
 		a.row.WithoutUsageRequests++
@@ -530,6 +548,10 @@ func isFailed(req RequestRecord) bool {
 
 func tokenTotal(tok TokenRecord) int64 {
 	return tok.InputTokens + tok.OutputTokens + tok.CacheCreationInputTokens + tok.CacheReadInputTokens
+}
+
+func hasUsage(tok TokenRecord) bool {
+	return tok.UsageSource != "" && tok.UsageSource != UsageSourceNone && tok.UsageParseStatus == ParseStatusOK
 }
 
 func topStatus(counts map[string]int64) string {
