@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
 
 	"claude_code_proxy_dns/internal/config"
+	"claude_code_proxy_dns/internal/usage"
 )
 
 // 请求体大小限制 (10MB)
@@ -20,14 +22,23 @@ const maxRequestBodySize = 10 * 1024 * 1024
 type Handler struct {
 	configStore config.ConfigStore
 	transport   *http.Transport
+	recorder    UsageRecorder
+}
+
+type UsageRecorder interface {
+	Record(req usage.RequestRecord, tok usage.TokenRecord) error
 }
 
 // NewHandler 创建代理处理器
-func NewHandler(store config.ConfigStore, transport *http.Transport) *Handler {
-	return &Handler{
+func NewHandler(store config.ConfigStore, transport *http.Transport, recorders ...UsageRecorder) *Handler {
+	handler := &Handler{
 		configStore: store,
 		transport:   transport,
 	}
+	if len(recorders) > 0 {
+		handler.recorder = recorders[0]
+	}
+	return handler
 }
 
 // ServeHTTP 处理 HTTP 请求
@@ -91,7 +102,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// 转换请求体（模型映射 + 按供应商能力调整）
 	modifiedBody := body
+	metadata := usage.ParseRequestMetadata(body, r.Header)
+	mappedModel := metadata.OriginalModel
 	if activeProvider != nil {
+		mappedModel = activeProvider.MapModel(metadata.OriginalModel)
 		modifiedBody, err = h.transformRequest(body, activeProvider)
 		if err != nil {
 			log.Printf("Error transforming request: %v", err)
@@ -105,6 +119,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.RawQuery != "" {
 		backendURL += "?" + r.URL.RawQuery
 	}
+	usageReq := h.newUsageRequest(r, activeProvider, backendURL, metadata, mappedModel, len(modifiedBody))
+	shouldRecordUsage := h.recorder != nil && shouldRecordUsagePath(r.URL.Path)
 
 	backendReq, err := http.NewRequest(r.Method, backendURL, bytes.NewReader(modifiedBody))
 	if err != nil {
@@ -149,21 +165,27 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Timeout:   10 * time.Minute, // AI API 可能需要较长时间
 	}
 
+	requestStarted := usageReq.StartedAt
+	upstreamStarted := time.Now()
 	resp, err := client.Do(backendReq)
+	headerMS := time.Since(upstreamStarted).Milliseconds()
+	usageReq.UpstreamResponseHeaderMS = &headerMS
 	if err != nil {
 		log.Printf("Error forwarding request to %s: %v", backendURL, err)
+		if shouldRecordUsage {
+			usageReq.ErrorType = usageErrorType(err)
+			usageReq.ErrorMessage = usage.SanitizeErrorMessage(err.Error())
+			h.finishUsageRecord(usageReq, usage.TokenRecord{
+				UsageSource:      usage.UsageSourceNone,
+				UsageParseStatus: usage.ParseStatusNetworkError,
+				UsageParseError:  usage.SanitizeParseError(err.Error()),
+			})
+		}
 		http.Error(w, "Backend unavailable", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
-
-	// 非 2xx 响应记录详细错误信息
-	if resp.StatusCode >= 400 {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		log.Printf("[Proxy] Error %d %s | params: %s | resp: %s",
-			resp.StatusCode, backendURL, summarizeRequestParams(modifiedBody), string(respBody))
-		resp.Body = io.NopCloser(bytes.NewReader(respBody))
-	}
+	usageReq.StatusCode = &resp.StatusCode
 
 	// 复制响应 header
 	for key, values := range resp.Header {
@@ -179,16 +201,168 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if isSSEStream(resp) {
 		log.Printf("[Stream] SSE stream detected for %s, enabling heartbeat injection", backendURL)
 		hw := newHeartbeatWriter(w)
-		if err := copyWithHeartbeat(hw, resp.Body); err != nil {
+		var observer ChunkObserver
+		var streamObserver *streamUsageObserver
+		if shouldRecordUsage {
+			streamObserver = newStreamUsageObserver(requestStarted)
+			observer = streamObserver
+		}
+		if err := copyWithHeartbeatAndObserver(hw, resp.Body, observer); err != nil {
 			log.Printf("Stream interrupted for %s: %v (this is normal if client disconnected)", backendURL, err)
+			usageReq.ErrorType = usage.ErrorClientAborted
+			usageReq.ErrorMessage = usage.SanitizeErrorMessage(err.Error())
+		}
+		if shouldRecordUsage {
+			values, source, status, firstByte := streamObserver.Result()
+			usageReq.ResponseBytes = streamObserver.Bytes()
+			usageReq.TimeToFirstByteMS = firstByte
+			h.finishUsageRecord(usageReq, tokenRecordFromUsage(values, source, status))
 		}
 	} else {
 		// 非 SSE 响应，直接复制
-		_, err = io.Copy(w, resp.Body)
+		observer := newResponseObserver(requestStarted, 4*1024*1024)
+		_, err = io.Copy(io.MultiWriter(w, observer), resp.Body)
 		if err != nil {
 			log.Printf("Stream interrupted for %s: %v (this is normal if client disconnected)", backendURL, err)
+			usageReq.ErrorType = usage.ErrorClientAborted
+			usageReq.ErrorMessage = usage.SanitizeErrorMessage(err.Error())
+		}
+		if shouldRecordUsage {
+			usageReq.ResponseBytes = observer.Bytes()
+			usageReq.TimeToFirstByteMS = observer.FirstByte()
+			tok := usage.TokenRecord{}
+			if resp.StatusCode >= 400 {
+				usageReq.ErrorType = usage.ErrorHTTP
+				usageReq.ErrorMessage = usage.SanitizeErrorMessage(string(observer.Body()))
+				tok.UsageSource = usage.UsageSourceNone
+				tok.UsageParseStatus = usage.ParseStatusSkippedNon2xx
+				log.Printf("[Proxy] Error %d %s | params: %s | resp: %s",
+					resp.StatusCode, backendURL, summarizeRequestParams(modifiedBody), usageReq.ErrorMessage)
+			} else {
+				values, source, status := usage.ExtractUsageFromJSON(observer.Body())
+				tok = tokenRecordFromUsage(values, source, status)
+			}
+			h.finishUsageRecord(usageReq, tok)
 		}
 	}
+}
+
+func shouldRecordUsagePath(path string) bool {
+	return path == "/v1/messages" || path == "/anthropic/v1/messages"
+}
+
+func (h *Handler) newUsageRequest(r *http.Request, provider *config.Provider, backendURL string, metadata usage.RequestMetadata, mappedModel string, requestBytes int) usage.RequestRecord {
+	record := usage.RequestRecord{
+		ID:               generateID(),
+		StartedAt:        time.Now().UTC(),
+		Method:           r.Method,
+		RequestPath:      r.URL.Path,
+		BackendURL:       usage.RedactURL(backendURL),
+		SourceApp:        metadata.SourceApp,
+		SourceEntrypoint: metadata.SourceEntrypoint,
+		UserAgent:        metadata.UserAgent,
+		OriginalModel:    metadata.OriginalModel,
+		MappedModel:      mappedModel,
+		Stream:           metadata.Stream,
+		RequestBytes:     int64(requestBytes),
+	}
+	if provider != nil {
+		record.ProviderID = provider.ID
+		record.ProviderName = provider.Name
+		record.ProviderAPIURL = provider.APIURL
+	}
+	return record
+}
+
+func (h *Handler) finishUsageRecord(req usage.RequestRecord, tok usage.TokenRecord) {
+	ended := time.Now().UTC()
+	duration := ended.Sub(req.StartedAt).Milliseconds()
+	req.EndedAt = &ended
+	req.DurationMS = &duration
+	tok.RequestID = req.ID
+	if err := h.recorder.Record(req, tok); err != nil {
+		log.Printf("[Usage] Failed to record usage request %s: %v", req.ID, err)
+	}
+}
+
+func tokenRecordFromUsage(values usage.UsageValues, source, status string) usage.TokenRecord {
+	return usage.TokenRecord{
+		InputTokens:              values.InputTokens,
+		OutputTokens:             values.OutputTokens,
+		CacheCreationInputTokens: values.CacheCreationInputTokens,
+		CacheReadInputTokens:     values.CacheReadInputTokens,
+		UsageSource:              source,
+		UsageParseStatus:         status,
+	}
+}
+
+func usageErrorType(err error) string {
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		return usage.ErrorUpstreamTimeout
+	}
+	return usage.ErrorNetwork
+}
+
+type responseObserver struct {
+	startedAt time.Time
+	limit     int
+	body      []byte
+	bytes     int64
+	firstByte *int64
+}
+
+func newResponseObserver(startedAt time.Time, limit int) *responseObserver {
+	return &responseObserver{startedAt: startedAt, limit: limit}
+}
+
+func (o *responseObserver) Write(p []byte) (int, error) {
+	if len(p) > 0 && o.firstByte == nil {
+		ms := time.Since(o.startedAt).Milliseconds()
+		o.firstByte = &ms
+	}
+	o.bytes += int64(len(p))
+	remaining := o.limit - len(o.body)
+	if remaining > 0 {
+		if len(p) < remaining {
+			remaining = len(p)
+		}
+		o.body = append(o.body, p[:remaining]...)
+	}
+	return len(p), nil
+}
+
+func (o *responseObserver) Body() []byte {
+	return o.body
+}
+
+func (o *responseObserver) Bytes() int64 {
+	return o.bytes
+}
+
+func (o *responseObserver) FirstByte() *int64 {
+	return o.firstByte
+}
+
+type streamUsageObserver struct {
+	usage *usage.SSEObserver
+	bytes int64
+}
+
+func newStreamUsageObserver(startedAt time.Time) *streamUsageObserver {
+	return &streamUsageObserver{usage: usage.NewSSEObserver(startedAt)}
+}
+
+func (o *streamUsageObserver) Observe(chunk []byte) {
+	o.bytes += int64(len(chunk))
+	o.usage.Observe(chunk)
+}
+
+func (o *streamUsageObserver) Result() (usage.UsageValues, string, string, *int64) {
+	return o.usage.Result()
+}
+
+func (o *streamUsageObserver) Bytes() int64 {
+	return o.bytes
 }
 
 // transformRequest 转换请求体（模型映射 + 按供应商能力剥离 thinking）

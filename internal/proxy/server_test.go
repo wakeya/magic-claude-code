@@ -6,9 +6,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"claude_code_proxy_dns/internal/config"
+	"claude_code_proxy_dns/internal/usage"
 )
 
 func TestProxyHandler(t *testing.T) {
@@ -96,6 +98,166 @@ func TestProxyBackendError(t *testing.T) {
 	}
 }
 
+func TestProxyRecordsNonStreamingProviderUsage(t *testing.T) {
+	recorder := &fakeUsageRecorder{}
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":3,"cache_read_input_tokens":2}}`))
+	}))
+	defer backend.Close()
+
+	provider := testProxyProvider(backend.URL)
+	handler := NewHandler(config.NewMockStore(testProxyConfig(provider)), http.DefaultTransport.(*http.Transport), recorder)
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{
+		"model":"claude-sonnet",
+		"stream":false,
+		"system":"x-anthropic-billing-header: cc_entrypoint=cli",
+		"messages":[{"role":"user","content":"hello"}]
+	}`))
+	req.Header.Set("User-Agent", "claude-code/1.0")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	record := recorder.onlyRecord(t)
+	if record.req.ProviderID != provider.ID || record.req.ProviderName != provider.Name {
+		t.Fatalf("provider snapshot = %#v", record.req)
+	}
+	if record.req.OriginalModel != "claude-sonnet" || record.req.MappedModel != "mapped-sonnet" {
+		t.Fatalf("models = %q/%q", record.req.OriginalModel, record.req.MappedModel)
+	}
+	if record.req.SourceEntrypoint != "cli" {
+		t.Fatalf("SourceEntrypoint = %q", record.req.SourceEntrypoint)
+	}
+	if record.tok.UsageSource != usage.UsageSourceProvider || record.tok.UsageParseStatus != usage.ParseStatusOK {
+		t.Fatalf("token status = %#v", record.tok)
+	}
+	if record.tok.InputTokens != 10 || record.tok.OutputTokens != 5 || record.tok.CacheCreationInputTokens != 3 || record.tok.CacheReadInputTokens != 2 {
+		t.Fatalf("tokens = %#v", record.tok)
+	}
+}
+
+func TestProxyRecordsUsageNoneWhenUsageMissing(t *testing.T) {
+	recorder := &fakeUsageRecorder{}
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_123","type":"message"}`))
+	}))
+	defer backend.Close()
+
+	handler := NewHandler(config.NewMockStore(testProxyConfig(testProxyProvider(backend.URL))), http.DefaultTransport.(*http.Transport), recorder)
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"claude-sonnet","messages":[]}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	record := recorder.onlyRecord(t)
+	if record.tok.UsageSource != usage.UsageSourceNone || record.tok.UsageParseStatus != usage.ParseStatusMissing {
+		t.Fatalf("token status = %#v", record.tok)
+	}
+	if record.req.ErrorType != "" {
+		t.Fatalf("ErrorType = %q", record.req.ErrorType)
+	}
+}
+
+func TestProxyRecordsHTTPErrorAndForwardsFullBody(t *testing.T) {
+	recorder := &fakeUsageRecorder{}
+	errorBody := strings.Repeat("provider-error-", 500)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(errorBody))
+	}))
+	defer backend.Close()
+
+	handler := NewHandler(config.NewMockStore(testProxyConfig(testProxyProvider(backend.URL))), http.DefaultTransport.(*http.Transport), recorder)
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"claude-sonnet","messages":[]}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if rec.Body.String() != errorBody {
+		t.Fatalf("client did not receive full provider body: got %d want %d bytes", rec.Body.Len(), len(errorBody))
+	}
+	record := recorder.onlyRecord(t)
+	if record.req.ErrorType != usage.ErrorHTTP {
+		t.Fatalf("ErrorType = %q", record.req.ErrorType)
+	}
+	if record.tok.UsageParseStatus != usage.ParseStatusSkippedNon2xx {
+		t.Fatalf("UsageParseStatus = %q", record.tok.UsageParseStatus)
+	}
+}
+
+func TestProxyRecordsNetworkError(t *testing.T) {
+	recorder := &fakeUsageRecorder{}
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	backendURL := backend.URL
+	backend.Close()
+
+	handler := NewHandler(config.NewMockStore(testProxyConfig(testProxyProvider(backendURL))), http.DefaultTransport.(*http.Transport), recorder)
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"claude-sonnet","messages":[]}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	record := recorder.onlyRecord(t)
+	if record.req.ErrorType != usage.ErrorNetwork {
+		t.Fatalf("ErrorType = %q", record.req.ErrorType)
+	}
+	if record.tok.UsageParseStatus != usage.ParseStatusNetworkError {
+		t.Fatalf("UsageParseStatus = %q", record.tok.UsageParseStatus)
+	}
+}
+
+func TestProxyRecordsStreamingUsage(t *testing.T) {
+	recorder := &fakeUsageRecorder{}
+	sse := "event: message_start\ndata: {\"message\":{\"usage\":{\"input_tokens\":8,\"cache_read_input_tokens\":4}}}\n\n" +
+		"event: message_delta\ndata: {\"usage\":{\"output_tokens\":6}}\n\n"
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(sse))
+	}))
+	defer backend.Close()
+
+	handler := NewHandler(config.NewMockStore(testProxyConfig(testProxyProvider(backend.URL))), http.DefaultTransport.(*http.Transport), recorder)
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"claude-sonnet","stream":true,"messages":[]}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	record := recorder.onlyRecord(t)
+	if record.tok.UsageSource != usage.UsageSourceProvider || record.tok.UsageParseStatus != usage.ParseStatusOK {
+		t.Fatalf("token status = %#v", record.tok)
+	}
+	if record.tok.InputTokens != 8 || record.tok.OutputTokens != 6 || record.tok.CacheReadInputTokens != 4 {
+		t.Fatalf("tokens = %#v", record.tok)
+	}
+	if record.req.ResponseBytes != int64(len(sse)) {
+		t.Fatalf("ResponseBytes = %d", record.req.ResponseBytes)
+	}
+}
+
+func TestProxyDoesNotRecordHardcodedEndpointUsage(t *testing.T) {
+	recorder := &fakeUsageRecorder{}
+	handler := NewHandler(config.NewMockStore(testProxyConfig(testProxyProvider("https://example.com"))), nil, recorder)
+	req := httptest.NewRequest("GET", "/v1/me", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if len(recorder.records) != 0 {
+		t.Fatalf("expected no records, got %d", len(recorder.records))
+	}
+}
+
 func TestProxyRootPathReturnsOK(t *testing.T) {
 	cfg := &config.Config{
 		BackendURL: "https://example.com/anthropic",
@@ -176,4 +338,40 @@ func TestShouldForwardAnthropicProtocolHeadersToCompatibleProviders(t *testing.T
 			t.Fatalf("expected %s to be forwarded to Anthropic-compatible provider", header)
 		}
 	}
+}
+
+type recordedUsage struct {
+	req usage.RequestRecord
+	tok usage.TokenRecord
+}
+
+type fakeUsageRecorder struct {
+	records []recordedUsage
+}
+
+func (f *fakeUsageRecorder) Record(req usage.RequestRecord, tok usage.TokenRecord) error {
+	f.records = append(f.records, recordedUsage{req: req, tok: tok})
+	return nil
+}
+
+func (f *fakeUsageRecorder) onlyRecord(t *testing.T) recordedUsage {
+	t.Helper()
+	if len(f.records) != 1 {
+		t.Fatalf("expected one usage record, got %d", len(f.records))
+	}
+	return f.records[0]
+}
+
+func testProxyConfig(provider *config.Provider) *config.Config {
+	return &config.Config{
+		ActiveProviderID: provider.ID,
+		Providers:        []config.Provider{*provider},
+	}
+}
+
+func testProxyProvider(apiURL string) *config.Provider {
+	provider := config.NewProvider("Provider A", apiURL, "provider-token")
+	provider.ID = "provider-a"
+	provider.ModelMappings["claude-sonnet"] = "mapped-sonnet"
+	return provider
 }

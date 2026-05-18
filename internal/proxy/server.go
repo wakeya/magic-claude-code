@@ -16,6 +16,7 @@ type Server struct {
 	configStore config.ConfigStore
 	server      *http.Server
 	transport   *http.Transport
+	recorder    UsageRecorder
 
 	// 统计
 	requestsTotal atomic.Int64
@@ -24,8 +25,8 @@ type Server struct {
 }
 
 // NewServer 创建代理服务器
-func NewServer(store config.ConfigStore) *Server {
-	return &Server{
+func NewServer(store config.ConfigStore, recorders ...UsageRecorder) *Server {
+	server := &Server{
 		configStore: store,
 		startTime:   time.Now(),
 		transport: &http.Transport{
@@ -37,11 +38,15 @@ func NewServer(store config.ConfigStore) *Server {
 			IdleConnTimeout:     90 * time.Second,
 		},
 	}
+	if len(recorders) > 0 {
+		server.recorder = recorders[0]
+	}
+	return server
 }
 
 // Start 启动代理服务器
 func (s *Server) Start(addr string, certFile, keyFile string) error {
-	handler := NewHandler(s.configStore, s.transport)
+	handler := NewHandler(s.configStore, s.transport, s.recorder)
 
 	s.server = &http.Server{
 		Addr:         addr,
