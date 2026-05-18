@@ -37,6 +37,21 @@ func TestSSEObserverMergesPartialUsageFields(t *testing.T) {
 	}
 }
 
+func TestSSEObserverExtractsUsageWithCRLFDelimiters(t *testing.T) {
+	observer := NewSSEObserver(time.Now())
+	observer.Observe([]byte("event: message_start\r\ndata: {\"message\":{\"usage\":{\"input_tokens\":12,\"cache_read_input_tokens\":5}}}\r\n\r\n"))
+	observer.Observe([]byte("event: message_delta\r\ndata: {\"usage\":{\"output_tokens\":8}}\r\n\r\n"))
+
+	values, source, status, _ := observer.Result()
+
+	if source != UsageSourceProvider || status != ParseStatusOK {
+		t.Fatalf("source/status = %q/%q", source, status)
+	}
+	if values.InputTokens != 12 || values.OutputTokens != 8 || values.CacheReadInputTokens != 5 {
+		t.Fatalf("values = %#v", values)
+	}
+}
+
 func TestSSEObserverIgnoresPingEvents(t *testing.T) {
 	observer := NewSSEObserver(time.Now())
 	observer.Observe([]byte("event: ping\ndata: {\"type\":\"ping\"}\n\n"))

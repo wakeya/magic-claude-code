@@ -29,13 +29,28 @@ func (o *SSEObserver) Observe(chunk []byte) {
 	}
 	o.buffer = append(o.buffer, chunk...)
 	for {
-		idx := bytes.Index(o.buffer, []byte("\n\n"))
+		idx, delimiterLen := nextSSEBlockDelimiter(o.buffer)
 		if idx < 0 {
 			return
 		}
 		block := string(o.buffer[:idx])
-		o.buffer = o.buffer[idx+2:]
+		o.buffer = o.buffer[idx+delimiterLen:]
 		o.observeBlock(block)
+	}
+}
+
+func nextSSEBlockDelimiter(buffer []byte) (int, int) {
+	lf := bytes.Index(buffer, []byte("\n\n"))
+	crlf := bytes.Index(buffer, []byte("\r\n\r\n"))
+	switch {
+	case lf < 0:
+		return crlf, 4
+	case crlf < 0:
+		return lf, 2
+	case crlf < lf:
+		return crlf, 4
+	default:
+		return lf, 2
 	}
 }
 
