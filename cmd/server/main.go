@@ -18,6 +18,7 @@ import (
 	"claude_code_proxy_dns/internal/config"
 	"claude_code_proxy_dns/internal/frontend"
 	"claude_code_proxy_dns/internal/proxy"
+	"claude_code_proxy_dns/internal/usage"
 )
 
 // generateRandomPassword 生成随机密码
@@ -56,6 +57,12 @@ func main() {
 		log.Fatalf("Failed to initialize config store: %v", err)
 	}
 	defer configStore.Close()
+
+	usageStore := usage.NewStore(configStore.DB())
+	if err := usageStore.Migrate(); err != nil {
+		log.Fatalf("Failed to initialize usage store: %v", err)
+	}
+	usageHandler := usage.NewHandler(usageStore)
 
 	cfg, err := configStore.Load()
 	if err != nil {
@@ -99,7 +106,7 @@ func main() {
 	fmt.Println("========================================")
 
 	// 创建代理服务器
-	proxyServer := proxy.NewServer(configStore)
+	proxyServer := proxy.NewServer(configStore, usageStore)
 
 	// 创建配置服务
 	adminServer := admin.NewServer(&admin.AdminConfig{
@@ -107,7 +114,7 @@ func main() {
 		CertFile:   certManager.GetServerCertPath(),
 		KeyFile:    filepath.Join(*dataDir, "server.key"),
 		ConfigPath: configPath,
-	}, configStore, proxyServer)
+	}, configStore, proxyServer, usageHandler)
 
 	// 启动服务
 	go func() {

@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"claude_code_proxy_dns/internal/usage"
 )
 
 // handleLogin 处理登录
@@ -174,13 +176,25 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	} else {
 		uptime = time.Since(s.startTime)
 	}
+	usageSummary := usage.Summary{}
+	if s.usageHandler != nil {
+		if summary, err := s.usageHandler.Summary(usage.Filter{TZ: r.URL.Query().Get("tz")}); err == nil {
+			usageSummary = summary
+		}
+	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"running":        true,
-		"backend_url":    backendURL,
-		"uptime":         uptime.String(),
-		"requests_total": requestsTotal,
-		"last_request":   lastRequest,
+		"running":                 true,
+		"backend_url":             backendURL,
+		"uptime":                  uptime.String(),
+		"requests_total":          requestsTotal,
+		"last_request":            lastRequest,
+		"service_requests_total":  requestsTotal,
+		"provider_requests_total": usageSummary.ProviderRequestsTotal,
+		"today_provider_requests": usageSummary.TodayProviderRequests,
+		"today_token_consumption": usageSummary.TodayTokenConsumption,
+		"usage_coverage":          usageSummary.UsageCoverage,
+		"last_provider_request":   usageSummary.LastProviderRequest,
 	})
 }
 

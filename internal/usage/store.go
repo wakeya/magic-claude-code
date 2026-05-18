@@ -182,7 +182,35 @@ func (s *Store) Summary(filter Filter) (Summary, error) {
 }
 
 func (s *Store) Trends(filter Filter) ([]TrendPoint, error) {
-	return nil, nil
+	rows, err := s.queryRows(filter, false)
+	if err != nil {
+		return nil, err
+	}
+	loc, err := filterLocation(filter)
+	if err != nil {
+		return nil, err
+	}
+	groups := make(map[string]*trendAccumulator)
+	for _, row := range rows {
+		bucket := row.StartedAt.In(loc).Format("2006-01-02")
+		group := groups[bucket]
+		if group == nil {
+			group = &trendAccumulator{}
+			groups[bucket] = group
+		}
+		group.add(row)
+	}
+	out := make([]TrendPoint, 0, len(groups))
+	for bucket, group := range groups {
+		point := group.point
+		point.Bucket = bucket
+		if point.ProviderRequestsTotal > 0 {
+			point.UsageCoverage = float64(group.withUsage) / float64(point.ProviderRequestsTotal)
+		}
+		out = append(out, point)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Bucket < out[j].Bucket })
+	return out, nil
 }
 
 func (s *Store) Requests(filter Filter) (RequestPage, error) {
@@ -210,11 +238,43 @@ func (s *Store) Requests(filter Filter) (RequestPage, error) {
 }
 
 func (s *Store) Providers(filter Filter) ([]AggregateRow, error) {
-	return nil, nil
+	return s.aggregate(filter, func(row RequestRow) (key, name string) {
+		return row.ProviderID, row.ProviderName
+	})
 }
 
 func (s *Store) Models(filter Filter) ([]AggregateRow, error) {
-	return nil, nil
+	return s.aggregate(filter, func(row RequestRow) (key, name string) {
+		return row.MappedModel, row.MappedModel
+	})
+}
+
+func (s *Store) aggregate(filter Filter, keyFn func(RequestRow) (string, string)) ([]AggregateRow, error) {
+	rows, err := s.queryRows(filter, false)
+	if err != nil {
+		return nil, err
+	}
+	groups := make(map[string]*aggregateAccumulator)
+	for _, row := range rows {
+		key, name := keyFn(row)
+		group := groups[key]
+		if group == nil {
+			group = &aggregateAccumulator{row: AggregateRow{Name: name, ProviderID: row.ProviderID, ProviderName: row.ProviderName, MappedModel: row.MappedModel}}
+			groups[key] = group
+		}
+		group.add(row)
+	}
+	out := make([]AggregateRow, 0, len(groups))
+	for _, group := range groups {
+		row := group.row
+		if row.TotalRequests > 0 {
+			row.UsageCoverage = float64(group.withUsage) / float64(row.TotalRequests)
+			row.AverageDurationMS = float64(group.durationTotal) / float64(row.TotalRequests)
+		}
+		out = append(out, row)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].TotalRequests > out[j].TotalRequests })
+	return out, nil
 }
 
 func (s *Store) Coverage(filter Filter) ([]CoverageRow, error) {
@@ -379,6 +439,46 @@ type coverageAccumulator struct {
 	parseStatuses map[string]int64
 }
 
+type trendAccumulator struct {
+	point     TrendPoint
+	withUsage int64
+}
+
+func (a *trendAccumulator) add(row RequestRow) {
+	a.point.ProviderRequestsTotal++
+	if isFailed(row.RequestRecord) {
+		a.point.FailedRequests++
+	}
+	if row.UsageSource == UsageSourceProvider {
+		a.withUsage++
+		a.point.InputTokens += row.InputTokens
+		a.point.OutputTokens += row.OutputTokens
+		a.point.CacheCreationInputTokens += row.CacheCreationInputTokens
+		a.point.CacheReadInputTokens += row.CacheReadInputTokens
+		a.point.TokenConsumptionTotal += tokenTotal(row.TokenRecord)
+	}
+}
+
+type aggregateAccumulator struct {
+	row           AggregateRow
+	withUsage     int64
+	durationTotal int64
+}
+
+func (a *aggregateAccumulator) add(row RequestRow) {
+	a.row.TotalRequests++
+	if isFailed(row.RequestRecord) {
+		a.row.FailedRequests++
+	}
+	if row.UsageSource == UsageSourceProvider {
+		a.withUsage++
+		a.row.TokenConsumptionTotal += tokenTotal(row.TokenRecord)
+	}
+	if row.DurationMS != nil {
+		a.durationTotal += *row.DurationMS
+	}
+}
+
 func (a *coverageAccumulator) add(row RequestRow) {
 	a.row.TotalRequests++
 	if isFailed(row.RequestRecord) {
@@ -398,13 +498,9 @@ func (a *coverageAccumulator) add(row RequestRow) {
 }
 
 func todayRange(filter Filter) (time.Time, time.Time, error) {
-	loc := time.Local
-	var err error
-	if filter.TZ != "" {
-		loc, err = time.LoadLocation(filter.TZ)
-		if err != nil {
-			return time.Time{}, time.Time{}, err
-		}
+	loc, err := filterLocation(filter)
+	if err != nil {
+		return time.Time{}, time.Time{}, err
 	}
 	now := filter.Now
 	if now.IsZero() {
@@ -413,6 +509,13 @@ func todayRange(filter Filter) (time.Time, time.Time, error) {
 	localNow := now.In(loc)
 	start := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, loc)
 	return start.UTC(), start.AddDate(0, 0, 1).UTC(), nil
+}
+
+func filterLocation(filter Filter) (*time.Location, error) {
+	if filter.TZ == "" {
+		return time.Local, nil
+	}
+	return time.LoadLocation(filter.TZ)
 }
 
 func isFailed(req RequestRecord) bool {

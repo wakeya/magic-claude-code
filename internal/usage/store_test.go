@@ -204,6 +204,53 @@ func TestTodaySummaryUsesTimezone(t *testing.T) {
 	}
 }
 
+func TestTrendsAggregatesByDay(t *testing.T) {
+	store := newTestStore(t)
+	started := time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)
+	seedUsageRecord(t, store, "trend-1", started, 200, "", UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 2, OutputTokens: 3})
+	seedUsageRecord(t, store, "trend-2", started.Add(time.Hour), 500, ErrorHTTP, UsageSourceNone, ParseStatusSkippedNon2xx, UsageValues{})
+
+	points, err := store.Trends(Filter{From: started.Add(-time.Hour), To: started.Add(24 * time.Hour), TZ: "UTC"})
+	if err != nil {
+		t.Fatalf("Trends() error = %v", err)
+	}
+	if len(points) != 1 {
+		t.Fatalf("len(points) = %d", len(points))
+	}
+	if points[0].Bucket != "2026-05-18" || points[0].ProviderRequestsTotal != 2 || points[0].FailedRequests != 1 || points[0].TokenConsumptionTotal != 5 || points[0].UsageCoverage != 0.5 {
+		t.Fatalf("point = %#v", points[0])
+	}
+}
+
+func TestProvidersAndModelsAggregate(t *testing.T) {
+	store := newTestStore(t)
+	started := time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)
+	seedUsageRecord(t, store, "agg-1", started, 200, "", UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 2, OutputTokens: 3})
+	seedUsageRecord(t, store, "agg-2", started.Add(time.Hour), 200, "", UsageSourceNone, ParseStatusMissing, UsageValues{})
+
+	providers, err := store.Providers(Filter{})
+	if err != nil {
+		t.Fatalf("Providers() error = %v", err)
+	}
+	if len(providers) != 1 {
+		t.Fatalf("len(providers) = %d", len(providers))
+	}
+	if providers[0].ProviderName != "Provider A" || providers[0].TotalRequests != 2 || providers[0].TokenConsumptionTotal != 5 || providers[0].UsageCoverage != 0.5 {
+		t.Fatalf("provider aggregate = %#v", providers[0])
+	}
+
+	models, err := store.Models(Filter{})
+	if err != nil {
+		t.Fatalf("Models() error = %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("len(models) = %d", len(models))
+	}
+	if models[0].MappedModel != "mapped-model" || models[0].TotalRequests != 2 || models[0].AverageDurationMS != 120 {
+		t.Fatalf("model aggregate = %#v", models[0])
+	}
+}
+
 func seedUsageRecord(t *testing.T, store *Store, id string, started time.Time, statusCode int, errorType, usageSource, parseStatus string, values UsageValues) {
 	t.Helper()
 	req := testUsageRequest(id, started)

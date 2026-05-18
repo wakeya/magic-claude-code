@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"claude_code_proxy_dns/internal/config"
+	"claude_code_proxy_dns/internal/usage"
 )
 
 // StatsProvider 统计数据提供者接口
@@ -25,6 +26,7 @@ type Server struct {
 	startTime     time.Time
 	configStore   config.ConfigStore
 	statsProvider StatsProvider
+	usageHandler  *usage.Handler
 }
 
 // AdminConfig 配置服务配置
@@ -36,14 +38,18 @@ type AdminConfig struct {
 }
 
 // NewServer 创建配置服务
-func NewServer(cfg *AdminConfig, configStore config.ConfigStore, statsProvider StatsProvider) *Server {
-	return &Server{
+func NewServer(cfg *AdminConfig, configStore config.ConfigStore, statsProvider StatsProvider, usageHandlers ...*usage.Handler) *Server {
+	server := &Server{
 		config:        cfg,
 		auth:          NewAuth(cfg.Password),
 		startTime:     time.Now(),
 		configStore:   configStore,
 		statsProvider: statsProvider,
 	}
+	if len(usageHandlers) > 0 {
+		server.usageHandler = usageHandlers[0]
+	}
+	return server
 }
 
 // Start 启动配置服务
@@ -68,6 +74,9 @@ func (s *Server) Start(addr string, frontendFS embed.FS) error {
 	mux.HandleFunc("/api/providers", s.authMiddlewareFunc(s.handleProviders))
 	mux.HandleFunc("/api/providers/test", s.authMiddlewareFunc(s.handleTestProvider))
 	mux.HandleFunc("/api/providers/", s.authMiddlewareFunc(s.handleProviderRoutes))
+	if s.usageHandler != nil {
+		s.usageHandler.Register(mux, s.authMiddlewareFunc)
+	}
 
 	s.server = &http.Server{
 		Addr:         addr,

@@ -1,0 +1,147 @@
+package usage
+
+import (
+	"encoding/json"
+	"net/http"
+	"strconv"
+	"time"
+)
+
+type Handler struct {
+	store *Store
+}
+
+func NewHandler(store *Store) *Handler {
+	return &Handler{store: store}
+}
+
+func (h *Handler) Summary(filter Filter) (Summary, error) {
+	return h.store.Summary(filter)
+}
+
+func (h *Handler) Register(mux *http.ServeMux, wrap func(http.HandlerFunc) http.HandlerFunc) {
+	mux.HandleFunc("/api/usage/summary", wrap(h.handleSummary))
+	mux.HandleFunc("/api/usage/trends", wrap(h.handleTrends))
+	mux.HandleFunc("/api/usage/requests", wrap(h.handleRequests))
+	mux.HandleFunc("/api/usage/providers", wrap(h.handleProviders))
+	mux.HandleFunc("/api/usage/models", wrap(h.handleModels))
+	mux.HandleFunc("/api/usage/coverage", wrap(h.handleCoverage))
+}
+
+func (h *Handler) handleSummary(w http.ResponseWriter, r *http.Request) {
+	filter, ok := h.parseFilter(w, r)
+	if !ok {
+		return
+	}
+	result, err := h.store.Summary(filter)
+	writeUsageJSON(w, result, err)
+}
+
+func (h *Handler) handleTrends(w http.ResponseWriter, r *http.Request) {
+	filter, ok := h.parseFilter(w, r)
+	if !ok {
+		return
+	}
+	result, err := h.store.Trends(filter)
+	writeUsageJSON(w, result, err)
+}
+
+func (h *Handler) handleRequests(w http.ResponseWriter, r *http.Request) {
+	filter, ok := h.parseFilter(w, r)
+	if !ok {
+		return
+	}
+	result, err := h.store.Requests(filter)
+	writeUsageJSON(w, result, err)
+}
+
+func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
+	filter, ok := h.parseFilter(w, r)
+	if !ok {
+		return
+	}
+	result, err := h.store.Providers(filter)
+	writeUsageJSON(w, result, err)
+}
+
+func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
+	filter, ok := h.parseFilter(w, r)
+	if !ok {
+		return
+	}
+	result, err := h.store.Models(filter)
+	writeUsageJSON(w, result, err)
+}
+
+func (h *Handler) handleCoverage(w http.ResponseWriter, r *http.Request) {
+	filter, ok := h.parseFilter(w, r)
+	if !ok {
+		return
+	}
+	result, err := h.store.Coverage(filter)
+	writeUsageJSON(w, result, err)
+}
+
+func (h *Handler) parseFilter(w http.ResponseWriter, r *http.Request) (Filter, bool) {
+	q := r.URL.Query()
+	filter := Filter{
+		TZ:               q.Get("tz"),
+		SourceApp:        q.Get("source_app"),
+		SourceEntrypoint: q.Get("source_entrypoint"),
+		ProviderID:       q.Get("provider_id"),
+		Model:            q.Get("model"),
+		Status:           q.Get("status"),
+		UsageSource:      q.Get("usage_source"),
+		UsageParseStatus: q.Get("usage_parse_status"),
+		RequestPath:      q.Get("request_path"),
+		Query:            q.Get("q"),
+		Page:             parsePositiveInt(q.Get("page")),
+		PageSize:         parsePositiveInt(q.Get("page_size")),
+	}
+	var err error
+	if filter.From, err = parseFilterTime(q.Get("from")); err != nil {
+		http.Error(w, `{"error":"invalid from"}`, http.StatusBadRequest)
+		return Filter{}, false
+	}
+	if filter.To, err = parseFilterTime(q.Get("to")); err != nil {
+		http.Error(w, `{"error":"invalid to"}`, http.StatusBadRequest)
+		return Filter{}, false
+	}
+	if filter.TZ != "" {
+		if _, err := time.LoadLocation(filter.TZ); err != nil {
+			http.Error(w, `{"error":"invalid tz"}`, http.StatusBadRequest)
+			return Filter{}, false
+		}
+	}
+	return filter, true
+}
+
+func writeUsageJSON(w http.ResponseWriter, value any, err error) {
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		http.Error(w, `{"error":"usage query failed"}`, http.StatusInternalServerError)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(value)
+}
+
+func parsePositiveInt(value string) int {
+	if value == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+func parseFilterTime(value string) (time.Time, error) {
+	if value == "" {
+		return time.Time{}, nil
+	}
+	if t, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return t, nil
+	}
+	return time.Parse("2006-01-02", value)
+}
