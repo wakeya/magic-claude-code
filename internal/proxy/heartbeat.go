@@ -27,11 +27,15 @@ func isSSEStream(resp *http.Response) bool {
 // 当检测到一段时间没有数据传输时，自动发送 Anthropic 格式的 ping 事件
 type heartbeatWriter struct {
 	http.ResponseWriter
-	mu           sync.Mutex
-	lastWrite    time.Time
-	heartbeatMu  sync.Mutex
+	mu            sync.Mutex
+	lastWrite     time.Time
+	heartbeatMu   sync.Mutex
 	stopHeartbeat chan struct{}
-	stopped      bool
+	stopped       bool
+}
+
+type ChunkObserver interface {
+	Observe(chunk []byte)
 }
 
 // newHeartbeatWriter 创建带心跳功能的 ResponseWriter
@@ -127,6 +131,10 @@ func (hw *heartbeatWriter) stop() {
 // copyWithHeartbeat 从 reader 复制数据到 writer，并在空闲时注入心跳
 // 此函数会阻塞直到 reader 返回 io.EOF 或发生错误
 func copyWithHeartbeat(dst *heartbeatWriter, src io.Reader) error {
+	return copyWithHeartbeatAndObserver(dst, src, nil)
+}
+
+func copyWithHeartbeatAndObserver(dst *heartbeatWriter, src io.Reader, observer ChunkObserver) error {
 	defer dst.stop()
 
 	// 启动心跳
@@ -137,6 +145,9 @@ func copyWithHeartbeat(dst *heartbeatWriter, src io.Reader) error {
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
+			if observer != nil {
+				observer.Observe(buf[:n])
+			}
 			_, writeErr := dst.Write(buf[:n])
 			if writeErr != nil {
 				return writeErr

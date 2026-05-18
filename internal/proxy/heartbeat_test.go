@@ -97,6 +97,28 @@ func TestCopyWithHeartbeat_NoHeartbeatNeeded(t *testing.T) {
 	}
 }
 
+func TestCopyWithHeartbeatAndObserverObservesUpstreamChunks(t *testing.T) {
+	rec := httptest.NewRecorder()
+	hw := newHeartbeatWriter(rec)
+	observer := &recordingChunkObserver{}
+	data := []byte("event: message_start\ndata: {}\n\n")
+
+	err := copyWithHeartbeatAndObserver(hw, bytes.NewReader(data), observer)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(observer.chunks) != 1 {
+		t.Fatalf("expected one observed chunk, got %d", len(observer.chunks))
+	}
+	if string(observer.chunks[0]) != string(data) {
+		t.Fatalf("observed chunk = %q", string(observer.chunks[0]))
+	}
+	if strings.Contains(string(observer.chunks[0]), string(anthropicPingEvent)) {
+		t.Fatal("observer should not receive injected ping")
+	}
+}
+
 func TestCopyWithHeartbeat_StopsCleanly(t *testing.T) {
 	// 测试完成后 stop channel 被正确关闭
 	rec := httptest.NewRecorder()
@@ -116,6 +138,14 @@ func TestCopyWithHeartbeat_StopsCleanly(t *testing.T) {
 	if !stopped {
 		t.Error("expected heartbeat to be stopped after copyWithHeartbeat returns")
 	}
+}
+
+type recordingChunkObserver struct {
+	chunks [][]byte
+}
+
+func (o *recordingChunkObserver) Observe(chunk []byte) {
+	o.chunks = append(o.chunks, append([]byte(nil), chunk...))
 }
 
 func TestSSEStreamProxyWithHeartbeat(t *testing.T) {
