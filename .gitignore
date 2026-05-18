@@ -29,6 +29,7 @@ pnpm-debug.log*
 
 # --- 测试工具 ---
 .playwright-mcp/
+.worktrees/
 
 # --- 临时截图/输出 ---
 *.png
