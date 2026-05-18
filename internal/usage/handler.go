@@ -84,8 +84,18 @@ func (h *Handler) handleCoverage(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) parseFilter(w http.ResponseWriter, r *http.Request) (Filter, bool) {
 	q := r.URL.Query()
+	tz := q.Get("tz")
+	loc := time.Local
+	if tz != "" {
+		loaded, err := time.LoadLocation(tz)
+		if err != nil {
+			http.Error(w, `{"error":"invalid tz"}`, http.StatusBadRequest)
+			return Filter{}, false
+		}
+		loc = loaded
+	}
 	filter := Filter{
-		TZ:               q.Get("tz"),
+		TZ:               tz,
 		SourceApp:        q.Get("source_app"),
 		SourceEntrypoint: q.Get("source_entrypoint"),
 		ProviderID:       q.Get("provider_id"),
@@ -99,19 +109,13 @@ func (h *Handler) parseFilter(w http.ResponseWriter, r *http.Request) (Filter, b
 		PageSize:         parsePositiveInt(q.Get("page_size")),
 	}
 	var err error
-	if filter.From, err = parseFilterTime(q.Get("from")); err != nil {
+	if filter.From, err = parseFilterTime(q.Get("from"), loc, false); err != nil {
 		http.Error(w, `{"error":"invalid from"}`, http.StatusBadRequest)
 		return Filter{}, false
 	}
-	if filter.To, err = parseFilterTime(q.Get("to")); err != nil {
+	if filter.To, err = parseFilterTime(q.Get("to"), loc, true); err != nil {
 		http.Error(w, `{"error":"invalid to"}`, http.StatusBadRequest)
 		return Filter{}, false
-	}
-	if filter.TZ != "" {
-		if _, err := time.LoadLocation(filter.TZ); err != nil {
-			http.Error(w, `{"error":"invalid tz"}`, http.StatusBadRequest)
-			return Filter{}, false
-		}
 	}
 	return filter, true
 }
@@ -136,12 +140,19 @@ func parsePositiveInt(value string) int {
 	return n
 }
 
-func parseFilterTime(value string) (time.Time, error) {
+func parseFilterTime(value string, loc *time.Location, endOfDate bool) (time.Time, error) {
 	if value == "" {
 		return time.Time{}, nil
 	}
 	if t, err := time.Parse(time.RFC3339Nano, value); err == nil {
 		return t, nil
 	}
-	return time.Parse("2006-01-02", value)
+	t, err := time.ParseInLocation("2006-01-02", value, loc)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if endOfDate {
+		t = t.AddDate(0, 0, 1)
+	}
+	return t.UTC(), nil
 }

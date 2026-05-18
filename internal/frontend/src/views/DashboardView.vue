@@ -428,7 +428,7 @@ const usageTabs: Array<{ key: UsageTab; labelKey: string }> = [
 
 const activeTab = ref<MainTab>('status')
 const activeUsageTab = ref<UsageTab>('overview')
-const containerClass = computed(() => (activeTab.value === 'usage' ? 'max-w-[1440px]' : 'max-w-[900px]'))
+const containerClass = computed(() => 'max-w-[1440px]')
 
 const status = ref<StatusInfo | null>(null)
 const providers = ref<Provider[]>([])

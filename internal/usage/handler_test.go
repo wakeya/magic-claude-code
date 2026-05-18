@@ -52,6 +52,55 @@ func TestUsageRequestsHandlerFiltersAndSearches(t *testing.T) {
 	}
 }
 
+func TestUsageHandlerDateOnlyToIncludesWholeDay(t *testing.T) {
+	store := newTestStore(t)
+	started := time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)
+	seedUsageRecord(t, store, "today-1", started, 200, "", UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 3})
+
+	rec := serveUsageRequest(store, "/api/usage/summary?from=2026-05-18&to=2026-05-18&tz=UTC")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var got Summary
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode summary: %v", err)
+	}
+	if got.ProviderRequestsTotal != 1 {
+		t.Fatalf("ProviderRequestsTotal = %d", got.ProviderRequestsTotal)
+	}
+}
+
+func TestUsageRequestsHandlerReturnsSnakeCaseRows(t *testing.T) {
+	store := newTestStore(t)
+	started := time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)
+	seedUsageRecord(t, store, "row-1", started, 200, "", UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 3})
+
+	rec := serveUsageRequest(store, "/api/usage/requests")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode requests: %v", err)
+	}
+	rows, ok := got["rows"].([]any)
+	if !ok || len(rows) != 1 {
+		t.Fatalf("rows = %#v", got["rows"])
+	}
+	row, ok := rows[0].(map[string]any)
+	if !ok {
+		t.Fatalf("row = %#v", rows[0])
+	}
+	if _, ok := row["started_at"]; !ok {
+		t.Fatalf("expected snake_case started_at in row, got keys %#v", row)
+	}
+	if _, ok := row["StartedAt"]; ok {
+		t.Fatalf("unexpected exported Go field StartedAt in row: %#v", row)
+	}
+}
+
 func TestUsageCoverageHandler(t *testing.T) {
 	store := newTestStore(t)
 	started := time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)

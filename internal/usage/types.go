@@ -20,40 +20,40 @@ const (
 )
 
 type RequestRecord struct {
-	ID                       string
-	StartedAt                time.Time
-	EndedAt                  *time.Time
-	DurationMS               *int64
-	UpstreamResponseHeaderMS *int64
-	TimeToFirstByteMS        *int64
-	StatusCode               *int
-	ErrorType                string
-	ErrorMessage             string
-	Method                   string
-	RequestPath              string
-	BackendURL               string
-	ProviderID               string
-	ProviderName             string
-	ProviderAPIURL           string
-	SourceApp                string
-	SourceEntrypoint         string
-	UserAgent                string
-	OriginalModel            string
-	MappedModel              string
-	Stream                   bool
-	RequestBytes             int64
-	ResponseBytes            int64
+	ID                       string     `json:"id"`
+	StartedAt                time.Time  `json:"started_at"`
+	EndedAt                  *time.Time `json:"ended_at"`
+	DurationMS               *int64     `json:"duration_ms"`
+	UpstreamResponseHeaderMS *int64     `json:"upstream_response_header_ms"`
+	TimeToFirstByteMS        *int64     `json:"time_to_first_byte_ms"`
+	StatusCode               *int       `json:"status_code"`
+	ErrorType                string     `json:"error_type"`
+	ErrorMessage             string     `json:"error_message"`
+	Method                   string     `json:"method"`
+	RequestPath              string     `json:"request_path"`
+	BackendURL               string     `json:"backend_url"`
+	ProviderID               string     `json:"provider_id"`
+	ProviderName             string     `json:"provider_name"`
+	ProviderAPIURL           string     `json:"provider_api_url"`
+	SourceApp                string     `json:"source_app"`
+	SourceEntrypoint         string     `json:"source_entrypoint"`
+	UserAgent                string     `json:"user_agent"`
+	OriginalModel            string     `json:"original_model"`
+	MappedModel              string     `json:"mapped_model"`
+	Stream                   bool       `json:"stream"`
+	RequestBytes             int64      `json:"request_bytes"`
+	ResponseBytes            int64      `json:"response_bytes"`
 }
 
 type TokenRecord struct {
-	RequestID                string
-	InputTokens              int64
-	OutputTokens             int64
-	CacheCreationInputTokens int64
-	CacheReadInputTokens     int64
-	UsageSource              string
-	UsageParseStatus         string
-	UsageParseError          string
+	RequestID                string `json:"request_id"`
+	InputTokens              int64  `json:"input_tokens"`
+	OutputTokens             int64  `json:"output_tokens"`
+	CacheCreationInputTokens int64  `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int64  `json:"cache_read_input_tokens"`
+	UsageSource              string `json:"usage_source"`
+	UsageParseStatus         string `json:"usage_parse_status"`
+	UsageParseError          string `json:"usage_parse_error"`
 }
 
 type UsageValues struct {
