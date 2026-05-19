@@ -12,3 +12,8 @@ test('usage coverage help uses a custom hover tooltip', () => {
   assert.match(source, /USAGE_COVERAGE_TOOLTIP/)
   assert.doesNotMatch(source, /:title=/)
 })
+
+test('usage coverage help renders readable tooltip colors', () => {
+  assert.match(source, /bg-gray-100/)
+  assert.match(source, /text-black/)
+})
