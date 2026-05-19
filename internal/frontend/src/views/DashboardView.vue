@@ -456,7 +456,10 @@ const usageTabs: Array<{ key: UsageTab; labelKey: string }> = [
 
 const activeTab = ref<MainTab>('status')
 const activeUsageTab = ref<UsageTab>('overview')
-const containerClass = computed(() => 'max-w-[1440px]')
+const containerClass = computed(() => {
+  if (activeTab.value === 'usage' && activeUsageTab.value === 'requests') return 'max-w-[1920px]'
+  return 'max-w-[1440px]'
+})
 
 const status = ref<StatusInfo | null>(null)
 const providers = ref<Provider[]>([])

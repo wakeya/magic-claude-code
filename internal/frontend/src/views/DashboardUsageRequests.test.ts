@@ -70,3 +70,9 @@ test('usage request token field labels support Chinese and English', () => {
     assert.match(i18nSource, new RegExp(`'${key}':`), `missing i18n key ${key}`)
   }
 })
+
+test('usage request log widens the page content area', () => {
+  assert.match(dashboardSource, /activeTab\.value === 'usage' && activeUsageTab\.value === 'requests'/)
+  assert.match(dashboardSource, /max-w-\[1920px\]/)
+  assert.match(dashboardSource, /max-w-\[1440px\]/)
+})
