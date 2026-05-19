@@ -49,7 +49,10 @@
             <div class="mt-2 text-2xl font-bold">{{ formatNumber(status?.today_token_consumption ?? 0) }}</div>
           </div>
           <div class="bg-white p-5 rounded-lg border-2 border-border">
-            <div class="text-xs font-bold text-text-secondary uppercase tracking-widest">{{ t('status.usage_coverage') }}</div>
+            <div class="flex items-center gap-1.5 text-xs font-bold text-text-secondary uppercase tracking-widest">
+              <span>{{ t('status.usage_coverage') }}</span>
+              <CircleHelp :title="USAGE_COVERAGE_TOOLTIP" class="h-3.5 w-3.5 cursor-help text-text-secondary" aria-label="Usage 覆盖率说明" />
+            </div>
             <div class="mt-2 text-2xl font-bold">{{ formatPercent(status?.usage_coverage ?? 0) }}</div>
           </div>
         </div>
@@ -229,7 +232,10 @@
               <div class="mt-2 text-2xl font-bold">{{ formatNumber(usageSummary?.token_consumption_total ?? 0) }}</div>
             </div>
             <div class="bg-white p-5 rounded-lg border-2 border-border">
-              <div class="text-xs font-bold text-text-secondary uppercase tracking-widest">{{ t('usage.usage_coverage') }}</div>
+              <div class="flex items-center gap-1.5 text-xs font-bold text-text-secondary uppercase tracking-widest">
+                <span>{{ t('usage.usage_coverage') }}</span>
+                <CircleHelp :title="USAGE_COVERAGE_TOOLTIP" class="h-3.5 w-3.5 cursor-help text-text-secondary" aria-label="Usage 覆盖率说明" />
+              </div>
               <div class="mt-2 text-2xl font-bold">{{ formatPercent(usageSummary?.usage_coverage ?? 0) }}</div>
             </div>
           </div>
@@ -302,7 +308,12 @@
                 <th class="py-3 pr-4">{{ t('usage.provider_requests_total') }}</th>
                 <th class="py-3 pr-4">{{ t('usage.failed_requests') }}</th>
                 <th class="py-3 pr-4">{{ t('usage.token_consumption_total') }}</th>
-                <th class="py-3 pr-4">{{ t('usage.usage_coverage') }}</th>
+                <th class="py-3 pr-4">
+                  <span class="inline-flex items-center gap-1.5">
+                    <span>{{ t('usage.usage_coverage') }}</span>
+                    <CircleHelp :title="USAGE_COVERAGE_TOOLTIP" class="h-3.5 w-3.5 cursor-help text-text-secondary" aria-label="Usage 覆盖率说明" />
+                  </span>
+                </th>
                 <th class="py-3 pr-4">Avg ms</th>
               </tr>
             </thead>
@@ -329,7 +340,12 @@
                 <th class="py-3 pr-4">{{ t('usage.provider_requests_total') }}</th>
                 <th class="py-3 pr-4">{{ t('usage.failed_requests') }}</th>
                 <th class="py-3 pr-4">{{ t('usage.token_consumption_total') }}</th>
-                <th class="py-3 pr-4">{{ t('usage.usage_coverage') }}</th>
+                <th class="py-3 pr-4">
+                  <span class="inline-flex items-center gap-1.5">
+                    <span>{{ t('usage.usage_coverage') }}</span>
+                    <CircleHelp :title="USAGE_COVERAGE_TOOLTIP" class="h-3.5 w-3.5 cursor-help text-text-secondary" aria-label="Usage 覆盖率说明" />
+                  </span>
+                </th>
                 <th class="py-3 pr-4">Avg ms</th>
               </tr>
             </thead>
@@ -357,7 +373,12 @@
                 <th class="py-3 pr-4">{{ t('usage.model') }}</th>
                 <th class="py-3 pr-4">{{ t('usage.source_entrypoint') }}</th>
                 <th class="py-3 pr-4">{{ t('usage.provider_requests_total') }}</th>
-                <th class="py-3 pr-4">{{ t('usage.usage_coverage') }}</th>
+                <th class="py-3 pr-4">
+                  <span class="inline-flex items-center gap-1.5">
+                    <span>{{ t('usage.usage_coverage') }}</span>
+                    <CircleHelp :title="USAGE_COVERAGE_TOOLTIP" class="h-3.5 w-3.5 cursor-help text-text-secondary" aria-label="Usage 覆盖率说明" />
+                  </span>
+                </th>
                 <th class="py-3 pr-4">{{ t('usage.usage_status') }}</th>
                 <th class="py-3 pr-4">Last Seen</th>
               </tr>
@@ -388,6 +409,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import * as echarts from 'echarts'
+import { CircleHelp } from 'lucide-vue-next'
 import {
   useApi,
   type Provider,
@@ -403,7 +425,7 @@ import { useI18n } from '@/composables/useI18n'
 import AppHeader from '@/components/AppHeader.vue'
 import ProviderCard from '@/components/ProviderCard.vue'
 import ProviderModal from '@/components/ProviderModal.vue'
-import { formatPercent } from '@/utils/formatters'
+import { USAGE_COVERAGE_TOOLTIP, formatPercent } from '@/utils/formatters'
 
 const router = useRouter()
 const api = useApi()
