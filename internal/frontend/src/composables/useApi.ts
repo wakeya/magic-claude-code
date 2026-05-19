@@ -98,6 +98,8 @@ export interface UsageRequestRow {
   usage_source: 'provider' | 'session_log' | 'none'
   usage_parse_status: string
   usage_parse_error: string
+  dedupe_status?: 'duplicate' | ''
+  dedupe_request_id?: string
 }
 
 export interface UsageRequestPage {

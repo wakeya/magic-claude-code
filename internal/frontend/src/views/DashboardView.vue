@@ -199,7 +199,17 @@
             <select v-model="usageFilters.usage_source" class="w-full rounded-md border border-border px-3 py-2 text-sm bg-white">
               <option value="all">{{ t('usage.usage_source_all') }}</option>
               <option value="provider">{{ t('usage.usage_source_provider') }}</option>
+              <option value="session_log">{{ t('usage.usage_source_session_log') }}</option>
               <option value="none">{{ t('usage.usage_source_none') }}</option>
+            </select>
+          </div>
+          <div class="bg-white p-4 rounded-lg border-2 border-border">
+            <label class="block text-xs font-bold text-text-secondary uppercase tracking-widest mb-2">{{ t('usage.stats_scope') }}</label>
+            <select v-model="usageFilters.stats_scope" class="w-full rounded-md border border-border px-3 py-2 text-sm bg-white">
+              <option value="effective">{{ t('usage.stats_scope_effective') }}</option>
+              <option value="provider">{{ t('usage.stats_scope_provider') }}</option>
+              <option value="session_log">{{ t('usage.stats_scope_session_log') }}</option>
+              <option value="raw">{{ t('usage.stats_scope_raw') }}</option>
             </select>
           </div>
           <div class="bg-white p-4 rounded-lg border-2 border-border">
@@ -282,6 +292,9 @@
                 <td class="py-3 pr-4">{{ formatEntrypoint(row.source_entrypoint) }}</td>
                 <td class="py-3 pr-4">
                   <span :class="badgeClass(row.usage_source !== 'none')">{{ formatUsageSource(row.usage_source) }}</span>
+                  <span v-if="row.dedupe_status === 'duplicate'" class="ml-1 inline-flex items-center rounded-full bg-muted px-2.5 py-1 text-[11px] font-semibold text-text-secondary">
+                    {{ t('usage.dedupe_duplicate') }}
+                  </span>
                 </td>
                 <td class="py-3 pr-4">
                   <span :class="badgeClass(row.usage_parse_status === 'ok')">
@@ -460,7 +473,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import * as echarts from 'echarts'
+import type { EChartsType } from 'echarts/core'
 import {
   useApi,
   type Provider,
@@ -522,7 +535,8 @@ const usageModels = ref<UsageAggregateRow[]>([])
 const usageCoverage = ref<UsageCoverageRow[]>([])
 const usageLoading = ref(false)
 const usageChartEl = ref<HTMLDivElement | null>(null)
-let usageChart: echarts.EChartsType | null = null
+let echartsModule: { init: (dom: HTMLDivElement) => EChartsType } | null = null
+let usageChart: EChartsType | null = null
 let statusRefreshTimer: number | null = null
 
 const usageFilters = reactive({
@@ -532,6 +546,7 @@ const usageFilters = reactive({
   model: 'all',
   status: 'all',
   usage_source: 'all',
+  stats_scope: 'effective',
   source_entrypoint: 'all',
   q: '',
   tz: browserTimeZone(),
@@ -636,7 +651,7 @@ async function loadUsageData() {
   if (activeTab.value !== 'usage') return
   usageLoading.value = true
   try {
-    const params = { ...usageFilters }
+    const params = { ...usageFilters, stats_scope: usageFilters.stats_scope }
     const [summary, trends, requests, providers, models, coverage] = await Promise.all([
       api.getUsageSummary(params),
       api.getUsageTrends(params),
@@ -652,7 +667,7 @@ async function loadUsageData() {
     usageModels.value = models
     usageCoverage.value = coverage
     await nextTick()
-    updateUsageChart()
+    await updateUsageChart()
   } catch {
     // keep last value
   } finally {
@@ -748,12 +763,35 @@ function uniqueValues(values: string[]): string[] {
   return Array.from(new Set(values.filter(Boolean))).sort((a, b) => a.localeCompare(b))
 }
 
-function updateUsageChart() {
+async function loadECharts() {
+  if (!echartsModule) {
+    const [core, charts, components, renderers] = await Promise.all([
+      import('echarts/core'),
+      import('echarts/charts'),
+      import('echarts/components'),
+      import('echarts/renderers'),
+    ])
+    core.use([
+      charts.LineChart,
+      components.GridComponent,
+      components.TooltipComponent,
+      components.LegendComponent,
+      components.GraphicComponent,
+      renderers.CanvasRenderer,
+    ])
+    echartsModule = { init: core.init }
+  }
+  return echartsModule
+}
+
+async function updateUsageChart() {
   if (activeTab.value !== 'usage' || activeUsageTab.value !== 'overview') {
     disposeUsageChart()
     return
   }
   if (!usageChartEl.value) return
+  const echarts = await loadECharts()
+  if (activeTab.value !== 'usage' || activeUsageTab.value !== 'overview' || !usageChartEl.value) return
   if (!usageChart) {
     usageChart = echarts.init(usageChartEl.value)
   } else if (usageChart.getDom() !== usageChartEl.value) {
@@ -823,6 +861,10 @@ function scheduleUsageLoad() {
   }, 250)
 }
 
+function handleUsageChartResize() {
+  void updateUsageChart()
+}
+
 watch(
   () => activeTab.value,
   (tab) => {
@@ -838,7 +880,7 @@ watch(
   () => activeUsageTab.value,
   async () => {
     await nextTick()
-    updateUsageChart()
+    await updateUsageChart()
   }
 )
 
@@ -862,13 +904,13 @@ onMounted(async () => {
   statusRefreshTimer = window.setInterval(() => {
     void loadStatus()
   }, 30000)
-  window.addEventListener('resize', updateUsageChart)
+  window.addEventListener('resize', handleUsageChartResize)
 })
 
 onBeforeUnmount(() => {
   if (statusRefreshTimer) window.clearInterval(statusRefreshTimer)
   if (filterTimer) window.clearTimeout(filterTimer)
-  window.removeEventListener('resize', updateUsageChart)
+  window.removeEventListener('resize', handleUsageChartResize)
   disposeUsageChart()
 })
 </script>

@@ -2,9 +2,9 @@
 
 > **给自动化执行代理：** 必须使用子技能：使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans` 按任务逐项实施本计划。步骤使用复选框（`- [ ]`）语法追踪进度。
 
-**目标：** 为 Claude Code 代理请求构建 provider 使用统计，包括 provider 返回的真实 token 使用量、请求质量指标、usage 覆盖率、管理 API、状态摘要，以及 Vue/ECharts 统计页面。
+**目标：** 为 Claude Code 代理请求构建使用统计，包括 provider 返回的真实 token 使用量、Claude Session Log 独立补账、默认有效统计去重口径、请求质量指标、usage 覆盖率、管理 API、状态摘要，以及 Vue/ECharts 统计页面。
 
-**架构：** 新增聚焦的 `internal/usage` 包，负责 schema 迁移、记录、解析、聚合、脱敏和 HTTP 处理器。将 proxy 处理器接入为每个 provider 请求创建一条 usage 记录，同时不改变请求/响应转发行为；随后在现有管理服务中暴露只读 usage API，并在仪表盘中渲染。
+**架构：** 新增聚焦的 `internal/usage` 包，负责 schema 迁移、记录、解析、聚合、脱敏、Session Log 同步和 HTTP 处理器。将 proxy 处理器接入为每个 provider 请求创建一条 usage 记录，同时不改变请求/响应转发行为；Session Log 作为独立来源导入，不覆盖 provider 记录；聚合查询默认使用有效统计口径排除重复 Session Log。随后在现有管理服务中暴露只读 usage API，并在仪表盘中渲染。
 
 **技术栈：** Go `database/sql`、现有 `modernc.org/sqlite`、Go `net/http` 测试、Vue 3、TypeScript、Tailwind、ECharts。
 
@@ -94,6 +94,7 @@ import "time"
 
 const (
 	UsageSourceProvider = "provider"
+	UsageSourceSessionLog = "session_log"
 	UsageSourceNone     = "none"
 
 	ParseStatusOK                = "ok"
@@ -161,6 +162,17 @@ type RequestMetadata struct {
 	SourceEntrypoint string
 	UserAgent         string
 }
+```
+
+同时为后续查询定义统计口径常量：
+
+```go
+const (
+	StatsScopeEffective  = "effective"
+	StatsScopeProvider   = "provider"
+	StatsScopeSessionLog = "session_log"
+	StatsScopeRaw        = "raw"
+)
 ```
 
 - [ ] **步骤 4：实现脱敏辅助函数**
@@ -231,20 +243,27 @@ git commit -m "feat: 增加 usage 解析基础能力"
 ```go
 func TestStoreMigratesUsageSchema(t *testing.T)
 func TestRecordRequestAlwaysWritesTokenRow(t *testing.T)
-func TestSummaryAggregatesProviderUsageOnly(t *testing.T)
+func TestSummaryAggregatesEffectiveUsage(t *testing.T)
+func TestEffectiveScopeExcludesDuplicateSessionLogUsage(t *testing.T)
+func TestRawScopeIncludesProviderAndSessionLogUsage(t *testing.T)
 func TestCoverageGroupsByProviderURLModelAndEntrypoint(t *testing.T)
 func TestRequestsFilterBySourceEntrypointUsageStatusAndSearch(t *testing.T)
+func TestRequestsCanFilterStatsScope(t *testing.T)
 func TestTodaySummaryUsesTimezone(t *testing.T)
 ```
 
 写入混合种子记录：
 - `usage_source=provider`
+- `usage_source=session_log`
 - `usage_source=none`
 - `source_entrypoint=cli`
 - `source_entrypoint=claude-vscode`
+- `source_entrypoint=session_log`
 - `status_code=200`
 - `status_code=500`
 - `error_type=network_error`
+- 一组模型相同、四项 token 相同、时间戳在 `±10 分钟` 内的 provider/session_log 重复记录
+- 一条没有匹配 provider 的非重复 session_log 记录
 
 - [ ] **步骤 2：运行存储层测试并确认失败**
 
@@ -281,6 +300,25 @@ func (s *Store) Coverage(filter Filter) ([]CoverageRow, error)
 ```
 
 在 `types.go` 中定义 `Filter`、`Summary`、`TrendPoint`、`RequestPage`、`AggregateRow` 和 `CoverageRow`。
+
+`Filter` 必须包含：
+
+```go
+StatsScope string
+```
+
+默认 `StatsScopeEffective`。各查询必须支持：
+- `effective`：provider 记录 + 非重复 session_log 记录。
+- `provider`：仅 provider 实时记录。
+- `session_log`：仅 Session Log 导入记录，包含重复记录。
+- `raw`：全部原始记录，不排重。
+
+`RequestRow` 需要提供重复标记字段：
+
+```go
+DedupeStatus    string // "" 或 "duplicate"
+DedupeRequestID string // 可选，匹配到的 provider request ID
+```
 
 `Migrate()` 必须创建：
 - `usage_requests`
@@ -571,6 +609,11 @@ func (h *Handler) Register(mux *http.ServeMux, wrap func(http.HandlerFunc) http.
 - `/api/usage/coverage`
 
 解析规格中的 query 参数，包括 `source_entrypoint`、`request_path`、`q` 和 `tz`。
+同时解析 `stats_scope`，允许值为 `effective`、`provider`、`session_log`、`raw`，默认 `effective`。无效值返回明确 400 错误。
+
+Coverage 响应需要同时保留：
+- Provider Usage 覆盖率：只衡量 provider 响应是否返回 usage。
+- 有效 Usage 覆盖率：按 `effective` 口径计入非重复 Session Log 补账。
 
 - [ ] **步骤 4：接入 admin server**
 
@@ -646,7 +689,9 @@ environment:
   - CLAUDE_PROJECTS_DIR=/claude-projects
 ```
 
-挂载为只读，补账只更新 SQLite 中的 usage 字段。
+挂载为只读，补账只写入 SQLite，不修改宿主机文件。
+
+Windows 宿主机必须在部署文档中要求显式设置 `CLAUDE_PROJECTS_DIR`，例如 `C:\Users\<username>\.claude\projects`。容器内部仍统一使用 `/claude-projects`。
 
 - [ ] **步骤 2：更新构造函数**
 
@@ -696,12 +741,15 @@ git commit -m "feat: 初始化 usage 统计"
 ```go
 func TestSessionSyncImportsUsageFromLog(t *testing.T)
 func TestSessionSyncSkipsAlreadySynced(t *testing.T)
-func TestSessionSyncDoesNotOverwriteProviderUsage(t *testing.T)
+func TestSessionSyncImportsSessionUsageAsSeparateSource(t *testing.T)
+func TestSessionSyncDoesNotOverwriteOrDeleteProviderUsage(t *testing.T)
+func TestSessionSyncKeepsDuplicateSessionLogVisibleInRawScope(t *testing.T)
+func TestEffectiveScopeCountsProviderInsteadOfDuplicateSessionLog(t *testing.T)
 func TestSessionSyncHandlesInvalidJSONLWithoutPanic(t *testing.T)
 func TestSessionSyncTracksFileOffset(t *testing.T)
 ```
 
-使用包含 `type`、`timestamp`、`message.model`、`message.usage` 的 JSONL 文件，以及已有 `usage_source=none` 的种子请求记录。
+使用包含 `type`、`timestamp`、`message.id`、`message.model`、`message.usage` 的 JSONL 文件，以及已有 provider 实时统计种子记录。
 
 - [ ] **步骤 2：运行测试并确认失败**
 
@@ -727,7 +775,21 @@ func DefaultClaudeProjectsDir() string
 func (s *Store) SyncClaudeSessions(projectsDir string) SessionSyncResult
 ```
 
-扫描 `$CLAUDE_PROJECTS_DIR/**/*.jsonl`，通过 `session_log_sync` 表跟踪已同步偏移量。匹配 `usage_source=none` 的记录并更新 token 字段为 `usage_source=session_log`。
+扫描 `$CLAUDE_PROJECTS_DIR/**/*.jsonl`，通过 `session_log_sync` 表跟踪已同步文件状态。每条完整 assistant final usage 以独立请求记录写入：
+
+```text
+id=session:<message.id>
+provider_id=_session
+provider_name=Session Log
+method=SESSION
+request_path=session_log
+source_app=claude_code
+source_entrypoint=session_log
+usage_source=session_log
+usage_parse_status=ok
+```
+
+Session sync 不覆盖、不删除 provider 实时记录。重复识别只在查询/聚合层用于 `effective` 口径。
 
 - [ ] **步骤 4：运行测试**
 
@@ -812,12 +874,14 @@ export interface UsageRequestRow {
   output_tokens: number
   cache_creation_input_tokens: number
   cache_read_input_tokens: number
-  usage_source: 'provider' | 'none'
+  usage_source: 'provider' | 'session_log' | 'none'
   usage_parse_status: string
+  dedupe_status?: 'duplicate' | ''
+  dedupe_request_id?: string
 }
 ```
 
-增加 `getUsageSummary`、`getUsageTrends`、`getUsageRequests`、`getUsageProviders`、`getUsageModels` 和 `getUsageCoverage`。每个函数接收普通 params 对象并构建 `URLSearchParams`。
+增加 `getUsageSummary`、`getUsageTrends`、`getUsageRequests`、`getUsageProviders`、`getUsageModels` 和 `getUsageCoverage`。每个函数接收普通 params 对象并构建 `URLSearchParams`，支持传入 `stats_scope`。
 
 - [ ] **步骤 3：运行前端类型检查**
 
@@ -858,6 +922,12 @@ git commit -m "feat: 增加 usage 前端 API 客户端"
 - `usage.provider_requests_total`
 - `usage.token_consumption_total`
 - `usage.usage_coverage`
+- `usage.stats_scope`
+- `usage.stats_scope_effective`
+- `usage.stats_scope_provider`
+- `usage.stats_scope_session_log`
+- `usage.stats_scope_raw`
+- `usage.dedupe_duplicate`
 - `usage.failed_requests`
 - `usage.source_entrypoint`
 - `usage.usage_status`
@@ -873,6 +943,7 @@ git commit -m "feat: 增加 usage 前端 API 客户端"
 - 增加顶级 `usage` 页签。
 - 所有页签统一使用 `max-w-[1440px]` 容器宽度。
 - 增加 usage 过滤器：日期范围、provider、模型、状态、usage 来源、来源入口、搜索。
+- 增加统计口径切换：有效统计、实时请求、Session Log、全部原始。
 - 从 `useApi` 加载 summary/trends/requests/providers/models/coverage。
 - 请求日志默认 10 条/页，可选 20、50、100 条/页。
 
@@ -918,7 +989,7 @@ import * as echarts from 'echarts'
 - 模型聚合
 - usage 覆盖率
 
-将 `usage_source=none` 和 `usage_parse_status` 显示为可见标记。小屏下使用横向滚动。
+将 `usage_source=none`、`usage_source=session_log`、`usage_parse_status` 和重复 Session Log 标记显示为可见标记。小屏下使用横向滚动。
 
 - [ ] **步骤 6：运行前端构建**
 
@@ -985,6 +1056,9 @@ docker compose up -d --build
 - `/api/usage/requests` 包含两个请求。
 - 当请求元数据包含对应值时，`source_entrypoint` 能区分 `cli` 和 `claude-vscode`。
 - 每条 `usage_requests` 都有一条对应的 `usage_tokens`。
+- `stats_scope=effective` 不重复计入同一条 provider/session_log usage。
+- `stats_scope=session_log` 可以单独查看 Session Log 导入记录。
+- `stats_scope=raw` 可以查看全部原始记录。
 
 - [ ] **步骤 5：如有需要，提交最终修复**
 

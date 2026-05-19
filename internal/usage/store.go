@@ -370,7 +370,10 @@ func (s *Store) queryRows(filter Filter, includePagination bool) ([]RequestRow, 
 		}
 		rows = append(rows, row)
 	}
-	return rows, sqlRows.Err()
+	if err := sqlRows.Err(); err != nil {
+		return nil, err
+	}
+	return applyStatsScope(rows, filter.StatsScope), nil
 }
 
 func filterWhere(filter Filter) (string, []any) {
@@ -450,6 +453,139 @@ func scanRequestRow(rows *sql.Rows) (RequestRow, error) {
 	row.Stream = stream == 1
 	row.RequestID = row.ID
 	return row, nil
+}
+
+func applyStatsScope(rows []RequestRow, scope string) []RequestRow {
+	if scope == "" {
+		scope = StatsScopeEffective
+	}
+	markDuplicateSessionRows(rows)
+	out := rows[:0]
+	for _, row := range rows {
+		switch scope {
+		case StatsScopeRaw:
+			out = append(out, row)
+		case StatsScopeProvider:
+			if !isSessionLogRow(row) {
+				out = append(out, row)
+			}
+		case StatsScopeSessionLog:
+			if isSessionLogRow(row) {
+				out = append(out, row)
+			}
+		default:
+			if !isSessionLogRow(row) || row.DedupeStatus != DedupeStatusDuplicate {
+				out = append(out, row)
+			}
+		}
+	}
+	return out
+}
+
+func markDuplicateSessionRows(rows []RequestRow) {
+	providerIndex := buildProviderDuplicateIndex(rows)
+	for i := range rows {
+		if !isSessionLogRow(rows[i]) || rows[i].UsageParseStatus != ParseStatusOK {
+			continue
+		}
+		if candidateIndex, ok := duplicateProviderCandidate(rows[i], providerIndex); ok {
+			candidate := rows[candidateIndex]
+			rows[i].DedupeStatus = DedupeStatusDuplicate
+			rows[i].DedupeRequestID = candidate.ID
+		}
+	}
+}
+
+type duplicateCandidate struct {
+	rowIndex  int
+	startedAt time.Time
+}
+
+type duplicateIndexKey struct {
+	model                    string
+	inputTokens              int64
+	outputTokens             int64
+	cacheCreationInputTokens int64
+	cacheReadInputTokens     int64
+}
+
+func buildProviderDuplicateIndex(rows []RequestRow) map[duplicateIndexKey][]duplicateCandidate {
+	index := make(map[duplicateIndexKey][]duplicateCandidate)
+	for i, row := range rows {
+		if !isProviderUsageRow(row) {
+			continue
+		}
+		for _, key := range duplicateKeys(row) {
+			index[key] = append(index[key], duplicateCandidate{rowIndex: i, startedAt: row.StartedAt})
+		}
+	}
+	for key := range index {
+		sort.Slice(index[key], func(i, j int) bool {
+			return index[key][i].startedAt.Before(index[key][j].startedAt)
+		})
+	}
+	return index
+}
+
+func duplicateProviderCandidate(row RequestRow, index map[duplicateIndexKey][]duplicateCandidate) (int, bool) {
+	for _, key := range duplicateKeys(row) {
+		candidates := index[key]
+		if len(candidates) == 0 {
+			continue
+		}
+		start := row.StartedAt.Add(-10 * time.Minute)
+		end := row.StartedAt.Add(10 * time.Minute)
+		first := sort.Search(len(candidates), func(i int) bool {
+			return !candidates[i].startedAt.Before(start)
+		})
+		if first == len(candidates) || candidates[first].startedAt.After(end) {
+			continue
+		}
+		return candidates[first].rowIndex, true
+	}
+	return 0, false
+}
+
+func duplicateKeys(row RequestRow) []duplicateIndexKey {
+	models := dedupeModels(row.MappedModel, row.OriginalModel)
+	keys := make([]duplicateIndexKey, 0, len(models))
+	for _, model := range models {
+		keys = append(keys, duplicateIndexKey{
+			model:                    model,
+			inputTokens:              row.InputTokens,
+			outputTokens:             row.OutputTokens,
+			cacheCreationInputTokens: row.CacheCreationInputTokens,
+			cacheReadInputTokens:     row.CacheReadInputTokens,
+		})
+	}
+	return keys
+}
+
+func dedupeModels(values ...string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func isProviderUsageRow(row RequestRow) bool {
+	return !isSessionLogRow(row) &&
+		row.SourceApp == "claude_code" &&
+		row.UsageSource == UsageSourceProvider &&
+		row.UsageParseStatus == ParseStatusOK
+}
+
+func isSessionLogRow(row RequestRow) bool {
+	return row.UsageSource == UsageSourceSessionLog || row.SourceEntrypoint == "session_log" || row.ProviderID == "_session"
 }
 
 type coverageAccumulator struct {

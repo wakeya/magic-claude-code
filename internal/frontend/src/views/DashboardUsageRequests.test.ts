@@ -105,3 +105,35 @@ test('usage request pagination labels support Chinese and English', () => {
     assert.match(dashboardSource, new RegExp(`t\\('${key}'`), `missing dashboard usage of ${key}`)
   }
 })
+
+test('usage page exposes stats scope controls and sends stats_scope', () => {
+  for (const key of [
+    'usage.stats_scope',
+    'usage.stats_scope_effective',
+    'usage.stats_scope_provider',
+    'usage.stats_scope_session_log',
+    'usage.stats_scope_raw',
+  ]) {
+    assert.match(i18nSource, new RegExp(`'${key}':`), `missing i18n key ${key}`)
+    assert.match(dashboardSource, new RegExp(`t\\('${key}'`), `missing dashboard usage of ${key}`)
+  }
+
+  assert.match(dashboardSource, /stats_scope: 'effective'/)
+  assert.match(dashboardSource, /stats_scope: usageFilters\.stats_scope/)
+})
+
+test('usage request log displays session log source and duplicate marker', () => {
+  assert.match(dashboardSource, /<option value="session_log">/)
+  assert.match(dashboardSource, /usage\.usage_source_session_log/)
+  assert.match(dashboardSource, /usage\.dedupe_duplicate/)
+  assert.match(dashboardSource, /row\.dedupe_status === 'duplicate'/)
+})
+
+test('usage overview lazy loads echarts instead of bundling it in the main chunk', () => {
+  assert.doesNotMatch(dashboardSource, /import \* as echarts from 'echarts'/)
+  assert.match(dashboardSource, /import type \{ EChartsType \} from 'echarts\/core'/)
+  assert.match(dashboardSource, /import\('echarts\/core'\)/)
+  assert.match(dashboardSource, /import\('echarts\/charts'\)/)
+  assert.match(dashboardSource, /import\('echarts\/components'\)/)
+  assert.match(dashboardSource, /import\('echarts\/renderers'\)/)
+})

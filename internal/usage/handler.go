@@ -107,6 +107,14 @@ func (h *Handler) parseFilter(w http.ResponseWriter, r *http.Request) (Filter, b
 		Query:            q.Get("q"),
 		Page:             parsePositiveInt(q.Get("page")),
 		PageSize:         parsePositiveInt(q.Get("page_size")),
+		StatsScope:       q.Get("stats_scope"),
+	}
+	if filter.StatsScope == "" {
+		filter.StatsScope = StatsScopeEffective
+	}
+	if !validStatsScope(filter.StatsScope) {
+		http.Error(w, `{"error":"invalid stats_scope"}`, http.StatusBadRequest)
+		return Filter{}, false
 	}
 	var err error
 	if filter.From, err = parseFilterTime(q.Get("from"), loc, false); err != nil {
@@ -118,6 +126,15 @@ func (h *Handler) parseFilter(w http.ResponseWriter, r *http.Request) (Filter, b
 		return Filter{}, false
 	}
 	return filter, true
+}
+
+func validStatsScope(value string) bool {
+	switch value {
+	case StatsScopeEffective, StatsScopeProvider, StatsScopeSessionLog, StatsScopeRaw:
+		return true
+	default:
+		return false
+	}
 }
 
 func writeUsageJSON(w http.ResponseWriter, value any, err error) {

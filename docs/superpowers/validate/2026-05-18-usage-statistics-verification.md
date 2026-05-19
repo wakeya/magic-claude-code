@@ -1,7 +1,7 @@
 # 使用统计验证清单
 
-**版本**: 0.1
-**日期**: 2026-05-18
+**版本**: 0.2
+**日期**: 2026-05-19
 **规格**: [2026-05-15-usage-statistics-design.md](../specs/2026-05-15-usage-statistics-design.md)
 **计划**: [2026-05-18-usage-statistics.md](../plans/2026-05-18-usage-statistics.md)
 
@@ -36,6 +36,7 @@
 - [ ] `usage_tokens` 包含 `usage_source`
 - [ ] `usage_tokens` 包含 `usage_parse_status`
 - [ ] `usage_tokens` 包含 `usage_parse_error`
+- [ ] `usage_source` 支持 `provider`、`session_log`、`none`
 - [ ] `settings` 表包含默认 `usage_retention_days=90`
 - [ ] 规格中列出的所有 usage 索引存在
 - [ ] 每条 `usage_requests` 都对应一条 `usage_tokens`
@@ -84,11 +85,17 @@
 
 - [ ] `session_log_sync` 表存在于 `proxy.db`
 - [ ] 后台 goroutine 每分钟扫描 `$CLAUDE_PROJECTS_DIR` 下的 `.jsonl` 文件
-- [ ] session 日志中的 usage 能匹配并更新已有 `usage_source=none` 的记录
+- [ ] session 日志中的 usage 以独立 `session:<message.id>` 请求记录导入
 - [ ] 补账成功后记录的 `usage_source=session_log`
+- [ ] Session Log 记录的 `provider_id=_session`
+- [ ] Session Log 记录的 `source_entrypoint=session_log`
 - [ ] 已有 `usage_source=provider` 的记录不被补账覆盖
+- [ ] 已有 `usage_source=provider` 的记录不被补账删除
 - [ ] 文件偏移量正确保存，下次同步跳过已处理内容
 - [ ] 无效或损坏的 JSONL 行不会中断同步流程
+- [ ] provider/session_log 四项 token 相同、模型相同、时间接近时，默认有效统计只计入 provider
+- [ ] `stats_scope=session_log` 能看到重复 Session Log 记录
+- [ ] `stats_scope=raw` 能看到全部原始记录
 
 ## 6. 转发安全
 
@@ -102,13 +109,19 @@
 
 ## 7. 数据聚合口径
 
-- [ ] token 消耗总量只统计 `usage_source=provider`
+- [ ] token 消耗总量默认使用 `stats_scope=effective`
+- [ ] `stats_scope=effective` 统计 provider 记录和非重复 Session Log 记录
+- [ ] `stats_scope=effective` 排除重复 Session Log 记录
+- [ ] `stats_scope=provider` 只统计 `usage_source=provider`
+- [ ] `stats_scope=session_log` 只统计 `usage_source=session_log`
+- [ ] `stats_scope=raw` 不做去重，展示全部原始记录
 - [ ] `token_consumption_total = input + output + cache_creation + cache_read`
 - [ ] `usage_source=none` 请求不参与 token 消耗总量
 - [ ] 成功请求但无 usage 不计入请求失败
 - [ ] 4xx/5xx 计入请求失败
 - [ ] 网络错误计入请求失败
-- [ ] `usage_coverage = with_usage_requests / total_provider_requests`
+- [ ] Provider Usage 覆盖率只衡量 provider 响应是否返回 usage
+- [ ] 有效 Usage 覆盖率计入非重复 Session Log 补账
 - [ ] 今日统计使用 API `tz` 参数
 - [ ] 未传 `tz` 时使用服务端本地时区
 
@@ -126,9 +139,15 @@
 - [ ] `GET /api/usage/requests` 支持 `q` 搜索
 - [ ] `GET /api/usage/requests` 支持 `source_entrypoint` 过滤
 - [ ] `GET /api/usage/requests` 支持 `usage_source` 过滤
+- [ ] `GET /api/usage/requests` 支持 `stats_scope=effective`
+- [ ] `GET /api/usage/requests` 支持 `stats_scope=provider`
+- [ ] `GET /api/usage/requests` 支持 `stats_scope=session_log`
+- [ ] `GET /api/usage/requests` 支持 `stats_scope=raw`
+- [ ] 无效 `stats_scope` 返回明确 400 错误
 - [ ] `GET /api/usage/providers` 返回 provider 聚合
 - [ ] `GET /api/usage/models` 返回模型聚合
 - [ ] `GET /api/usage/coverage` 返回 provider/API 地址/模型/Claude Code 入口覆盖率
+- [ ] `GET /api/usage/coverage` 同时保留 Provider Usage 覆盖率和有效 Usage 覆盖率
 - [ ] 所有 `/api/usage/*` 接口需要登录 session
 - [ ] 无效 `tz` 返回明确 400 错误
 
@@ -156,6 +175,7 @@
 - [ ] 顶部过滤包含模型
 - [ ] 顶部过滤包含状态
 - [ ] 顶部过滤包含 usage 来源
+- [ ] 顶部过滤或分段控件包含统计口径：有效统计 / 实时请求 / Session Log / 全部原始
 - [ ] 顶部过滤包含时间范围
 - [ ] 顶部过滤包含搜索
 - [ ] 摘要卡片显示 Provider 请求总数
@@ -164,7 +184,11 @@
 - [ ] 摘要卡片显示缓存 token
 - [ ] 摘要卡片显示 usage 覆盖率
 - [ ] 请求日志表显示 usage 状态
+- [ ] 请求日志表显示 `usage_source=session_log`
+- [ ] 请求日志表对重复 Session Log 行显示“与实时请求重复”或等价标记
 - [ ] Usage 覆盖率表显示无 usage 原因
+- [ ] Usage 覆盖率表保留 Provider Usage 覆盖率
+- [ ] 概览 usage 覆盖率问号提示说明 Session Log 补账计入有效覆盖率
 - [ ] 请求日志表底部有分页控件
 - [ ] 分页默认 10 条/页
 - [ ] 分页可选 20、50、100 条/页
@@ -206,6 +230,7 @@
 - [ ] `docker compose up -d --build` 成功
 - [ ] 容器启动日志无 usage schema 初始化错误
 - [ ] `docker-compose.yml` 包含 `CLAUDE_PROJECTS_DIR` 挂载（只读）
+- [ ] Windows 部署文档说明需要显式设置 `CLAUDE_PROJECTS_DIR`
 - [ ] 宿主机 `data/proxy.db` 包含 usage 表
 - [ ] 真实 Claude Code CLI 请求成功
 - [ ] 真实 Claude Code VS Code 扩展请求成功
@@ -216,6 +241,8 @@
 - [ ] provider 未返回 usage 时无 usage 请求数增加
 - [ ] session 补账能从宿主机 Claude session 日志补充 usage 数据
 - [ ] 补账后的请求 `usage_source` 显示为 `session_log`
+- [ ] 默认有效统计不把同一条 provider/session_log 重复相加
+- [ ] Session Log 视图能单独列出补账记录
 
 ## 14. 最终确认
 

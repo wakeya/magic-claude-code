@@ -130,6 +130,16 @@ func TestUsageHandlersRejectInvalidTimezone(t *testing.T) {
 	}
 }
 
+func TestUsageHandlersRejectInvalidStatsScope(t *testing.T) {
+	store := newTestStore(t)
+
+	rec := serveUsageRequest(store, "/api/usage/requests?stats_scope=invalid")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func serveUsageRequest(store *Store, target string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
 	NewHandler(store).Register(mux, func(next http.HandlerFunc) http.HandlerFunc { return next })

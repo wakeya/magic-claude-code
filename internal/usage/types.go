@@ -7,6 +7,13 @@ const (
 	UsageSourceSessionLog = "session_log"
 	UsageSourceNone       = "none"
 
+	StatsScopeEffective  = "effective"
+	StatsScopeProvider   = "provider"
+	StatsScopeSessionLog = "session_log"
+	StatsScopeRaw        = "raw"
+
+	DedupeStatusDuplicate = "duplicate"
+
 	ParseStatusOK                = "ok"
 	ParseStatusMissing           = "missing"
 	ParseStatusUnsupportedFormat = "unsupported_format"
@@ -89,6 +96,7 @@ type Filter struct {
 	Query            string
 	Page             int
 	PageSize         int
+	StatsScope       string
 }
 
 type Summary struct {
@@ -117,6 +125,8 @@ type TrendPoint struct {
 type RequestRow struct {
 	RequestRecord
 	TokenRecord
+	DedupeStatus    string `json:"dedupe_status,omitempty"`
+	DedupeRequestID string `json:"dedupe_request_id,omitempty"`
 }
 
 type RequestPage struct {

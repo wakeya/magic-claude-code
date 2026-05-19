@@ -3,6 +3,7 @@ package usage
 import (
 	"database/sql"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -112,6 +113,136 @@ func TestSummaryAggregatesProviderUsageOnly(t *testing.T) {
 	}
 	if summary.UsageCoverage != 1.0/3.0 {
 		t.Fatalf("UsageCoverage = %v", summary.UsageCoverage)
+	}
+}
+
+func TestEffectiveScopeExcludesDuplicateSessionLogUsage(t *testing.T) {
+	store := newTestStore(t)
+	started := time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)
+	seedUsageRecord(t, store, "provider-dup", started, 200, "", UsageSourceProvider, ParseStatusOK, UsageValues{
+		InputTokens:          100,
+		OutputTokens:         20,
+		CacheReadInputTokens: 800,
+	})
+	seedSessionUsageRecord(t, store, "session:dup", started.Add(30*time.Second), "mapped-model", UsageValues{
+		InputTokens:          100,
+		OutputTokens:         20,
+		CacheReadInputTokens: 800,
+	})
+	seedSessionUsageRecord(t, store, "session:only", started.Add(time.Hour), "session-only-model", UsageValues{
+		InputTokens:  7,
+		OutputTokens: 3,
+	})
+
+	summary, err := store.Summary(Filter{TZ: "UTC"})
+	if err != nil {
+		t.Fatalf("Summary() error = %v", err)
+	}
+	if summary.ProviderRequestsTotal != 2 {
+		t.Fatalf("ProviderRequestsTotal = %d", summary.ProviderRequestsTotal)
+	}
+	if summary.TokenConsumptionTotal != 930 {
+		t.Fatalf("TokenConsumptionTotal = %d", summary.TokenConsumptionTotal)
+	}
+
+	page, err := store.Requests(Filter{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("Requests() error = %v", err)
+	}
+	if page.Total != 2 {
+		t.Fatalf("effective Total = %d rows=%#v", page.Total, page.Rows)
+	}
+	for _, row := range page.Rows {
+		if row.ID == "session:dup" {
+			t.Fatalf("duplicate session row was included in effective scope: %#v", row)
+		}
+	}
+}
+
+func TestStatsScopesReturnExpectedRows(t *testing.T) {
+	store := newTestStore(t)
+	started := time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)
+	seedUsageRecord(t, store, "provider-dup", started, 200, "", UsageSourceProvider, ParseStatusOK, UsageValues{
+		InputTokens:  10,
+		OutputTokens: 5,
+	})
+	seedUsageRecord(t, store, "provider-none", started.Add(2*time.Minute), 200, "", UsageSourceNone, ParseStatusMissing, UsageValues{})
+	seedSessionUsageRecord(t, store, "session:dup", started.Add(30*time.Second), "mapped-model", UsageValues{
+		InputTokens:  10,
+		OutputTokens: 5,
+	})
+
+	raw, err := store.Requests(Filter{StatsScope: StatsScopeRaw, Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("raw Requests() error = %v", err)
+	}
+	if raw.Total != 3 {
+		t.Fatalf("raw Total = %d", raw.Total)
+	}
+	var duplicate RequestRow
+	for _, row := range raw.Rows {
+		if row.ID == "session:dup" {
+			duplicate = row
+		}
+	}
+	if duplicate.DedupeStatus != DedupeStatusDuplicate || duplicate.DedupeRequestID != "provider-dup" {
+		t.Fatalf("duplicate row markers = %q/%q", duplicate.DedupeStatus, duplicate.DedupeRequestID)
+	}
+
+	provider, err := store.Requests(Filter{StatsScope: StatsScopeProvider, Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("provider Requests() error = %v", err)
+	}
+	if provider.Total != 2 {
+		t.Fatalf("provider Total = %d", provider.Total)
+	}
+
+	session, err := store.Requests(Filter{StatsScope: StatsScopeSessionLog, Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("session Requests() error = %v", err)
+	}
+	if session.Total != 1 || session.Rows[0].ID != "session:dup" {
+		t.Fatalf("session page = %#v", session)
+	}
+}
+
+func TestStatsScopeDuplicateDetectionScalesWithManyRows(t *testing.T) {
+	store := newTestStore(t)
+	started := time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)
+	for i := 0; i < 250; i++ {
+		seedUsageRecord(t, store, "provider-noise-"+strconv.Itoa(i), started.Add(time.Duration(i)*time.Second), 200, "", UsageSourceProvider, ParseStatusOK, UsageValues{
+			InputTokens:  int64(i + 1),
+			OutputTokens: int64(i + 2),
+		})
+		seedSessionUsageRecord(t, store, "session:noise-"+strconv.Itoa(i), started.Add(time.Hour+time.Duration(i)*time.Second), "noise-model-"+strconv.Itoa(i), UsageValues{
+			InputTokens:  int64(i + 3),
+			OutputTokens: int64(i + 4),
+		})
+	}
+	seedUsageRecord(t, store, "provider-target", started.Add(2*time.Hour), 200, "", UsageSourceProvider, ParseStatusOK, UsageValues{
+		InputTokens:          100,
+		OutputTokens:         20,
+		CacheReadInputTokens: 800,
+	})
+	seedSessionUsageRecord(t, store, "session:target", started.Add(2*time.Hour+30*time.Second), "mapped-model", UsageValues{
+		InputTokens:          100,
+		OutputTokens:         20,
+		CacheReadInputTokens: 800,
+	})
+
+	page, err := store.Requests(Filter{StatsScope: StatsScopeRaw, Page: 1, PageSize: 600})
+	if err != nil {
+		t.Fatalf("Requests() error = %v", err)
+	}
+	var target RequestRow
+	for _, row := range page.Rows {
+		if row.ID == "session:target" {
+			target = row
+			break
+		}
+	}
+	if target.DedupeStatus != DedupeStatusDuplicate || target.DedupeRequestID != "provider-target" {
+		t.Fatalf("target duplicate markers = %q/%q", target.DedupeStatus, target.DedupeRequestID)
 	}
 }
 
@@ -266,6 +397,30 @@ func seedUsageRecord(t *testing.T, store *Store, id string, started time.Time, s
 		UsageSource:              usageSource,
 		UsageParseStatus:         parseStatus,
 		UsageParseError:          "",
+	}); err != nil {
+		t.Fatalf("Record() error = %v", err)
+	}
+}
+
+func seedSessionUsageRecord(t *testing.T, store *Store, id string, started time.Time, model string, values UsageValues) {
+	t.Helper()
+	req := testUsageRequest(id, started)
+	req.Method = "SESSION"
+	req.RequestPath = "session_log"
+	req.ProviderID = "_session"
+	req.ProviderName = "Session Log"
+	req.ProviderAPIURL = ""
+	req.SourceEntrypoint = "session_log"
+	req.OriginalModel = model
+	req.MappedModel = model
+	if err := store.Record(req, TokenRecord{
+		RequestID:                id,
+		InputTokens:              values.InputTokens,
+		OutputTokens:             values.OutputTokens,
+		CacheCreationInputTokens: values.CacheCreationInputTokens,
+		CacheReadInputTokens:     values.CacheReadInputTokens,
+		UsageSource:              UsageSourceSessionLog,
+		UsageParseStatus:         ParseStatusOK,
 	}); err != nil {
 		t.Fatalf("Record() error = %v", err)
 	}
