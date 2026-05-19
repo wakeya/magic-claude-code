@@ -254,83 +254,49 @@
             <div class="text-sm font-bold uppercase tracking-widest text-text-secondary">{{ t('usage.requests') }}</div>
             <div class="text-sm text-text-secondary">{{ formatNumber(usageRequests?.total ?? 0) }}</div>
           </div>
-          <table class="min-w-[4200px] w-full text-sm">
+          <table class="min-w-[1900px] w-full text-sm">
             <thead>
               <tr class="border-b border-border text-left text-xs uppercase tracking-widest text-text-secondary">
-                <th class="py-3 pr-4">id</th>
-                <th class="py-3 pr-4">request_id</th>
-                <th class="py-3 pr-4">started_at</th>
-                <th class="py-3 pr-4">ended_at</th>
-                <th class="py-3 pr-4">duration_ms</th>
-                <th class="py-3 pr-4">upstream_response_header_ms</th>
-                <th class="py-3 pr-4">time_to_first_byte_ms</th>
-                <th class="py-3 pr-4">status_code</th>
-                <th class="py-3 pr-4">error_type</th>
-                <th class="py-3 pr-4">error_message</th>
-                <th class="py-3 pr-4">method</th>
-                <th class="py-3 pr-4">request_path</th>
-                <th class="py-3 pr-4">backend_url</th>
-                <th class="py-3 pr-4">provider_id</th>
-                <th class="py-3 pr-4">provider_name</th>
-                <th class="py-3 pr-4">provider_api_url</th>
-                <th class="py-3 pr-4">source_app</th>
-                <th class="py-3 pr-4">source_entrypoint</th>
-                <th class="py-3 pr-4">user_agent</th>
-                <th class="py-3 pr-4">original_model</th>
-                <th class="py-3 pr-4">mapped_model</th>
-                <th class="py-3 pr-4">stream</th>
-                <th class="py-3 pr-4">request_bytes</th>
-                <th class="py-3 pr-4">response_bytes</th>
-                <th class="py-3 pr-4">tokens</th>
-                <th class="py-3 pr-4">input_tokens</th>
-                <th class="py-3 pr-4">output_tokens</th>
-                <th class="py-3 pr-4">cache_creation_input_tokens</th>
-                <th class="py-3 pr-4">cache_read_input_tokens</th>
-                <th class="py-3 pr-4">usage_source</th>
-                <th class="py-3 pr-4">usage_parse_status</th>
-                <th class="py-3 pr-4">usage_parse_error</th>
+                <th class="py-3 pr-4">{{ t('usage.time_range') }}</th>
+                <th class="py-3 pr-4">{{ t('usage.provider') }}</th>
+                <th class="py-3 pr-4">{{ t('usage.model') }}</th>
+                <th class="py-3 pr-4">{{ t('usage.source_entrypoint') }}</th>
+                <th class="py-3 pr-4">{{ t('usage.usage_source') }}</th>
+                <th class="py-3 pr-4">{{ t('usage.usage_status') }}</th>
+                <th class="py-3 pr-4">{{ t('usage.duration_ms') }}</th>
+                <th class="py-3 pr-4">{{ t('usage.upstream_response_header_ms') }}</th>
+                <th class="py-3 pr-4">{{ t('usage.time_to_first_byte_ms') }}</th>
+                <th class="py-3 pr-4">{{ t('usage.status') }}</th>
+                <th class="py-3 pr-4">{{ t('usage.tokens') }}</th>
+                <th class="py-3 pr-4">{{ t('usage.input_tokens') }}</th>
+                <th class="py-3 pr-4">{{ t('usage.output_tokens') }}</th>
+                <th class="py-3 pr-4">{{ t('usage.cache_creation_input_tokens') }}</th>
+                <th class="py-3 pr-4">{{ t('usage.cache_read_input_tokens') }}</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="row in usageRequests?.rows || []" :key="row.id" class="border-b border-border/70">
-                <td class="py-3 pr-4 font-mono text-xs">{{ formatText(row.id) }}</td>
-                <td class="py-3 pr-4 font-mono text-xs">{{ formatText(row.request_id) }}</td>
                 <td class="py-3 pr-4 font-mono text-xs">{{ formatDateTime(row.started_at) }}</td>
-                <td class="py-3 pr-4 font-mono text-xs">{{ formatDateTime(row.ended_at) }}</td>
-                <td class="py-3 pr-4">{{ formatPlainNumber(row.duration_ms) }}</td>
-                <td class="py-3 pr-4">{{ formatPlainNumber(row.upstream_response_header_ms) }}</td>
-                <td class="py-3 pr-4">{{ formatPlainNumber(row.time_to_first_byte_ms) }}</td>
-                <td class="py-3 pr-4">{{ row.status_code ?? '-' }}</td>
-                <td class="py-3 pr-4">{{ formatText(row.error_type) }}</td>
-                <td class="py-3 pr-4 break-all">{{ formatText(row.error_message) }}</td>
-                <td class="py-3 pr-4">{{ formatText(row.method) }}</td>
-                <td class="py-3 pr-4 font-mono text-xs">{{ formatText(row.request_path) }}</td>
-                <td class="py-3 pr-4 font-mono text-xs break-all">{{ formatText(row.backend_url) }}</td>
-                <td class="py-3 pr-4 font-mono text-xs">{{ formatText(row.provider_id) }}</td>
-                <td class="py-3 pr-4">{{ formatText(row.provider_name) }}</td>
-                <td class="py-3 pr-4 font-mono text-xs break-all">{{ formatText(row.provider_api_url) }}</td>
-                <td class="py-3 pr-4">{{ formatText(row.source_app) }}</td>
-                <td class="py-3 pr-4">{{ formatText(row.source_entrypoint) }}</td>
-                <td class="py-3 pr-4 break-all">{{ formatText(row.user_agent) }}</td>
-                <td class="py-3 pr-4 font-mono text-xs">{{ formatText(row.original_model) }}</td>
-                <td class="py-3 pr-4 font-mono text-xs">{{ formatText(row.mapped_model) }}</td>
-                <td class="py-3 pr-4">{{ formatBoolean(row.stream) }}</td>
-                <td class="py-3 pr-4">{{ formatNumber(row.request_bytes) }}</td>
-                <td class="py-3 pr-4">{{ formatNumber(row.response_bytes) }}</td>
-                <td class="py-3 pr-4 font-mono text-xs font-bold">{{ formatNumber(tokenTotal(row)) }}</td>
-                <td class="py-3 pr-4 font-mono text-xs">{{ formatNumber(row.input_tokens) }}</td>
-                <td class="py-3 pr-4 font-mono text-xs">{{ formatNumber(row.output_tokens) }}</td>
-                <td class="py-3 pr-4 font-mono text-xs">{{ formatNumber(row.cache_creation_input_tokens) }}</td>
-                <td class="py-3 pr-4 font-mono text-xs">{{ formatNumber(row.cache_read_input_tokens) }}</td>
+                <td class="py-3 pr-4">{{ row.provider_name }}</td>
+                <td class="py-3 pr-4 font-mono text-xs">{{ row.mapped_model || row.original_model }}</td>
+                <td class="py-3 pr-4">{{ formatEntrypoint(row.source_entrypoint) }}</td>
                 <td class="py-3 pr-4">
-                  <span :class="badgeClass(row.usage_source !== 'none')">{{ formatText(row.usage_source) }}</span>
+                  <span :class="badgeClass(row.usage_source !== 'none')">{{ formatUsageSource(row.usage_source) }}</span>
                 </td>
                 <td class="py-3 pr-4">
                   <span :class="badgeClass(row.usage_parse_status === 'ok')">
                     {{ row.usage_parse_status }}
                   </span>
                 </td>
-                <td class="py-3 pr-4 break-all">{{ formatText(row.usage_parse_error) }}</td>
+                <td class="py-3 pr-4">{{ formatDuration(row.duration_ms) }}</td>
+                <td class="py-3 pr-4">{{ formatDuration(row.upstream_response_header_ms) }}</td>
+                <td class="py-3 pr-4">{{ formatDuration(row.time_to_first_byte_ms) }}</td>
+                <td class="py-3 pr-4">{{ row.status_code ?? '-' }}</td>
+                <td class="py-3 pr-4 font-mono text-xs font-bold">{{ formatNumber(tokenTotal(row)) }}</td>
+                <td class="py-3 pr-4 font-mono text-xs">{{ formatNumber(row.input_tokens) }}</td>
+                <td class="py-3 pr-4 font-mono text-xs">{{ formatNumber(row.output_tokens) }}</td>
+                <td class="py-3 pr-4 font-mono text-xs">{{ formatNumber(row.cache_creation_input_tokens) }}</td>
+                <td class="py-3 pr-4 font-mono text-xs">{{ formatNumber(row.cache_read_input_tokens) }}</td>
               </tr>
             </tbody>
           </table>
@@ -672,17 +638,9 @@ function formatNumber(value: number | null | undefined): string {
   return new Intl.NumberFormat(locale.value === 'zh' ? 'zh-CN' : 'en-US').format(Math.round(value))
 }
 
-function formatPlainNumber(value: number | null | undefined): string {
-  if (value === null || value === undefined || Number.isNaN(value)) return '-'
-  return String(Math.round(value))
-}
-
-function formatText(value: string | null | undefined): string {
-  return value ? value : '-'
-}
-
-function formatBoolean(value: boolean): string {
-  return value ? 'true' : 'false'
+function formatDuration(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '-'
+  return `${formatNumber(value)} ms`
 }
 
 function formatEntrypoint(value: string): string {
@@ -691,6 +649,12 @@ function formatEntrypoint(value: string): string {
   if (value === 'claude-vscode') return t('usage.source_claude_vscode')
   if (value === 'unknown') return t('usage.source_unknown')
   return value
+}
+
+function formatUsageSource(value: UsageRequestRow['usage_source']): string {
+  if (value === 'provider') return t('usage.usage_source_provider')
+  if (value === 'session_log') return t('usage.usage_source_session_log')
+  return t('usage.usage_source_none')
 }
 
 function tokenTotal(row: UsageRequestRow): number {
