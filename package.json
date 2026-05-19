@@ -1,0 +1,8 @@
+{
+  "name": "claude-code-proxy-dns",
+  "private": true,
+  "scripts": {
+    "test": "npm --prefix internal/frontend test",
+    "build": "npm --prefix internal/frontend run build"
+  }
+}

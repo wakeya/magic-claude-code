@@ -301,6 +301,54 @@
             </tbody>
           </table>
           <div v-if="!usageRequests?.rows?.length" class="py-10 text-center text-text-secondary">{{ t('usage.empty') }}</div>
+          <div v-if="usageRequests?.total" class="mt-4 flex flex-wrap items-center justify-end gap-3 border-t border-border pt-4 text-sm">
+            <div class="flex items-center gap-2 text-text-secondary">
+              <span>{{ t('usage.page_size') }}</span>
+              <select v-model.number="usageRequestPageSize" class="rounded-md border border-border bg-white px-2 py-1 text-sm text-fg">
+                <option v-for="size in usageRequestPageSizes" :key="size" :value="size">{{ size }}</option>
+              </select>
+              <span>{{ t('usage.per_page') }}</span>
+            </div>
+            <div class="flex items-center gap-1">
+              <button
+                class="rounded-md border border-border px-2 py-1 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-45"
+                :disabled="usageRequestPage <= 1"
+                :aria-label="t('usage.first_page')"
+                :title="t('usage.first_page')"
+                @click="goToUsageRequestPage(1)"
+              >
+                &lt;&lt;
+              </button>
+              <button
+                class="rounded-md border border-border px-2 py-1 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-45"
+                :disabled="usageRequestPage <= 1"
+                :aria-label="t('usage.prev_page')"
+                :title="t('usage.prev_page')"
+                @click="goToUsageRequestPage(usageRequestPage - 1)"
+              >
+                &lt;
+              </button>
+              <span class="px-2 text-text-secondary">{{ t('usage.page_summary', { page: usageRequestPage, total: usageRequestTotalPages }) }}</span>
+              <button
+                class="rounded-md border border-border px-2 py-1 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-45"
+                :disabled="usageRequestPage >= usageRequestTotalPages"
+                :aria-label="t('usage.next_page')"
+                :title="t('usage.next_page')"
+                @click="goToUsageRequestPage(usageRequestPage + 1)"
+              >
+                &gt;
+              </button>
+              <button
+                class="rounded-md border border-border px-2 py-1 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-45"
+                :disabled="usageRequestPage >= usageRequestTotalPages"
+                :aria-label="t('usage.last_page')"
+                :title="t('usage.last_page')"
+                @click="goToUsageRequestPage(usageRequestTotalPages)"
+              >
+                &gt;&gt;
+              </button>
+            </div>
+          </div>
         </div>
 
         <div v-if="activeUsageTab === 'providers'" class="bg-white p-5 rounded-lg border-2 border-border overflow-x-auto">
@@ -456,10 +504,7 @@ const usageTabs: Array<{ key: UsageTab; labelKey: string }> = [
 
 const activeTab = ref<MainTab>('status')
 const activeUsageTab = ref<UsageTab>('overview')
-const containerClass = computed(() => {
-  if (activeTab.value === 'usage' && activeUsageTab.value === 'requests') return 'max-w-[1920px]'
-  return 'max-w-[1440px]'
-})
+const containerClass = 'max-w-[1440px]'
 
 const status = ref<StatusInfo | null>(null)
 const providers = ref<Provider[]>([])
@@ -469,6 +514,9 @@ const certs = ref<CertificateInfo | null>(null)
 const usageSummary = ref<UsageSummary | null>(null)
 const usageTrends = ref<UsageTrendPoint[]>([])
 const usageRequests = ref<UsageRequestPage | null>(null)
+const usageRequestPage = ref(1)
+const usageRequestPageSize = ref(10)
+const usageRequestPageSizes = [10, 20, 50, 100]
 const usageProviders = ref<UsageAggregateRow[]>([])
 const usageModels = ref<UsageAggregateRow[]>([])
 const usageCoverage = ref<UsageCoverageRow[]>([])
@@ -492,6 +540,9 @@ const usageFilters = reactive({
 const activeProvider = computed(() => providers.value.find((p) => p.id === activeProviderId.value))
 const providerOptions = computed(() => providers.value.map((provider) => ({ value: provider.id, label: provider.name })))
 const modelOptions = computed(() => uniqueValues(usageModels.value.map((row) => row.mapped_model || row.name)))
+const usageRequestTotalPages = computed(() =>
+  Math.max(1, Math.ceil((usageRequests.value?.total ?? 0) / usageRequestPageSize.value))
+)
 
 const showModal = ref(false)
 const editingProvider = ref<Provider | null>(null)
@@ -507,6 +558,11 @@ function openEditModal(p: Provider) {
 function closeModal() {
   showModal.value = false
   editingProvider.value = null
+}
+
+function goToUsageRequestPage(page: number) {
+  usageRequestPage.value = Math.max(1, Math.min(page, usageRequestTotalPages.value))
+  void loadUsageData()
 }
 
 async function handleSaved() {
@@ -584,7 +640,7 @@ async function loadUsageData() {
     const [summary, trends, requests, providers, models, coverage] = await Promise.all([
       api.getUsageSummary(params),
       api.getUsageTrends(params),
-      api.getUsageRequests({ ...params, page: 1, page_size: 50 }),
+      api.getUsageRequests({ ...params, page: usageRequestPage.value, page_size: usageRequestPageSize.value }),
       api.getUsageProviders(params),
       api.getUsageModels(params),
       api.getUsageCoverage(params),
@@ -789,10 +845,16 @@ watch(
 watch(
   usageFilters,
   () => {
+    usageRequestPage.value = 1
     scheduleUsageLoad()
   },
   { deep: true }
 )
+
+watch(usageRequestPageSize, () => {
+  usageRequestPage.value = 1
+  void loadUsageData()
+})
 
 onMounted(async () => {
   await Promise.all([loadStatus(), loadProviders(), loadCerts()])

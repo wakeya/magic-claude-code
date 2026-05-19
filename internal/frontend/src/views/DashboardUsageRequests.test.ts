@@ -71,8 +71,37 @@ test('usage request token field labels support Chinese and English', () => {
   }
 })
 
-test('usage request log widens the page content area', () => {
-  assert.match(dashboardSource, /activeTab\.value === 'usage' && activeUsageTab\.value === 'requests'/)
-  assert.match(dashboardSource, /max-w-\[1920px\]/)
+test('usage request log uses the standard page content width', () => {
+  assert.doesNotMatch(dashboardSource, /max-w-\[1920px\]/)
   assert.match(dashboardSource, /max-w-\[1440px\]/)
+})
+
+test('usage request log has bottom-right pagination with page size options', () => {
+  assert.match(dashboardSource, /const usageRequestPage = ref\(1\)/)
+  assert.match(dashboardSource, /const usageRequestPageSize = ref\(10\)/)
+  assert.match(dashboardSource, /const usageRequestPageSizes = \[10, 20, 50, 100\]/)
+  assert.match(dashboardSource, /justify-end/)
+  assert.match(dashboardSource, /v-model\.number="usageRequestPageSize"/)
+  assert.match(dashboardSource, /usageRequestPageSizes/)
+})
+
+test('usage request log fetches the selected page and page size', () => {
+  assert.match(dashboardSource, /page: usageRequestPage\.value/)
+  assert.match(dashboardSource, /page_size: usageRequestPageSize\.value/)
+  assert.match(dashboardSource, /goToUsageRequestPage/)
+})
+
+test('usage request pagination labels support Chinese and English', () => {
+  for (const key of [
+    'usage.page_size',
+    'usage.per_page',
+    'usage.first_page',
+    'usage.prev_page',
+    'usage.next_page',
+    'usage.last_page',
+    'usage.page_summary',
+  ]) {
+    assert.match(i18nSource, new RegExp(`'${key}':`), `missing i18n key ${key}`)
+    assert.match(dashboardSource, new RegExp(`t\\('${key}'`), `missing dashboard usage of ${key}`)
+  }
 })
