@@ -11,6 +11,7 @@ const (
 	PatternNone ErrorPattern = iota
 	PatternToolValidation
 	PatternThinkingSignature
+	PatternGenericBadRequest
 )
 
 // RectifyRequest 根据错误模式对请求体执行清理，返回清理后的请求体和是否执行了清理
@@ -30,6 +31,13 @@ func RectifyRequest(body []byte, pattern ErrorPattern) ([]byte, bool) {
 
 	if pattern == PatternThinkingSignature {
 		if cleaned, changed := cleanThinking(body); changed {
+			body = cleaned
+			anyChanged = true
+		}
+	}
+
+	if pattern == PatternGenericBadRequest {
+		if cleaned, changed := cleanUnknownContentTypes(body); changed {
 			body = cleaned
 			anyChanged = true
 		}
@@ -58,6 +66,11 @@ func matchErrorPattern(errorBody []byte) ErrorPattern {
 	// 模式 2：Thinking/签名不兼容
 	if isThinkingSignatureError(lower) {
 		return PatternThinkingSignature
+	}
+
+	// 模式 3：通用 400 错误（如 kimi "Invalid request Error"）
+	if hasGenericInvalidRequestPhrase(lower) {
+		return PatternGenericBadRequest
 	}
 
 	return PatternNone
@@ -325,4 +338,81 @@ func findLastAssistantMessage(messages []any) map[string]any {
 		}
 	}
 	return nil
+}
+
+var knownContentTypes = map[string]bool{
+	"text": true, "image": true, "tool_use": true, "tool_result": true,
+	"thinking": true, "redacted_thinking": true,
+}
+
+// cleanUnknownContentTypes removes non-standard content blocks (e.g. tool_reference)
+// from messages and nested tool_result.content that upstream providers may not recognize
+func cleanUnknownContentTypes(body []byte) ([]byte, bool) {
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		return body, false
+	}
+
+	messages, ok := req["messages"].([]any)
+	if !ok {
+		return body, false
+	}
+
+	changed := false
+	for _, m := range messages {
+		msg, ok := m.(map[string]any)
+		if !ok {
+			continue
+		}
+		if filterContentBlocks(msg) {
+			changed = true
+		}
+	}
+
+	if !changed {
+		return body, false
+	}
+
+	out, err := json.Marshal(req)
+	if err != nil {
+		return body, false
+	}
+	return out, true
+}
+
+// filterContentBlocks cleans a message's content array and recurses into tool_result.content
+func filterContentBlocks(msg map[string]any) bool {
+	content, ok := msg["content"]
+	if !ok {
+		return false
+	}
+
+	arr, ok := content.([]any)
+	if !ok {
+		return false
+	}
+
+	changed := false
+	filtered := make([]any, 0, len(arr))
+	for _, block := range arr {
+		b, ok := block.(map[string]any)
+		if !ok {
+			filtered = append(filtered, block)
+			continue
+		}
+		btype, _ := b["type"].(string)
+		if !knownContentTypes[btype] && btype != "" {
+			changed = true
+			continue
+		}
+		// recurse into tool_result.content
+		if btype == "tool_result" {
+			if filterContentBlocks(b) {
+				changed = true
+			}
+		}
+		filtered = append(filtered, block)
+	}
+	msg["content"] = filtered
+	return changed
 }

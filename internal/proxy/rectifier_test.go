@@ -14,11 +14,11 @@ func TestMatchErrorPattern_ToolValidation(t *testing.T) {
 }
 
 func TestMatchErrorPattern_GenericInvalidParams(t *testing.T) {
-	// 单独的 "invalid params" 不够精确，不应触发自动修复
+	// 单独的 "invalid params" 触发通用 400 清理（如移除未知 content block）
 	body := []byte(`{"error":{"type":"invalid_request_error","message":"invalid params, some other error"}}`)
 	got := matchErrorPattern(body)
-	if got != PatternNone {
-		t.Errorf("expected PatternNone, got %v", got)
+	if got != PatternGenericBadRequest {
+		t.Errorf("expected PatternGenericBadRequest, got %v", got)
 	}
 }
 
@@ -39,10 +39,11 @@ func TestMatchErrorPattern_ExpectedThinking(t *testing.T) {
 }
 
 func TestMatchErrorPattern_GenericInvalidRequest(t *testing.T) {
+	// kimi 的 "Invalid request Error" 触发通用 400 清理
 	body := []byte(`{"type":"error","error":{"type":"invalid_request_error","message":"Invalid request Error"}}`)
 	got := matchErrorPattern(body)
-	if got != PatternNone {
-		t.Errorf("expected PatternNone for generic invalid request without tool/thinking context, got %v", got)
+	if got != PatternGenericBadRequest {
+		t.Errorf("expected PatternGenericBadRequest for kimi-style generic invalid request, got %v", got)
 	}
 }
 
@@ -104,8 +105,8 @@ func TestMatchErrorPattern_NestedJSON(t *testing.T) {
 func TestMatchErrorPattern_ChineseInvalidRequest(t *testing.T) {
 	body := []byte(`{"error":{"message":"非法请求：参数格式错误"}}`)
 	got := matchErrorPattern(body)
-	if got != PatternNone {
-		t.Errorf("expected PatternNone for Chinese generic error, got %v", got)
+	if got != PatternGenericBadRequest {
+		t.Errorf("expected PatternGenericBadRequest for Chinese generic error, got %v", got)
 	}
 }
 
