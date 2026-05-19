@@ -7,6 +7,7 @@ services:
       - "8442:8442"
     volumes:
       - ./data:/app/data
+      # Linux/macOS 默认读取 ${HOME}/.claude/projects；Windows 请在 .env 或 PowerShell 中显式设置 CLAUDE_PROJECTS_DIR，例如 C:/Users/用户名/.claude/projects
       - ${CLAUDE_PROJECTS_DIR:-${HOME}/.claude/projects}:/claude-projects:ro
     environment:
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}

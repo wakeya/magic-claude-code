@@ -33,7 +33,9 @@ docker run -d \
   -p 443:443 \
   -p 8442:8442 \
   -v ./data:/app/data \
+  -v "${CLAUDE_PROJECTS_DIR:-$HOME/.claude/projects}:/claude-projects:ro" \
   -e ADMIN_PASSWORD=admin123 \
+  -e CLAUDE_PROJECTS_DIR=/claude-projects \
   --cap-add NET_BIND_SERVICE \
   --restart=unless-stopped \
   claude_code_proxy_dns
@@ -359,6 +361,69 @@ sudo iptables -t nat -A OUTPUT -p tcp --dport 443 -j REDIRECT --to-port 8443
 | 环境变量 | 说明 | 默认值 |
 |---------|------|--------|
 | ADMIN_PASSWORD | 管理密码 | admin123 |
+| CLAUDE_PROJECTS_DIR | 容器内 Claude Code session 日志目录，用于使用统计自动补账 | /claude-projects |
+
+### 使用统计自动补账目录
+
+使用统计会自动扫描 Claude Code 本地 session JSONL 日志，并把其中已完成请求的 usage 导入统计库。服务启动时会同步一次，之后每分钟自动同步一次。
+
+容器内统一读取：
+
+```text
+/claude-projects
+```
+
+宿主机路径需要通过 Docker volume 挂载到该目录。
+
+**Linux / macOS：**
+
+默认使用当前用户的 Claude Code session 目录：
+
+```text
+$HOME/.claude/projects
+```
+
+如果使用 docker-compose，默认配置已经包含该挂载：
+
+```yaml
+- ${CLAUDE_PROJECTS_DIR:-${HOME}/.claude/projects}:/claude-projects:ro
+```
+
+如果你的 Claude Code 日志不在默认目录，可以在启动前覆盖：
+
+```bash
+export CLAUDE_PROJECTS_DIR=/path/to/.claude/projects
+docker compose up -d --build
+```
+
+**Windows：**
+
+Windows 的用户目录路径不同，不能依赖 Linux/macOS 的 `$HOME/.claude/projects` 默认值。请显式设置 `CLAUDE_PROJECTS_DIR`，并优先使用 `/` 作为路径分隔符，避免 Docker volume 中的 `:` 和反斜杠转义问题。
+
+PowerShell 示例：
+
+```powershell
+$env:CLAUDE_PROJECTS_DIR="C:/Users/你的用户名/.claude/projects"
+docker compose up -d --build
+```
+
+`.env` 示例：
+
+```env
+CLAUDE_PROJECTS_DIR=C:/Users/你的用户名/.claude/projects
+```
+
+然后启动：
+
+```powershell
+docker compose up -d --build
+```
+
+注意事项：
+
+- Docker Desktop 需要允许挂载该用户目录。
+- 如果路径不存在，服务仍会启动，但不会导入 session 日志，使用统计里的补账数据会为空。
+- 应用代码只读取容器内的 `/claude-projects`，宿主机路径差异由 Docker volume 处理。
 
 ### 供应商配置
 
