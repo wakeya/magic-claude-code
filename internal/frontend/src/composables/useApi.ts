@@ -68,24 +68,36 @@ export interface UsageTrendPoint {
 
 export interface UsageRequestRow {
   id: string
+  request_id: string
   started_at: string
+  ended_at: string | null
   duration_ms: number | null
   upstream_response_header_ms: number | null
   time_to_first_byte_ms: number | null
   status_code: number | null
   error_type: string
+  error_message: string
+  method: string
+  request_path: string
+  backend_url: string
+  provider_id: string
   provider_name: string
   provider_api_url: string
+  source_app: string
   source_entrypoint: string
+  user_agent: string
   original_model: string
   mapped_model: string
   stream: boolean
+  request_bytes: number
+  response_bytes: number
   input_tokens: number
   output_tokens: number
   cache_creation_input_tokens: number
   cache_read_input_tokens: number
-  usage_source: 'provider' | 'none'
+  usage_source: 'provider' | 'session_log' | 'none'
   usage_parse_status: string
+  usage_parse_error: string
 }
 
 export interface UsageRequestPage {
