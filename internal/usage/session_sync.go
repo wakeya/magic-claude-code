@@ -39,6 +39,9 @@ type claudeSessionLine struct {
 }
 
 func DefaultClaudeProjectsDir() string {
+	if dir := os.Getenv("CLAUDE_PROJECTS_DIR"); dir != "" {
+		return dir
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""

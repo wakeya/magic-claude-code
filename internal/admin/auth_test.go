@@ -83,7 +83,7 @@ func TestUsageRoutesRequireSession(t *testing.T) {
 
 func TestStatusIncludesUsageSummary(t *testing.T) {
 	store := newAdminUsageStore(t)
-	started := time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)
+	started := time.Now().UTC()
 	statusCode := 200
 	if err := store.Record(usage.RequestRecord{
 		ID:               "status-usage",

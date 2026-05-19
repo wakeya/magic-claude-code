@@ -112,6 +112,14 @@ func TestSyncClaudeSessionLogsSkipsIncompleteAssistantUsage(t *testing.T) {
 	}
 }
 
+func TestDefaultClaudeProjectsDirUsesEnvironmentOverride(t *testing.T) {
+	t.Setenv("CLAUDE_PROJECTS_DIR", "/mounted-claude-projects")
+
+	if got := DefaultClaudeProjectsDir(); got != "/mounted-claude-projects" {
+		t.Fatalf("DefaultClaudeProjectsDir() = %q", got)
+	}
+}
+
 func writeSessionLog(t *testing.T, path string, lines ...string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {

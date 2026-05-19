@@ -7,8 +7,10 @@ services:
       - "8442:8442"
     volumes:
       - ./data:/app/data
+      - ${CLAUDE_PROJECTS_DIR:-${HOME}/.claude/projects}:/claude-projects:ro
     environment:
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}
+      - CLAUDE_PROJECTS_DIR=/claude-projects
     restart: unless-stopped
     cap_add:
       - NET_BIND_SERVICE
