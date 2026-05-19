@@ -187,6 +187,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 	usageReq.StatusCode = &resp.StatusCode
 
+	// 反应式错误恢复：400 时尝试清理请求并重试
+	if resp.StatusCode == 400 && shouldRecordUsagePath(r.URL.Path) && activeProvider != nil {
+		retried, restoredBody := h.tryRectify(r, modifiedBody, resp, backendURL, apiToken, client)
+		if retried != nil {
+			resp = retried
+			defer resp.Body.Close()
+			usageReq.StatusCode = &resp.StatusCode
+			log.Printf("[Rectifier] Retry response status: %d", resp.StatusCode)
+		} else if restoredBody != nil {
+			resp.Body = restoredBody
+		}
+	}
+
 	// 复制响应 header
 	for key, values := range resp.Header {
 		for _, value := range values {
@@ -429,4 +442,79 @@ func summarizeRequestParams(body []byte) string {
 	}
 	out, _ := json.Marshal(summary)
 	return string(out)
+}
+
+const maxErrorBodySize = 128 * 1024
+
+// tryRectify 尝试对 400 错误进行反应式恢复
+// 返回值：重试后的响应（如有），或恢复后的原始响应体（用于直接转发）
+func (h *Handler) tryRectify(
+	origReq *http.Request,
+	origBody []byte,
+	resp *http.Response,
+	backendURL string,
+	apiToken string,
+	client *http.Client,
+) (*http.Response, io.ReadCloser) {
+	// 缓冲错误体
+	errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodySize))
+	restoredBody := func() io.ReadCloser {
+		return io.NopCloser(io.MultiReader(bytes.NewReader(errBody), resp.Body))
+	}
+
+	pattern := matchErrorPattern(errBody)
+	if pattern == PatternNone {
+		return nil, restoredBody()
+	}
+
+	log.Printf("[Rectifier] Detected error pattern %d, attempting cleanup", pattern)
+
+	cleanedBody, applied := RectifyRequest(origBody, pattern)
+	if !applied {
+		log.Printf("[Rectifier] Cleanup made no changes, forwarding original error")
+		return nil, restoredBody()
+	}
+
+	log.Printf("[Rectifier] Cleanup applied, retrying request to %s", backendURL)
+
+	// 重建重试请求
+	retryReq, err := http.NewRequest(origReq.Method, backendURL, bytes.NewReader(cleanedBody))
+	if err != nil {
+		log.Printf("[Rectifier] Failed to create retry request: %v", err)
+		return nil, restoredBody()
+	}
+
+	// 复制原始请求头
+	hasAuth := false
+	for key, values := range origReq.Header {
+		if !shouldForwardRequestHeader(key) {
+			continue
+		}
+		if apiToken != "" && (strings.EqualFold(key, "Authorization") || strings.EqualFold(key, "X-Api-Key")) {
+			if !hasAuth {
+				if strings.EqualFold(key, "Authorization") {
+					retryReq.Header.Set("Authorization", "Bearer "+apiToken)
+				} else {
+					retryReq.Header.Set("X-Api-Key", apiToken)
+				}
+				hasAuth = true
+			}
+			continue
+		}
+		for _, value := range values {
+			retryReq.Header.Add(key, value)
+		}
+	}
+	if !hasAuth && apiToken != "" {
+		retryReq.Header.Set("Authorization", "Bearer "+apiToken)
+	}
+
+	retryResp, err := client.Do(retryReq)
+	if err != nil {
+		log.Printf("[Rectifier] Retry request failed: %v", err)
+		return nil, restoredBody()
+	}
+
+	resp.Body.Close()
+	return retryResp, nil
 }

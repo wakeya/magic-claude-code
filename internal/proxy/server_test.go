@@ -193,6 +193,85 @@ func TestProxyRecordsHTTPErrorAndForwardsFullBody(t *testing.T) {
 	}
 }
 
+func TestProxyForwardsLargeNonRecoverable400Body(t *testing.T) {
+	errorBody := strings.Repeat("provider-error-", 12000)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(errorBody))
+	}))
+	defer backend.Close()
+
+	handler := NewHandler(config.NewMockStore(testProxyConfig(testProxyProvider(backend.URL))), http.DefaultTransport.(*http.Transport))
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"claude-sonnet","messages":[]}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if rec.Body.String() != errorBody {
+		t.Fatalf("client did not receive full provider body: got %d want %d bytes", rec.Body.Len(), len(errorBody))
+	}
+}
+
+func TestProxyRetriesKimiTool400WithCleanedRequestBody(t *testing.T) {
+	recorder := &fakeUsageRecorder{}
+	requests := 0
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read backend request: %v", err)
+		}
+
+		if requests == 1 {
+			if !strings.Contains(string(body), "cache_control") || !strings.Contains(string(body), "additionalProperties") {
+				t.Fatalf("first request should be original body, got %s", string(body))
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"type":"invalid_request_error","message":"Invalid request Error: tools.0.input_schema.additionalProperties is not supported"}}`))
+			return
+		}
+
+		if strings.Contains(string(body), "cache_control") || strings.Contains(string(body), "additionalProperties") {
+			t.Fatalf("retry request was not cleaned: %s", string(body))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage":{"input_tokens":3,"output_tokens":2}}`))
+	}))
+	defer backend.Close()
+
+	handler := NewHandler(config.NewMockStore(testProxyConfig(testProxyProvider(backend.URL))), http.DefaultTransport.(*http.Transport), recorder)
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{
+		"model":"claude-sonnet",
+		"messages":[{"role":"user","content":"hello"}],
+		"tools":[{
+			"name":"Bash",
+			"description":"run",
+			"cache_control":{"type":"ephemeral"},
+			"input_schema":{"type":"object","properties":{"cmd":{"type":"string"}},"additionalProperties":false}
+		}]
+	}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if requests != 2 {
+		t.Fatalf("backend requests = %d, want 2", requests)
+	}
+	record := recorder.onlyRecord(t)
+	if record.req.StatusCode == nil || *record.req.StatusCode != http.StatusOK {
+		t.Fatalf("recorded status = %v", record.req.StatusCode)
+	}
+	if record.tok.InputTokens != 3 || record.tok.OutputTokens != 2 {
+		t.Fatalf("tokens = %#v", record.tok)
+	}
+}
+
 func TestProxyRecordsNetworkError(t *testing.T) {
 	recorder := &fakeUsageRecorder{}
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
