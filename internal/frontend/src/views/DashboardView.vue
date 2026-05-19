@@ -403,6 +403,7 @@ import { useI18n } from '@/composables/useI18n'
 import AppHeader from '@/components/AppHeader.vue'
 import ProviderCard from '@/components/ProviderCard.vue'
 import ProviderModal from '@/components/ProviderModal.vue'
+import { formatPercent } from '@/utils/formatters'
 
 const router = useRouter()
 const api = useApi()
@@ -608,11 +609,6 @@ function formatDateTime(value: string | null | undefined): string {
 function formatNumber(value: number | null | undefined): string {
   if (value === null || value === undefined || Number.isNaN(value)) return '0'
   return new Intl.NumberFormat(locale.value === 'zh' ? 'zh-CN' : 'en-US').format(Math.round(value))
-}
-
-function formatPercent(value: number | null | undefined): string {
-  if (value === null || value === undefined || Number.isNaN(value)) return '0%'
-  return `${(value * 100).toFixed(value < 0.1 ? 1 : 0)}%`
 }
 
 function formatDuration(value: number | null | undefined): string {
