@@ -29,9 +29,13 @@
             <div class="text-[28px] font-extrabold tracking-tight">{{ status?.uptime || '-' }}</div>
             <div class="text-[13px] mt-1 font-medium opacity-85">{{ t('status.uptime') }}</div>
           </div>
-          <div class="bg-accent text-white p-7 rounded-lg text-center transition-all duration-200 hover:scale-[1.02] cursor-default">
+          <div class="bg-accent text-white p-7 rounded-lg text-center transition-all duration-200 hover:scale-[1.02] cursor-default group relative">
             <div class="text-[28px] font-extrabold tracking-tight">{{ formatNumber(status?.requests_total ?? status?.service_requests_total ?? 0) }}</div>
-            <div class="text-[13px] mt-1 font-medium opacity-85">{{ t('status.total_requests') }}</div>
+            <div class="text-[13px] mt-1 font-medium opacity-85 inline-flex items-center gap-1">
+              {{ t('status.total_requests') }}
+              <span class="inline-flex items-center justify-center w-4 h-4 rounded-full border border-white/50 text-[10px] cursor-help opacity-70 hover:opacity-100">?</span>
+            </div>
+            <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 rounded-md bg-gray-700 text-white text-[12px] leading-snug whitespace-normal w-56 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 shadow-lg">{{ t('status.total_requests_tip') }}</div>
           </div>
         </div>
 
@@ -262,7 +266,6 @@
         <div v-if="activeUsageTab === 'requests'" class="bg-white p-5 rounded-lg border-2 border-border overflow-x-auto">
           <div class="flex items-center justify-between mb-4">
             <div class="text-sm font-bold uppercase tracking-widest text-text-secondary">{{ t('usage.requests') }}</div>
-            <div class="text-sm text-text-secondary">{{ formatNumber(usageRequests?.total ?? 0) }}</div>
           </div>
           <table class="min-w-[1900px] w-full text-sm">
             <thead>
@@ -315,6 +318,7 @@
           </table>
           <div v-if="!usageRequests?.rows?.length" class="py-10 text-center text-text-secondary">{{ t('usage.empty') }}</div>
           <div v-if="usageRequests?.total" class="mt-4 flex flex-wrap items-center justify-end gap-3 border-t border-border pt-4 text-sm">
+            <span class="text-text-secondary">{{ t('usage.total_count', { count: usageRequests.total }) }}</span>
             <div class="flex items-center gap-2 text-text-secondary">
               <span>{{ t('usage.page_size') }}</span>
               <select v-model.number="usageRequestPageSize" class="rounded-md border border-border bg-white px-2 py-1 text-sm text-fg">
