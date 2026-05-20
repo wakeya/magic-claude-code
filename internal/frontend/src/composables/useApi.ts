@@ -163,8 +163,9 @@ export function useApi() {
     await fetch('/api/logout', { method: 'POST' })
   }
 
-  async function getStatus(): Promise<StatusInfo> {
-    const res = await fetch('/api/status')
+  async function getStatus(tz?: string): Promise<StatusInfo> {
+    const query = tz ? `?tz=${encodeURIComponent(tz)}` : ''
+    const res = await fetch(`/api/status${query}`)
     if (!res.ok) throw new Error('Failed to fetch status')
     return res.json()
   }

@@ -40,13 +40,21 @@
         </div>
 
         <div class="grid grid-cols-2 xl:grid-cols-4 gap-4">
-          <div class="bg-white p-5 rounded-lg border-2 border-border">
-            <div class="text-xs font-bold text-text-secondary uppercase tracking-widest">{{ t('status.provider_requests_total') }}</div>
+          <div class="bg-white p-5 rounded-lg border-2 border-border group relative">
+            <div class="text-xs font-bold text-text-secondary uppercase tracking-widest inline-flex items-center gap-1">
+              {{ t('status.provider_requests_total') }}
+              <span class="inline-flex items-center justify-center w-4 h-4 rounded-full border border-gray-300 text-[10px] cursor-help opacity-70 hover:opacity-100">?</span>
+            </div>
             <div class="mt-2 text-2xl font-bold">{{ formatNumber(status?.provider_requests_total ?? 0) }}</div>
+            <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 rounded-md bg-gray-700 text-white text-[12px] leading-snug whitespace-normal w-56 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 shadow-lg">{{ t('status.provider_requests_total_tip') }}</div>
           </div>
-          <div class="bg-white p-5 rounded-lg border-2 border-border">
-            <div class="text-xs font-bold text-text-secondary uppercase tracking-widest">{{ t('status.today_provider_requests') }}</div>
+          <div class="bg-white p-5 rounded-lg border-2 border-border group relative">
+            <div class="text-xs font-bold text-text-secondary uppercase tracking-widest inline-flex items-center gap-1">
+              {{ t('status.today_provider_requests') }}
+              <span class="inline-flex items-center justify-center w-4 h-4 rounded-full border border-gray-300 text-[10px] cursor-help opacity-70 hover:opacity-100">?</span>
+            </div>
             <div class="mt-2 text-2xl font-bold">{{ formatNumber(status?.today_provider_requests ?? 0) }}</div>
+            <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 rounded-md bg-gray-700 text-white text-[12px] leading-snug whitespace-normal w-56 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 shadow-lg">{{ t('status.today_provider_requests_tip') }}</div>
           </div>
           <div class="bg-white p-5 rounded-lg border-2 border-border">
             <div class="text-xs font-bold text-text-secondary uppercase tracking-widest">{{ t('status.today_token_consumption') }}</div>
@@ -627,7 +635,7 @@ async function handleDuplicate(id: string) {
 
 async function loadStatus() {
   try {
-    status.value = await api.getStatus()
+    status.value = await api.getStatus(browserTimeZone())
   } catch {
     // keep last value
   }

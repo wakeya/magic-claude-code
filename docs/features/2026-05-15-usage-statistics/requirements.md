@@ -517,7 +517,7 @@ CREATE INDEX IF NOT EXISTS idx_usage_tokens_parse_status ON usage_tokens(usage_p
 | `page` / `page_size` | 请求日志分页 |
 | `stats_scope` | `effective`、`provider`、`session_log`、`raw`；默认 `effective` |
 
-`tz` 默认使用服务端本地时区。前端应传入浏览器时区，确保“今日请求数”和“今日 token 消耗”符合用户所在时区。
+`tz` 默认使用服务端本地时区。所有前端页面（包括状态页和使用统计页）都必须传入浏览器时区，确保”今日”相关统计与用户所在时区一致。状态页通过 `/api/status?tz=...` 传参，使用统计页通过 `/api/usage/*?tz=...` 传参。
 
 状态页可以复用 `/api/usage/summary` 的轻量摘要，也可以由 `/api/status` 内部组合返回。无论采用哪种接口形式，状态页显示的数据定义必须与使用统计页一致。
 
@@ -547,15 +547,17 @@ max-w-[1440px]
 
 1. 服务状态。
 2. 运行时间。
-3. 服务总请求数 `service_requests_total`，沿用现有中间件口径，包含健康检查和本地硬编码端点。
-4. Provider 请求总数 `provider_requests_total`，只统计实际转发到 provider 的 messages 请求。
-5. 今日 Provider 请求数。
-6. 今日 token 消耗，注明“仅含 provider 返回 usage 的请求”。
+3. 服务总请求数 `service_requests_total`，沿用现有中间件口径，包含健康检查和本地硬编码端点。问号提示说明：当前进程内所有经过代理的 HTTP 请求数，包括硬编码端点（/v1/me、/api/feature/* 等）和转发到 Provider 的请求。
+4. Provider 请求总数 `provider_requests_total`，只统计实际转发到 provider 的 messages 请求。问号提示说明：服务启动以来实际转发到上游 Provider 的 API 请求总数。
+5. 今日 Provider 请求数。问号提示说明：今日（UTC）实际转发到上游 Provider 的 API 请求数，仅统计 /v1/messages 等转发路径。
+6. 今日 token 消耗，注明”仅含 provider 返回 usage 的请求”。
 7. Usage 覆盖率。
 8. 当前 Provider。
 9. 最近一次 provider 请求时间。
 
 状态页不展示成本、模型排行、完整 provider 表格、请求日志或覆盖率详情。
+
+`/api/status` 接口必须接受 `tz` 查询参数，用于”今日”统计的时区计算。前端调用时必须传入浏览器时区（`Intl.DateTimeFormat().resolvedOptions().timeZone`），确保”今日 Provider 请求数”和”今日 token 消耗”与使用统计页的时间范围一致。
 
 ### 12.3 使用统计内部结构
 
