@@ -476,6 +476,10 @@
           <div v-if="!usageCoverage.length" class="py-10 text-center text-text-secondary">{{ t('usage.empty') }}</div>
         </div>
       </div>
+
+      <div v-if="activeTab === 'sessions'">
+        <SessionBrowser />
+      </div>
     </div>
 
     <ProviderModal v-if="showModal" :provider="editingProvider" @close="closeModal" @saved="handleSaved" />
@@ -503,13 +507,14 @@ import AppHeader from '@/components/AppHeader.vue'
 import ProviderCard from '@/components/ProviderCard.vue'
 import ProviderModal from '@/components/ProviderModal.vue'
 import UsageCoverageHelp from '@/components/UsageCoverageHelp.vue'
+import SessionBrowser from '@/components/SessionBrowser.vue'
 import { formatPercent } from '@/utils/formatters'
 
 const router = useRouter()
 const api = useApi()
 const { t, locale } = useI18n()
 
-type MainTab = 'status' | 'providers' | 'certs' | 'usage'
+type MainTab = 'status' | 'providers' | 'certs' | 'usage' | 'sessions'
 type UsageTab = 'overview' | 'requests' | 'providers' | 'models' | 'coverage'
 
 const tabs: Array<{ key: MainTab; labelKey: string }> = [
@@ -517,6 +522,7 @@ const tabs: Array<{ key: MainTab; labelKey: string }> = [
   { key: 'providers', labelKey: 'tab.providers' },
   { key: 'certs', labelKey: 'tab.certs' },
   { key: 'usage', labelKey: 'tab.usage' },
+  { key: 'sessions', labelKey: 'tab.sessions' },
 ]
 
 const usageTabs: Array<{ key: UsageTab; labelKey: string }> = [
@@ -529,7 +535,7 @@ const usageTabs: Array<{ key: UsageTab; labelKey: string }> = [
 
 const activeTab = ref<MainTab>('status')
 const activeUsageTab = ref<UsageTab>('overview')
-const containerClass = 'max-w-[1440px]'
+const containerClass = computed(() => (activeTab.value === 'sessions' ? 'max-w-[1600px]' : 'max-w-[1440px]'))
 
 const status = ref<StatusInfo | null>(null)
 const providers = ref<Provider[]>([])

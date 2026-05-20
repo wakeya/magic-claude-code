@@ -31,10 +31,11 @@ type Server struct {
 
 // AdminConfig 配置服务配置
 type AdminConfig struct {
-	Password   string
-	CertFile   string
-	KeyFile    string
-	ConfigPath string
+	Password          string
+	CertFile          string
+	KeyFile           string
+	ConfigPath        string
+	ClaudeProjectsDir string
 }
 
 // NewServer 创建配置服务
@@ -74,6 +75,10 @@ func (s *Server) Start(addr string, frontendFS embed.FS) error {
 	mux.HandleFunc("/api/providers", s.authMiddlewareFunc(s.handleProviders))
 	mux.HandleFunc("/api/providers/test", s.authMiddlewareFunc(s.handleTestProvider))
 	mux.HandleFunc("/api/providers/", s.authMiddlewareFunc(s.handleProviderRoutes))
+	// net/http ServeMux uses longest-pattern matching; keep exact session routes before the subtree handler for readability.
+	mux.HandleFunc("/api/sessions", s.authMiddlewareFunc(s.handleSessions))
+	mux.HandleFunc("/api/sessions/projects", s.authMiddlewareFunc(s.handleSessionProjects))
+	mux.HandleFunc("/api/sessions/", s.authMiddlewareFunc(s.handleSessionRoutes))
 	if s.usageHandler != nil {
 		s.usageHandler.Register(mux, s.authMiddlewareFunc)
 	}

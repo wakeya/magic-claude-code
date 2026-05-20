@@ -138,6 +138,48 @@ export interface UsageCoverageRow {
 
 export type UsageParams = Record<string, string | number | boolean | null | undefined>
 
+export interface SessionProject {
+  path: string
+  name: string
+  session_count: number
+  last_active_at: string
+}
+
+export interface SessionItem {
+  id: string
+  title: string
+  project_path: string
+  source_path: string
+  created_at: string
+  last_active_at: string
+  message_count: number
+}
+
+export interface SessionMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool'
+  content: string
+  ts?: number
+}
+
+export interface SessionDetailResponse {
+  session: SessionItem
+  messages: SessionMessage[]
+}
+
+export interface SessionListResponse {
+  sessions: SessionItem[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export interface SessionCleanupHint {
+  project_path: string
+  preview_command: string
+  interactive_command: string
+  note: string
+}
+
 export function useApi() {
   function buildQuery(params?: UsageParams): string {
     const search = new URLSearchParams()
@@ -302,6 +344,36 @@ export function useApi() {
     return res.json()
   }
 
+  async function getSessionProjects(): Promise<SessionProject[]> {
+    const res = await fetch('/api/sessions/projects')
+    if (!res.ok) throw new Error('Failed to fetch session projects')
+    return res.json()
+  }
+
+  async function getSessionList(params?: { project?: string; page?: number; page_size?: number }): Promise<SessionListResponse> {
+    const res = await fetch(`/api/sessions${buildQuery(params)}`)
+    if (!res.ok) throw new Error('Failed to fetch sessions')
+    return res.json()
+  }
+
+  async function getSessionDetail(id: string, source: string): Promise<SessionDetailResponse> {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}${buildQuery({ source })}`)
+    if (!res.ok) throw new Error('Failed to fetch session detail')
+    return res.json()
+  }
+
+  async function exportSessionHTML(id: string, source: string): Promise<Blob> {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/export${buildQuery({ source })}`)
+    if (!res.ok) throw new Error('Failed to export session')
+    return res.blob()
+  }
+
+  async function getSessionCleanupHint(id: string, source: string): Promise<SessionCleanupHint> {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/cleanup-hint${buildQuery({ source })}`)
+    if (!res.ok) throw new Error('Failed to fetch cleanup hint')
+    return res.json()
+  }
+
   return {
     login,
     logout,
@@ -323,5 +395,10 @@ export function useApi() {
     getUsageProviders,
     getUsageModels,
     getUsageCoverage,
+    getSessionProjects,
+    getSessionList,
+    getSessionDetail,
+    exportSessionHTML,
+    getSessionCleanupHint,
   }
 }
