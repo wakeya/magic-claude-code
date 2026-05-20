@@ -114,6 +114,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	reqID := randomHex(8)
+
+	// 请求入口日志
+	msgs, tools, isStream := requestBodySummary(body)
+	modelStr := metadata.OriginalModel
+	if mappedModel != metadata.OriginalModel {
+		modelStr = fmt.Sprintf("%s -> %s", metadata.OriginalModel, mappedModel)
+	}
+	log.Printf("[%s] >>> %s %s model=%s stream=%v msgs=%d tools=%d size=%d",
+		reqID, r.Method, r.URL.Path, modelStr, isStream, msgs, tools, len(body))
+
 	// 创建后端请求
 	backendURL = strings.TrimSuffix(backendURL, "/") + r.URL.Path
 	if r.URL.RawQuery != "" {
@@ -124,7 +135,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	backendReq, err := http.NewRequest(r.Method, backendURL, bytes.NewReader(modifiedBody))
 	if err != nil {
-		log.Printf("Error creating backend request: %v", err)
+		log.Printf("[%s] <<< %d error=request_construct: %v",
+			reqID, http.StatusInternalServerError, err)
 		http.Error(w, "Error creating backend request", http.StatusInternalServerError)
 		return
 	}
@@ -171,7 +183,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	headerMS := time.Since(upstreamStarted).Milliseconds()
 	usageReq.UpstreamResponseHeaderMS = &headerMS
 	if err != nil {
-		log.Printf("Error forwarding request to %s: %v", backendURL, err)
+		log.Printf("[%s] <<< %d upstream=%dms error=%v",
+			reqID, http.StatusBadGateway, headerMS, err)
 		if shouldRecordUsage {
 			usageReq.ErrorType = usageErrorType(err)
 			usageReq.ErrorMessage = usage.SanitizeErrorMessage(err.Error())
@@ -194,6 +207,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			resp = retried
 			defer resp.Body.Close()
 			usageReq.StatusCode = &resp.StatusCode
+			headerMS = time.Since(upstreamStarted).Milliseconds()
+			usageReq.UpstreamResponseHeaderMS = &headerMS
 			log.Printf("[Rectifier] Retry response status: %d", resp.StatusCode)
 		} else if restoredBody != nil {
 			resp.Body = restoredBody
@@ -206,6 +221,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Add(key, value)
 		}
 	}
+
+	// 响应出口日志
+	log.Printf("[%s] <<< %d model=%s upstream=%dms",
+		reqID, resp.StatusCode, modelStr, headerMS)
 
 	// 设置状态码
 	w.WriteHeader(resp.StatusCode)
@@ -390,7 +409,6 @@ func (h *Handler) transformRequest(body []byte, provider *config.Provider) ([]by
 	// 模型映射
 	if model, ok := req["model"].(string); ok {
 		if mapped := provider.MapModel(model); mapped != model {
-			log.Printf("Model mapping: %s -> %s (provider: %s)", model, mapped, provider.Name)
 			req["model"] = mapped
 			changed = true
 		}
@@ -442,6 +460,19 @@ func summarizeRequestParams(body []byte) string {
 	}
 	out, _ := json.Marshal(summary)
 	return string(out)
+}
+
+// requestBodySummary 从请求体中提取关键统计信息
+func requestBodySummary(body []byte) (msgs int, tools int, stream bool) {
+	var req struct {
+		Messages []json.RawMessage `json:"messages"`
+		Tools    []json.RawMessage `json:"tools"`
+		Stream   bool              `json:"stream"`
+	}
+	if json.Unmarshal(body, &req) != nil {
+		return 0, 0, false
+	}
+	return len(req.Messages), len(req.Tools), req.Stream
 }
 
 const maxErrorBodySize = 128 * 1024

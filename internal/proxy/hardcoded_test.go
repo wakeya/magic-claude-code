@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -61,6 +63,8 @@ func TestIsHardcodedEndpoint(t *testing.T) {
 		// v1.3 新增精确匹配
 		{"/api/auth/trusted_devices", true},
 		{"/api/oauth/file_upload", true},
+		// count_tokens 拦截
+		{"/v1/messages/count_tokens", true},
 		// 不匹配
 		{"/v1/messages", false},
 		{"/v1/complete", false},
@@ -87,10 +91,9 @@ func TestIsHardcodedEndpoint(t *testing.T) {
 func TestHandleFeedback(t *testing.T) {
 	handler := NewHandler(config.NewMockStore(nil), nil)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/claude_cli_feedback", nil)
 	rec := httptest.NewRecorder()
 
-	handler.handleFeedback(rec, req)
+	handler.handleFeedback(rec)
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("Expected status %d, got %d", http.StatusOK, rec.Code)
@@ -106,10 +109,9 @@ func TestHandleFeedback(t *testing.T) {
 func TestHandleDomainInfo(t *testing.T) {
 	handler := NewHandler(config.NewMockStore(nil), nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/web/domain_info?domain=example.com", nil)
 	rec := httptest.NewRecorder()
 
-	handler.handleDomainInfo(rec, req)
+	handler.handleDomainInfo(rec)
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("Expected status %d, got %d", http.StatusOK, rec.Code)
@@ -129,10 +131,9 @@ func TestHandleDomainInfo(t *testing.T) {
 func TestHandleOrganization(t *testing.T) {
 	handler := NewHandler(config.NewMockStore(nil), nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/claude_code/organization", nil)
 	rec := httptest.NewRecorder()
 
-	handler.handleOrganization(rec, req)
+	handler.handleOrganization(rec)
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("Expected status %d, got %d", http.StatusOK, rec.Code)
@@ -147,10 +148,9 @@ func TestHandleOrganization(t *testing.T) {
 func TestHandleMetricsEnabled(t *testing.T) {
 	handler := NewHandler(config.NewMockStore(nil), nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/claude_code/organizations/metrics_enabled", nil)
 	rec := httptest.NewRecorder()
 
-	handler.handleMetricsEnabled(rec, req)
+	handler.handleMetricsEnabled(rec)
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("Expected status %d, got %d", http.StatusOK, rec.Code)
@@ -168,10 +168,9 @@ func TestHandleMetricsEnabled(t *testing.T) {
 func TestHandleEventLogging(t *testing.T) {
 	handler := NewHandler(config.NewMockStore(nil), nil)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/event_logging/batch", nil)
 	rec := httptest.NewRecorder()
 
-	handler.handleEventLogging(rec, req)
+	handler.handleEventLogging(rec)
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("Expected status %d, got %d", http.StatusOK, rec.Code)
@@ -181,10 +180,9 @@ func TestHandleEventLogging(t *testing.T) {
 func TestHandleGrowthBookFeature(t *testing.T) {
 	handler := NewHandler(config.NewMockStore(nil), nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/feature/some-client-key", nil)
 	rec := httptest.NewRecorder()
 
-	handler.handleGrowthBookFeature(rec, req)
+	handler.handleGrowthBookFeature(rec)
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("Expected status %d, got %d", http.StatusOK, rec.Code)
@@ -199,10 +197,9 @@ func TestHandleGrowthBookFeature(t *testing.T) {
 func TestHandleBootstrap(t *testing.T) {
 	handler := NewHandler(config.NewMockStore(nil), nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/claude_cli/bootstrap", nil)
 	rec := httptest.NewRecorder()
 
-	handler.handleBootstrap(rec, req)
+	handler.handleBootstrap(rec)
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("Expected status %d, got %d", http.StatusOK, rec.Code)
@@ -212,10 +209,9 @@ func TestHandleBootstrap(t *testing.T) {
 func TestHandleMCPRegistry(t *testing.T) {
 	handler := NewHandler(config.NewMockStore(nil), nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/mcp-registry/v0/servers?version=latest", nil)
 	rec := httptest.NewRecorder()
 
-	handler.handleMCPRegistry(rec, req)
+	handler.handleMCPRegistry(rec)
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("Expected status %d, got %d", http.StatusOK, rec.Code)
@@ -230,10 +226,9 @@ func TestHandleMCPRegistry(t *testing.T) {
 func TestHandleMCPServers(t *testing.T) {
 	handler := NewHandler(config.NewMockStore(nil), nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/mcp_servers?limit=1000", nil)
 	rec := httptest.NewRecorder()
 
-	handler.handleMCPServers(rec, req)
+	handler.handleMCPServers(rec)
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("Expected status %d, got %d", http.StatusOK, rec.Code)
@@ -248,10 +243,9 @@ func TestHandleMCPServers(t *testing.T) {
 func TestHandlePenguinMode(t *testing.T) {
 	handler := NewHandler(config.NewMockStore(nil), nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/claude_code_penguin_mode", nil)
 	rec := httptest.NewRecorder()
 
-	handler.handlePenguinMode(rec, req)
+	handler.handlePenguinMode(rec)
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("Expected status %d, got %d", http.StatusOK, rec.Code)
@@ -285,10 +279,9 @@ func TestHandleEmptyResponse(t *testing.T) {
 
 	for _, tt := range endpoints {
 		t.Run(tt.path, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
 			rec := httptest.NewRecorder()
 
-			handler.handleEmptyResponse(rec, req)
+			handler.handleEmptyResponse(rec)
 
 			if rec.Code != http.StatusOK {
 				t.Errorf("Expected status %d, got %d", http.StatusOK, rec.Code)
@@ -305,10 +298,9 @@ func TestHandleEmptyResponse(t *testing.T) {
 func TestHandleMe(t *testing.T) {
 	handler := NewHandler(config.NewMockStore(nil), nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/me", nil)
 	rec := httptest.NewRecorder()
 
-	handler.handleMe(rec, req)
+	handler.handleMe(rec)
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("Expected status %d, got %d", http.StatusOK, rec.Code)
@@ -323,10 +315,9 @@ func TestHandleMe(t *testing.T) {
 func TestHandleMetric(t *testing.T) {
 	handler := NewHandler(config.NewMockStore(nil), nil)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/claude_code/metric", nil)
 	rec := httptest.NewRecorder()
 
-	handler.handleMetric(rec, req)
+	handler.handleMetric(rec)
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("Expected status %d, got %d", http.StatusOK, rec.Code)
@@ -387,5 +378,72 @@ func TestHandleHardcodedEndpoint(t *testing.T) {
 				t.Errorf("handleHardcodedEndpoint should return true for %s", tt.path)
 			}
 		})
+	}
+}
+func TestHandleCountTokens(t *testing.T) {
+	handler := NewHandler(config.NewMockStore(nil), nil)
+
+	tests := []struct {
+		name     string
+		body     string
+		expected int
+	}{
+		{"empty body", "", 1},
+		{"small body", strings.Repeat("a", 400), 100},
+		{"tiny body", "hi", 1},
+		{"medium body", strings.Repeat("hello world ", 100), 300},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body io.Reader
+			if tt.body != "" {
+				body = strings.NewReader(tt.body)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", body)
+			rec := httptest.NewRecorder()
+
+			handler.handleCountTokens(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+			}
+
+			var resp struct {
+				InputTokens int `json:"input_tokens"`
+			}
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if resp.InputTokens != tt.expected {
+				t.Errorf("input_tokens = %d, want %d", resp.InputTokens, tt.expected)
+			}
+		})
+	}
+}
+
+func TestHandleCountTokensIntegration(t *testing.T) {
+	handler := NewHandler(config.NewMockStore(nil), nil)
+
+	body := `{"model":"claude-opus-4-6","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	result := handler.handleHardcodedEndpoint(rec, req)
+	if !result {
+		t.Fatal("handleHardcodedEndpoint should return true for count_tokens")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var resp struct {
+		InputTokens int `json:"input_tokens"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.InputTokens < 1 {
+		t.Errorf("input_tokens = %d, want >= 1", resp.InputTokens)
 	}
 }
