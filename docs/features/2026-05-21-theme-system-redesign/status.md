@@ -1,7 +1,7 @@
 # Theme System Redesign Status
 
 **Feature:** Admin frontend Light/Dark theme system
-**Current state:** Phase 1 validated; Phase 2 specification in review
+**Current state:** Phase 2 validated
 **Created:** 2026-05-21
 **Last updated:** 2026-05-21
 **Owner:** local project maintainer
@@ -15,12 +15,12 @@ draft -> approved -> planned -> implementing -> implemented -> validating -> val
 Current position:
 
 ```text
-phase-2-spec-review
+validated
 ```
 
 Phase 1 session browser pilot has been implemented. Automated frontend verification passed, the containerized build was restarted successfully, and browser smoke validation confirmed the theme switch, persisted Dark mode, selected-session continuity during theme switching, and Dark-mode cleanup command readability.
 
-Phase 2 has been specified as a full-stack rollout. It moves the final switch to `AppHeader.vue`, persists the admin theme preference through backend config storage, keeps `localStorage` as fallback, and expands semantic theme tokens across the full dashboard.
+Phase 2 has been implemented and validated as a full-stack rollout. The final switch lives in `AppHeader.vue`, the admin theme preference is persisted through backend config storage, `localStorage` remains the startup/failure fallback, and semantic theme tokens now cover the dashboard shell, login screen, provider surfaces, modals, session browser, message blocks, and code blocks.
 
 ## Transition Checklist
 
@@ -52,4 +52,4 @@ None.
 
 ## Revisit Trigger
 
-Revisit after the Phase 2 specs are reviewed. If accepted, create an implementation plan for the full-dashboard rollout and backend preference API.
+Revisit when extending the theme system to additional public-facing pages, adding a future `system` mode, or introducing multiple admin users with per-user preferences.
