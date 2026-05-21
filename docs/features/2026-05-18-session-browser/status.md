@@ -1,9 +1,9 @@
 # Claude Code Session Browser Status
 
 **Feature:** Claude Code 会话记录浏览器
-**Current state:** approved
+**Current state:** shipped
 **Created:** 2026-05-18
-**Last updated:** 2026-05-20
+**Last updated:** 2026-05-21
 **Owner:** local project maintainer
 
 ## Lifecycle

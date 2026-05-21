@@ -1,7 +1,7 @@
 # Theme System Redesign Status
 
 **Feature:** Admin frontend Light/Dark theme system
-**Current state:** Phase 2 validated
+**Current state:** shipped
 **Created:** 2026-05-21
 **Last updated:** 2026-05-21
 **Owner:** local project maintainer
