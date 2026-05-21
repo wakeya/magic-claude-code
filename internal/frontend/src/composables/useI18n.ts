@@ -181,6 +181,7 @@ const messages: Record<Locale, Record<string, string>> = {
     'sessions.cleanup_note': '管理面板不会删除 JSONL 文件。请在终端中运行 Claude Code CLI 命令。',
     'sessions.load_failed': '加载会话失败',
     'sessions.export_failed': '导出失败',
+    'sessions.back_to_top': '回到顶部',
 
     // Test results
     'test.activate_failed': '激活供应商失败',
@@ -348,6 +349,7 @@ const messages: Record<Locale, Record<string, string>> = {
     'sessions.cleanup_note': 'The admin panel does not delete JSONL files. Run Claude Code CLI commands in your terminal.',
     'sessions.load_failed': 'Failed to load sessions',
     'sessions.export_failed': 'Export failed',
+    'sessions.back_to_top': 'Back to top',
 
     'test.activate_failed': 'Failed to activate provider',
     'test.toggle_failed': 'Failed to toggle provider',

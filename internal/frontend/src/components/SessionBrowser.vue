@@ -91,6 +91,11 @@
           <div class="session-outline-panel sticky top-4 max-h-[calc(100vh-2rem)] overflow-y-auto overscroll-contain p-3">
             <div class="mb-3 text-xs font-bold uppercase tracking-widest session-muted">{{ t('sessions.outline') }}</div>
             <SessionOutline :messages="detail.messages" @jump="jumpToMessage" />
+            <div class="sticky bottom-0 flex justify-end pt-2">
+              <button class="session-icon-button" :title="t('sessions.back_to_top')" @click="scrollToTop">
+                <ArrowUp class="h-4 w-4" />
+              </button>
+            </div>
           </div>
         </aside>
       </div>
@@ -103,6 +108,12 @@
           <button class="session-icon-button" @click="showOutline = false"><X class="h-4 w-4" /></button>
         </div>
         <SessionOutline :messages="detail.messages" @jump="jumpToMessage" />
+        <div class="flex justify-end pt-3">
+          <button class="session-icon-button" @click="scrollToTop(); showOutline = false">
+            <ArrowUp class="h-4 w-4" />
+            {{ t('sessions.back_to_top') }}
+          </button>
+        </div>
       </div>
     </div>
 
@@ -123,7 +134,7 @@
 
 <script setup lang="ts">
 import { computed, defineComponent, h, onMounted, ref } from 'vue'
-import { Copy, Download, Folder, List, MessageSquare, RefreshCw, Terminal, X } from 'lucide-vue-next'
+import { ArrowUp, Copy, Download, Folder, List, MessageSquare, RefreshCw, Terminal, X } from 'lucide-vue-next'
 import {
   useApi,
   type SessionCleanupHint,
@@ -242,6 +253,10 @@ async function openCleanupHint() {
 function jumpToMessage(index: number) {
   showOutline.value = false
   detailRef.value?.scrollToMessage(index)
+}
+
+function scrollToTop() {
+  window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
 function commandTokenClass(kind: CommandTokenKind): string {

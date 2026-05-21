@@ -22,3 +22,11 @@ test('session browser does not render the redundant selected-session hero block'
   assert.doesNotMatch(source, /session-theme-hero/)
   assert.match(source, /v-if="!detail" class="session-empty-state"/)
 })
+
+test('session outline has back to top button in desktop and mobile views', () => {
+  assert.match(source, /ArrowUp/)
+  assert.match(source, /scrollToTop/)
+  assert.match(source, /sessions\.back_to_top/)
+  assert.match(source, /sticky bottom-0/)
+  assert.match(source, /scrollToTop\(\); showOutline = false/)
+})
