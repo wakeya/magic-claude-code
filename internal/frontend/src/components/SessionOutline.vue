@@ -3,11 +3,11 @@
     <button
       v-for="item in userItems"
       :key="item.index"
-      class="w-full rounded-md border border-border bg-white px-3 py-2 text-left text-sm transition hover:border-primary hover:text-primary"
+      class="session-outline-item"
       @click="$emit('jump', item.index)"
     >
       <div class="line-clamp-2 font-medium">{{ item.preview }}</div>
-      <div class="mt-1 text-xs text-text-secondary">{{ formatMessageTime(item.ts) }}</div>
+      <div class="mt-1 text-xs session-muted">{{ formatMessageTime(item.ts) }}</div>
     </button>
   </div>
 </template>

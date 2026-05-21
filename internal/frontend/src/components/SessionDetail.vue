@@ -5,24 +5,24 @@
       :id="`session-message-${index}`"
       :key="`${message.role}-${index}`"
       :class="[
-        'rounded-lg border-2 p-4',
-        message.role === 'user' ? 'border-green-300 bg-green-100 text-green-950' : '',
-        message.role === 'assistant' ? 'border-border bg-white' : '',
-        message.role === 'system' || message.role === 'tool' ? 'border-accent/40 bg-accent-light/40' : '',
+        'session-message',
+        message.role === 'user' ? 'session-message-user' : '',
+        message.role === 'assistant' ? 'session-message-assistant' : '',
+        message.role === 'system' || message.role === 'tool' ? 'session-message-technical' : '',
       ]"
     >
       <details v-if="message.role === 'system' || message.role === 'tool'" class="group">
-        <summary class="flex cursor-pointer list-none items-center justify-between gap-3 text-xs font-bold uppercase tracking-widest text-text-secondary">
+        <summary class="flex cursor-pointer list-none items-center justify-between gap-3 text-xs font-bold uppercase tracking-widest session-muted">
           <span>{{ message.role }}</span>
           <span class="font-mono normal-case tracking-normal">{{ formatMessageTime(message.ts) }}</span>
         </summary>
-        <pre class="mt-3 whitespace-pre-wrap break-words rounded-md bg-fg p-4 font-mono text-[13px] leading-relaxed text-gray-100">{{ message.content }}</pre>
+        <pre class="session-technical-pre">{{ message.content }}</pre>
       </details>
       <div v-else>
         <div
           :class="[
             'mb-2 flex items-center justify-between gap-3 text-xs font-bold uppercase tracking-widest',
-            message.role === 'user' ? 'text-green-800' : 'text-text-secondary',
+            message.role === 'user' ? 'session-user-label' : 'session-muted',
           ]"
         >
           <span>{{ message.role }}</span>
@@ -31,7 +31,7 @@
         <pre
           :class="[
             'whitespace-pre-wrap break-words font-sans text-[14px] leading-relaxed',
-            message.role === 'user' ? 'text-green-950' : 'text-fg',
+            message.role === 'user' ? 'session-user-text' : 'session-body-text',
           ]"
         >{{ message.content }}</pre>
       </div>

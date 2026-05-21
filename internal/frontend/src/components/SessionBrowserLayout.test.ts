@@ -11,3 +11,10 @@ test('desktop session outline panel scrolls independently when many user message
   assert.match(source, /sticky top-4[^"]*max-h-\[calc\(100vh-2rem\)\][^"]*overflow-y-auto/)
   assert.match(source, /SessionOutline :messages="detail\.messages"/)
 })
+
+test('session browser exposes an explicit light dark theme switch', () => {
+  assert.match(source, /useTheme/)
+  assert.match(source, /:data-theme="themeMode"/)
+  assert.match(source, /setTheme\('light'\)/)
+  assert.match(source, /setTheme\('dark'\)/)
+})

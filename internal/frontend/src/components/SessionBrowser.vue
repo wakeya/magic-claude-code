@@ -1,20 +1,38 @@
 <template>
-  <div class="grid grid-cols-1 gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
-    <aside class="rounded-lg border-2 border-border bg-white">
-      <div class="border-b border-border p-4">
+  <div class="session-theme space-y-4 rounded-[1.35rem] p-4 sm:p-5" :data-theme="themeMode">
+    <div class="session-theme-hero">
+      <div>
+        <div class="text-xs font-bold uppercase tracking-[0.22em] session-muted">{{ t('sessions.title') }}</div>
+        <h2 class="mt-1 text-2xl font-extrabold tracking-tight session-heading">{{ detail?.session.title || t('sessions.select') }}</h2>
+      </div>
+      <div class="session-theme-toggle" :aria-label="t('sessions.theme')">
+        <button :class="['session-theme-toggle-button', themeMode === 'light' ? 'session-theme-toggle-active' : '']" @click="setTheme('light')">
+          <Sun class="h-4 w-4" />
+          {{ t('sessions.theme_light') }}
+        </button>
+        <button :class="['session-theme-toggle-button', themeMode === 'dark' ? 'session-theme-toggle-active' : '']" @click="setTheme('dark')">
+          <Moon class="h-4 w-4" />
+          {{ t('sessions.theme_dark') }}
+        </button>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
+      <aside class="session-panel session-sidebar">
+        <div class="session-panel-header p-4">
         <div class="mb-2 flex items-center justify-between gap-2">
-          <label for="session-project-select" class="flex items-center gap-2 text-sm font-bold">
+          <label for="session-project-select" class="flex items-center gap-2 text-sm font-bold session-heading">
             <Folder class="h-4 w-4" />
             {{ t('sessions.projects') }}
           </label>
-          <button class="rounded-md p-2 text-text-secondary hover:bg-muted hover:text-fg" :title="t('sessions.refresh')" @click="reload">
+          <button class="session-icon-button" :title="t('sessions.refresh')" @click="reload">
             <RefreshCw class="h-4 w-4" />
           </button>
         </div>
         <select
           id="session-project-select"
           v-model="selectedProject"
-          class="w-full rounded-lg border-2 border-border bg-white px-3 py-2 text-sm font-semibold text-fg outline-none transition focus:border-primary"
+          class="session-select"
           @change="selectProject(selectedProject)"
         >
           <option value="">{{ t('sessions.all_projects') }} ({{ totalSessions }})</option>
@@ -25,26 +43,26 @@
       </div>
 
       <div class="max-h-[calc(100vh-260px)] overflow-y-auto p-3">
-        <div class="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-text-secondary">
+        <div class="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-widest session-muted">
           <MessageSquare class="h-3.5 w-3.5" />
           {{ t('sessions.sessions') }}
         </div>
-        <div v-if="loading" class="py-8 text-center text-sm text-text-secondary">{{ t('sessions.loading') }}</div>
-        <div v-else-if="sessions.length === 0" class="py-8 text-center text-sm text-text-secondary">
+        <div v-if="loading" class="session-empty-compact">{{ t('sessions.loading') }}</div>
+        <div v-else-if="sessions.length === 0" class="session-empty-compact">
           {{ selectedProject ? t('sessions.empty_project') : t('sessions.empty') }}
         </div>
         <button
           v-for="session in sessions"
           :key="session.source_path"
           :class="[
-            'mb-2 w-full rounded-lg border-2 p-3 text-left transition',
-            selectedSession?.source_path === session.source_path ? 'border-primary bg-primary-light' : 'border-border bg-white hover:border-primary/50',
+            'session-card',
+            selectedSession?.source_path === session.source_path ? 'session-card-active' : '',
           ]"
           @click="selectSession(session)"
         >
-          <div class="line-clamp-2 text-sm font-bold text-fg">{{ session.title }}</div>
-          <div v-if="!selectedProject" class="mt-1 truncate text-xs text-text-secondary">{{ projectLabel(session.project_path) }}</div>
-          <div class="mt-2 flex items-center justify-between gap-2 text-xs text-text-secondary">
+          <div class="line-clamp-2 text-sm font-bold session-heading">{{ session.title }}</div>
+          <div v-if="!selectedProject" class="mt-1 truncate text-xs session-muted">{{ projectLabel(session.project_path) }}</div>
+          <div class="mt-2 flex items-center justify-between gap-2 text-xs session-muted">
             <span>{{ relativeTime(session.last_active_at) }}</span>
             <span>{{ t('sessions.messages', { count: session.message_count }) }}</span>
           </div>
@@ -53,30 +71,30 @@
     </aside>
 
     <section class="min-w-0">
-      <div v-if="!detail" class="rounded-lg border-2 border-border bg-white p-10 text-center text-text-secondary">
+      <div v-if="!detail" class="session-empty-state">
         {{ error || t('sessions.select') }}
       </div>
       <div v-else class="grid grid-cols-1 gap-4 2xl:grid-cols-[minmax(0,1fr)_260px]">
         <div class="min-w-0">
-          <div class="mb-4 rounded-lg border-2 border-border bg-white p-5">
+          <div class="session-panel mb-4 p-5">
             <div class="flex flex-wrap items-start justify-between gap-3">
               <div class="min-w-0">
-                <h2 class="break-words text-xl font-bold">{{ detail.session.title }}</h2>
-                <div class="mt-1 break-all text-sm text-text-secondary">{{ detail.session.project_path }}</div>
-                <div class="mt-2 text-xs text-text-secondary">
+                <h2 class="break-words text-xl font-bold session-heading">{{ detail.session.title }}</h2>
+                <div class="mt-1 break-all text-sm session-muted">{{ detail.session.project_path }}</div>
+                <div class="mt-2 text-xs session-muted">
                   {{ formatDateTime(detail.session.created_at) }} - {{ formatDateTime(detail.session.last_active_at) }}
                 </div>
               </div>
               <div class="flex shrink-0 gap-2">
-                <button class="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-white hover:bg-primary-hover" @click="exportSelected">
+                <button class="session-primary-button" @click="exportSelected">
                   <Download class="h-4 w-4" />
                   {{ t('sessions.export') }}
                 </button>
-                <button class="inline-flex items-center gap-2 rounded-lg border-2 border-border px-4 py-2 text-sm font-semibold text-fg hover:border-primary" @click="openCleanupHint">
+                <button class="session-secondary-button" @click="openCleanupHint">
                   <Terminal class="h-4 w-4" />
                   {{ t('sessions.cleanup') }}
                 </button>
-                <button class="inline-flex items-center gap-2 rounded-lg border-2 border-border px-3 py-2 text-sm font-semibold text-fg hover:border-primary 2xl:hidden" @click="showOutline = true">
+                <button class="session-secondary-button 2xl:hidden" @click="showOutline = true">
                   <List class="h-4 w-4" />
                   {{ t('sessions.outline') }}
                 </button>
@@ -87,41 +105,42 @@
         </div>
 
         <aside class="hidden 2xl:block">
-          <div class="sticky top-4 max-h-[calc(100vh-2rem)] overflow-y-auto overscroll-contain rounded-lg border-2 border-border bg-muted p-3">
-            <div class="mb-3 text-xs font-bold uppercase tracking-widest text-text-secondary">{{ t('sessions.outline') }}</div>
+          <div class="session-outline-panel sticky top-4 max-h-[calc(100vh-2rem)] overflow-y-auto overscroll-contain p-3">
+            <div class="mb-3 text-xs font-bold uppercase tracking-widest session-muted">{{ t('sessions.outline') }}</div>
             <SessionOutline :messages="detail.messages" @jump="jumpToMessage" />
           </div>
         </aside>
       </div>
     </section>
 
-    <div v-if="showOutline && detail" class="fixed inset-0 z-40 bg-black/40 p-4 2xl:hidden" @click.self="showOutline = false">
-      <div class="ml-auto max-h-full w-full max-w-sm overflow-y-auto rounded-lg bg-muted p-4 shadow-xl">
+    <div v-if="showOutline && detail" class="session-modal-backdrop fixed inset-0 z-40 p-4 2xl:hidden" @click.self="showOutline = false">
+      <div class="session-modal-panel ml-auto max-h-full w-full max-w-sm overflow-y-auto p-4">
         <div class="mb-3 flex items-center justify-between">
-          <div class="text-sm font-bold">{{ t('sessions.outline') }}</div>
-          <button class="rounded-md p-2 hover:bg-white" @click="showOutline = false"><X class="h-4 w-4" /></button>
+          <div class="text-sm font-bold session-heading">{{ t('sessions.outline') }}</div>
+          <button class="session-icon-button" @click="showOutline = false"><X class="h-4 w-4" /></button>
         </div>
         <SessionOutline :messages="detail.messages" @jump="jumpToMessage" />
       </div>
     </div>
 
-    <div v-if="cleanupHint" class="fixed inset-0 z-50 bg-black/40 p-4" @click.self="cleanupHint = null">
-      <div class="mx-auto mt-20 max-w-2xl rounded-lg bg-white p-5 shadow-xl">
+    <div v-if="cleanupHint" class="session-modal-backdrop fixed inset-0 z-50 p-4" @click.self="cleanupHint = null">
+      <div class="session-modal-panel mx-auto mt-20 max-w-2xl p-5">
         <div class="mb-4 flex items-center justify-between gap-3">
-          <div class="text-lg font-bold">{{ t('sessions.cleanup') }}</div>
-          <button class="rounded-md p-2 hover:bg-muted" @click="cleanupHint = null"><X class="h-4 w-4" /></button>
+          <div class="text-lg font-bold session-heading">{{ t('sessions.cleanup') }}</div>
+          <button class="session-icon-button" @click="cleanupHint = null"><X class="h-4 w-4" /></button>
         </div>
-        <p class="mb-4 text-sm text-text-secondary">{{ cleanupHint.note || t('sessions.cleanup_note') }}</p>
+        <p class="mb-4 text-sm session-muted">{{ cleanupHint.note || t('sessions.cleanup_note') }}</p>
         <CommandBlock :label="t('sessions.preview_command')" :command="cleanupHint.preview_command" />
         <CommandBlock :label="t('sessions.interactive_command')" :command="cleanupHint.interactive_command" />
       </div>
     </div>
   </div>
+  </div>
 </template>
 
 <script setup lang="ts">
 import { computed, defineComponent, h, onMounted, ref } from 'vue'
-import { Copy, Download, Folder, List, MessageSquare, RefreshCw, Terminal, X } from 'lucide-vue-next'
+import { Copy, Download, Folder, List, MessageSquare, Moon, RefreshCw, Sun, Terminal, X } from 'lucide-vue-next'
 import {
   useApi,
   type SessionCleanupHint,
@@ -133,9 +152,11 @@ import { useI18n } from '@/composables/useI18n'
 import SessionDetail from '@/components/SessionDetail.vue'
 import SessionOutline from '@/components/SessionOutline.vue'
 import { tokenizeCommand, type CommandTokenKind } from '@/utils/sessionCommands'
+import { useTheme } from '@/composables/useTheme'
 
 const api = useApi()
 const { t, locale } = useI18n()
+const { themeMode, setTheme } = useTheme()
 
 const projects = ref<SessionProject[]>([])
 const sessions = ref<SessionItem[]>([])
@@ -166,16 +187,16 @@ const CommandBlock = defineComponent({
     }
     return () =>
       h('div', { class: 'mb-4' }, [
-        h('div', { class: 'mb-1 text-xs font-bold uppercase tracking-widest text-text-secondary' }, props.label),
-        h('div', { class: 'flex items-start gap-2 rounded-lg border border-slate-700 bg-slate-950 p-3 shadow-inner' }, [
+        h('div', { class: 'session-command-label' }, props.label),
+        h('div', { class: 'session-command-block' }, [
           h(
             'code',
-            { class: 'min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-sm leading-relaxed text-slate-100' },
+            { class: 'session-command-code' },
             tokenizeCommand(props.command).map((token) => h('span', { class: commandTokenClass(token.kind) }, token.text))
           ),
           h(
             'button',
-            { class: 'rounded-md bg-white/10 p-2 text-slate-100 hover:bg-white/20', onClick: copyCommand, title: copied.value ? t('sessions.copied') : t('sessions.copy') },
+            { class: 'session-command-copy', onClick: copyCommand, title: copied.value ? t('sessions.copied') : t('sessions.copy') },
             [h(Copy, { class: 'h-4 w-4' })]
           ),
         ]),
@@ -244,12 +265,12 @@ function jumpToMessage(index: number) {
 
 function commandTokenClass(kind: CommandTokenKind): string {
   const classes: Record<CommandTokenKind, string> = {
-    command: 'text-emerald-300',
-    keyword: 'text-sky-300',
-    flag: 'text-amber-300',
-    path: 'text-fuchsia-200',
-    space: 'text-slate-300',
-    text: 'text-slate-100',
+    command: 'session-token-command',
+    keyword: 'session-token-keyword',
+    flag: 'session-token-flag',
+    path: 'session-token-path',
+    space: 'session-token-space',
+    text: 'session-token-text',
   }
   return classes[kind]
 }
