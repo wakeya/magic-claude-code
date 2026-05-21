@@ -67,6 +67,7 @@ func (s *Server) Start(addr string, frontendFS embed.FS) error {
 	mux.HandleFunc("/api/login", s.handleLogin)
 	mux.HandleFunc("/api/logout", s.handleLogout)
 	mux.HandleFunc("/api/config", s.authMiddlewareFunc(s.handleConfig))
+	mux.HandleFunc("/api/preferences", s.authMiddlewareFunc(s.handlePreferences))
 	mux.HandleFunc("/api/status", s.authMiddlewareFunc(s.handleStatus))
 	mux.HandleFunc("/api/certificates", s.authMiddlewareFunc(s.handleCertificates))
 	mux.HandleFunc("/api/config/test", s.authMiddlewareFunc(s.handleTestBackend))
@@ -132,7 +133,9 @@ func (s *Server) authMiddlewareFunc(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie("session")
 		if err != nil || !s.auth.ValidateToken(cookie.Value) {
-			http.Error(w, `{"error": "unauthorized"}`, http.StatusUnauthorized)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error": "unauthorized"}`))
 			return
 		}
 		next(w, r)
