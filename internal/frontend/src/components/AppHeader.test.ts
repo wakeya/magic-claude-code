@@ -17,5 +17,7 @@ test('header owns the global theme switch', () => {
   assert.match(source, /:aria-pressed="themeMode === 'dark'"/)
   assert.match(source, /type="button"/)
   assert.match(source, /langMenuRef/)
+  assert.match(source, /onBeforeUnmount/)
+  assert.match(source, /removeEventListener\('click', closeLanguageMenuOnOutsideClick\)/)
   assert.doesNotMatch(source, /closest\('\\.relative'\)/)
 })

@@ -137,3 +137,13 @@ test('usage overview lazy loads echarts instead of bundling it in the main chunk
   assert.match(dashboardSource, /import\('echarts\/components'\)/)
   assert.match(dashboardSource, /import\('echarts\/renderers'\)/)
 })
+
+test('usage overview chart uses app theme tokens', () => {
+  assert.match(dashboardSource, /function usageChartTheme\(\)/)
+  assert.match(dashboardSource, /appCssVar\('--app-text'/)
+  assert.match(dashboardSource, /appCssVar\('--app-surface-raised'/)
+  assert.match(dashboardSource, /legend: \{ top: 0, textStyle: \{ color: theme\.muted \} \}/)
+  assert.match(dashboardSource, /tooltip: \{[\s\S]*backgroundColor: theme\.surface/)
+  assert.match(dashboardSource, /axisLabel: \{ color: theme\.muted/)
+  assert.match(dashboardSource, /watch\(themeMode/)
+})

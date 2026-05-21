@@ -514,7 +514,7 @@ import { formatPercent } from '@/utils/formatters'
 const router = useRouter()
 const api = useApi()
 const { t, locale } = useI18n()
-const { syncTheme } = useTheme()
+const { syncTheme, themeMode } = useTheme()
 
 type MainTab = 'status' | 'providers' | 'certs' | 'usage' | 'sessions'
 type UsageTab = 'overview' | 'requests' | 'providers' | 'models' | 'coverage'
@@ -783,6 +783,22 @@ function uniqueValues(values: string[]): string[] {
   return Array.from(new Set(values.filter(Boolean))).sort((a, b) => a.localeCompare(b))
 }
 
+function appCssVar(name: string, fallback: string): string {
+  if (typeof window === 'undefined') return fallback
+  const value = window.getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+  return value || fallback
+}
+
+function usageChartTheme() {
+  return {
+    text: appCssVar('--app-text', '#102033'),
+    muted: appCssVar('--app-text-muted', '#64748b'),
+    surface: appCssVar('--app-surface-raised', '#ffffff'),
+    border: appCssVar('--app-border', '#dbeafe'),
+    accent: appCssVar('--app-accent', '#2563eb'),
+  }
+}
+
 async function loadECharts() {
   if (!echartsModule) {
     const [core, charts, components, renderers] = await Promise.all([
@@ -840,18 +856,44 @@ async function updateUsageChart() {
     return
   }
 
+  const theme = usageChartTheme()
   usageChart.setOption({
-    tooltip: { trigger: 'axis' },
-    legend: { top: 0 },
+    color: [theme.accent, '#fb7185', '#22c55e', '#f59e0b', '#a855f7', '#14b8a6', '#38bdf8'],
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: theme.surface,
+      borderColor: theme.border,
+      textStyle: { color: theme.text },
+    },
+    legend: { top: 0, textStyle: { color: theme.muted } },
     grid: { left: 48, right: 56, top: 48, bottom: 32 },
     xAxis: {
       type: 'category',
       boundaryGap: false,
       data: data.map((row) => row.bucket),
+      axisLabel: { color: theme.muted },
+      axisLine: { lineStyle: { color: theme.border } },
+      splitLine: { lineStyle: { color: theme.border } },
     },
     yAxis: [
-      { type: 'value', name: t('usage.provider_requests_total') },
-      { type: 'value', name: t('usage.usage_coverage'), min: 0, max: 1, axisLabel: { formatter: (v: number) => `${Math.round(v * 100)}%` } },
+      {
+        type: 'value',
+        name: t('usage.provider_requests_total'),
+        nameTextStyle: { color: theme.muted },
+        axisLabel: { color: theme.muted },
+        axisLine: { lineStyle: { color: theme.border } },
+        splitLine: { lineStyle: { color: theme.border } },
+      },
+      {
+        type: 'value',
+        name: t('usage.usage_coverage'),
+        min: 0,
+        max: 1,
+        nameTextStyle: { color: theme.muted },
+        axisLabel: { color: theme.muted, formatter: (v: number) => `${Math.round(v * 100)}%` },
+        axisLine: { lineStyle: { color: theme.border } },
+        splitLine: { lineStyle: { color: theme.border } },
+      },
     ],
     series: [
       { name: t('usage.provider_requests_total'), type: 'line', smooth: true, data: data.map((row) => row.provider_requests_total) },
@@ -916,6 +958,10 @@ watch(
 watch(usageRequestPageSize, () => {
   usageRequestPage.value = 1
   void loadUsageData()
+})
+
+watch(themeMode, () => {
+  void updateUsageChart()
 })
 
 onMounted(async () => {

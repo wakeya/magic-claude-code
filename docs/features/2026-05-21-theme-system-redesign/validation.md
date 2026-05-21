@@ -35,7 +35,7 @@ rtk go test ./...
 Result: 288 passed in 8 packages
 
 rtk npm --prefix internal/frontend test
-Result: 30 passed, 0 failed
+Result: 31 passed, 0 failed
 
 rtk npm --prefix internal/frontend run build
 Result: Vite production build succeeded
@@ -105,5 +105,6 @@ Pending product-owner visual review:
 - Confirmed the user message block background is green in Dark mode and readable.
 - Opened the cleanup hint modal and confirmed the command block uses the dark code editor style with syntax-colored tokens.
 - Confirmed the desktop outline panel uses overflow-y:auto with a bounded max height.
+- Confirmed the usage overview chart reads app theme tokens for tooltip, legend, axis, grid, and series colors.
 - Checked a narrow viewport and adjusted the shell/header to avoid layout breakage.
 ```

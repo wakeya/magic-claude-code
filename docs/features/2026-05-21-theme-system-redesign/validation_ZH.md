@@ -35,7 +35,7 @@ rtk go test ./...
 结果：288 passed in 8 packages
 
 rtk npm --prefix internal/frontend test
-结果：30 passed, 0 failed
+结果：31 passed, 0 failed
 
 rtk npm --prefix internal/frontend run build
 结果：Vite production build succeeded
@@ -105,5 +105,6 @@ rtk docker compose up -d --build
 - 确认 Dark 模式下用户消息块为绿色背景且可读。
 - 打开清理提示弹窗，确认命令块为深色代码编辑框风格，并带语法高亮 token。
 - 确认桌面端大纲面板具备受限高度和 overflow-y:auto。
+- 确认使用统计概览图表从 app theme token 读取 tooltip、legend、坐标轴、网格和折线颜色。
 - 检查窄屏视口，并调整外壳/Header 避免布局破裂。
 ```

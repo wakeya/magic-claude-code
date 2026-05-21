@@ -65,7 +65,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onBeforeUnmount, ref } from 'vue'
 import { Moon, Sun } from 'lucide-vue-next'
 import { useApi } from '@/composables/useApi'
 import { useI18n } from '@/composables/useI18n'
@@ -83,11 +83,15 @@ const langOptions = [
   { value: 'en' as const, label: 'English' },
 ]
 
-// 点击外部关闭下拉
+function closeLanguageMenuOnOutsideClick(e: MouseEvent) {
+  const target = e.target as Node | null
+  if (target && !langMenuRef.value?.contains(target)) langOpen.value = false
+}
+
 if (typeof window !== 'undefined') {
-  window.addEventListener('click', (e: MouseEvent) => {
-    const target = e.target as Node | null
-    if (target && !langMenuRef.value?.contains(target)) langOpen.value = false
+  window.addEventListener('click', closeLanguageMenuOnOutsideClick)
+  onBeforeUnmount(() => {
+    window.removeEventListener('click', closeLanguageMenuOnOutsideClick)
   })
 }
 </script>
