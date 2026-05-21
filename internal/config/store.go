@@ -50,6 +50,7 @@ func (s *Store) Load() (*Config, error) {
 	if cfg.DataDir == "" {
 		cfg.DataDir = "./data"
 	}
+	cfg.AdminThemeMode = NormalizeThemeMode(cfg.AdminThemeMode)
 
 	return cfg, nil
 }

@@ -18,10 +18,10 @@ func TestStore_SaveAndLoad(t *testing.T) {
 
 	// 测试保存
 	cfg := &Config{
-		BackendURL:    "https://test.example.com/api",
-		ProxyPort:     443,
-		AdminPort:     8442,
-		DataDir:       tmpDir,
+		BackendURL: "https://test.example.com/api",
+		ProxyPort:  443,
+		AdminPort:  8442,
+		DataDir:    tmpDir,
 	}
 
 	if err := store.Save(cfg); err != nil {
@@ -36,6 +36,25 @@ func TestStore_SaveAndLoad(t *testing.T) {
 
 	if loaded.BackendURL != cfg.BackendURL {
 		t.Errorf("expected backend URL %s, got %s", cfg.BackendURL, loaded.BackendURL)
+	}
+}
+
+func TestJSONStorePersistsAdminThemeMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := NewStore(filepath.Join(tmpDir, "config.json"))
+
+	cfg := DefaultConfig()
+	cfg.AdminThemeMode = ThemeModeDark
+	if err := store.Save(cfg); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if loaded.AdminThemeMode != ThemeModeDark {
+		t.Fatalf("AdminThemeMode = %q, want %q", loaded.AdminThemeMode, ThemeModeDark)
 	}
 }
 

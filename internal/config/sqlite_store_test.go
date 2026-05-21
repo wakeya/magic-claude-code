@@ -43,6 +43,9 @@ func assertConfigEqual(t *testing.T, want, got *Config) {
 	if got.ActiveProviderID != want.ActiveProviderID {
 		t.Fatalf("ActiveProviderID mismatch: want %q, got %q", want.ActiveProviderID, got.ActiveProviderID)
 	}
+	if got.AdminThemeMode != NormalizeThemeMode(want.AdminThemeMode) {
+		t.Fatalf("AdminThemeMode mismatch: want %q, got %q", NormalizeThemeMode(want.AdminThemeMode), got.AdminThemeMode)
+	}
 	if len(got.Providers) != len(want.Providers) {
 		t.Fatalf("Providers length mismatch: want %d, got %d", len(want.Providers), len(got.Providers))
 	}
@@ -90,6 +93,29 @@ func TestSQLiteStoreSaveAndLoad(t *testing.T) {
 	assertConfigEqual(t, cfg, loaded)
 }
 
+func TestSQLiteStorePersistsAdminThemeMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewSQLiteStore(filepath.Join(tmpDir, "config.db"), filepath.Join(tmpDir, "config.json"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	cfg := DefaultConfig()
+	cfg.AdminThemeMode = ThemeModeDark
+	if err := store.Save(cfg); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if loaded.AdminThemeMode != ThemeModeDark {
+		t.Fatalf("AdminThemeMode = %q, want %q", loaded.AdminThemeMode, ThemeModeDark)
+	}
+}
+
 func TestSQLiteStoreLoadDefaults(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewSQLiteStore(filepath.Join(dir, "proxy.db"), filepath.Join(dir, "missing-config.json"))
@@ -128,6 +154,7 @@ func TestSQLiteStoreMigratesLegacyJSONOnce(t *testing.T) {
 		AdminPasswordHash: "legacy-hash",
 		DataDir:           dir,
 		ActiveProviderID:  "provider-a",
+		AdminThemeMode:    ThemeModeDark,
 		Providers: []Provider{
 			testProvider("provider-a", "Legacy", "https://legacy-provider.example.com/anthropic", "legacy-token", true),
 		},

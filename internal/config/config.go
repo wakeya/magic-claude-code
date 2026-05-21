@@ -5,6 +5,11 @@ import (
 	"net/url"
 )
 
+const (
+	ThemeModeLight = "light"
+	ThemeModeDark  = "dark"
+)
+
 // Config 应用配置
 type Config struct {
 	// 后端代理地址（保留用于向后兼容）
@@ -27,15 +32,31 @@ type Config struct {
 
 	// ActiveProviderID 当前激活的供应商 ID
 	ActiveProviderID string `json:"active_provider_id"`
+
+	// AdminThemeMode 管理端主题模式: light 或 dark
+	AdminThemeMode string `json:"admin_theme_mode"`
 }
 
 // DefaultConfig 返回默认配置
 func DefaultConfig() *Config {
 	return &Config{
-		BackendURL:    "https://open.bigmodel.cn/api/anthropic",
-		ProxyPort:     443,
-		AdminPort:     8442,
-		DataDir:       "./data",
+		BackendURL:     "https://open.bigmodel.cn/api/anthropic",
+		ProxyPort:      443,
+		AdminPort:      8442,
+		DataDir:        "./data",
+		AdminThemeMode: ThemeModeLight,
+	}
+}
+
+// NormalizeThemeMode returns a supported admin theme mode.
+func NormalizeThemeMode(mode string) string {
+	switch mode {
+	case ThemeModeDark:
+		return ThemeModeDark
+	case ThemeModeLight:
+		return ThemeModeLight
+	default:
+		return ThemeModeLight
 	}
 }
 

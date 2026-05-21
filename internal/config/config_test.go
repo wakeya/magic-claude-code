@@ -20,6 +20,34 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
+func TestNormalizeThemeMode(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "empty defaults light", in: "", want: ThemeModeLight},
+		{name: "light accepted", in: "light", want: ThemeModeLight},
+		{name: "dark accepted", in: "dark", want: ThemeModeDark},
+		{name: "invalid defaults light", in: "system", want: ThemeModeLight},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NormalizeThemeMode(tt.in); got != tt.want {
+				t.Fatalf("NormalizeThemeMode(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDefaultConfigThemeMode(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.AdminThemeMode != ThemeModeLight {
+		t.Fatalf("AdminThemeMode = %q, want %q", cfg.AdminThemeMode, ThemeModeLight)
+	}
+}
+
 func TestConfigValidation(t *testing.T) {
 	tests := []struct {
 		name    string

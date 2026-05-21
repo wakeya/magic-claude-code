@@ -170,6 +170,7 @@ func (s *SQLiteStore) Load() (*Config, error) {
 		cfg.DataDir = v
 	}
 	cfg.ActiveProviderID = settings["active_provider_id"]
+	cfg.AdminThemeMode = NormalizeThemeMode(settings["admin_theme_mode"])
 
 	providers, err := s.loadProviders()
 	if err != nil {
@@ -281,6 +282,7 @@ func saveSettings(tx *sql.Tx, cfg *Config) error {
 		"admin_password_hash": cfg.AdminPasswordHash,
 		"data_dir":            cfg.DataDir,
 		"active_provider_id":  cfg.ActiveProviderID,
+		"admin_theme_mode":    NormalizeThemeMode(cfg.AdminThemeMode),
 	}
 	for key, value := range settings {
 		if _, err := tx.Exec(`INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value); err != nil {
