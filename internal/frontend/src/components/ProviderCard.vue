@@ -1,14 +1,14 @@
 <template>
-  <div :class="['bg-white p-6 rounded-lg mb-3 transition-all duration-200 border-2 cursor-default', provider.active ? 'border-secondary bg-secondary-light' : 'border-border hover:border-primary', !provider.enabled ? 'opacity-50' : '']">
+  <div :class="['app-panel p-6 rounded-lg mb-3 transition-all duration-200 cursor-default', provider.active ? 'border-secondary bg-secondary-light' : 'hover:border-primary', !provider.enabled ? 'opacity-50' : '']">
     <div class="flex items-center gap-3 mb-3.5">
       <span :class="['w-2.5 h-2.5 rounded-full flex-shrink-0', provider.enabled ? 'bg-secondary' : 'bg-gray-300']" />
       <span class="text-base font-bold flex-1">{{ provider.name }}</span>
       <span v-if="provider.active" class="bg-secondary text-white px-3 py-1 rounded-full text-[11px] font-bold uppercase tracking-wider">{{ t('providers.active') }}</span>
     </div>
 
-    <div class="text-[13px] text-text-secondary mb-4">
-      <div>API: <code class="bg-black/5 px-1.5 py-0.5 rounded text-xs">{{ provider.api_url }}</code></div>
-      <div>Token: <code class="bg-black/5 px-1.5 py-0.5 rounded text-xs">{{ provider.api_token_mask || t('providers.not_set') }}</code></div>
+    <div class="app-muted text-[13px] mb-4">
+      <div>API: <code class="app-control px-1.5 py-0.5 rounded text-xs">{{ provider.api_url }}</code></div>
+      <div>Token: <code class="app-control px-1.5 py-0.5 rounded text-xs">{{ provider.api_token_mask || t('providers.not_set') }}</code></div>
       <div v-if="Object.keys(provider.model_mappings).length" class="flex flex-wrap gap-1.5 mt-2">
         <span v-for="(to, from) in provider.model_mappings" :key="from" class="bg-primary-light text-primary px-2.5 py-0.5 rounded-full text-xs font-semibold">{{ from }} &rarr; {{ to }}</span>
       </div>

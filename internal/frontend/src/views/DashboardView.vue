@@ -1,9 +1,9 @@
 <template>
-  <div class="min-h-screen bg-muted">
+  <div class="app-shell min-h-screen">
     <AppHeader @logout="handleLogout" />
 
-    <div :class="['mx-auto px-6 py-8', containerClass]">
-      <div class="flex flex-wrap gap-1 mb-8 bg-white p-1 rounded-lg border-2 border-border w-fit">
+    <div :class="['mx-auto px-4 py-6 sm:px-6 sm:py-8', containerClass]">
+      <div class="app-panel flex flex-wrap gap-1 mb-8 p-1 rounded-lg w-fit">
         <button
           v-for="tab in tabs"
           :key="tab.key"
@@ -40,7 +40,7 @@
         </div>
 
         <div class="grid grid-cols-2 xl:grid-cols-4 gap-4">
-          <div class="bg-white p-5 rounded-lg border-2 border-border group relative">
+          <div class="app-panel p-5 rounded-lg group relative">
             <div class="text-xs font-bold text-text-secondary uppercase tracking-widest inline-flex items-center gap-1">
               {{ t('status.provider_requests_total') }}
               <span class="inline-flex items-center justify-center w-4 h-4 rounded-full border border-gray-300 text-[10px] cursor-help opacity-70 hover:opacity-100">?</span>
@@ -48,7 +48,7 @@
             <div class="mt-2 text-2xl font-bold">{{ formatNumber(status?.provider_requests_total ?? 0) }}</div>
             <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 rounded-md bg-gray-700 text-white text-[12px] leading-snug whitespace-normal w-56 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 shadow-lg">{{ t('status.provider_requests_total_tip') }}</div>
           </div>
-          <div class="bg-white p-5 rounded-lg border-2 border-border group relative">
+          <div class="app-panel p-5 rounded-lg group relative">
             <div class="text-xs font-bold text-text-secondary uppercase tracking-widest inline-flex items-center gap-1">
               {{ t('status.today_provider_requests') }}
               <span class="inline-flex items-center justify-center w-4 h-4 rounded-full border border-gray-300 text-[10px] cursor-help opacity-70 hover:opacity-100">?</span>
@@ -56,11 +56,11 @@
             <div class="mt-2 text-2xl font-bold">{{ formatNumber(status?.today_provider_requests ?? 0) }}</div>
             <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 rounded-md bg-gray-700 text-white text-[12px] leading-snug whitespace-normal w-56 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 shadow-lg">{{ t('status.today_provider_requests_tip') }}</div>
           </div>
-          <div class="bg-white p-5 rounded-lg border-2 border-border">
+          <div class="app-panel p-5 rounded-lg">
             <div class="text-xs font-bold text-text-secondary uppercase tracking-widest">{{ t('status.today_token_consumption') }}</div>
             <div class="mt-2 text-2xl font-bold">{{ formatNumber(status?.today_token_consumption ?? 0) }}</div>
           </div>
-          <div class="bg-white p-5 rounded-lg border-2 border-border">
+          <div class="app-panel p-5 rounded-lg">
             <div class="flex items-center gap-1.5 text-xs font-bold text-text-secondary uppercase tracking-widest">
               <span>{{ t('status.usage_coverage') }}</span>
               <UsageCoverageHelp />
@@ -70,7 +70,7 @@
         </div>
 
         <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
-          <div v-if="activeProvider" class="bg-white p-6 rounded-lg border-2 border-border">
+          <div v-if="activeProvider" class="app-panel p-6 rounded-lg">
             <h3 class="text-xs font-bold text-text-secondary uppercase tracking-widest mb-3.5">{{ t('status.active_provider') }}</h3>
             <div class="text-xl font-bold mb-1">{{ activeProvider.name }}</div>
             <div class="text-[13px] text-text-secondary font-mono">{{ activeProvider.api_url }}</div>
@@ -80,11 +80,11 @@
               </span>
             </div>
           </div>
-          <div v-else class="bg-white p-6 rounded-lg border-2 border-border text-center">
+          <div v-else class="app-panel p-6 rounded-lg text-center">
             <p class="text-danger font-medium">{{ t('status.no_provider') }}</p>
           </div>
 
-          <div class="bg-white p-6 rounded-lg border-2 border-border">
+          <div class="app-panel p-6 rounded-lg">
             <h3 class="text-xs font-bold text-text-secondary uppercase tracking-widest mb-3.5">{{ t('status.last_provider_request') }}</h3>
             <div class="text-lg font-semibold">{{ formatDateTime(status?.last_provider_request || null) }}</div>
             <div class="mt-2 text-sm text-text-secondary">
@@ -134,15 +134,15 @@
         </div>
 
         <div v-if="certs" class="space-y-3">
-          <div class="p-5 bg-white rounded-lg border-2 border-border">
+          <div class="app-panel p-5 rounded-lg">
             <label class="block text-xs font-bold text-text-secondary uppercase tracking-widest mb-1.5">{{ t('certs.ca_path') }}</label>
             <div class="text-sm font-medium">{{ certs.ca_cert_path }}</div>
           </div>
-          <div class="p-5 bg-white rounded-lg border-2 border-border">
+          <div class="app-panel p-5 rounded-lg">
             <label class="block text-xs font-bold text-text-secondary uppercase tracking-widest mb-1.5">{{ t('certs.ca_expires') }}</label>
             <div class="text-sm font-medium">{{ formatDate(certs.ca_expires_at) }}</div>
           </div>
-          <div class="p-5 bg-white rounded-lg border-2 border-border">
+          <div class="app-panel p-5 rounded-lg">
             <label class="block text-xs font-bold text-text-secondary uppercase tracking-widest mb-1.5">{{ t('certs.node_config') }}</label>
             <div class="bg-fg text-gray-200 px-4 py-3.5 rounded-lg font-mono text-[13px] flex justify-between items-center mt-2 gap-3">
               <span class="break-all">NODE_EXTRA_CA_CERTS={{ certs.ca_cert_path }}</span>
@@ -154,7 +154,7 @@
 
       <div v-if="activeTab === 'usage'" class="space-y-6">
         <div class="flex flex-wrap items-center justify-between gap-3">
-          <div class="flex flex-wrap gap-1 bg-white p-1 rounded-lg border-2 border-border">
+          <div class="app-panel flex flex-wrap gap-1 p-1 rounded-lg">
             <button
               v-for="tab in usageTabs"
               :key="tab.key"
@@ -170,90 +170,90 @@
             </button>
           </div>
 
-          <button class="px-4 py-2 bg-white rounded-lg border-2 border-border text-sm font-semibold cursor-pointer hover:border-primary hover:text-primary" @click="loadUsageData">
+          <button class="app-control px-4 py-2 rounded-lg text-sm font-semibold cursor-pointer" @click="loadUsageData">
             {{ t('usage.refresh') }}
           </button>
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
-          <div class="bg-white p-4 rounded-lg border-2 border-border">
+          <div class="app-panel p-4 rounded-lg">
             <label class="block text-xs font-bold text-text-secondary uppercase tracking-widest mb-2">{{ t('usage.from') }}</label>
-            <input v-model="usageFilters.from" type="date" class="w-full rounded-md border border-border px-3 py-2 text-sm bg-white" />
+            <input v-model="usageFilters.from" type="date" class="app-control w-full rounded-md px-3 py-2 text-sm" />
           </div>
-          <div class="bg-white p-4 rounded-lg border-2 border-border">
+          <div class="app-panel p-4 rounded-lg">
             <label class="block text-xs font-bold text-text-secondary uppercase tracking-widest mb-2">{{ t('usage.to') }}</label>
-            <input v-model="usageFilters.to" type="date" class="w-full rounded-md border border-border px-3 py-2 text-sm bg-white" />
+            <input v-model="usageFilters.to" type="date" class="app-control w-full rounded-md px-3 py-2 text-sm" />
           </div>
-          <div class="bg-white p-4 rounded-lg border-2 border-border">
+          <div class="app-panel p-4 rounded-lg">
             <label class="block text-xs font-bold text-text-secondary uppercase tracking-widest mb-2">{{ t('usage.provider') }}</label>
-            <select v-model="usageFilters.provider_id" class="w-full rounded-md border border-border px-3 py-2 text-sm bg-white">
+            <select v-model="usageFilters.provider_id" class="app-control w-full rounded-md px-3 py-2 text-sm">
               <option value="all">{{ t('usage.all') }}</option>
               <option v-for="provider in providerOptions" :key="provider.value" :value="provider.value">{{ provider.label }}</option>
             </select>
           </div>
-          <div class="bg-white p-4 rounded-lg border-2 border-border">
+          <div class="app-panel p-4 rounded-lg">
             <label class="block text-xs font-bold text-text-secondary uppercase tracking-widest mb-2">{{ t('usage.model') }}</label>
-            <select v-model="usageFilters.model" class="w-full rounded-md border border-border px-3 py-2 text-sm bg-white">
+            <select v-model="usageFilters.model" class="app-control w-full rounded-md px-3 py-2 text-sm">
               <option value="all">{{ t('usage.all') }}</option>
               <option v-for="model in modelOptions" :key="model" :value="model">{{ model }}</option>
             </select>
           </div>
-          <div class="bg-white p-4 rounded-lg border-2 border-border">
+          <div class="app-panel p-4 rounded-lg">
             <label class="block text-xs font-bold text-text-secondary uppercase tracking-widest mb-2">{{ t('usage.status') }}</label>
-            <select v-model="usageFilters.status" class="w-full rounded-md border border-border px-3 py-2 text-sm bg-white">
+            <select v-model="usageFilters.status" class="app-control w-full rounded-md px-3 py-2 text-sm">
               <option value="all">{{ t('usage.status_all') }}</option>
               <option value="success">success</option>
               <option value="error">error</option>
             </select>
           </div>
-          <div class="bg-white p-4 rounded-lg border-2 border-border">
+          <div class="app-panel p-4 rounded-lg">
             <label class="block text-xs font-bold text-text-secondary uppercase tracking-widest mb-2">{{ t('usage.usage_source') }}</label>
-            <select v-model="usageFilters.usage_source" class="w-full rounded-md border border-border px-3 py-2 text-sm bg-white">
+            <select v-model="usageFilters.usage_source" class="app-control w-full rounded-md px-3 py-2 text-sm">
               <option value="all">{{ t('usage.usage_source_all') }}</option>
               <option value="provider">{{ t('usage.usage_source_provider') }}</option>
               <option value="session_log">{{ t('usage.usage_source_session_log') }}</option>
               <option value="none">{{ t('usage.usage_source_none') }}</option>
             </select>
           </div>
-          <div class="bg-white p-4 rounded-lg border-2 border-border">
+          <div class="app-panel p-4 rounded-lg">
             <label class="block text-xs font-bold text-text-secondary uppercase tracking-widest mb-2">{{ t('usage.stats_scope') }}</label>
-            <select v-model="usageFilters.stats_scope" class="w-full rounded-md border border-border px-3 py-2 text-sm bg-white">
+            <select v-model="usageFilters.stats_scope" class="app-control w-full rounded-md px-3 py-2 text-sm">
               <option value="effective">{{ t('usage.stats_scope_effective') }}</option>
               <option value="provider">{{ t('usage.stats_scope_provider') }}</option>
               <option value="session_log">{{ t('usage.stats_scope_session_log') }}</option>
               <option value="raw">{{ t('usage.stats_scope_raw') }}</option>
             </select>
           </div>
-          <div class="bg-white p-4 rounded-lg border-2 border-border">
+          <div class="app-panel p-4 rounded-lg">
             <label class="block text-xs font-bold text-text-secondary uppercase tracking-widest mb-2">{{ t('usage.source_entrypoint') }}</label>
-            <select v-model="usageFilters.source_entrypoint" class="w-full rounded-md border border-border px-3 py-2 text-sm bg-white">
+            <select v-model="usageFilters.source_entrypoint" class="app-control w-full rounded-md px-3 py-2 text-sm">
               <option value="all">{{ t('usage.source_all_entrypoint') }}</option>
               <option value="cli">{{ t('usage.source_cli') }}</option>
               <option value="claude-vscode">{{ t('usage.source_claude_vscode') }}</option>
               <option value="unknown">{{ t('usage.source_unknown') }}</option>
             </select>
           </div>
-          <div class="bg-white p-4 rounded-lg border-2 border-border md:col-span-2 xl:col-span-4">
+          <div class="app-panel p-4 rounded-lg md:col-span-2 xl:col-span-4">
             <label class="block text-xs font-bold text-text-secondary uppercase tracking-widest mb-2">{{ t('usage.search') }}</label>
-            <input v-model="usageFilters.q" type="text" :placeholder="t('usage.search_placeholder')" class="w-full rounded-md border border-border px-3 py-2 text-sm bg-white" />
+            <input v-model="usageFilters.q" type="text" :placeholder="t('usage.search_placeholder')" class="app-control w-full rounded-md px-3 py-2 text-sm" />
           </div>
         </div>
 
         <div v-if="activeUsageTab === 'overview'" class="space-y-6">
           <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-            <div class="bg-white p-5 rounded-lg border-2 border-border">
+            <div class="app-panel p-5 rounded-lg">
               <div class="text-xs font-bold text-text-secondary uppercase tracking-widest">{{ t('usage.provider_requests_total') }}</div>
               <div class="mt-2 text-2xl font-bold">{{ formatNumber(usageSummary?.provider_requests_total ?? 0) }}</div>
             </div>
-            <div class="bg-white p-5 rounded-lg border-2 border-border">
+            <div class="app-panel p-5 rounded-lg">
               <div class="text-xs font-bold text-text-secondary uppercase tracking-widest">{{ t('usage.failed_requests') }}</div>
               <div class="mt-2 text-2xl font-bold">{{ formatNumber(usageSummary?.failed_requests ?? 0) }}</div>
             </div>
-            <div class="bg-white p-5 rounded-lg border-2 border-border">
+            <div class="app-panel p-5 rounded-lg">
               <div class="text-xs font-bold text-text-secondary uppercase tracking-widest">{{ t('usage.token_consumption_total') }}</div>
               <div class="mt-2 text-2xl font-bold">{{ formatNumber(usageSummary?.token_consumption_total ?? 0) }}</div>
             </div>
-            <div class="bg-white p-5 rounded-lg border-2 border-border">
+            <div class="app-panel p-5 rounded-lg">
               <div class="flex items-center gap-1.5 text-xs font-bold text-text-secondary uppercase tracking-widest">
                 <span>{{ t('usage.usage_coverage') }}</span>
                 <UsageCoverageHelp />
@@ -262,7 +262,7 @@
             </div>
           </div>
 
-          <div class="bg-white p-5 rounded-lg border-2 border-border">
+          <div class="app-panel p-5 rounded-lg">
             <div class="flex items-center justify-between mb-4">
               <div class="text-sm font-bold uppercase tracking-widest text-text-secondary">{{ t('usage.overview') }}</div>
               <div v-if="usageLoading" class="text-sm text-text-secondary">{{ t('usage.loading') }}</div>
@@ -271,7 +271,7 @@
           </div>
         </div>
 
-        <div v-if="activeUsageTab === 'requests'" class="bg-white p-5 rounded-lg border-2 border-border overflow-x-auto">
+        <div v-if="activeUsageTab === 'requests'" class="app-panel p-5 rounded-lg overflow-x-auto">
           <div class="flex items-center justify-between mb-4">
             <div class="text-sm font-bold uppercase tracking-widest text-text-secondary">{{ t('usage.requests') }}</div>
           </div>
@@ -329,7 +329,7 @@
             <span class="text-text-secondary">{{ t('usage.total_count', { count: usageRequests.total }) }}</span>
             <div class="flex items-center gap-2 text-text-secondary">
               <span>{{ t('usage.page_size') }}</span>
-              <select v-model.number="usageRequestPageSize" class="rounded-md border border-border bg-white px-2 py-1 text-sm text-fg">
+              <select v-model.number="usageRequestPageSize" class="app-control rounded-md px-2 py-1 text-sm">
                 <option v-for="size in usageRequestPageSizes" :key="size" :value="size">{{ size }}</option>
               </select>
               <span>{{ t('usage.per_page') }}</span>
@@ -376,7 +376,7 @@
           </div>
         </div>
 
-        <div v-if="activeUsageTab === 'providers'" class="bg-white p-5 rounded-lg border-2 border-border overflow-x-auto">
+        <div v-if="activeUsageTab === 'providers'" class="app-panel p-5 rounded-lg overflow-x-auto">
           <div class="mb-4 text-sm font-bold uppercase tracking-widest text-text-secondary">{{ t('usage.providers') }}</div>
           <table class="min-w-[1000px] w-full text-sm">
             <thead>
@@ -408,7 +408,7 @@
           <div v-if="!usageProviders.length" class="py-10 text-center text-text-secondary">{{ t('usage.empty') }}</div>
         </div>
 
-        <div v-if="activeUsageTab === 'models'" class="bg-white p-5 rounded-lg border-2 border-border overflow-x-auto">
+        <div v-if="activeUsageTab === 'models'" class="app-panel p-5 rounded-lg overflow-x-auto">
           <div class="mb-4 text-sm font-bold uppercase tracking-widest text-text-secondary">{{ t('usage.models') }}</div>
           <table class="min-w-[1000px] w-full text-sm">
             <thead>
@@ -440,7 +440,7 @@
           <div v-if="!usageModels.length" class="py-10 text-center text-text-secondary">{{ t('usage.empty') }}</div>
         </div>
 
-        <div v-if="activeUsageTab === 'coverage'" class="bg-white p-5 rounded-lg border-2 border-border overflow-x-auto">
+        <div v-if="activeUsageTab === 'coverage'" class="app-panel p-5 rounded-lg overflow-x-auto">
           <div class="mb-4 text-sm font-bold uppercase tracking-widest text-text-secondary">{{ t('usage.coverage') }}</div>
           <table class="min-w-[1400px] w-full text-sm">
             <thead>
@@ -503,6 +503,7 @@ import {
   type UsageCoverageRow,
 } from '@/composables/useApi'
 import { useI18n } from '@/composables/useI18n'
+import { useTheme } from '@/composables/useTheme'
 import AppHeader from '@/components/AppHeader.vue'
 import ProviderCard from '@/components/ProviderCard.vue'
 import ProviderModal from '@/components/ProviderModal.vue'
@@ -513,6 +514,7 @@ import { formatPercent } from '@/utils/formatters'
 const router = useRouter()
 const api = useApi()
 const { t, locale } = useI18n()
+const { syncTheme } = useTheme()
 
 type MainTab = 'status' | 'providers' | 'certs' | 'usage' | 'sessions'
 type UsageTab = 'overview' | 'requests' | 'providers' | 'models' | 'coverage'
@@ -917,6 +919,7 @@ watch(usageRequestPageSize, () => {
 })
 
 onMounted(async () => {
+  await syncTheme(api.getPreferences)
   await Promise.all([loadStatus(), loadProviders(), loadCerts()])
   void loadUsageData()
   statusRefreshTimer = window.setInterval(() => {

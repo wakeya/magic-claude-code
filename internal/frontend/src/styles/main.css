@@ -21,60 +21,218 @@ body {
   font-family: 'Outfit', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  background: var(--app-bg);
+  color: var(--app-text);
+}
+
+:root,
+:root[data-theme="light"] {
+  --app-bg: #f7fbff;
+  --app-bg-soft: #eef6ff;
+  --app-surface: rgba(255, 255, 255, 0.92);
+  --app-surface-raised: #ffffff;
+  --app-surface-muted: #f1f7ff;
+  --app-border: #dbeafe;
+  --app-border-strong: #93c5fd;
+  --app-text: #102033;
+  --app-text-muted: #64748b;
+  --app-accent: #2563eb;
+  --app-accent-strong: #1d4ed8;
+  --app-accent-soft: #dbeafe;
+  --app-danger: #dc2626;
+  --app-danger-soft: #fee2e2;
+  --app-success: #15803d;
+  --app-success-soft: #dcfce7;
+  --app-user-bg: #dcfce7;
+  --app-user-border: #86efac;
+  --app-user-text: #14532d;
+  --app-user-label: #166534;
+  --app-code-bg: #0f172a;
+  --app-code-border: #334155;
+  --app-code-text: #e2e8f0;
+  --app-shadow: 0 18px 50px rgba(37, 99, 235, 0.12);
+}
+
+:root[data-theme="dark"] {
+  --app-bg: #070b14;
+  --app-bg-soft: #0b1120;
+  --app-surface: rgba(15, 23, 42, 0.94);
+  --app-surface-raised: #111827;
+  --app-surface-muted: #0f172a;
+  --app-border: #263449;
+  --app-border-strong: #38bdf8;
+  --app-text: #e5edf7;
+  --app-text-muted: #94a3b8;
+  --app-accent: #38bdf8;
+  --app-accent-strong: #7dd3fc;
+  --app-accent-soft: rgba(56, 189, 248, 0.14);
+  --app-danger: #fb7185;
+  --app-danger-soft: rgba(251, 113, 133, 0.14);
+  --app-success: #86efac;
+  --app-success-soft: rgba(22, 101, 52, 0.42);
+  --app-user-bg: #052e1b;
+  --app-user-border: #22c55e;
+  --app-user-text: #bbf7d0;
+  --app-user-label: #86efac;
+  --app-code-bg: #020617;
+  --app-code-border: #334155;
+  --app-code-text: #e2e8f0;
+  --app-shadow: 0 22px 70px rgba(0, 0, 0, 0.42);
+}
+
+.app-header {
+  background: var(--app-surface);
+  border-color: var(--app-border);
+  color: var(--app-text);
+  box-shadow: var(--app-shadow);
+}
+
+.app-logo-mark {
+  background: var(--app-accent);
+}
+
+.app-shell {
+  background:
+    radial-gradient(circle at 18% 0%, var(--app-accent-soft), transparent 32rem),
+    var(--app-bg);
+  color: var(--app-text);
+  overflow-x: hidden;
+}
+
+.app-panel {
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  color: var(--app-text);
+}
+
+.app-muted {
+  color: var(--app-text-muted);
+}
+
+.app-control {
+  background: var(--app-surface-raised);
+  border: 1px solid var(--app-border);
+  color: var(--app-text);
+}
+
+.app-control::placeholder {
+  color: var(--app-text-muted);
+}
+
+.app-theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border: 1px solid var(--app-border);
+  border-radius: 0.75rem;
+  background: var(--app-surface-muted);
+  padding: 0.2rem;
+}
+
+.app-theme-toggle-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 0;
+  border-radius: 0.55rem;
+  padding: 0.4rem 0.65rem;
+  background: transparent;
+  color: var(--app-text-muted);
+  cursor: pointer;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  transition: all 160ms ease;
+}
+
+.app-theme-toggle-button:hover,
+.app-control:hover {
+  border-color: var(--app-border-strong);
+}
+
+.app-theme-toggle-button:focus-visible,
+.app-control:focus-visible {
+  outline: 2px solid var(--app-accent);
+  outline-offset: 2px;
+}
+
+.app-theme-toggle-active {
+  background: var(--app-surface-raised);
+  color: var(--app-accent-strong);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.12);
+}
+
+.app-shell .bg-white {
+  background: var(--app-surface-raised);
+}
+
+.app-shell .bg-muted {
+  background: var(--app-surface-muted);
+}
+
+.app-shell .bg-primary-light {
+  background: var(--app-accent-soft);
+}
+
+.app-shell .bg-secondary-light {
+  background: var(--app-success-soft);
+}
+
+.app-shell .bg-danger-light {
+  background: var(--app-danger-soft);
+}
+
+.app-shell .border-border {
+  border-color: var(--app-border);
+}
+
+.app-shell .text-text-secondary {
+  color: var(--app-text-muted);
+}
+
+.app-shell .text-primary {
+  color: var(--app-accent-strong);
+}
+
+.app-shell .text-danger {
+  color: var(--app-danger);
+}
+
+.app-shell input,
+.app-shell select {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] .app-shell input,
+:root[data-theme="dark"] .app-shell select {
+  color-scheme: dark;
 }
 
 .session-theme {
-  --session-bg: #f7fbff;
-  --session-bg-soft: #eef6ff;
-  --session-surface: rgba(255, 255, 255, 0.92);
-  --session-surface-raised: #ffffff;
-  --session-surface-muted: #f1f7ff;
-  --session-border: #dbeafe;
-  --session-border-strong: #93c5fd;
-  --session-text: #102033;
-  --session-text-muted: #64748b;
-  --session-accent: #2563eb;
-  --session-accent-strong: #1d4ed8;
-  --session-accent-soft: #dbeafe;
-  --session-user-bg: #dcfce7;
-  --session-user-border: #86efac;
-  --session-user-text: #14532d;
-  --session-user-label: #166534;
-  --session-code-bg: #0f172a;
-  --session-code-border: #334155;
-  --session-code-text: #e2e8f0;
-  --session-shadow: 0 20px 55px rgba(37, 99, 235, 0.1);
+  --session-bg: var(--app-bg);
+  --session-bg-soft: var(--app-bg-soft);
+  --session-surface: var(--app-surface);
+  --session-surface-raised: var(--app-surface-raised);
+  --session-surface-muted: var(--app-surface-muted);
+  --session-border: var(--app-border);
+  --session-border-strong: var(--app-border-strong);
+  --session-text: var(--app-text);
+  --session-text-muted: var(--app-text-muted);
+  --session-accent: var(--app-accent);
+  --session-accent-strong: var(--app-accent-strong);
+  --session-accent-soft: var(--app-accent-soft);
+  --session-user-bg: var(--app-user-bg);
+  --session-user-border: var(--app-user-border);
+  --session-user-text: var(--app-user-text);
+  --session-user-label: var(--app-user-label);
+  --session-code-bg: var(--app-code-bg);
+  --session-code-border: var(--app-code-border);
+  --session-code-text: var(--app-code-text);
+  --session-shadow: var(--app-shadow);
   background:
     radial-gradient(circle at top left, rgba(59, 130, 246, 0.14), transparent 32rem),
-    linear-gradient(135deg, var(--session-bg), #fff7ed);
+    var(--session-bg);
   color: var(--session-text);
   border: 1px solid var(--session-border);
-}
-
-.session-theme[data-theme="dark"] {
-  --session-bg: #070b14;
-  --session-bg-soft: #0b1120;
-  --session-surface: rgba(15, 23, 42, 0.94);
-  --session-surface-raised: #111827;
-  --session-surface-muted: #0f172a;
-  --session-border: #263449;
-  --session-border-strong: #38bdf8;
-  --session-text: #e5edf7;
-  --session-text-muted: #94a3b8;
-  --session-accent: #38bdf8;
-  --session-accent-strong: #7dd3fc;
-  --session-accent-soft: rgba(56, 189, 248, 0.14);
-  --session-user-bg: #052e1b;
-  --session-user-border: #22c55e;
-  --session-user-text: #bbf7d0;
-  --session-user-label: #86efac;
-  --session-code-bg: #020617;
-  --session-code-border: #334155;
-  --session-code-text: #e2e8f0;
-  --session-shadow: 0 22px 60px rgba(0, 0, 0, 0.34);
-  background:
-    radial-gradient(circle at top left, rgba(56, 189, 248, 0.16), transparent 30rem),
-    linear-gradient(135deg, var(--session-bg), #101827);
 }
 
 .session-heading {
@@ -95,33 +253,6 @@ body {
   background: var(--session-surface);
   padding: 1rem;
   box-shadow: var(--session-shadow);
-}
-
-.session-theme-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  border: 1px solid var(--session-border);
-  border-radius: 999px;
-  background: var(--session-surface-muted);
-  padding: 0.28rem;
-}
-
-.session-theme-toggle-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  border-radius: 999px;
-  padding: 0.45rem 0.8rem;
-  color: var(--session-text-muted);
-  font-size: 0.8rem;
-  font-weight: 800;
-  transition: all 160ms ease;
-}
-
-.session-theme-toggle-active {
-  background: var(--session-accent);
-  color: var(--session-bg);
 }
 
 .session-panel,
@@ -155,7 +286,6 @@ body {
 .session-card:focus-visible,
 .session-primary-button:focus-visible,
 .session-secondary-button:focus-visible,
-.session-theme-toggle-button:focus-visible,
 .session-outline-item:focus-visible,
 .session-command-copy:focus-visible {
   outline: 2px solid var(--session-accent);
@@ -389,12 +519,4 @@ body {
     flex-direction: column;
   }
 
-  .session-theme-toggle {
-    width: 100%;
-  }
-
-  .session-theme-toggle-button {
-    flex: 1;
-    justify-content: center;
-  }
 }

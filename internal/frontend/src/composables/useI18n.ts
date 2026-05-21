@@ -21,6 +21,9 @@ const messages: Record<Locale, Record<string, string>> = {
     'login.error.network': '网络错误',
 
     // Header
+    'header.theme': '主题',
+    'header.theme_light': '浅色',
+    'header.theme_dark': '深色',
     'header.logout': '退出登录',
 
     // Tabs
@@ -177,9 +180,6 @@ const messages: Record<Locale, Record<string, string>> = {
     'sessions.cleanup_note': '管理面板不会删除 JSONL 文件。请在终端中运行 Claude Code CLI 命令。',
     'sessions.load_failed': '加载会话失败',
     'sessions.export_failed': '导出失败',
-    'sessions.theme': '主题',
-    'sessions.theme_light': '浅色',
-    'sessions.theme_dark': '深色',
 
     // Test results
     'test.activate_failed': '激活供应商失败',
@@ -194,6 +194,9 @@ const messages: Record<Locale, Record<string, string>> = {
     'login.error.invalid': 'Invalid password',
     'login.error.network': 'Network error',
 
+    'header.theme': 'Theme',
+    'header.theme_light': 'Light',
+    'header.theme_dark': 'Dark',
     'header.logout': 'Logout',
 
     'tab.status': 'Status',
@@ -343,9 +346,6 @@ const messages: Record<Locale, Record<string, string>> = {
     'sessions.cleanup_note': 'The admin panel does not delete JSONL files. Run Claude Code CLI commands in your terminal.',
     'sessions.load_failed': 'Failed to load sessions',
     'sessions.export_failed': 'Export failed',
-    'sessions.theme': 'Theme',
-    'sessions.theme_light': 'Light',
-    'sessions.theme_dark': 'Dark',
 
     'test.activate_failed': 'Failed to activate provider',
     'test.toggle_failed': 'Failed to toggle provider',

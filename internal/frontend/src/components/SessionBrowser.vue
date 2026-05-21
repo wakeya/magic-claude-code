@@ -1,19 +1,9 @@
 <template>
-  <div class="session-theme space-y-4 rounded-[1.35rem] p-4 sm:p-5" :data-theme="themeMode">
+  <div class="session-theme space-y-4 rounded-[1.35rem] p-4 sm:p-5">
     <div class="session-theme-hero">
       <div>
         <div class="text-xs font-bold uppercase tracking-[0.22em] session-muted">{{ t('sessions.title') }}</div>
         <h2 class="mt-1 text-2xl font-extrabold tracking-tight session-heading">{{ detail?.session.title || t('sessions.select') }}</h2>
-      </div>
-      <div class="session-theme-toggle" :aria-label="t('sessions.theme')">
-        <button :class="['session-theme-toggle-button', themeMode === 'light' ? 'session-theme-toggle-active' : '']" @click="setTheme('light')">
-          <Sun class="h-4 w-4" />
-          {{ t('sessions.theme_light') }}
-        </button>
-        <button :class="['session-theme-toggle-button', themeMode === 'dark' ? 'session-theme-toggle-active' : '']" @click="setTheme('dark')">
-          <Moon class="h-4 w-4" />
-          {{ t('sessions.theme_dark') }}
-        </button>
       </div>
     </div>
 
@@ -140,7 +130,7 @@
 
 <script setup lang="ts">
 import { computed, defineComponent, h, onMounted, ref } from 'vue'
-import { Copy, Download, Folder, List, MessageSquare, Moon, RefreshCw, Sun, Terminal, X } from 'lucide-vue-next'
+import { Copy, Download, Folder, List, MessageSquare, RefreshCw, Terminal, X } from 'lucide-vue-next'
 import {
   useApi,
   type SessionCleanupHint,
@@ -152,11 +142,9 @@ import { useI18n } from '@/composables/useI18n'
 import SessionDetail from '@/components/SessionDetail.vue'
 import SessionOutline from '@/components/SessionOutline.vue'
 import { tokenizeCommand, type CommandTokenKind } from '@/utils/sessionCommands'
-import { useTheme } from '@/composables/useTheme'
 
 const api = useApi()
 const { t, locale } = useI18n()
-const { themeMode, setTheme } = useTheme()
 
 const projects = ref<SessionProject[]>([])
 const sessions = ref<SessionItem[]>([])

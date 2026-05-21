@@ -12,9 +12,8 @@ test('desktop session outline panel scrolls independently when many user message
   assert.match(source, /SessionOutline :messages="detail\.messages"/)
 })
 
-test('session browser exposes an explicit light dark theme switch', () => {
-  assert.match(source, /useTheme/)
-  assert.match(source, /:data-theme="themeMode"/)
-  assert.match(source, /setTheme\('light'\)/)
-  assert.match(source, /setTheme\('dark'\)/)
+test('session browser no longer owns global theme switch', () => {
+  assert.doesNotMatch(source, /session-theme-toggle/)
+  assert.doesNotMatch(source, /setTheme\('light'\)/)
+  assert.doesNotMatch(source, /setTheme\('dark'\)/)
 })

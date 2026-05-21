@@ -1,25 +1,25 @@
 <template>
   <div class="fixed inset-0 bg-black/50 z-50 flex justify-center items-center" @click.self="$emit('close')">
-    <div class="bg-white p-8 rounded-lg w-[90%] max-w-[500px] max-h-[90vh] overflow-y-auto">
+    <div class="app-panel p-8 rounded-lg w-[90%] max-w-[500px] max-h-[90vh] overflow-y-auto">
       <div class="flex justify-between items-center mb-6">
         <h2 class="text-lg font-bold m-0">{{ provider ? t('modal.edit_title') : t('modal.add_title') }}</h2>
-        <button class="bg-transparent border-none text-2xl cursor-pointer text-text-secondary hover:text-fg" @click="$emit('close')">&times;</button>
+        <button class="bg-transparent border-none text-2xl cursor-pointer app-muted hover:text-fg" @click="$emit('close')">&times;</button>
       </div>
 
       <div class="mb-5">
         <label class="block text-[13px] font-semibold mb-2">{{ t('modal.name') }}</label>
-        <input v-model="form.name" type="text" placeholder="e.g. DashScope (AliCloud)" class="w-full px-4 py-3 bg-muted border-2 border-transparent rounded-lg text-sm transition-all duration-200 outline-none focus:bg-white focus:border-primary placeholder:text-gray-400" />
+        <input v-model="form.name" type="text" placeholder="e.g. DashScope (AliCloud)" class="app-control w-full px-4 py-3 rounded-lg text-sm transition-all duration-200 outline-none focus:border-primary" />
       </div>
 
       <div class="mb-5">
         <label class="block text-[13px] font-semibold mb-2">{{ t('modal.api_url') }}</label>
-        <input v-model="form.api_url" type="text" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" class="w-full px-4 py-3 bg-muted border-2 border-transparent rounded-lg text-sm transition-all duration-200 outline-none focus:bg-white focus:border-primary placeholder:text-gray-400" />
+        <input v-model="form.api_url" type="text" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" class="app-control w-full px-4 py-3 rounded-lg text-sm transition-all duration-200 outline-none focus:border-primary" />
       </div>
 
       <div class="mb-5">
         <label class="block text-[13px] font-semibold mb-2">{{ t('modal.api_token') }}</label>
         <div class="relative">
-          <input v-model="form.api_token" :type="showToken ? 'text' : 'password'" :placeholder="t('modal.api_token_placeholder')" class="w-full px-4 py-3 pr-10 bg-muted border-2 border-transparent rounded-lg text-sm transition-all duration-200 outline-none focus:bg-white focus:border-primary placeholder:text-gray-400" />
+          <input v-model="form.api_token" :type="showToken ? 'text' : 'password'" :placeholder="t('modal.api_token_placeholder')" class="app-control w-full px-4 py-3 pr-10 rounded-lg text-sm transition-all duration-200 outline-none focus:border-primary" />
           <button type="button" class="absolute right-3 top-1/2 -translate-y-1/2 bg-transparent border-none cursor-pointer text-text-secondary hover:text-fg p-0" @click="toggleToken">
             <svg v-if="!showToken" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
             <svg v-else width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
@@ -31,7 +31,7 @@
         <label class="block text-[13px] font-semibold mb-2">{{ t('modal.supports_thinking') }}</label>
         <label class="flex items-center gap-2 cursor-pointer">
           <input v-model="form.supports_thinking" type="checkbox" class="w-4 h-4 accent-primary cursor-pointer" />
-          <span class="text-sm text-text-secondary">{{ t('modal.supports_thinking_hint') }}</span>
+          <span class="app-muted text-sm">{{ t('modal.supports_thinking_hint') }}</span>
         </label>
       </div>
 
@@ -39,9 +39,9 @@
         <label class="block text-[13px] font-semibold mb-2">{{ t('modal.model_mappings') }}</label>
         <div class="space-y-2.5">
           <div v-for="(_, i) in mappings" :key="i" class="flex gap-2.5 items-center">
-            <input v-model="mappings[i].from" type="text" placeholder="claude-sonnet-4" class="flex-1 px-3 py-2 bg-muted border-2 border-transparent rounded-md text-sm outline-none focus:bg-white focus:border-primary placeholder:text-gray-400" />
+            <input v-model="mappings[i].from" type="text" placeholder="claude-sonnet-4" class="app-control flex-1 px-3 py-2 rounded-md text-sm outline-none focus:border-primary" />
             <span class="text-primary font-bold">&rarr;</span>
-            <input v-model="mappings[i].to" type="text" placeholder="qwen-max" class="flex-1 px-3 py-2 bg-muted border-2 border-transparent rounded-md text-sm outline-none focus:bg-white focus:border-primary placeholder:text-gray-400" />
+            <input v-model="mappings[i].to" type="text" placeholder="qwen-max" class="app-control flex-1 px-3 py-2 rounded-md text-sm outline-none focus:border-primary" />
             <button
               v-if="mappings.length > 1"
               class="px-2 py-1 bg-danger text-white border-none rounded-md text-xs font-semibold cursor-pointer hover:scale-105 transition-all"
@@ -49,12 +49,12 @@
             >X</button>
           </div>
         </div>
-        <button class="mt-2.5 px-3 py-1.5 bg-muted text-text-secondary border-none rounded-md text-xs font-semibold cursor-pointer hover:bg-gray-200 transition-all" @click="mappings.push({ from: '', to: '' })">{{ t('modal.add_mapping') }}</button>
+        <button class="app-control mt-2.5 px-3 py-1.5 rounded-md text-xs font-semibold cursor-pointer transition-all" @click="mappings.push({ from: '', to: '' })">{{ t('modal.add_mapping') }}</button>
       </div>
 
       <div class="flex gap-2.5">
-        <button class="px-5 py-2.5 bg-muted text-fg border-none rounded-lg text-sm font-semibold cursor-pointer hover:bg-gray-200 transition-all" @click="$emit('close')">{{ t('modal.cancel') }}</button>
-        <button class="px-5 py-2.5 bg-transparent text-text-secondary border-none rounded-lg text-sm font-semibold cursor-pointer hover:bg-muted transition-all" @click="testConnection">{{ t('modal.test') }}</button>
+        <button class="app-control px-5 py-2.5 rounded-lg text-sm font-semibold cursor-pointer transition-all" @click="$emit('close')">{{ t('modal.cancel') }}</button>
+        <button class="app-control px-5 py-2.5 rounded-lg text-sm font-semibold cursor-pointer transition-all" @click="testConnection">{{ t('modal.test') }}</button>
         <button class="px-5 py-2.5 bg-primary text-white border-none rounded-lg text-sm font-semibold cursor-pointer hover:bg-primary-hover hover:scale-[1.02] transition-all" @click="save">{{ t('modal.save') }}</button>
       </div>
 
