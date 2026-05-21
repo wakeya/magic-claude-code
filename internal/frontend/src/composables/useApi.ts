@@ -1,3 +1,7 @@
+import type { ThemeMode } from './useTheme'
+
+export type { ThemeMode } from './useTheme'
+
 export interface StatusInfo {
   running: boolean
   backend_url: string
@@ -138,6 +142,11 @@ export interface UsageCoverageRow {
 
 export type UsageParams = Record<string, string | number | boolean | null | undefined>
 
+export interface PreferencesResponse {
+  theme_mode: ThemeMode
+  success?: boolean
+}
+
 export interface SessionProject {
   path: string
   name: string
@@ -203,6 +212,22 @@ export function useApi() {
 
   async function logout(): Promise<void> {
     await fetch('/api/logout', { method: 'POST' })
+  }
+
+  async function getPreferences(): Promise<PreferencesResponse> {
+    const res = await fetch('/api/preferences')
+    if (!res.ok) throw new Error('Failed to fetch preferences')
+    return res.json()
+  }
+
+  async function updatePreferences(themeMode: ThemeMode): Promise<PreferencesResponse> {
+    const res = await fetch('/api/preferences', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ theme_mode: themeMode }),
+    })
+    if (!res.ok) throw new Error('Failed to update preferences')
+    return res.json()
   }
 
   async function getStatus(tz?: string): Promise<StatusInfo> {
@@ -377,6 +402,8 @@ export function useApi() {
   return {
     login,
     logout,
+    getPreferences,
+    updatePreferences,
     getStatus,
     getProviders,
     createProvider,
