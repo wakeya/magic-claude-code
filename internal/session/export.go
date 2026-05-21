@@ -36,20 +36,23 @@ const exportTemplate = `<!DOCTYPE html>
 <meta charset="utf-8">
 <title>{{.Session.Title}}</title>
 <style>
-body{margin:0;background:#111827;color:#e5e7eb;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.55}
-header{padding:28px 36px;border-bottom:1px solid #374151;background:#0f172a}
-h1{margin:0 0 10px;font-size:26px}
-.meta{color:#9ca3af;font-size:13px}
+:root{--bg:#f7fbff;--surface:#ffffff;--border:#dbeafe;--text:#102033;--text-muted:#64748b;--accent:#2563eb;--user-bg:#dcfce7;--user-border:#86efac;--user-text:#14532d;--user-label:#166534;--technical-border:#f59e0b;--shadow:0 1px 3px rgba(0,0,0,.06)}
+@media(prefers-color-scheme:dark){:root{--bg:#070b14;--surface:rgba(15,23,42,.94);--border:#263449;--text:#e5edf7;--text-muted:#94a3b8;--accent:#38bdf8;--user-bg:#052e1b;--user-border:#22c55e;--user-text:#bbf7d0;--user-label:#86efac;--technical-border:#f59e0b;--shadow:0 1px 3px rgba(0,0,0,.2)}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:'Outfit',Inter,system-ui,-apple-system,BlinkMacSystemFont,sans-serif;line-height:1.6}
+header{padding:28px 36px;border-bottom:1px solid var(--border);background:var(--surface)}
+h1{margin:0 0 10px;font-size:24px;font-weight:700}
+.meta{color:var(--text-muted);font-size:13px}
 main{max-width:980px;margin:0 auto;padding:28px}
-.message{border:1px solid #374151;border-radius:8px;padding:16px;margin:0 0 16px;background:#1f2937}
-.message.user{background:#dcfce7;border:1px solid #86efac;color:#14532d}
-.message.user .role{color:#166534}
-.message.assistant{border-left:4px solid #a78bfa}
-.message.system,.message.tool{border-left:4px solid #f59e0b}
-.role{font-weight:700;text-transform:uppercase;font-size:12px;color:#cbd5e1;margin-bottom:8px}
-pre{white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace;font-size:13px}
-summary{cursor:pointer;font-weight:700}
-@media print{body{background:#fff;color:#111827}.message,header{background:#fff;border-color:#d1d5db}.meta{color:#4b5563}}
+.message{border:1px solid var(--border);border-radius:12px;padding:16px;margin:0 0 12px;background:var(--surface);box-shadow:var(--shadow)}
+.message.user{background:var(--user-bg);border:1px solid var(--user-border);color:var(--user-text)}
+.message.user .role{color:var(--user-label)}
+.message.assistant{border-left:4px solid var(--accent)}
+.message.system,.message.tool{border-left:4px solid var(--technical-border)}
+.role{font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:.06em;color:var(--text-muted);margin-bottom:8px}
+pre{white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:13px;margin:0}
+summary{cursor:pointer;font-weight:700;color:var(--text-muted);font-size:12px;letter-spacing:.04em;text-transform:uppercase}
+@media print{body{background:#fff;color:#111827}.message,header{background:#fff;border-color:#d1d5db;box-shadow:none}.meta{color:#4b5563}}
 </style>
 </head>
 <body>
