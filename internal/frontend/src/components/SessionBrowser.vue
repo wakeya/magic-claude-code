@@ -143,12 +143,14 @@ import {
   type SessionProject,
 } from '@/composables/useApi'
 import { useI18n } from '@/composables/useI18n'
+import { useTheme } from '@/composables/useTheme'
 import SessionDetail from '@/components/SessionDetail.vue'
 import SessionOutline from '@/components/SessionOutline.vue'
 import { tokenizeCommand, type CommandTokenKind } from '@/utils/sessionCommands'
 
 const api = useApi()
 const { t, locale } = useI18n()
+const { themeMode } = useTheme()
 
 const projects = ref<SessionProject[]>([])
 const sessions = ref<SessionItem[]>([])
@@ -233,7 +235,7 @@ async function selectSession(session: SessionItem) {
 async function exportSelected() {
   if (!selectedSession.value) return
   try {
-    const blob = await api.exportSessionHTML(selectedSession.value.id, selectedSession.value.source_path)
+    const blob = await api.exportSessionHTML(selectedSession.value.id, selectedSession.value.source_path, themeMode.value)
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url

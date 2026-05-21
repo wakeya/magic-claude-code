@@ -11,9 +11,14 @@ var parsedExportTemplate = template.Must(template.New("session-export").Funcs(te
 	"fold": shouldFoldMessage,
 }).Parse(exportTemplate))
 
-func ExportHTML(detail *SessionDetail) ([]byte, error) {
+func ExportHTML(detail *SessionDetail, theme string) ([]byte, error) {
 	var out bytes.Buffer
-	if err := parsedExportTemplate.Execute(&out, detail); err != nil {
+	data := map[string]any{
+		"Session":  detail.Session,
+		"Messages": detail.Messages,
+		"Theme":    theme,
+	}
+	if err := parsedExportTemplate.Execute(&out, data); err != nil {
 		return nil, err
 	}
 	return out.Bytes(), nil
@@ -31,13 +36,13 @@ func shouldFoldMessage(role string) bool {
 }
 
 const exportTemplate = `<!DOCTYPE html>
-<html lang="zh">
+<html lang="zh" data-theme="{{.Theme}}">
 <head>
 <meta charset="utf-8">
 <title>{{.Session.Title}}</title>
 <style>
-:root{--bg:#f7fbff;--surface:#ffffff;--border:#dbeafe;--text:#102033;--text-muted:#64748b;--accent:#2563eb;--user-bg:#dcfce7;--user-border:#86efac;--user-text:#14532d;--user-label:#166534;--technical-border:#f59e0b;--shadow:0 1px 3px rgba(0,0,0,.06)}
-@media(prefers-color-scheme:dark){:root{--bg:#070b14;--surface:rgba(15,23,42,.94);--border:#263449;--text:#e5edf7;--text-muted:#94a3b8;--accent:#38bdf8;--user-bg:#052e1b;--user-border:#22c55e;--user-text:#bbf7d0;--user-label:#86efac;--technical-border:#f59e0b;--shadow:0 1px 3px rgba(0,0,0,.2)}}
+:root,:root[data-theme="light"]{--bg:#f7fbff;--surface:#ffffff;--border:#dbeafe;--text:#102033;--text-muted:#64748b;--accent:#2563eb;--user-bg:#dcfce7;--user-border:#86efac;--user-text:#14532d;--user-label:#166534;--technical-border:#f59e0b;--shadow:0 1px 3px rgba(0,0,0,.06)}
+:root[data-theme="dark"]{--bg:#070b14;--surface:rgba(15,23,42,.94);--border:#263449;--text:#e5edf7;--text-muted:#94a3b8;--accent:#38bdf8;--user-bg:#052e1b;--user-border:#22c55e;--user-text:#bbf7d0;--user-label:#86efac;--technical-border:#f59e0b;--shadow:0 1px 3px rgba(0,0,0,.2)}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);font-family:'Outfit',Inter,system-ui,-apple-system,BlinkMacSystemFont,sans-serif;line-height:1.6}
 header{padding:28px 36px;border-bottom:1px solid var(--border);background:var(--surface)}

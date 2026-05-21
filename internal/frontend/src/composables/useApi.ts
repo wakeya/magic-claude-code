@@ -387,8 +387,8 @@ export function useApi() {
     return res.json()
   }
 
-  async function exportSessionHTML(id: string, source: string): Promise<Blob> {
-    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/export${buildQuery({ source })}`)
+  async function exportSessionHTML(id: string, source: string, theme: string): Promise<Blob> {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/export${buildQuery({ source, theme })}`)
     if (!res.ok) throw new Error('Failed to export session')
     return res.blob()
   }
