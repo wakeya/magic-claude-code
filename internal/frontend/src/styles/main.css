@@ -96,7 +96,7 @@ body {
     radial-gradient(circle at 18% 0%, var(--app-accent-soft), transparent 32rem),
     var(--app-bg);
   color: var(--app-text);
-  overflow-x: hidden;
+  overflow-x: clip;
 }
 
 .app-panel {

@@ -13,12 +13,13 @@ test('usage coverage help uses a custom hover tooltip', () => {
   assert.doesNotMatch(source, /:title=/)
 })
 
-test('usage coverage help renders readable tooltip colors', () => {
+test('usage coverage help renders tooltip matching provider card style', () => {
   assert.match(source, /bg-gray-700/)
   assert.match(source, /text-white/)
+  assert.match(source, /absolute bottom-full/)
 })
 
-test('usage coverage help is triggered by the parent hover group', () => {
+test('usage coverage help relies on parent group for hover trigger', () => {
   assert.doesNotMatch(source, /class="group/)
-  assert.match(source, /absolute bottom-full/)
+  assert.match(source, /group-hover:opacity-100/)
 })

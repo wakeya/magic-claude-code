@@ -241,7 +241,7 @@
 
         <div v-if="activeUsageTab === 'overview'" class="space-y-6">
           <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-            <div class="app-panel p-5 rounded-lg group relative">
+            <div class="app-panel p-5 rounded-lg">
               <div class="text-xs font-bold text-text-secondary uppercase tracking-widest">{{ t('usage.provider_requests_total') }}</div>
               <div class="mt-2 text-2xl font-bold">{{ formatNumber(usageSummary?.provider_requests_total ?? 0) }}</div>
             </div>
@@ -253,7 +253,7 @@
               <div class="text-xs font-bold text-text-secondary uppercase tracking-widest">{{ t('usage.token_consumption_total') }}</div>
               <div class="mt-2 text-2xl font-bold">{{ formatNumber(usageSummary?.token_consumption_total ?? 0) }}</div>
             </div>
-            <div class="app-panel p-5 rounded-lg">
+            <div class="app-panel p-5 rounded-lg group relative">
               <div class="flex items-center gap-1.5 text-xs font-bold text-text-secondary uppercase tracking-widest">
                 <span>{{ t('usage.usage_coverage') }}</span>
                 <UsageCoverageHelp />
@@ -376,7 +376,7 @@
           </div>
         </div>
 
-        <div v-if="activeUsageTab === 'providers'" class="app-panel p-5 rounded-lg overflow-x-auto">
+        <div v-if="activeUsageTab === 'providers'" class="app-panel p-5 rounded-lg" style="overflow-x:clip;overflow-y:visible">
           <div class="mb-4 text-sm font-bold uppercase tracking-widest text-text-secondary">{{ t('usage.providers') }}</div>
           <table class="min-w-[1000px] w-full text-sm">
             <thead>
@@ -408,7 +408,7 @@
           <div v-if="!usageProviders.length" class="py-10 text-center text-text-secondary">{{ t('usage.empty') }}</div>
         </div>
 
-        <div v-if="activeUsageTab === 'models'" class="app-panel p-5 rounded-lg overflow-x-auto">
+        <div v-if="activeUsageTab === 'models'" class="app-panel p-5 rounded-lg" style="overflow-x:clip;overflow-y:visible">
           <div class="mb-4 text-sm font-bold uppercase tracking-widest text-text-secondary">{{ t('usage.models') }}</div>
           <table class="min-w-[1000px] w-full text-sm">
             <thead>
@@ -440,7 +440,7 @@
           <div v-if="!usageModels.length" class="py-10 text-center text-text-secondary">{{ t('usage.empty') }}</div>
         </div>
 
-        <div v-if="activeUsageTab === 'coverage'" class="app-panel p-5 rounded-lg overflow-x-auto">
+        <div v-if="activeUsageTab === 'coverage'" class="app-panel p-5 rounded-lg" style="overflow-x:clip;overflow-y:visible">
           <div class="mb-4 text-sm font-bold uppercase tracking-widest text-text-secondary">{{ t('usage.coverage') }}</div>
           <table class="min-w-[1400px] w-full text-sm">
             <thead>

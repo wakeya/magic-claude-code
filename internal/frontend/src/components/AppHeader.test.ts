@@ -21,3 +21,8 @@ test('header owns the global theme switch', () => {
   assert.match(source, /removeEventListener\('click', closeLanguageMenuOnOutsideClick\)/)
   assert.doesNotMatch(source, /closest\('\\.relative'\)/)
 })
+
+test('header exposes theme sync error', () => {
+  assert.match(source, /syncError/)
+  assert.match(source, /v-if="syncError"/)
+})

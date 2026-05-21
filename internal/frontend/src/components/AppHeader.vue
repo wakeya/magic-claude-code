@@ -29,6 +29,7 @@
           {{ t('header.theme_dark') }}
         </button>
       </div>
+      <span v-if="syncError" class="text-[11px] text-[var(--app-danger)] truncate max-w-32" :title="syncError">{{ syncError }}</span>
       <!-- Language Switcher -->
       <div ref="langMenuRef" class="relative">
         <button
@@ -75,7 +76,7 @@ defineEmits<{ logout: [] }>()
 
 const api = useApi()
 const { locale, t, setLocale } = useI18n()
-const { themeMode, persistTheme } = useTheme()
+const { themeMode, persistTheme, syncError } = useTheme()
 const langOpen = ref(false)
 const langMenuRef = ref<HTMLElement | null>(null)
 const langOptions = [
