@@ -3,6 +3,7 @@ package config
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -35,11 +36,13 @@ func NewSQLiteStore(dbPath string, legacyJSONPath string) (*SQLiteStore, error) 
 		return nil, statErr
 	}
 
-	db, err := sql.Open("sqlite", dbPath)
+	dsn := fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)", dbPath)
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(1)
+	db.SetMaxOpenConns(8)
+	db.SetMaxIdleConns(8)
 
 	store := &SQLiteStore{
 		db:             db,
@@ -61,9 +64,6 @@ func (s *SQLiteStore) DB() *sql.DB {
 }
 
 func (s *SQLiteStore) init(dbExisted bool) error {
-	if _, err := s.db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
-		return err
-	}
 	schemaInitialized, err := s.hasSchemaVersion()
 	if err != nil {
 		return err

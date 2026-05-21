@@ -18,7 +18,6 @@ func NewStore(db *sql.DB) *Store {
 
 func (s *Store) Migrate() error {
 	stmts := []string{
-		`PRAGMA foreign_keys = ON;`,
 		`CREATE TABLE IF NOT EXISTS settings (
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL
@@ -151,14 +150,71 @@ func (s *Store) Record(req RequestRecord, tok TokenRecord) error {
 }
 
 func (s *Store) recordIfAbsent(req RequestRecord, tok TokenRecord) (bool, error) {
-	var exists int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM usage_requests WHERE id = ?`, req.ID).Scan(&exists); err != nil {
+	tx, err := s.db.Begin()
+	if err != nil {
 		return false, err
 	}
-	if exists > 0 {
+	defer tx.Rollback()
+
+	if tok.RequestID == "" {
+		tok.RequestID = req.ID
+	}
+	result, err := tx.Exec(
+		`INSERT OR IGNORE INTO usage_requests(
+			id, started_at, ended_at, duration_ms, upstream_response_header_ms, time_to_first_byte_ms,
+			status_code, error_type, error_message, method, request_path, backend_url,
+			provider_id, provider_name, provider_api_url, source_app, source_entrypoint, user_agent,
+			original_model, mapped_model, stream, request_bytes, response_bytes
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		req.ID,
+		formatTime(req.StartedAt),
+		formatOptionalTime(req.EndedAt),
+		req.DurationMS,
+		req.UpstreamResponseHeaderMS,
+		req.TimeToFirstByteMS,
+		req.StatusCode,
+		req.ErrorType,
+		req.ErrorMessage,
+		req.Method,
+		req.RequestPath,
+		req.BackendURL,
+		req.ProviderID,
+		req.ProviderName,
+		req.ProviderAPIURL,
+		defaultString(req.SourceApp, "unknown"),
+		req.SourceEntrypoint,
+		req.UserAgent,
+		req.OriginalModel,
+		req.MappedModel,
+		boolToInt(req.Stream),
+		req.RequestBytes,
+		req.ResponseBytes,
+	)
+	if err != nil {
+		return false, err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
 		return false, nil
 	}
-	return true, s.Record(req, tok)
+	_, err = tx.Exec(
+		`INSERT INTO usage_tokens(
+			request_id, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+			usage_source, usage_parse_status, usage_parse_error
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		tok.RequestID,
+		tok.InputTokens,
+		tok.OutputTokens,
+		tok.CacheCreationInputTokens,
+		tok.CacheReadInputTokens,
+		defaultString(tok.UsageSource, UsageSourceNone),
+		defaultString(tok.UsageParseStatus, ParseStatusMissing),
+		tok.UsageParseError,
+	)
+	if err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
 }
 
 func (s *Store) Summary(filter Filter) (Summary, error) {
