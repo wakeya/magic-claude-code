@@ -9,12 +9,11 @@ services:
       - ./data:/app/data
       # Linux/macOS 默认读取 ${HOME}/.claude/projects；Windows 请在 .env 或 PowerShell 中显式设置 CLAUDE_PROJECTS_DIR，例如 C:/Users/用户名/.claude/projects
       - ${CLAUDE_PROJECTS_DIR:-${HOME}/.claude/projects}:/claude-projects:ro
-      # 自动同步宿主机时区：优先使用 TZ 环境变量，后备挂载 /etc/localtime
+      # 自动同步宿主机时区：通过挂载 /etc/localtime，Go 程序会自动读取
       - /etc/localtime:/etc/localtime:ro
     environment:
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}
       - CLAUDE_PROJECTS_DIR=/claude-projects
-      - TZ=${TZ:-UTC}
     restart: unless-stopped
     cap_add:
       - NET_BIND_SERVICE
