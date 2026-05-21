@@ -60,7 +60,7 @@
             <div class="text-xs font-bold text-text-secondary uppercase tracking-widest">{{ t('status.today_token_consumption') }}</div>
             <div class="mt-2 text-2xl font-bold">{{ formatNumber(status?.today_token_consumption ?? 0) }}</div>
           </div>
-          <div class="app-panel p-5 rounded-lg">
+          <div class="app-panel p-5 rounded-lg group relative">
             <div class="flex items-center gap-1.5 text-xs font-bold text-text-secondary uppercase tracking-widest">
               <span>{{ t('status.usage_coverage') }}</span>
               <UsageCoverageHelp />
@@ -241,7 +241,7 @@
 
         <div v-if="activeUsageTab === 'overview'" class="space-y-6">
           <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-            <div class="app-panel p-5 rounded-lg">
+            <div class="app-panel p-5 rounded-lg group relative">
               <div class="text-xs font-bold text-text-secondary uppercase tracking-widest">{{ t('usage.provider_requests_total') }}</div>
               <div class="mt-2 text-2xl font-bold">{{ formatNumber(usageSummary?.provider_requests_total ?? 0) }}</div>
             </div>
@@ -385,7 +385,7 @@
                 <th class="py-3 pr-4">{{ t('usage.provider_requests_total') }}</th>
                 <th class="py-3 pr-4">{{ t('usage.failed_requests') }}</th>
                 <th class="py-3 pr-4">{{ t('usage.token_consumption_total') }}</th>
-                <th class="py-3 pr-4">
+                <th class="py-3 pr-4 group relative">
                   <span class="inline-flex items-center gap-1.5">
                     <span>{{ t('usage.usage_coverage') }}</span>
                     <UsageCoverageHelp />
@@ -417,7 +417,7 @@
                 <th class="py-3 pr-4">{{ t('usage.provider_requests_total') }}</th>
                 <th class="py-3 pr-4">{{ t('usage.failed_requests') }}</th>
                 <th class="py-3 pr-4">{{ t('usage.token_consumption_total') }}</th>
-                <th class="py-3 pr-4">
+                <th class="py-3 pr-4 group relative">
                   <span class="inline-flex items-center gap-1.5">
                     <span>{{ t('usage.usage_coverage') }}</span>
                     <UsageCoverageHelp />
@@ -450,7 +450,7 @@
                 <th class="py-3 pr-4">{{ t('usage.model') }}</th>
                 <th class="py-3 pr-4">{{ t('usage.source_entrypoint') }}</th>
                 <th class="py-3 pr-4">{{ t('usage.provider_requests_total') }}</th>
-                <th class="py-3 pr-4">
+                <th class="py-3 pr-4 group relative">
                   <span class="inline-flex items-center gap-1.5">
                     <span>{{ t('usage.usage_coverage') }}</span>
                     <UsageCoverageHelp />

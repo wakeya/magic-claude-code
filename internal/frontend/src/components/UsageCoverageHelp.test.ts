@@ -9,11 +9,16 @@ const source = readFileSync(join(here, 'UsageCoverageHelp.vue'), 'utf8')
 
 test('usage coverage help uses a custom hover tooltip', () => {
   assert.match(source, /group-hover:opacity-100/)
-  assert.match(source, /USAGE_COVERAGE_TOOLTIP/)
+  assert.match(source, /t\('usage\.usage_coverage_tip'\)/)
   assert.doesNotMatch(source, /:title=/)
 })
 
 test('usage coverage help renders readable tooltip colors', () => {
-  assert.match(source, /bg-gray-100/)
-  assert.match(source, /text-black/)
+  assert.match(source, /bg-gray-700/)
+  assert.match(source, /text-white/)
+})
+
+test('usage coverage help is triggered by the parent hover group', () => {
+  assert.doesNotMatch(source, /class="group/)
+  assert.match(source, /absolute bottom-full/)
 })

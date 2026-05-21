@@ -106,6 +106,17 @@ test('usage request pagination labels support Chinese and English', () => {
   }
 })
 
+test('usage coverage tooltip uses bilingual i18n text', () => {
+  assert.match(i18nSource, /'usage\.usage_coverage_tip': 'Usage 覆盖率 =/)
+  assert.match(i18nSource, /'usage\.usage_coverage_tip': 'Usage Coverage =/)
+})
+
+test('usage coverage tooltip is triggered from status and usage parent blocks', () => {
+  assert.match(dashboardSource, /class="app-panel p-5 rounded-lg group relative"[\s\S]*t\('status\.usage_coverage'\)[\s\S]*<UsageCoverageHelp \/>/)
+  assert.match(dashboardSource, /class="app-panel p-5 rounded-lg group relative"[\s\S]*t\('usage\.usage_coverage'\)[\s\S]*<UsageCoverageHelp \/>/)
+  assert.match(dashboardSource, /<th class="py-3 pr-4 group relative">[\s\S]*<UsageCoverageHelp \/>/)
+})
+
 test('usage page exposes stats scope controls and sends stats_scope', () => {
   for (const key of [
     'usage.stats_scope',
