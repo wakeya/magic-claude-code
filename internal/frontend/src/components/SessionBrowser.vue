@@ -1,12 +1,5 @@
 <template>
-  <div class="session-theme space-y-4 rounded-[1.35rem] p-4 sm:p-5">
-    <div class="session-theme-hero">
-      <div>
-        <div class="text-xs font-bold uppercase tracking-[0.22em] session-muted">{{ t('sessions.title') }}</div>
-        <h2 class="mt-1 text-2xl font-extrabold tracking-tight session-heading">{{ detail?.session.title || t('sessions.select') }}</h2>
-      </div>
-    </div>
-
+  <div class="session-theme rounded-[1.35rem] p-4 sm:p-5">
     <div class="grid grid-cols-1 gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
       <aside class="session-panel session-sidebar">
         <div class="session-panel-header p-4">

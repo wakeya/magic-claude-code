@@ -243,18 +243,6 @@ body {
   color: var(--session-text-muted);
 }
 
-.session-theme-hero {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  border: 1px solid var(--session-border);
-  border-radius: 1.15rem;
-  background: var(--session-surface);
-  padding: 1rem;
-  box-shadow: var(--session-shadow);
-}
-
 .session-panel,
 .session-outline-panel,
 .session-modal-panel {
@@ -511,12 +499,4 @@ body {
 
 .session-token-text {
   color: #e2e8f0;
-}
-
-@media (max-width: 640px) {
-  .session-theme-hero {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
 }

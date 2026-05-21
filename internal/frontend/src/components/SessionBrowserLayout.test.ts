@@ -17,3 +17,8 @@ test('session browser no longer owns global theme switch', () => {
   assert.doesNotMatch(source, /setTheme\('light'\)/)
   assert.doesNotMatch(source, /setTheme\('dark'\)/)
 })
+
+test('session browser does not render the redundant selected-session hero block', () => {
+  assert.doesNotMatch(source, /session-theme-hero/)
+  assert.match(source, /v-if="!detail" class="session-empty-state"/)
+})
