@@ -1,9 +1,9 @@
 # Claude Code Session Browser Status
 
 **Feature:** Claude Code 会话记录浏览器
-**Current state:** draft
+**Current state:** approved
 **Created:** 2026-05-18
-**Last updated:** 2026-05-18
+**Last updated:** 2026-05-20
 **Owner:** local project maintainer
 
 ## Lifecycle
@@ -15,17 +15,19 @@ draft -> approved -> planned -> implementing -> implemented -> validating -> val
 Current position:
 
 ```text
-draft
+approved
 ```
+
+Specs review completed on 2026-05-20; this feature is now `approved`.
 
 ## Transition Checklist
 
 Move to `approved` when:
 
-1. `requirements.md` has been reviewed.
-2. The privacy default `session_capture_enabled=false` is accepted.
-3. The three-column UI scope is accepted.
-4. The storage limits and deletion behavior are accepted.
+1. `requirements.md` v1.0 has been reviewed (file-based approach).
+2. The project-directory navigation design is accepted.
+3. The HTML export scope is accepted.
+4. The deployment model (local mount or Docker volume) is confirmed.
 
 Move to `planned` when:
 
@@ -36,12 +38,12 @@ Move to `planned` when:
 Move to `implementing` when:
 
 1. A work branch or worktree is selected.
-2. The usage statistics work dependency is either merged or consciously decoupled.
+2. The `CLAUDE_PROJECTS_DIR` path is confirmed accessible.
 
 ## Blockers
 
-1. This feature should not be implemented before the usage statistics schema/store shape is stable, because it links conversation requests back to request usage metadata.
+None. This feature is independent of proxy logic and usage statistics.
 
 ## Revisit Trigger
 
-Revisit this feature before implementation if Claude Code exposes a stable session ID in headers or request metadata, because that would simplify session grouping.
+None. The file-based approach uses Claude Code's native sessionId, eliminating the grouping uncertainty from the previous proxy-capture approach.

@@ -1,334 +1,267 @@
 # Claude Code Session Browser Requirements
 
-**Version:** 0.2
-**Date:** 2026-05-18
+**Version:** 1.1
+**Date:** 2026-05-21
 **Status:** draft
-**Lifecycle state:** draft
-**Source:** migrated from the legacy flat specs directory into feature-directory format
+**Supersedes:** v0.2 (proxy-based capture, archived)
 
 ---
 
 ## 1. Objective
 
-Add a local admin-page session browser for Claude Code conversations observed by this proxy.
+Add a session browser tab to the admin panel that reads local Claude Code session files, organizes them by project directory, and supports exporting any session as a self-contained HTML file.
 
 The browser should show:
 
-1. A left sidebar of sessions, defaulting to all sessions and sorted by most recent activity.
-2. Project-based filtering using the best project name the proxy can infer.
-3. A center column with the selected conversation content.
-4. A right sidebar listing human `user` messages; clicking a user message scrolls the center column to that message.
+1. A left panel with a project dropdown at the top and the selected project's session list below.
+2. A right panel with the selected session's full conversation content.
+3. An outline of user messages; clicking an outline item scrolls to the corresponding message.
+4. An export button that downloads the session as a single HTML file.
 
 ## 2. Outcomes
 
 The feature is successful when:
 
-1. Conversation capture is explicitly opt-in and disabled by default.
-2. Claude Code `/v1/messages` and `/anthropic/v1/messages` requests can be associated with a session.
-3. Non-streaming assistant responses can be saved without affecting forwarding.
-4. Streaming SSE assistant responses can be reconstructed without affecting forwarding.
-5. Stored conversations can be browsed by project, session, message, and user-message outline.
-6. Users can delete a session and its messages from the admin UI.
+1. Sessions are read from `~/.claude/projects/` JSONL files with native sessionId.
+2. Project directories are the first-level filter for the session list.
+3. Session detail shows the full conversation with collapsible system and tool content.
+4. Any session can be exported as a self-contained HTML file opened offline, with user messages shown as full light-green blocks.
+5. The admin UI never deletes JSONL files; if cleanup is needed, it only shows Claude Code CLI command hints for session/project cleanup.
+6. The left session list refreshes when the selected project changes and scrolls independently from the right detail panel.
 
-## 3. Evidence
+## 3. Data Source
 
-Implementation must produce:
+### 3.1 Directory Structure
 
-1. Unit tests for message normalization, truncation, session fingerprinting, and SSE reconstruction.
-2. Store tests for session CRUD, request links, project grouping, pagination, and cascade deletion.
-3. API handler tests for settings, project list, session list, session detail, outline, and deletion.
-4. Frontend build verification.
-5. Manual verification using a real Claude Code request after enabling capture.
-
-## 4. Scope
-
-Capture only provider-bound Claude Code messages requests:
-
-1. `/v1/messages`
-2. `/anthropic/v1/messages`
-3. Equivalent provider messages paths after base URL joining.
-
-Do not capture local hardcoded endpoints, OAuth, settings, quota, metrics, bootstrap, MCP registry, certificate routes, admin routes, or frontend assets.
-
-Capture these request fields when present:
-
-1. `system`
-2. `messages`
-3. `tools`
-4. `tool_choice`
-5. `model`
-6. `stream`
-7. mapped model
-8. provider ID, provider name, API URL, source entrypoint, status code, duration, and usage status when available
-
-## 5. Privacy Constraints
-
-Conversation content is sensitive.
-
-Required behavior:
-
-1. Default `session_capture_enabled=false`.
-2. The admin UI must show a warning before enabling capture.
-3. Do not save `Authorization`, `X-Api-Key`, `Cookie`, or provider tokens.
-4. Save provider errors as summaries, not full raw responses.
-5. Default `tool_result` storage to a smaller limit than normal messages.
-6. Mark truncated content with `truncated=true`.
-7. Support deleting one session and all of its messages.
-
-Default limits:
+Claude Code stores sessions under `~/.claude/projects/`:
 
 ```text
-session_message_max_bytes = 262144
-session_tool_result_max_bytes = 65536
-session_request_body_max_bytes = 2097152
-session_retention_days = 30
+~/.claude/projects/
+  <encoded-path>/
+    <session-id>.jsonl        (conversation transcript)
+    <session-id>/             (sidecar: subagents/, tool-results/)
 ```
 
-The first implementation can store `session_retention_days` without automatic cleanup.
+One subdirectory per project. The subdirectory name encodes the project path. Each `.jsonl` file is one session. Files starting with `agent-` are agent sub-sessions and should be skipped in v1.
 
-## 6. Session Grouping
+### 3.2 JSONL Line Format
 
-Use this priority:
+Each `.jsonl` file contains one JSON object per line. Relevant line types:
 
-1. If a stable session ID is found in request metadata or headers, use it.
-2. If project path is known, group by `project_path + source_entrypoint + conversation_fingerprint`.
-3. If project path is unknown, group under `Unknown Project` and use request time plus message fingerprint.
+| Type | Example |
+|------|---------|
+| Metadata | `{"sessionId":"abc","cwd":"/path/to/project","timestamp":"2026-05-20T10:00:00Z"}` |
+| User message | `{"type":"user","message":{"role":"user","content":"hello"},"timestamp":"..."}` |
+| Assistant message | `{"type":"assistant","message":{"role":"assistant","content":[...]},"timestamp":"..."}` |
+| Custom title | `{"type":"custom-title","customTitle":"fix-login-bug"}` |
+| Meta skip | `{"isMeta":true,...}` |
 
-`conversation_fingerprint` should use:
+Content can be a plain string or an array of content blocks:
 
-1. First user message text hash.
-2. System prompt hash.
-3. Source entrypoint.
-4. Project path or `unknown`.
-
-The grouping strategy must be conservative. Creating extra sessions is better than merging unrelated sessions.
-
-## 7. Project Identification
-
-Project grouping uses:
-
-1. Current working directory or project path parsed from Claude Code `system` content.
-2. Useful entrypoint hints from headers or User-Agent.
-3. Path basename as `project_name` when a path is available.
-4. Fallback:
-
-```text
-project_name = "Unknown Project"
-project_path = ""
-project_name_source = "unknown"
+```json
+"text"
+[{"type":"text","text":"..."},{"type":"tool_use","id":"toolu_1","name":"Read","input":{}}]
+[{"type":"tool_result","tool_use_id":"toolu_1","content":"file contents"}]
 ```
 
-Allowed `project_name_source` values:
+### 3.3 Metadata Extraction (Listing)
 
-```text
-system
-header
-derived_path
-unknown
+For the session list, read only the first 10 and last 30 lines of each JSONL file:
+
+| Field | Source | Fallback |
+|-------|--------|----------|
+| `sessionId` | metadata line `sessionId` | filename stem |
+| `cwd` | metadata line `cwd` | `"Unknown Project"` |
+| `title` | last non-empty `custom-title` in the scan window > first user message (skip caveats/commands) > directory basename > ID prefix | session ID prefix |
+| `createdAt` | first `timestamp` | file mod time |
+| `lastActiveAt` | last non-meta `timestamp` | file mod time |
+| `messageCount` | count of non-meta, non-summary lines | 0 |
+
+### 3.4 Full Message Parsing (Detail)
+
+When a specific session is opened, parse the entire JSONL file into ordered messages.
+
+## 4. Project Directory Mapping
+
+Projects are identified by the Claude projects source directory together with the `cwd` field from session metadata. A single JSONL session can contain multiple `cwd` values when Claude Code runs commands from subdirectories; if those values have an ancestor/child relationship, the session must keep the ancestor path as its project path. If one source directory contains sessions from a project root and sessions from its subdirectories, subdirectory sessions must also be folded into the project root so `/repo/internal/frontend` is not shown as a separate `frontend` project.
+
+| Field | Value |
+|-------|-------|
+| `name` | `basename(projectPath)` |
+| `path` | normalized project root path; fall back to full `cwd` when the root cannot be inferred |
+| `sessionCount` | number of sessions folded into this project path |
+| `lastActiveAt` | most recent `lastActiveAt` among sessions |
+
+Projects are sorted by `lastActiveAt DESC`. Sessions within a project are also sorted by `lastActiveAt DESC`.
+
+Path normalization for cross-platform support:
+
+1. Use `filepath.Clean(cwd)` to normalize separators before grouping.
+2. Within one JSONL file, collect all scanned non-empty `cwd` values. If one `cwd` is an ancestor of all other scanned `cwd` values, use that ancestor for the session's `projectPath` instead of the last-seen `cwd`.
+3. Within the same Claude projects source directory, if one session `projectPath` is an ancestor of the other session `projectPath` values, use that ancestor as the source directory's project root.
+4. Ancestor checks must use one consistent comparable representation: normalize `\` to `/`, clean with slash-style path semantics, apply case-insensitive comparison for Windows drive paths, and compare path segments instead of string prefixes. `/work/project-a` must not match `/work/project-api`.
+5. On case-insensitive filesystems (Windows), apply `strings.ToLower` to the project path for deduplication.
+6. Use `filepath.Base(projectPath)` for project name (works with both `/` and `\` separators).
+
+## 5. Message Model
+
+| Role | Detection Rule | Display |
+|------|---------------|---------|
+| `system` | first metadata/system content | collapsed by default |
+| `user` | `message.role=user` with non-tool_result content | full light-green block highlight, included in outline |
+| `assistant` | `message.role=assistant` | text + tool use blocks |
+| `tool` | `message.role=user` where all content blocks are `tool_result` | tool name + result summary |
+
+Content block handling:
+
+| Block Type | Display |
+|------------|---------|
+| `text` | rendered as plain text |
+| `tool_use` | `[Tool: {name}]` with expandable input |
+| `tool_result` | summary with expandable detail |
+| `image` / binary | type and size only |
+
+User messages containing `<local-command-caveat>`, starting with `<command-name>`, or containing local-command stdout/stderr wrappers should be displayed but excluded from title candidates and de-emphasized in the outline.
+
+## 6. HTML Export
+
+Generate a self-contained HTML file for any session.
+
+Requirements:
+
+1. Single `.html` file, no external dependencies, works offline.
+2. Inline CSS: dark theme, monospace code blocks, print-friendly.
+3. Collapsible `<details>` elements for system prompts and tool results.
+4. User messages visually distinct: the full message block uses an eye-friendly light-green background with green border and dark-green role label; a colored left border alone is not sufficient.
+5. Timestamps shown per message.
+6. Header: session title, project path, time range, model (if available).
+7. Filename: `{title}-{date}.html` (date in `YYYY-MM-DD` format).
+
+Template structure:
+
+```html
+<!DOCTYPE html>
+<html lang="zh">
+<head><meta charset="utf-8"><title>{title}</title><style>/* inline */</style></head>
+<body>
+  <header><!-- session metadata --></header>
+  <main>
+    <!-- messages rendered server-side -->
+  </main>
+  <script>/* toggle collapse, minimal */</script>
+</body>
+</html>
 ```
 
-## 8. Message Model
+## 7. Admin API
 
-The center column displays messages in stable sequence order.
-
-Supported message types:
-
-| Type | Source | Display |
-|------|--------|---------|
-| `system` | request `system` | collapsed by default |
-| `user` | request `messages.role=user` | highlighted and included in right outline |
-| `assistant` | provider response or request history | text and tool use content |
-| `tool_use` | assistant content block | tool name and input summary |
-| `tool_result` | user content block | summary with expandable content |
-| `error` | provider or network error | error summary |
-
-Large, binary, image, and unknown payloads should store type, size, and summary instead of raw content.
-
-## 9. Streaming Reconstruction
-
-The SSE observer must support these Anthropic-style events:
-
-```text
-message_start
-content_block_start
-content_block_delta
-content_block_stop
-message_delta
-message_stop
-error
-```
-
-Rules:
-
-1. Append `text_delta` to the current assistant text block.
-2. Append `input_json_delta` to the current tool input buffer.
-3. Finalize the current block on `content_block_stop`.
-4. Finalize the assistant message on `message_stop`.
-5. Convert SSE `error` into an `error` message summary.
-6. Ignore locally injected heartbeat events.
-7. Capture failures must not change response forwarding.
-
-## 10. Storage Requirements
-
-Create these SQLite tables:
-
-```sql
-CREATE TABLE IF NOT EXISTS conversation_sessions (
-  id TEXT PRIMARY KEY,
-  project_name TEXT NOT NULL DEFAULT 'Unknown Project',
-  project_path TEXT NOT NULL DEFAULT '',
-  project_name_source TEXT NOT NULL DEFAULT 'unknown',
-  title TEXT NOT NULL DEFAULT '',
-  source_entrypoint TEXT NOT NULL DEFAULT '',
-  first_seen_at TEXT NOT NULL,
-  last_seen_at TEXT NOT NULL,
-  request_count INTEGER NOT NULL DEFAULT 0,
-  message_count INTEGER NOT NULL DEFAULT 0,
-  last_provider_id TEXT NOT NULL DEFAULT '',
-  last_provider_name TEXT NOT NULL DEFAULT '',
-  last_model TEXT NOT NULL DEFAULT '',
-  capture_status TEXT NOT NULL DEFAULT 'ok'
-);
-
-CREATE TABLE IF NOT EXISTS conversation_messages (
-  id TEXT PRIMARY KEY,
-  session_id TEXT NOT NULL,
-  request_id TEXT NOT NULL DEFAULT '',
-  role TEXT NOT NULL,
-  message_type TEXT NOT NULL,
-  content_text TEXT NOT NULL DEFAULT '',
-  content_json TEXT NOT NULL DEFAULT '',
-  tool_name TEXT NOT NULL DEFAULT '',
-  sequence INTEGER NOT NULL,
-  created_at TEXT NOT NULL,
-  token_input INTEGER NOT NULL DEFAULT 0,
-  token_output INTEGER NOT NULL DEFAULT 0,
-  truncated INTEGER NOT NULL DEFAULT 0,
-  capture_status TEXT NOT NULL DEFAULT 'ok',
-  FOREIGN KEY (session_id) REFERENCES conversation_sessions(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS conversation_request_links (
-  request_id TEXT PRIMARY KEY,
-  session_id TEXT NOT NULL,
-  request_sequence INTEGER NOT NULL,
-  started_at TEXT NOT NULL,
-  status_code INTEGER,
-  usage_source TEXT NOT NULL DEFAULT 'none',
-  FOREIGN KEY (session_id) REFERENCES conversation_sessions(id) ON DELETE CASCADE
-);
-```
-
-Required indexes:
-
-```sql
-CREATE INDEX IF NOT EXISTS idx_conversation_sessions_recent ON conversation_sessions(last_seen_at);
-CREATE INDEX IF NOT EXISTS idx_conversation_sessions_project ON conversation_sessions(project_name, last_seen_at);
-CREATE INDEX IF NOT EXISTS idx_conversation_sessions_entrypoint ON conversation_sessions(source_entrypoint, last_seen_at);
-CREATE INDEX IF NOT EXISTS idx_conversation_messages_session_sequence ON conversation_messages(session_id, sequence);
-CREATE INDEX IF NOT EXISTS idx_conversation_messages_request ON conversation_messages(request_id);
-CREATE INDEX IF NOT EXISTS idx_conversation_messages_role ON conversation_messages(session_id, role, sequence);
-```
-
-## 11. Admin API
-
-Add these authenticated routes:
+Authenticated routes under `/api/sessions/`:
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET` | `/api/conversations/settings` | Return capture settings |
-| `PUT` | `/api/conversations/settings` | Update capture settings and limits |
-| `GET` | `/api/conversations/projects` | Return project groups and counts |
-| `GET` | `/api/conversations/sessions` | Return paginated session list |
-| `GET` | `/api/conversations/sessions/{id}` | Return session detail and messages |
-| `GET` | `/api/conversations/sessions/{id}/outline` | Return user-message outline |
-| `DELETE` | `/api/conversations/sessions/{id}` | Delete one session |
+| `GET` | `/api/sessions/projects` | List projects with session counts |
+| `GET` | `/api/sessions?project={path}` | List sessions, optionally filtered by project |
+| `GET` | `/api/sessions/{id}?source={path}` | Session detail with messages |
+| `GET` | `/api/sessions/{id}/export?source={path}` | Export as HTML (returns `text/html`) |
+| `GET` | `/api/sessions/{id}/cleanup-hint?source={path}` | Return Claude Code CLI cleanup command hints (does not delete) |
 
-Supported query parameters:
+Query parameters:
 
 ```text
-project_name
-from
-to
-provider_id
-model
-capture_status
-page
-page_size
+project      filter sessions by cwd path
+page         page number (default 1)
+page_size    items per page (default 20, max 100)
+source       JSONL file path (required for detail/export/cleanup hint to disambiguate)
 ```
 
-`capture_status` accepts:
+The `source` parameter is required for detail, export, and cleanup hints because session IDs are not globally unique across projects. The server must not expose an API that deletes JSONL files or sidecar directories.
 
-```text
-all
-ok
-partial
-failed
-```
+Error responses use `{"error":"..."}`. Invalid methods return 405.
 
-## 12. Frontend Requirements
+## 8. Frontend
 
-Add a top-level tab:
+### 8.1 Tab
+
+Add `会话记录` tab to the dashboard navigation:
 
 ```text
 状态 / Providers / 证书 / 使用统计 / 会话记录
 ```
 
-The session browser should use a wider layout than the current status/provider pages:
+### 8.2 Layout
 
-```text
-max-width: 1600px
-```
+Two-panel layout, `max-width: 1600px`:
 
-Left sidebar:
+**Left panel (recommended 360px):**
 
-1. Project filter with `All Projects` default.
-2. Project list with counts.
-3. Session list sorted by `last_seen_at DESC`.
-4. Session card fields: title, project name, provider, model, last updated, message count, capture status.
+1. Project dropdown at the top, sorted by `lastActiveAt DESC`.
+2. Dropdown includes `"All Projects"` and concrete projects; each option shows project name and session count.
+3. Selecting a project refreshes the left panel body with that project's sessions.
+4. Session list scrolls vertically inside the left panel and does not affect the right detail scroll position.
+5. Session cards show title, relative time, and message count; in `"All Projects"` mode, they also show a project name or path summary.
+6. The currently selected session is highlighted in the left list.
 
-Center column:
+**Right panel:**
 
-1. Header with title, project, provider, model, and time range.
-2. Ordered messages.
-3. User messages visually distinct.
-4. Assistant messages support text, tool use, and tool result blocks.
-5. System and large tool result messages collapsed by default.
-6. Scroll target for each user message.
+1. When no session is selected, show an empty state that prompts the user to select a session from the left panel.
+2. When a session is selected, show header: title, project path, time range, export button, Claude Code CLI cleanup hint button.
+3. Message list shows the full conversation; user messages use a full light-green block background, assistant messages use white or neutral background, and system/tool messages remain collapsible.
+4. Outline sidebar on `xl+` screens: user messages only, click to scroll; when many user messages exist, the outline region must have a maximum height and support independent mouse-wheel vertical scrolling.
+5. Outline floating button + dialog on smaller screens.
+6. Do not add a "back to session list" button; the left session list remains visible, and switching sessions is done by clicking left list items.
 
-Right sidebar:
+### 8.3 Cleanup Hint Dialog
 
-1. Only `role=user` messages.
-2. Summary and timestamp.
-3. Click scrolls the center column to the corresponding message.
-4. Current user message is highlighted based on scroll position.
+The cleanup hint dialog only displays commands and never executes deletion. Command display must use a modern code-editor style:
 
-Empty and disabled states:
+1. Dark code box with clear contrast against the white dialog background.
+2. Monospace font, long-command wrapping, and no horizontal overflow that breaks the dialog.
+3. Lightweight highlighting for command keywords, flags, and paths; frontend token splitting is enough and a full syntax-highlighting library is not required.
+4. Copy button remains visible at the top-right or right side of the code box with clear hover state.
+5. Preview and interactive commands are shown as separate labeled code blocks.
 
-1. Disabled capture state explains that full conversations may contain sensitive content and provides an enable action.
-2. Enabled empty state says no sessions are available yet.
+### 8.4 States
 
-## 13. Non-Goals
+| State | Display |
+|-------|---------|
+| Config dir not accessible | Error message with mount instructions |
+| No projects found | "No Claude Code sessions found" with path hint |
+| Empty project | "This project has no sessions" |
+| Loading | Spinner |
 
-1. No cloud sync.
-2. No multi-instance session merge.
-3. No attempt to fully reconstruct Claude Code local internal state.
-4. No provider token or sensitive header persistence.
-5. No usage aggregation from conversation content.
-6. No full-text search in the first version.
-7. No Markdown or JSON export in the first version.
+## 9. Non-Goals
 
-## 14. Edge Cases
+1. No proxy modification — this feature is completely independent of proxy logic.
+2. No SSE reconstruction — not needed when reading local files.
+3. No multi-provider support — Claude Code only in v1.
+4. No full-text search in v1.
+5. No session resume or terminal integration (out of scope for a web admin panel).
+6. No cloud sync or multi-instance merge.
+7. No SQLite index — read files directly, cache in memory with TTL.
 
-1. Capture disabled: no conversation rows are written.
-2. Request body exceeds `session_request_body_max_bytes`: skip capture and leave proxy forwarding unchanged.
-3. Unknown project: group under `Unknown Project`.
-4. SSE parse failure: save partial content when possible and mark capture status `partial` or `failed`.
-5. Client disconnect: finalize whatever was captured and mark status `partial`.
-6. Non-2xx provider response: store a summarized `error` message without consuming the response body needed for forwarding.
-7. Duplicate request replay: use request link uniqueness to avoid duplicate messages for the same request ID.
+## 10. Edge Cases
 
-## 15. References
+1. `.claude/projects/` not found or not readable: return empty list with error hint.
+2. JSONL parse failure on a line: skip the line, continue parsing.
+3. JSONL file completely corrupted: skip the file, log warning.
+4. Missing `cwd`: fall back to `"Unknown Project"`.
+5. Missing `sessionId`: use filename stem as ID.
+6. Agent session files (`agent-*`): skip in v1.
+7. Cleanup hint: show commands only; do not execute deletion from the admin panel. For project-level cleanup, prefer `claude project purge --dry-run <project-path>` as a preview, then tell the user to run `claude project purge -i <project-path>` in a terminal for interactive confirmation. Session-level cleanup commands are version-dependent and should be checked with the current `claude --help` / `claude project --help`.
+8. Concurrent Claude Code writes: JSONL files are append-only; partial last line is expected and should be handled gracefully.
+9. Symlinked project paths: resolve to real path for deduplication.
 
-1. Anthropic streaming events and usage: https://platform.claude.com/docs/en/build-with-claude/streaming
-2. cc-switch: https://github.com/farion1231/cc-switch
+## 11. Deployment
+
+The Claude projects directory must be accessible to the application:
+
+- **Local run:** default `~/.claude/projects/` (via `os.UserHomeDir()`)
+- **Docker:** mount `~/.claude/projects/` as a volume, configure via `CLAUDE_PROJECTS_DIR` environment variable
+
+Cross-platform: `os.UserHomeDir()` and `filepath` functions handle Linux, macOS, and Windows automatically. The `CLAUDE_PROJECTS_DIR` environment variable can override the default projects path on any platform.
+
+## 12. References
+
+1. cc-switch session manager: https://github.com/farion1231/cc-switch
+2. cc-switch Claude provider implementation: `src-tauri/src/session_manager/providers/claude.rs`
+3. cc-switch session UI: `src/components/sessions/`

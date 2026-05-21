@@ -70,7 +70,101 @@ func TestScanSessionsExtractsMetadata(t *testing.T) {
 	}
 }
 
-func TestScanSessionsUsesHeadWindowForTitle(t *testing.T) {
+func TestScanProjectsFoldsSubdirectoryCwdIntoProjectRoot(t *testing.T) {
+	root := t.TempDir()
+	writeJSONL(t, filepath.Join(root, "encoded-project-a", "session-root.jsonl"),
+		`{"sessionId":"sess-root","cwd":"/work/project-a","timestamp":"2026-05-18T10:00:00Z"}`,
+		`{"type":"user","message":{"role":"user","content":"root"},"timestamp":"2026-05-18T10:01:00Z"}`,
+	)
+	writeJSONL(t, filepath.Join(root, "encoded-project-a", "session-frontend.jsonl"),
+		`{"sessionId":"sess-frontend","cwd":"/work/project-a/internal/frontend","timestamp":"2026-05-18T11:00:00Z"}`,
+		`{"type":"custom-title","customTitle":"Frontend work"}`,
+		`{"type":"user","message":{"role":"user","content":"frontend"},"timestamp":"2026-05-18T11:01:00Z"}`,
+	)
+
+	projects, err := ScanProjects(root)
+	if err != nil {
+		t.Fatalf("ScanProjects() error = %v", err)
+	}
+	if len(projects) != 1 {
+		t.Fatalf("len(projects) = %d, want 1: %#v", len(projects), projects)
+	}
+	if projects[0].Path != "/work/project-a" || projects[0].Name != "project-a" || projects[0].SessionCount != 2 {
+		t.Fatalf("project = %#v, want folded root project", projects[0])
+	}
+
+	sessions, err := ScanSessions(root, "/work/project-a")
+	if err != nil {
+		t.Fatalf("ScanSessions() error = %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("len(sessions) = %d, want 2: %#v", len(sessions), sessions)
+	}
+	for _, session := range sessions {
+		if session.ProjectPath != "/work/project-a" {
+			t.Fatalf("session %s ProjectPath = %q, want root", session.ID, session.ProjectPath)
+		}
+	}
+}
+
+func TestScanSessionsKeepsRootCwdWhenSessionTailContainsSubdirectoryCwd(t *testing.T) {
+	root := t.TempDir()
+	lines := []string{
+		`{"sessionId":"sess-frontend","cwd":"/work/project-a","timestamp":"2026-05-18T10:00:00Z"}`,
+		`{"type":"custom-title","customTitle":"Frontend work"}`,
+		`{"type":"user","message":{"role":"user","content":"start at root"},"timestamp":"2026-05-18T10:01:00Z"}`,
+	}
+	for i := 0; i < 45; i++ {
+		lines = append(lines, `{"type":"assistant","message":{"role":"assistant","content":"filler"},"timestamp":"2026-05-18T10:02:00Z"}`)
+	}
+	lines = append(lines,
+		`{"sessionId":"sess-frontend","cwd":"/work/project-a/internal/frontend","timestamp":"2026-05-18T11:00:00Z"}`,
+		`{"type":"user","message":{"role":"user","content":"command from frontend"},"timestamp":"2026-05-18T11:01:00Z"}`,
+	)
+	writeJSONL(t, filepath.Join(root, "encoded-project-a", "session-frontend.jsonl"), lines...)
+
+	projects, err := ScanProjects(root)
+	if err != nil {
+		t.Fatalf("ScanProjects() error = %v", err)
+	}
+	if len(projects) != 1 {
+		t.Fatalf("len(projects) = %d, want 1: %#v", len(projects), projects)
+	}
+	if projects[0].Path != "/work/project-a" || projects[0].Name != "project-a" {
+		t.Fatalf("project = %#v, want root project", projects[0])
+	}
+
+	sessions, err := ScanSessions(root, "/work/project-a")
+	if err != nil {
+		t.Fatalf("ScanSessions() error = %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("len(sessions) = %d, want 1: %#v", len(sessions), sessions)
+	}
+	if sessions[0].ProjectPath != "/work/project-a" {
+		t.Fatalf("ProjectPath = %q, want root", sessions[0].ProjectPath)
+	}
+}
+
+func TestIsSameOrChildPathHandlesWindowsStylePaths(t *testing.T) {
+	if !isSameOrChildPath(`C:\Work\Project-A`, `c:\work\project-a\internal\frontend`) {
+		t.Fatal("expected Windows-style child path to match parent case-insensitively")
+	}
+	if isSameOrChildPath(`C:\Work\Project-A`, `C:\Work\Project-API`) {
+		t.Fatal("expected sibling with shared prefix not to match")
+	}
+}
+
+func TestIsSameOrChildPathUsesPathSegments(t *testing.T) {
+	if !isSameOrChildPath("/work/project-a", "/work/project-a/internal/frontend") {
+		t.Fatal("expected child path to match parent")
+	}
+	if isSameOrChildPath("/work/project-a", "/work/project-api") {
+		t.Fatal("expected sibling with shared prefix not to match")
+	}
+}
+
+func TestScanSessionsUsesScanWindowCustomTitleForTitle(t *testing.T) {
 	root := t.TempDir()
 	lines := []string{
 		`{"sessionId":"sess-1","cwd":"/work/project-a","timestamp":"2026-05-18T10:00:00Z"}`,
@@ -89,8 +183,8 @@ func TestScanSessionsUsesHeadWindowForTitle(t *testing.T) {
 	if len(sessions) != 1 {
 		t.Fatalf("len(sessions) = %d, want 1", len(sessions))
 	}
-	if sessions[0].Title != "Head title" {
-		t.Fatalf("Title = %q, want head-window title", sessions[0].Title)
+	if sessions[0].Title != "Late custom title" {
+		t.Fatalf("Title = %q, want scan-window custom title", sessions[0].Title)
 	}
 }
 

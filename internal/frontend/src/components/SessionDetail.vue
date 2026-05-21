@@ -5,9 +5,9 @@
       :id="`session-message-${index}`"
       :key="`${message.role}-${index}`"
       :class="[
-        'rounded-lg border-2 bg-white p-4',
-        message.role === 'user' ? 'border-l-4 border-l-primary border-border' : '',
-        message.role === 'assistant' ? 'border-border' : '',
+        'rounded-lg border-2 p-4',
+        message.role === 'user' ? 'border-green-300 bg-green-100 text-green-950' : '',
+        message.role === 'assistant' ? 'border-border bg-white' : '',
         message.role === 'system' || message.role === 'tool' ? 'border-accent/40 bg-accent-light/40' : '',
       ]"
     >
@@ -19,11 +19,21 @@
         <pre class="mt-3 whitespace-pre-wrap break-words rounded-md bg-fg p-4 font-mono text-[13px] leading-relaxed text-gray-100">{{ message.content }}</pre>
       </details>
       <div v-else>
-        <div class="mb-2 flex items-center justify-between gap-3 text-xs font-bold uppercase tracking-widest text-text-secondary">
+        <div
+          :class="[
+            'mb-2 flex items-center justify-between gap-3 text-xs font-bold uppercase tracking-widest',
+            message.role === 'user' ? 'text-green-800' : 'text-text-secondary',
+          ]"
+        >
           <span>{{ message.role }}</span>
           <span class="font-mono normal-case tracking-normal">{{ formatMessageTime(message.ts) }}</span>
         </div>
-        <pre class="whitespace-pre-wrap break-words font-sans text-[14px] leading-relaxed text-fg">{{ message.content }}</pre>
+        <pre
+          :class="[
+            'whitespace-pre-wrap break-words font-sans text-[14px] leading-relaxed',
+            message.role === 'user' ? 'text-green-950' : 'text-fg',
+          ]"
+        >{{ message.content }}</pre>
       </div>
     </div>
   </div>

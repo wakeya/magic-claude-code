@@ -42,7 +42,8 @@ h1{margin:0 0 10px;font-size:26px}
 .meta{color:#9ca3af;font-size:13px}
 main{max-width:980px;margin:0 auto;padding:28px}
 .message{border:1px solid #374151;border-radius:8px;padding:16px;margin:0 0 16px;background:#1f2937}
-.message.user{border-left:4px solid #38bdf8}
+.message.user{background:#dcfce7;border:1px solid #86efac;color:#14532d}
+.message.user .role{color:#166534}
 .message.assistant{border-left:4px solid #a78bfa}
 .message.system,.message.tool{border-left:4px solid #f59e0b}
 .role{font-weight:700;text-transform:uppercase;font-size:12px;color:#cbd5e1;margin-bottom:8px}

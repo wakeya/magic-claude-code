@@ -85,6 +85,17 @@ func TestExtractTitleFromCustomTitle(t *testing.T) {
 	}
 }
 
+func TestExtractTitleUsesLastCustomTitle(t *testing.T) {
+	got := ExtractTitle([]string{
+		`{"type":"custom-title","customTitle":"old-title"}`,
+		`{"type":"user","message":{"role":"user","content":"Original user prompt"}}`,
+		`{"type":"custom-title","customTitle":"20260521-003-temp"}`,
+	})
+	if got != "20260521-003-temp" {
+		t.Fatalf("ExtractTitle() = %q, want latest custom title", got)
+	}
+}
+
 func TestExtractTitleFromFirstUserMessage(t *testing.T) {
 	got := ExtractTitle([]string{
 		`{"type":"assistant","message":{"role":"assistant","content":"skip"}}`,
@@ -103,5 +114,32 @@ func TestExtractTitleSkipsCaveatAndCommands(t *testing.T) {
 	})
 	if got != "Real user task" {
 		t.Fatalf("ExtractTitle() = %q", got)
+	}
+}
+
+func TestScanSessionsUsesTailCustomTitleForRenamedSession(t *testing.T) {
+	root := t.TempDir()
+	lines := []string{
+		`{"sessionId":"sess-renamed","cwd":"/work/temp","timestamp":"2026-05-21T00:00:00Z"}`,
+		`{"type":"user","message":{"role":"user","content":"Old user prompt title"},"timestamp":"2026-05-21T00:01:00Z"}`,
+	}
+	for i := 0; i < 45; i++ {
+		lines = append(lines, `{"type":"assistant","message":{"role":"assistant","content":"filler"},"timestamp":"2026-05-21T00:02:00Z"}`)
+	}
+	lines = append(lines,
+		`{"type":"custom-title","customTitle":"20260521-003-temp","sessionId":"sess-renamed"}`,
+		`{"type":"user","message":{"role":"user","content":"<local-command-stdout>(no content)</local-command-stdout>"},"timestamp":"2026-05-21T00:03:00Z"}`,
+	)
+	writeJSONL(t, filepath.Join(root, "encoded-temp", "sess-renamed.jsonl"), lines...)
+
+	sessions, err := ScanSessions(root, "/work/temp")
+	if err != nil {
+		t.Fatalf("ScanSessions() error = %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("len(sessions) = %d, want 1", len(sessions))
+	}
+	if sessions[0].Title != "20260521-003-temp" {
+		t.Fatalf("Title = %q, want renamed custom title", sessions[0].Title)
 	}
 }

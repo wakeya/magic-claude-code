@@ -49,6 +49,10 @@ tmp/
 coverage/
 coverage.out
 
+# --- AI 工具临时文件 ---
+.codex/
+.superpowers/
+
 # --- Claude Code 临时文件 ---
 tmpclaude-*-cwd
 

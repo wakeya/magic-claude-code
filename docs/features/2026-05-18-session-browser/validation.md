@@ -2,30 +2,30 @@
 
 **Feature:** Claude Code 会话记录浏览器
 **Status:** draft
-**Last updated:** 2026-05-18
+**Last updated:** 2026-05-20
 
 ## Acceptance Criteria
 
-1. Capture is disabled by default.
-2. Enabling capture requires an explicit admin UI action.
-3. No provider tokens or sensitive request headers are persisted.
-4. Non-streaming conversations are saved and forwarded unchanged.
-5. Streaming SSE conversations are reconstructed and forwarded unchanged.
-6. Project grouping uses the configured conservative fallback behavior.
-7. Session list supports project, time, provider, model, capture status, and pagination filters.
-8. Session detail returns messages in stable sequence order.
-9. Outline contains only `user` messages.
-10. Deleting a session removes linked messages and request links.
+1. Sessions are read from `~/.claude/projects/` without modifying proxy logic.
+2. Projects are listed as primary navigation with session counts.
+3. Selecting a project shows its sessions sorted by most recent activity.
+4. Session detail displays messages in chronological order with correct roles.
+5. User messages are highlighted and listed in the outline sidebar.
+6. System prompts and tool results are collapsed by default.
+7. Clicking an outline item scrolls to the matching message.
+8. HTML export produces a self-contained `.html` file viewable offline.
+9. The admin UI does not delete JSONL files or sidecar directories; the cleanup entry only displays Claude Code CLI command hints.
+10. Agent session files (`agent-*`) are excluded from listing.
+11. Corrupted or empty JSONL files do not crash the application.
 
 ## Automated Verification
 
 Backend:
 
 ```bash
-go test ./internal/conversation
-go test ./internal/proxy -run 'TestProxy.*Capture' -v
-go test ./internal/admin -run TestConversation -v
-go test ./...
+go test ./internal/session/... -v
+go test ./internal/admin/... -run TestSession -v
+go test ./... -cover
 ```
 
 Frontend:
@@ -37,17 +37,17 @@ npm run build
 
 ## Manual Verification
 
-1. Start the proxy/admin service.
-2. Open the admin UI.
-3. Open the `会话记录` tab.
-4. Verify the disabled state explains privacy risk.
-5. Enable capture.
-6. Send one Claude Code CLI request through the proxy.
-7. Verify a session appears.
-8. Open the session.
-9. Verify center messages and right-side user outline.
-10. Click a user outline item and verify scroll positioning.
-11. Delete the session and verify it disappears.
+1. Ensure `~/.claude/projects/` is accessible (or mount in Docker).
+2. Start the proxy/admin service.
+3. Open the admin UI and navigate to the `会话记录` tab.
+4. Verify the project list shows projects from `~/.claude/projects/`.
+5. Select a project and verify sessions appear with correct titles.
+6. Open a session and verify messages are displayed in order.
+7. Verify user messages are highlighted and appear in the outline.
+8. Click an outline item and verify scroll positioning.
+9. Click "Export" and verify the downloaded HTML opens correctly in a browser.
+10. Open the cleanup hint and verify it shows `claude project purge --dry-run <project-path>` plus interactive terminal cleanup guidance, and that no files are deleted by the admin panel.
+11. Verify that the proxy continues to work normally (no proxy changes).
 
 ## Evidence Log
 

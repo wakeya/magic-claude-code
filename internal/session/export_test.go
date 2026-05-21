@@ -39,6 +39,15 @@ func TestExportHTMLCollapsesSystemMessages(t *testing.T) {
 	}
 }
 
+func TestExportHTMLHighlightsUserMessagesAsGreenBlocks(t *testing.T) {
+	html := exportTestHTML(t)
+	for _, want := range []string{".message.user{", "background:#dcfce7", "border:1px solid #86efac", "color:#166534"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("exported user message CSS missing %q: %s", want, html)
+		}
+	}
+}
+
 func exportTestHTML(t *testing.T) string {
 	t.Helper()
 	out, err := ExportHTML(&SessionDetail{

@@ -78,14 +78,18 @@ func ParseMessages(filePath string) ([]Message, error) {
 }
 
 func ExtractTitle(lines []string) string {
+	customTitle := ""
 	for _, raw := range lines {
 		line, ok := parseJSONLine(raw)
 		if !ok {
 			continue
 		}
 		if strings.TrimSpace(line.CustomTitle) != "" {
-			return strings.TrimSpace(line.CustomTitle)
+			customTitle = strings.TrimSpace(line.CustomTitle)
 		}
+	}
+	if customTitle != "" {
+		return customTitle
 	}
 	for _, raw := range lines {
 		line, ok := parseJSONLine(raw)
@@ -218,7 +222,9 @@ func parseTimestampUnix(value string) int64 {
 func isTitleNoise(content string) bool {
 	trimmed := strings.TrimSpace(content)
 	return strings.Contains(trimmed, "<local-command-caveat>") ||
-		strings.HasPrefix(trimmed, "<command-name>")
+		strings.HasPrefix(trimmed, "<command-name>") ||
+		strings.HasPrefix(trimmed, "<local-command-stdout>") ||
+		strings.HasPrefix(trimmed, "<local-command-stderr>")
 }
 
 func trimTitle(content string) string {

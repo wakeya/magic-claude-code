@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"io"
 	"os"
+	slashpath "path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -27,6 +28,11 @@ type scanCacheEntry struct {
 	at       time.Time
 	sessions []Session
 	err      error
+}
+
+type scannedSession struct {
+	session       Session
+	sourceProject string
 }
 
 func DefaultProjectsDir() string {
@@ -114,7 +120,7 @@ func scanSessionsCached(root string) ([]Session, error) {
 	}
 	scanCacheMu.Unlock()
 
-	var sessions []Session
+	var scanned []scannedSession
 	err = filepath.WalkDir(absRoot, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
@@ -126,12 +132,16 @@ func scanSessionsCached(root string) ([]Session, error) {
 		if !ok {
 			return nil
 		}
-		sessions = append(sessions, sess)
+		scanned = append(scanned, scannedSession{
+			session:       sess,
+			sourceProject: sourceProjectDir(absRoot, path),
+		})
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
+	sessions := foldSourceProjectSessions(scanned)
 	sort.Slice(sessions, func(i, j int) bool {
 		return sessions[i].LastActiveAt.After(sessions[j].LastActiveAt)
 	})
@@ -139,6 +149,107 @@ func scanSessionsCached(root string) ([]Session, error) {
 	scanCache[absRoot] = scanCacheEntry{at: now, sessions: append([]Session(nil), sessions...), err: err}
 	scanCacheMu.Unlock()
 	return append([]Session(nil), sessions...), nil
+}
+
+func sourceProjectDir(root string, path string) string {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return filepath.Dir(path)
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	if len(parts) == 0 || parts[0] == "." || parts[0] == "" {
+		return filepath.Dir(path)
+	}
+	return parts[0]
+}
+
+func foldSourceProjectSessions(scanned []scannedSession) []Session {
+	bySource := make(map[string][]int)
+	for i, item := range scanned {
+		bySource[item.sourceProject] = append(bySource[item.sourceProject], i)
+	}
+	roots := make(map[string]string, len(bySource))
+	for source, indexes := range bySource {
+		paths := make([]string, 0, len(indexes))
+		for _, index := range indexes {
+			paths = append(paths, scanned[index].session.ProjectPath)
+		}
+		roots[source] = inferProjectRoot(paths)
+	}
+	sessions := make([]Session, 0, len(scanned))
+	for _, item := range scanned {
+		session := item.session
+		if root := roots[item.sourceProject]; root != "" {
+			session.ProjectPath = root
+		}
+		sessions = append(sessions, session)
+	}
+	return sessions
+}
+
+func inferProjectRoot(paths []string) string {
+	if len(paths) == 0 {
+		return ""
+	}
+	candidates := append([]string(nil), paths...)
+	sort.Slice(candidates, func(i, j int) bool {
+		return pathDepth(candidates[i]) < pathDepth(candidates[j])
+	})
+	for _, candidate := range candidates {
+		if candidate == "" || candidate == "Unknown Project" {
+			continue
+		}
+		if isAncestorOfAll(candidate, paths) {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func pathDepth(path string) int {
+	return len(pathSegments(projectKey(path)))
+}
+
+func isAncestorOfAll(candidate string, paths []string) bool {
+	for _, path := range paths {
+		if !isSameOrChildPath(candidate, path) {
+			return false
+		}
+	}
+	return true
+}
+
+func isSameOrChildPath(parent string, child string) bool {
+	parent = projectKey(parent)
+	child = projectKey(child)
+	if parent == child {
+		return true
+	}
+	if parent == "" || child == "" || parent == "Unknown Project" || child == "Unknown Project" {
+		return false
+	}
+	if parent == "/" {
+		return strings.HasPrefix(child, "/")
+	}
+	parentParts := pathSegments(parent)
+	childParts := pathSegments(child)
+	if len(parentParts) == 0 || len(parentParts) > len(childParts) {
+		return false
+	}
+	for i, part := range parentParts {
+		if childParts[i] != part {
+			return false
+		}
+	}
+	return true
+}
+
+func pathSegments(path string) []string {
+	normalized := strings.Trim(projectComparablePath(path), "/")
+	if normalized == "" || normalized == "." {
+		return nil
+	}
+	return strings.Split(normalized, "/")
 }
 
 func scanSessionFile(path string) (Session, bool) {
@@ -153,6 +264,7 @@ func scanSessionFile(path string) (Session, bool) {
 		CreatedAt: fallbackModTime(info),
 		LastAt:    fallbackModTime(info),
 	}
+	var cwdCandidates []string
 	for _, raw := range lines {
 		line, ok := parseJSONLine(raw)
 		if !ok || line.IsMeta {
@@ -162,7 +274,9 @@ func scanSessionFile(path string) (Session, bool) {
 			meta.ID = line.SessionID
 		}
 		if line.CWD != "" {
-			meta.CWD = normalizeProjectPath(line.CWD)
+			cwd := normalizeProjectPath(line.CWD)
+			cwdCandidates = append(cwdCandidates, cwd)
+			meta.CWD = cwd
 		}
 		if ts, ok := parseTimestamp(line.Timestamp); ok {
 			if meta.CreatedAt.IsZero() || ts.Before(meta.CreatedAt) {
@@ -174,7 +288,10 @@ func scanSessionFile(path string) (Session, bool) {
 			meta.MessageCount++
 		}
 	}
-	title := ExtractTitle(firstN(lines, listHeadLines))
+	if root := inferProjectRoot(cwdCandidates); root != "" {
+		meta.CWD = root
+	}
+	title := ExtractTitle(lines)
 	if title == "" {
 		title = projectName(meta.CWD)
 	}
@@ -315,11 +432,28 @@ func normalizeProjectPath(path string) string {
 }
 
 func projectKey(path string) string {
+	return projectComparablePath(path)
+}
+
+func projectComparablePath(path string) string {
 	cleaned := normalizeProjectPath(path)
-	if runtime.GOOS == "windows" {
-		return strings.ToLower(cleaned)
+	if cleaned == "Unknown Project" {
+		return cleaned
 	}
-	return cleaned
+	normalized := strings.ReplaceAll(cleaned, "\\", "/")
+	normalized = slashpath.Clean(normalized)
+	if runtime.GOOS == "windows" || hasWindowsDrivePrefix(normalized) {
+		normalized = strings.ToLower(normalized)
+	}
+	return normalized
+}
+
+func hasWindowsDrivePrefix(path string) bool {
+	if len(path) < 2 || path[1] != ':' {
+		return false
+	}
+	first := path[0]
+	return (first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z')
 }
 
 func projectName(path string) string {
