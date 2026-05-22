@@ -62,3 +62,19 @@ A set of incremental improvements to the Session Browser feature, focusing on se
 | `internal/session/types.go` | Added `MessageCount` field to `SessionDetail` |
 | `internal/session/scanner.go` | Removed `countMessages`, restored window-based counting |
 | `internal/admin/session_handler.go` | Set `MessageCount: len(messages)` in detail and export handlers |
+| `internal/session/scanner.go` | Removed `countMessages`, restored window-based counting; `foldSourceProjectSessions` filters invalid paths + `projectNameFromDir` fallback |
+| `internal/session/scanner_test.go` | `projectNameFromDir` unit test + fold integration tests |
+| `internal/frontend/src/components/SessionOutline.vue` | Null-guard on `props.messages` |
+
+## Additional Requirements (2026-05-22 follow-up fixes)
+
+### 7. Unknown Project — Project Name Inference Fix
+
+- **R022**: `foldSourceProjectSessions` must filter out `""` and `"Unknown Project"` when collecting paths from sibling sessions in the same directory, so that sessions with valid `cwd` can correctly determine the project name for sessions without `cwd`.
+- **R023**: When all sessions in a directory lack `cwd`, the last segment of the encoded directory name must be used as a fallback project display name instead of showing "Unknown Project".
+- **R024**: Directory name parsing must handle the leading `-` from path encoding (absolute paths have `/` encoded as `-`), skipping empty leading segments.
+
+### 8. Null Messages JSON Serialization Fix
+
+- **R025**: `handleSessionDetail` and `handleSessionExport` must convert nil messages to `[]Message{}` when `ParseMessages` returns nil, ensuring JSON output is `"messages":[]` instead of `"messages":null`.
+- **R026**: The `SessionOutline.vue` `userItems` computed property must null-guard `props.messages` with `(props.messages || [])`.

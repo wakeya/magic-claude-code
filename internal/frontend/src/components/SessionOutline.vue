@@ -25,7 +25,7 @@ defineEmits<{
 }>()
 
 const userItems = computed(() =>
-  props.messages
+  (props.messages || [])
     .map((message, index) => ({ message, index }))
     .filter(({ message }) => message.role === 'user')
     .map(({ message, index }) => ({

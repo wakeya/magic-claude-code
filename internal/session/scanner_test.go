@@ -229,3 +229,75 @@ func writeJSONL(t *testing.T, path string, lines ...string) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 }
+
+func TestProjectNameFromDir(t *testing.T) {
+	tests := []struct {
+		dir  string
+		want string
+	}{
+		// 不含 "-" 的项目名可完整还原
+		{"-home-www-workspace-2026-claude_code_proxy_dns", "claude_code_proxy_dns"},
+		// 含 "-" 的项目名有损，只能拿到最后一段
+		{"-home-www-workspace-MyProjects-2026-pm0511-lvshixiehui", "lvshixiehui"},
+		{"-home-www-workspace-claude-workspace", "workspace"},
+		{"foo", "foo"},
+		{"", "Unknown Project"},
+		{"-", "Unknown Project"},
+	}
+	for _, tt := range tests {
+		got := projectNameFromDir(tt.dir)
+		if got != tt.want {
+			t.Errorf("projectNameFromDir(%q) = %q, want %q", tt.dir, got, tt.want)
+		}
+	}
+}
+
+func TestFoldSourceProjectSessionsUsesValidCwdToResolveUnknown(t *testing.T) {
+	// 同目录下：session-A 缺少 cwd → "Unknown Project"
+	//           session-B 有 cwd → "/work/project-a"
+	// 期望：fold 后 session-A 也被修正为 "/work/project-a"
+	root := t.TempDir()
+	writeJSONL(t, filepath.Join(root, "-work-project-a", "session-A.jsonl"),
+		`{"sessionId":"sess-A","timestamp":"2026-05-18T10:00:00Z"}`,
+	)
+	writeJSONL(t, filepath.Join(root, "-work-project-a", "session-B.jsonl"),
+		`{"sessionId":"sess-B","cwd":"/work/project-a","timestamp":"2026-05-18T11:00:00Z"}`,
+	)
+
+	sessions, err := ScanSessions(root, "")
+	if err != nil {
+		t.Fatalf("ScanSessions() error = %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("len(sessions) = %d, want 2", len(sessions))
+	}
+	for _, sess := range sessions {
+		if sess.ProjectPath != "/work/project-a" {
+			t.Errorf("session %s ProjectPath = %q, want /work/project-a", sess.ID, sess.ProjectPath)
+		}
+	}
+}
+
+func TestFoldSourceProjectSessionsAllUnknownFallback(t *testing.T) {
+	// 同目录下所有 session 都缺少 cwd，使用目录名最后一段作为兜底
+	root := t.TempDir()
+	writeJSONL(t, filepath.Join(root, "-work-foo_bar", "session-A.jsonl"),
+		`{"sessionId":"sess-A","timestamp":"2026-05-18T10:00:00Z"}`,
+	)
+	writeJSONL(t, filepath.Join(root, "-work-foo_bar", "session-B.jsonl"),
+		`{"sessionId":"sess-B","timestamp":"2026-05-18T11:00:00Z"}`,
+	)
+
+	sessions, err := ScanSessions(root, "")
+	if err != nil {
+		t.Fatalf("ScanSessions() error = %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("len(sessions) = %d, want 2", len(sessions))
+	}
+	for _, sess := range sessions {
+		if sess.ProjectPath != "foo_bar" {
+			t.Errorf("session %s ProjectPath = %q, want foo_bar", sess.ID, sess.ProjectPath)
+		}
+	}
+}

@@ -95,6 +95,9 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request, id 
 		writeSessionError(w, http.StatusInternalServerError, "failed to parse session")
 		return
 	}
+	if messages == nil {
+		messages = []session.Message{}
+	}
 	writeSessionJSON(w, session.SessionDetail{Session: sess, Messages: messages, MessageCount: len(messages)}, nil)
 }
 
@@ -108,6 +111,9 @@ func (s *Server) handleSessionExport(w http.ResponseWriter, r *http.Request, id 
 	if err != nil {
 		writeSessionError(w, http.StatusInternalServerError, "failed to parse session")
 		return
+	}
+	if messages == nil {
+		messages = []session.Message{}
 	}
 	theme := r.URL.Query().Get("theme")
 	html, err := session.ExportHTML(&session.SessionDetail{Session: sess, Messages: messages, MessageCount: len(messages)}, theme)

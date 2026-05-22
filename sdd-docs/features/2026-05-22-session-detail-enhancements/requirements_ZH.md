@@ -62,3 +62,19 @@
 | `internal/session/types.go` | `SessionDetail` 新增 `MessageCount` 字段 |
 | `internal/session/scanner.go` | 移除 `countMessages`，恢复基于 window 的计数 |
 | `internal/admin/session_handler.go` | 在详情和导出 handler 中设置 `MessageCount: len(messages)` |
+| `internal/session/scanner.go` | 移除 `countMessages`，恢复基于 window 的计数；`foldSourceProjectSessions` 过滤无效路径 + `projectNameFromDir` 兜底 |
+| `internal/session/scanner_test.go` | `projectNameFromDir` 单测 + fold 集成测试 |
+| `internal/frontend/src/components/SessionOutline.vue` | `props.messages` 空值防御 |
+
+## 补充需求 (2026-05-22 后续修复)
+
+### 7. Unknown Project — 项目名推断修复
+
+- **R022**: `foldSourceProjectSessions` 收集同目录 session 路径时，必须过滤掉 `""` 和 `"Unknown Project"`，确保有效 cwd 的 session 能带动缺失 cwd 的 session。
+- **R023**: 当同目录下所有 session 都缺少 `cwd` 时，必须从文件目录名中提取最后一段作为项目名的兜底显示，而非显示 "Unknown Project"。
+- **R024**: 目录名解析必须处理以 `-` 开头的路径编码格式（绝对路径 `/` 被编码为 `-`），跳过开头的空段。
+
+### 8. 空消息 JSON 序列化修复
+
+- **R025**: `handleSessionDetail` 和 `handleSessionExport` 必须在 `ParseMessages` 返回 `nil` 时将 messages 转为 `[]Message{}`，确保 JSON 输出 `"messages":[]` 而非 `"messages":null`。
+- **R026**: 前端 `SessionOutline.vue` 的 `userItems` computed 必须对 `props.messages` 做空值防御（`props.messages || []`）。

@@ -49,3 +49,28 @@
 - Wrap `resp.Body` with `gzip.NewReader`: Rejected. Would require detecting `Content-Encoding` and handling both compressed/uncompressed responses.
 
 **Rationale**: Stripping the headers is a one-line fix that prevents the problem at the source. No upstream SSE response will be compressed, so the SSEObserver always receives plain text. Other providers (Zhipu GLM, Kimi) that ignore `Accept-Encoding` for SSE are unaffected.
+
+## D7: Project Name Inference — Valid CWD Priority + Directory Name Fallback
+
+**Decision**: When `foldSourceProjectSessions` collects `ProjectPath` values from sibling sessions in the same directory, filter out `""` and `"Unknown Project"` before inference. When all paths are invalid, extract the last segment from the encoded directory name as a fallback.
+
+**Problem**: Some JSONL files lack the `cwd` field (e.g., sessions launched from `~`), causing `scanSessionFile` to return `"Unknown Project"`. The old code passed "Unknown Project" alongside valid paths to `inferProjectRoot`. Since `isAncestorOfAll` returns false for "Unknown Project", the entire group inference failed — even when sibling sessions in the same directory had correct `cwd` values.
+
+**Alternatives considered**:
+- Full-path decoding from directory name: Rejected. The encoding (`/` → `-`) is lossy — project names containing `-` cannot be reliably recovered. E.g., `-home-www-claude-workspace` could be `/home/www/claude/workspace` or `/home/www/claude-workspace`.
+- Filter only, no fallback: Partial fix. Still shows "Unknown Project" when all sessions in a directory lack CWD.
+- Infer full path from directory name: Rejected. Unnecessary — `projectName()` only uses the last segment for display, so a full path isn't needed.
+
+**Rationale**: Two-tier strategy — trust signal data first (valid CWD from siblings), only fall back to directory name when all signals are absent. The directory name fallback is lossy for project names containing `-` (e.g., `pm0511-lvshixiehui` → `lvshixiehui`), but is still better than "Unknown Project".
+
+## D8: Nil Slice JSON Serialization — Dual Backend + Frontend Defense
+
+**Decision**: Convert nil messages to empty slice in `handleSessionDetail` and `handleSessionExport` on the backend; add `|| []` null-guard on `props.messages` in the frontend `SessionOutline.vue`.
+
+**Problem**: In Go, `var msgs []Message` is a nil slice, and `json.Marshal` outputs `null` rather than `[]`. The TypeScript type annotation `SessionMessage[]` does not reflect the runtime null possibility. `SessionOutline.vue`'s computed property directly calls `props.messages.map(...)`, throwing `TypeError: Cannot read properties of null (reading 'map')` when messages is null.
+
+**Alternatives considered**:
+- Frontend-only fix: Would fix the immediate error, but other potential consumers could still hit the same issue.
+- Backend-only fix: Would ensure data integrity, but the frontend would lack a defensive layer.
+
+**Rationale**: Dual-layer fix — backend ensures the data contract (`"messages"` is always an array), frontend defends against unexpected nulls. Go's `json.Marshal([]Message(nil))` → `null` is a classic pitfall worth explicitly guarding against in the handler layer. The root cause is `SessionOutline.vue:28`'s `.map()` call; the backend fix is data integrity insurance.

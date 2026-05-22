@@ -172,9 +172,17 @@ func foldSourceProjectSessions(scanned []scannedSession) []Session {
 	for source, indexes := range bySource {
 		paths := make([]string, 0, len(indexes))
 		for _, index := range indexes {
-			paths = append(paths, scanned[index].session.ProjectPath)
+			p := scanned[index].session.ProjectPath
+			if p == "" || p == "Unknown Project" {
+				continue
+			}
+			paths = append(paths, p)
 		}
-		roots[source] = inferProjectRoot(paths)
+		if len(paths) > 0 {
+			roots[source] = inferProjectRoot(paths)
+		} else {
+			roots[source] = projectNameFromDir(source)
+		}
 	}
 	sessions := make([]Session, 0, len(scanned))
 	for _, item := range scanned {
@@ -185,6 +193,22 @@ func foldSourceProjectSessions(scanned []scannedSession) []Session {
 		sessions = append(sessions, session)
 	}
 	return sessions
+}
+
+// projectNameFromDir 从编码后的项目目录名中提取项目名称（最后一段）。
+// 仅在所有 session 都缺少 cwd 时作为兜底，优于显示 "Unknown Project"。
+// 例如: "-home-www-workspace-2026-claude_code_proxy_dns" → "claude_code_proxy_dns"
+func projectNameFromDir(dir string) string {
+	parts := strings.Split(dir, "-")
+	// 跳过开头的空段（路径以 / 开头时，编码后以 - 开头）
+	// 例如 "-home-www-workspace-foo" 分割后第一段为空
+	for len(parts) > 0 && parts[0] == "" {
+		parts = parts[1:]
+	}
+	if len(parts) == 0 {
+		return "Unknown Project"
+	}
+	return parts[len(parts)-1]
 }
 
 func inferProjectRoot(paths []string) string {

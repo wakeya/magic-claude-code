@@ -49,3 +49,28 @@
 - 包装 `resp.Body` 为 `gzip.NewReader`: 已否决。需要检测 `Content-Encoding` 并同时处理压缩/未压缩响应。
 
 **理由**: 剥离头是从源头阻止问题的单行修复。上游 SSE 响应不会被压缩，SSEObserver 始终收到明文。忽略 `Accept-Encoding` 的其他 provider（Zhipu GLM、Kimi）不受影响。
+
+## D7: 项目名推断 — 同目录有效 cwd 优先 + 目录名兜底
+
+**决策**: `foldSourceProjectSessions` 收集同目录 session 的 `ProjectPath` 时过滤掉 `""` 和 `"Unknown Project"`，仅用有效路径推断。全部无效时，从目录名最后一段提取项目名兜底。
+
+**问题**: 某些 jsonl 文件缺少 `cwd` 字段（如在 `~` 目录启动的会话），导致 `scanSessionFile` 返回 `"Unknown Project"`。旧代码将 "Unknown Project" 与其他有效路径一起传给 `inferProjectRoot`，由于 `isAncestorOfAll` 对 "Unknown Project" 返回 false，整组推断失败——即使同目录有 session 包含正确的 `cwd`。
+
+**备选方案**:
+- 尝试从目录名完整解码项目路径: 已否决。路径编码（`/` → `-`）是有损的，项目名若含 `-` 则无法可靠还原。例如 `-home-www-claude-workspace` 可能是 `/home/www/claude/workspace` 或 `/home/www/claude-workspace`。
+- 仅过滤无效路径不做兜底: 部分解决。但当目录下所有 session 都缺 cwd 时，仍然显示 "Unknown Project"。
+- 从目录名推断完整路径: 已否决。不必要——`projectName()` 只取最后一段作为显示名，完整路径不是必需的。
+
+**理由**: 两层策略——优先信赖数据（同目录有效 cwd），仅在全部缺失时用目录名兜底。目录名兜底虽对有 `-` 的项目名有损（`pm0511-lvshixiehui` → `lvshixiehui`），但仍优于 "Unknown Project"。
+
+## D8: nil slice JSON 序列化 — 后端 + 前端双层防御
+
+**决策**: 后端在 `handleSessionDetail` 和 `handleSessionExport` 中将 nil messages 转为空切片；前端 `SessionOutline.vue` 对 `props.messages` 添加 `|| []` 防御。
+
+**问题**: Go 中 `var msgs []Message` 声明后是 nil slice，`json.Marshal` 输出 `null` 而非 `[]`。TypeScript 类型标注 `SessionMessage[]` 无法反映运行时的 null 可能性。`SessionOutline.vue` 的 computed 属性直接调用 `props.messages.map(...)`，在 messages 为 null 时抛出 `TypeError: Cannot read properties of null (reading 'map')`。
+
+**备选方案**:
+- 仅前端修复: 可解决当前错误，但其他可能的消费者仍会踩坑。
+- 仅后端修复: 可确保数据完整性，但前端缺少防御层。
+
+**理由**: 双层修复——后端保证数据契约（`"messages"` 始终是数组），前端兜底防止意外的 null。Go 中 `json.Marshal([]Message(nil))` → `null` 是经典陷阱，值得在 handler 层显式防范。**根因**在前端 `SessionOutline.vue:28` 的 `.map()` 调用，后端修复是数据完整性保障。
