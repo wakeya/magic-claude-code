@@ -64,6 +64,14 @@
               <div class="min-w-0">
                 <h2 class="break-words text-xl font-bold session-heading">{{ detail.session.title }}</h2>
                 <div class="mt-1 break-all text-sm session-muted">{{ detail.session.project_path }}</div>
+                <div class="mt-1 flex items-center gap-2">
+                  <FileText class="h-3.5 w-3.5 shrink-0 session-muted" />
+                  <span class="truncate font-mono text-xs session-muted" :title="detail.session.source_path">{{ sourceFileName }}</span>
+                  <button class="session-icon-button shrink-0" :title="copiedSource ? t('sessions.copied') : t('sessions.copy')" @click="copySourcePath">
+                    <Copy v-if="!copiedSource" class="h-3.5 w-3.5" />
+                    <Check v-else class="h-3.5 w-3.5 text-green-500" />
+                  </button>
+                </div>
                 <div class="mt-2 text-xs session-muted">
                   {{ formatDateTime(detail.session.created_at) }} - {{ formatDateTime(detail.session.last_active_at) }}
                 </div>
@@ -134,7 +142,7 @@
 
 <script setup lang="ts">
 import { computed, defineComponent, h, onMounted, ref } from 'vue'
-import { ArrowUp, Copy, Download, Folder, List, MessageSquare, RefreshCw, Terminal, X } from 'lucide-vue-next'
+import { ArrowUp, Check, Copy, Download, FileText, Folder, List, MessageSquare, RefreshCw, Terminal, X } from 'lucide-vue-next'
 import {
   useApi,
   type SessionCleanupHint,
@@ -164,6 +172,21 @@ const showOutline = ref(false)
 const detailRef = ref<InstanceType<typeof SessionDetail> | null>(null)
 
 const totalSessions = computed(() => projects.value.reduce((sum, project) => sum + project.session_count, 0))
+const sourceFileName = computed(() => {
+  const path = detail.value?.session.source_path
+  if (!path) return ''
+  const parts = path.split(/[\\/]/)
+  return parts.at(-1) || path
+})
+
+const copiedSource = ref(false)
+async function copySourcePath() {
+  const path = detail.value?.session.source_path
+  if (!path) return
+  await navigator.clipboard?.writeText(path)
+  copiedSource.value = true
+  window.setTimeout(() => { copiedSource.value = false }, 1200)
+}
 
 const CommandBlock = defineComponent({
   props: {
@@ -229,7 +252,12 @@ async function loadSessions() {
 
 async function selectSession(session: SessionItem) {
   selectedSession.value = session
-  detail.value = await api.getSessionDetail(session.id, session.source_path)
+  copiedSource.value = false
+  const res = await api.getSessionDetail(session.id, session.source_path)
+  detail.value = res
+  if (res.message_count && res.message_count !== session.message_count) {
+    session.message_count = res.message_count
+  }
 }
 
 async function exportSelected() {

@@ -141,11 +141,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 复制所有 header（跳过 Host，让 Go 自动设置）
-	// 如果有供应商配置的 Token，替换 Authorization
+	// 复制所有 header（跳过 Host 和 Accept-Encoding，防止上游压缩 SSE 响应）
+	// Go 的 http.Transport 不会自动解压应用层显式设置的 Accept-Encoding，
+	// 导致压缩后的 SSE 数据无法被 SSEObserver 解析
 	hasAuth := false
 	for key, values := range r.Header {
 		if !shouldForwardRequestHeader(key) {
+			continue
+		}
+		// 不转发 Accept-Encoding 和 TE，防止上游压缩 SSE 响应
+		if strings.EqualFold(key, "Accept-Encoding") || strings.EqualFold(key, "TE") {
 			continue
 		}
 		// 如果有供应商配置的 Token，替换认证头

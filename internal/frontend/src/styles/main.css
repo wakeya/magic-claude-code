@@ -228,6 +228,7 @@ body {
   --session-code-border: var(--app-code-border);
   --session-code-text: var(--app-code-text);
   --session-shadow: var(--app-shadow);
+  --session-technical-border: #f59e0b;
   background:
     radial-gradient(circle at top left, rgba(59, 130, 246, 0.14), transparent 32rem),
     var(--session-bg);
@@ -286,6 +287,7 @@ body {
   justify-content: center;
   border-radius: 0.75rem;
   padding: 0.55rem;
+  background: var(--session-border);
   color: var(--session-text-muted);
   transition: all 160ms ease;
 }
@@ -379,11 +381,13 @@ body {
 }
 
 .session-message-assistant {
+  border-left: 4px solid var(--session-accent);
   background: var(--session-surface-raised);
   color: var(--session-text);
 }
 
 .session-message-technical {
+  border-left: 4px solid var(--session-technical-border);
   background: var(--session-surface-muted);
 }
 

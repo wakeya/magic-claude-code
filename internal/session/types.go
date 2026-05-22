@@ -26,8 +26,9 @@ type Message struct {
 }
 
 type SessionDetail struct {
-	Session  Session   `json:"session"`
-	Messages []Message `json:"messages"`
+	Session       Session   `json:"session"`
+	Messages      []Message `json:"messages"`
+	MessageCount  int       `json:"message_count"`
 }
 
 type CleanupHint struct {

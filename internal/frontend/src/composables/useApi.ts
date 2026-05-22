@@ -173,6 +173,7 @@ export interface SessionMessage {
 export interface SessionDetailResponse {
   session: SessionItem
   messages: SessionMessage[]
+  message_count: number
 }
 
 export interface SessionListResponse {
