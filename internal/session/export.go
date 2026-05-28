@@ -113,9 +113,9 @@ main{flex:1;min-width:0}
 .outline-item.outline-active{background:var(--outline-active-bg);border-color:var(--outline-active-border)}
 .outline-item-preview{font-size:13px;line-height:1.4;color:var(--text);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .outline-item-time{font-size:11px;color:var(--text-muted);margin-top:4px}
-.back-to-top{display:none;position:fixed;bottom:20px;right:20px;width:40px;height:40px;border-radius:50%;border:1px solid var(--border);background:var(--surface);color:var(--text-muted);cursor:pointer;transition:background .15s,color .15s;box-shadow:0 2px 8px rgba(0,0,0,.15);font-size:18px;z-index:40}
+.back-to-top{position:fixed;bottom:20px;right:20px;width:40px;height:40px;border-radius:50%;border:1px solid var(--border);background:var(--surface);color:var(--text-muted);cursor:pointer;transition:background .15s,color .15s;box-shadow:0 2px 8px rgba(0,0,0,.15);font-size:18px;z-index:40;display:flex;align-items:center;justify-content:center}
 .back-to-top:hover{background:var(--outline-hover);color:var(--text)}
-@media(max-width:1023px){.back-to-top{display:flex;align-items:center;justify-content:center}}
+@media(max-width:1023px){.outline-panel{display:none}.outline-toggle{display:flex}.layout{padding:0 8px}}
 
 /* Small screen: hide fixed panel, show toggle */
 .outline-toggle{display:none;position:fixed;bottom:20px;right:20px;width:48px;height:48px;border-radius:50%;border:none;background:var(--accent);color:#fff;font-size:20px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.2);z-index:50;align-items:center;justify-content:center}
@@ -126,12 +126,6 @@ main{flex:1;min-width:0}
 .outline-modal-close{border:none;background:transparent;color:var(--text-muted);cursor:pointer;font-size:20px;padding:4px;line-height:1}
 .outline-modal-body{padding:12px;max-height:60vh;overflow-y:auto}
 .outline-modal-backtop{display:flex;justify-content:flex-end;padding:12px;border-top:1px solid var(--border)}
-
-@media(max-width:1023px){
-.outline-panel{display:none}
-.outline-toggle{display:flex}
-.layout{padding:0 8px}
-}
 </style>
 </head>
 <body>
