@@ -48,6 +48,69 @@ func TestExportHTMLHighlightsUserMessagesAsGreenBlocks(t *testing.T) {
 	}
 }
 
+func TestExportHTMLContainsOutline(t *testing.T) {
+	html := exportTestHTML(t)
+	if !strings.Contains(html, "Outline") {
+		t.Fatalf("export should contain Outline panel: %s", html)
+	}
+}
+
+func TestExportHTMLOutlineItems(t *testing.T) {
+	html := exportTestHTML(t)
+	// The test data has 1 user message + 1 assistant message (2 total)
+	// System messages are collapsed and not included in outline
+	count := strings.Count(html, "class=\"outline-item\"")
+	if count != 2 {
+		t.Fatalf("expected 2 outline items (1 user + 1 assistant), got %d: %s", count, html)
+	}
+}
+
+func TestExportHTMLOutlineHasPreviewText(t *testing.T) {
+	html := exportTestHTML(t)
+	// The user message is "hello" (5 chars, less than 50)
+	if !strings.Contains(html, "hello") {
+		t.Fatalf("outline preview should contain 'hello': %s", html)
+	}
+}
+
+func TestExportHTMLMessageHasAnchorID(t *testing.T) {
+	html := exportTestHTML(t)
+	// The user message is at index 1
+	if !strings.Contains(html, `id="msg-1"`) {
+		t.Fatalf("user message should have id=\"msg-1\": %s", html)
+	}
+}
+
+func TestExportHTMLOutlineHasBackToTop(t *testing.T) {
+	html := exportTestHTML(t)
+	if !strings.Contains(html, "back-to-top") {
+		t.Fatalf("export should contain back-to-top: %s", html)
+	}
+}
+
+func TestExportHTMLOutlineScript(t *testing.T) {
+	html := exportTestHTML(t)
+	if !strings.Contains(html, "jumpToMsg") {
+		t.Fatalf("export should contain jumpToMsg JS: %s", html)
+	}
+	if !strings.Contains(html, "IntersectionObserver") {
+		t.Fatalf("export should contain IntersectionObserver: %s", html)
+	}
+	if !strings.Contains(html, "backToTop") {
+		t.Fatalf("export should contain backToTop JS: %s", html)
+	}
+}
+
+func TestExportHTMLOutlineModal(t *testing.T) {
+	html := exportTestHTML(t)
+	if !strings.Contains(html, "outline-modal") {
+		t.Fatalf("export should contain outline-modal: %s", html)
+	}
+	if !strings.Contains(html, "outline-toggle") {
+		t.Fatalf("export should contain outline-toggle: %s", html)
+	}
+}
+
 func exportTestHTML(t *testing.T) string {
 	t.Helper()
 	out, err := ExportHTML(&SessionDetail{
