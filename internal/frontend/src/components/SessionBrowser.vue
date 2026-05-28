@@ -97,7 +97,7 @@
 
         <aside class="hidden 2xl:block">
           <div class="session-outline-panel sticky top-4 max-h-[calc(100vh-2rem)] overflow-y-auto overscroll-contain p-3">
-            <div class="mb-3 text-xs font-bold uppercase tracking-widest session-muted">{{ t('sessions.outline') }}</div>
+            <div class="mb-3 text-xs font-bold uppercase tracking-widest session-muted">{{ t('sessions.outline') }} ({{ outlineCount }})</div>
             <SessionOutline :messages="detail.messages" @jump="jumpToMessage" />
           </div>
         </aside>
@@ -177,6 +177,8 @@ const sourceFileName = computed(() => {
   const parts = path.split(/[\\/]/)
   return parts.at(-1) || path
 })
+
+const outlineCount = computed(() => detail.value?.messages.filter(m => m.role === 'user').length ?? 0)
 
 const copiedSource = ref(false)
 async function copySourcePath() {
