@@ -57,11 +57,11 @@ func TestExportHTMLContainsOutline(t *testing.T) {
 
 func TestExportHTMLOutlineItems(t *testing.T) {
 	html := exportTestHTML(t)
-	// The test data has 1 user message + 1 assistant message (2 total)
+	// The test data has 1 user message, rendered in both sidebar and modal (2 total)
 	// System messages are collapsed and not included in outline
 	count := strings.Count(html, "class=\"outline-item\"")
 	if count != 2 {
-		t.Fatalf("expected 2 outline items (1 user + 1 assistant), got %d: %s", count, html)
+		t.Fatalf("expected 2 outline items (sidebar + modal), got %d: %s", count, html)
 	}
 }
 
