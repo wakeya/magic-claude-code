@@ -126,7 +126,7 @@ func exportTestHTML(t *testing.T) string {
 			{Role: "user", Content: "hello"},
 			{Role: "assistant", Content: "done"},
 		},
-	}, "dark")
+	}, "dark", "en")
 	if err != nil {
 		t.Fatalf("ExportHTML() error = %v", err)
 	}

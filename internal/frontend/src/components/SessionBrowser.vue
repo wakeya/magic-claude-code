@@ -263,7 +263,7 @@ async function selectSession(session: SessionItem) {
 async function exportSelected() {
   if (!selectedSession.value) return
   try {
-    const blob = await api.exportSessionHTML(selectedSession.value.id, selectedSession.value.source_path, themeMode.value)
+    const blob = await api.exportSessionHTML(selectedSession.value.id, selectedSession.value.source_path, themeMode.value, locale.value)
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url

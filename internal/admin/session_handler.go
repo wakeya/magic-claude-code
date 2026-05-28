@@ -116,7 +116,8 @@ func (s *Server) handleSessionExport(w http.ResponseWriter, r *http.Request, id 
 		messages = []session.Message{}
 	}
 	theme := r.URL.Query().Get("theme")
-	html, err := session.ExportHTML(&session.SessionDetail{Session: sess, Messages: messages, MessageCount: len(messages)}, theme)
+	locale := r.URL.Query().Get("locale")
+	html, err := session.ExportHTML(&session.SessionDetail{Session: sess, Messages: messages, MessageCount: len(messages)}, theme, locale)
 	if err != nil {
 		writeSessionError(w, http.StatusInternalServerError, "failed to export session")
 		return

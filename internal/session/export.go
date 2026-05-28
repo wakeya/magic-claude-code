@@ -25,13 +25,15 @@ var parsedExportTemplate = template.Must(template.New("session-export").Funcs(te
 	},
 }).Parse(exportTemplate))
 
-func ExportHTML(detail *SessionDetail, theme string) ([]byte, error) {
+func ExportHTML(detail *SessionDetail, theme, locale string) ([]byte, error) {
 	var out bytes.Buffer
 	data := map[string]any{
 		"Session":       detail.Session,
 		"Messages":      detail.Messages,
 		"Theme":         theme,
+		"Locale":        locale,
 		"OutlineItems":  buildOutlineItems(detail.Messages),
+		"OutlineCount":  len(buildOutlineItems(detail.Messages)),
 	}
 	if err := parsedExportTemplate.Execute(&out, data); err != nil {
 		return nil, err
@@ -154,7 +156,7 @@ main{flex:1;min-width:0}
 {{end}}
 </main>
 <aside class="outline-panel">
-<div class="outline-title">Outline</div>
+<div class="outline-title">{{if eq .Locale "zh"}}大纲 ({{.OutlineCount}}){{else}}Outline ({{.OutlineCount}}){{end}}</div>
 <div class="outline-items">
 {{range .OutlineItems}}
 <button class="outline-item" onclick="jumpToMsg('msg-{{.Index}}')">
@@ -171,7 +173,7 @@ main{flex:1;min-width:0}
 <button class="outline-toggle" onclick="document.getElementById('outline-modal').showModal()">☰</button>
 <dialog class="outline-modal" id="outline-modal">
 <div class="outline-modal-header">
-<span class="outline-modal-title">Outline</span>
+<span class="outline-modal-title">{{if eq .Locale "zh"}}大纲 ({{.OutlineCount}}){{else}}Outline ({{.OutlineCount}}){{end}}</span>
 <button class="outline-modal-close" onclick="document.getElementById('outline-modal').close()">×</button>
 </div>
 <div class="outline-modal-body">
