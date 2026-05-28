@@ -3,20 +3,35 @@ package session
 import (
 	"bytes"
 	"html/template"
+	"strings"
 	"time"
 )
 
+// OutlineItem represents a summary item for the session outline
+type OutlineItem struct {
+	Index     int
+	Preview   string
+	Timestamp int64
+}
+
 var parsedExportTemplate = template.Must(template.New("session-export").Funcs(template.FuncMap{
-	"time": formatExportTime,
-	"fold": shouldFoldMessage,
+	"time":         formatExportTime,
+	"fold":         shouldFoldMessage,
+	"outlineTime": func(ts int64) string {
+		if ts == 0 {
+			return ""
+		}
+		return time.Unix(ts, 0).Format("2006-01-02 15:04:05")
+	},
 }).Parse(exportTemplate))
 
 func ExportHTML(detail *SessionDetail, theme string) ([]byte, error) {
 	var out bytes.Buffer
 	data := map[string]any{
-		"Session":  detail.Session,
-		"Messages": detail.Messages,
-		"Theme":    theme,
+		"Session":       detail.Session,
+		"Messages":      detail.Messages,
+		"Theme":         theme,
+		"OutlineItems":  buildOutlineItems(detail.Messages),
 	}
 	if err := parsedExportTemplate.Execute(&out, data); err != nil {
 		return nil, err
@@ -33,6 +48,30 @@ func formatExportTime(unix int64) string {
 
 func shouldFoldMessage(role string) bool {
 	return role == "system" || role == "tool"
+}
+
+func buildOutlineItems(messages []Message) []OutlineItem {
+	var items []OutlineItem
+	for i, msg := range messages {
+		if msg.Role != "user" {
+			continue
+		}
+		preview := previewText(msg.Content)
+		items = append(items, OutlineItem{
+			Index:     i,
+			Preview:   preview,
+			Timestamp: msg.Timestamp,
+		})
+	}
+	return items
+}
+
+func previewText(content string) string {
+	compact := strings.Join(strings.Fields(content), " ")
+	if len(compact) <= 50 {
+		return compact
+	}
+	return compact[:50] + "..."
 }
 
 const exportTemplate = `<!DOCTYPE html>
