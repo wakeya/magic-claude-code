@@ -142,6 +142,11 @@ func isThinkingSignatureError(lower string) bool {
 		return true
 	}
 
+	// thinking content must be passed back (DeepSeek: "The content[].thinking in the thinking mode must be passed back")
+	if strings.Contains(lower, "passed back") && strings.Contains(lower, "thinking") {
+		return true
+	}
+
 	// Thought signature is not valid
 	if strings.Contains(lower, "thought signature") &&
 		(strings.Contains(lower, "not valid") || strings.Contains(lower, "invalid")) {
@@ -153,6 +158,10 @@ func isThinkingSignatureError(lower string) bool {
 
 func isToolValidationError(lower string) bool {
 	if strings.Contains(lower, "function name or parameters is empty") {
+		return true
+	}
+	// DeepSeek: "tool_use ids were found without tool_result blocks immediately after"
+	if strings.Contains(lower, "tool_use") && strings.Contains(lower, "without") && strings.Contains(lower, "tool_result") {
 		return true
 	}
 	if !hasGenericInvalidRequestPhrase(lower) {

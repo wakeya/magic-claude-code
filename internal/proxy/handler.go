@@ -273,8 +273,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				usageReq.ErrorMessage = usage.SanitizeErrorMessage(string(observer.Body()))
 				tok.UsageSource = usage.UsageSourceNone
 				tok.UsageParseStatus = usage.ParseStatusSkippedNon2xx
-				log.Printf("[Proxy] Error %d %s | params: %s | resp: %s",
-					resp.StatusCode, backendURL, summarizeRequestParams(modifiedBody), usageReq.ErrorMessage)
+				log.Printf("[Proxy] Error %d %s | headers: %s | params: %s | resp: %s",
+					resp.StatusCode, backendURL, summarizeCompatHeaders(r.Header), summarizeRequestParams(modifiedBody), usageReq.ErrorMessage)
 			} else {
 				values, source, status := usage.ExtractUsageFromJSON(observer.Body())
 				tok = tokenRecordFromUsage(values, source, status)
@@ -465,6 +465,23 @@ func summarizeRequestParams(body []byte) string {
 	}
 	out, _ := json.Marshal(summary)
 	return string(out)
+}
+
+// summarizeCompatHeaders 提取对兼容性排查有用的请求头（用于错误日志）
+func summarizeCompatHeaders(header http.Header) string {
+	keys := []string{"Anthropic-Version", "Anthropic-Beta", "Content-Type"}
+	parts := make([]string, 0, len(keys)+1)
+	for _, k := range keys {
+		if v := header.Get(k); v != "" {
+			parts = append(parts, fmt.Sprintf("%s: %s", k, v))
+		}
+	}
+	if v := header.Get("X-Api-Key"); v != "" {
+		parts = append(parts, "X-Api-Key: ***"+v[max(0, len(v)-4):])
+	} else if v := header.Get("Authorization"); v != "" {
+		parts = append(parts, "Authorization: ***")
+	}
+	return strings.Join(parts, ", ")
 }
 
 // requestBodySummary 从请求体中提取关键统计信息
