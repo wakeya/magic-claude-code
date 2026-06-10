@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"claude_code_proxy_dns/internal/config"
-	"claude_code_proxy_dns/internal/usage"
+	"magic-claude-code/internal/config"
+	"magic-claude-code/internal/usage"
 )
 
 // 请求体大小限制 (10MB)

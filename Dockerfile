@@ -27,7 +27,7 @@ COPY . .
 COPY --from=frontend-builder /frontend/dist ./internal/frontend/dist
 
 # 构建
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o claude_code_proxy_dns ./cmd/server
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o mcc ./cmd/server
 
 # 阶段3: 运行
 FROM alpine:latest
@@ -38,7 +38,7 @@ RUN apk --no-cache add ca-certificates tzdata
 WORKDIR /app
 
 # 复制二进制文件
-COPY --from=builder /app/claude_code_proxy_dns .
+COPY --from=builder /app/mcc .
 
 # 创建数据目录
 RUN mkdir -p /app/data
@@ -50,5 +50,5 @@ EXPOSE 443 8442
 ENV ADMIN_PASSWORD=admin123
 
 # 启动
-ENTRYPOINT ["./claude_code_proxy_dns"]
+ENTRYPOINT ["./mcc"]
 CMD ["-data", "/app/data"]

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"claude_code_proxy_dns/internal/config"
+	"magic-claude-code/internal/config"
 )
 
 // handleProviders 处理供应商列表

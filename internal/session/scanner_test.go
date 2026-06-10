@@ -235,8 +235,8 @@ func TestProjectNameFromDir(t *testing.T) {
 		dir  string
 		want string
 	}{
-		// 不含 "-" 的项目名可完整还原
-		{"-home-www-workspace-2026-claude_code_proxy_dns", "claude_code_proxy_dns"},
+		// 含 "-" 的项目名有损，只能拿到最后一段
+		{"-home-www-workspace-2026-magic-claude-code", "code"},
 		// 含 "-" 的项目名有损，只能拿到最后一段
 		{"-home-www-workspace-MyProjects-2026-pm0511-lvshixiehui", "lvshixiehui"},
 		{"-home-www-workspace-claude-workspace", "workspace"},

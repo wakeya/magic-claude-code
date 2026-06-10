@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"claude_code_proxy_dns/internal/config"
+	"magic-claude-code/internal/config"
 )
 
 func TestIsSSEStream(t *testing.T) {

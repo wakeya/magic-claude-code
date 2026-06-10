@@ -197,7 +197,7 @@ func foldSourceProjectSessions(scanned []scannedSession) []Session {
 
 // projectNameFromDir 从编码后的项目目录名中提取项目名称（最后一段）。
 // 仅在所有 session 都缺少 cwd 时作为兜底，优于显示 "Unknown Project"。
-// 例如: "-home-www-workspace-2026-claude_code_proxy_dns" → "claude_code_proxy_dns"
+// 例如: "-home-www-workspace-2026-magic-claude-code" → "code"
 func projectNameFromDir(dir string) string {
 	parts := strings.Split(dir, "-")
 	// 跳过开头的空段（路径以 / 开头时，编码后以 - 开头）

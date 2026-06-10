@@ -1,4 +1,4 @@
-module claude_code_proxy_dns
+module magic-claude-code
 
 go 1.26.0
 

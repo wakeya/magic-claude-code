@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"claude_code_proxy_dns/internal/config"
+	"magic-claude-code/internal/config"
 )
 
 func TestIsHardcodedEndpoint(t *testing.T) {
@@ -69,13 +69,13 @@ func TestIsHardcodedEndpoint(t *testing.T) {
 		{"/v1/messages", false},
 		{"/v1/complete", false},
 		{"/some/other/path", false},
-		{"/api/oauth/claude_cli/role", false},   // 单数 role 不应匹配
-		{"/api/feature", false},                  // 无尾部斜杠不应匹配
-		{"/mcp-registry", false},                 // 无尾部斜杠不应匹配
-		{"/api/oauth/account", false},             // 无尾部斜杠不应匹配
-		{"/v1/session_ingress/session", false},     // 无尾部斜杠不应匹配
-		{"/api/oauth/organizations", false},       // 无尾部斜杠不应匹配
-		{"/v1/code/sessions", false},              // 无尾部斜杠不应匹配
+		{"/api/oauth/claude_cli/role", false},  // 单数 role 不应匹配
+		{"/api/feature", false},                // 无尾部斜杠不应匹配
+		{"/mcp-registry", false},               // 无尾部斜杠不应匹配
+		{"/api/oauth/account", false},          // 无尾部斜杠不应匹配
+		{"/v1/session_ingress/session", false}, // 无尾部斜杠不应匹配
+		{"/api/oauth/organizations", false},    // 无尾部斜杠不应匹配
+		{"/v1/code/sessions", false},           // 无尾部斜杠不应匹配
 	}
 
 	for _, tt := range tests {
@@ -265,16 +265,16 @@ func TestHandleEmptyResponse(t *testing.T) {
 		{"/api/claude_code/settings"},
 		{"/api/claude_code/user_settings"},
 		{"/api/oauth/account/settings"},
-			{"/api/claude_code_grove"},
-			{"/api/organization/claude_code_first_token_date"},
-			{"/v1/ultrareview/quota"},
-			{"/v1/session_ingress/session/test-id"},
-			{"/api/claude_code/team_memory"},
-			{"/api/oauth/organizations/org-123/referral/eligibility"},
-			{"/api/oauth/organizations/org-123/overage_credit_grant"},
-			{"/v1/code/sessions/sess-123/teleport-events"},
-			{"/api/auth/trusted_devices"},
-			{"/api/oauth/file_upload"},
+		{"/api/claude_code_grove"},
+		{"/api/organization/claude_code_first_token_date"},
+		{"/v1/ultrareview/quota"},
+		{"/v1/session_ingress/session/test-id"},
+		{"/api/claude_code/team_memory"},
+		{"/api/oauth/organizations/org-123/referral/eligibility"},
+		{"/api/oauth/organizations/org-123/overage_credit_grant"},
+		{"/v1/code/sessions/sess-123/teleport-events"},
+		{"/api/auth/trusted_devices"},
+		{"/api/oauth/file_upload"},
 	}
 
 	for _, tt := range endpoints {
@@ -356,16 +356,16 @@ func TestHandleHardcodedEndpoint(t *testing.T) {
 		{"/api/claude_code/settings"},
 		{"/api/claude_code/user_settings"},
 		{"/api/oauth/account/settings"},
-			{"/api/claude_code_grove"},
-			{"/api/organization/claude_code_first_token_date"},
-			{"/v1/ultrareview/quota"},
-			{"/v1/session_ingress/session/test-id"},
-			{"/api/claude_code/team_memory"},
-			{"/api/oauth/organizations/org-123/referral/eligibility"},
-			{"/api/auth/trusted_devices"},
-			{"/api/oauth/file_upload"},
-			{"/api/oauth/organizations/org-123/admin_requests"},
-			{"/v1/code/sessions/sess-123/teleport-events"},
+		{"/api/claude_code_grove"},
+		{"/api/organization/claude_code_first_token_date"},
+		{"/v1/ultrareview/quota"},
+		{"/v1/session_ingress/session/test-id"},
+		{"/api/claude_code/team_memory"},
+		{"/api/oauth/organizations/org-123/referral/eligibility"},
+		{"/api/auth/trusted_devices"},
+		{"/api/oauth/file_upload"},
+		{"/api/oauth/organizations/org-123/admin_requests"},
+		{"/v1/code/sessions/sess-123/teleport-events"},
 	}
 
 	for _, tt := range tests {

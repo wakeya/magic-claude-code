@@ -8,6 +8,8 @@ const here = dirname(fileURLToPath(import.meta.url))
 const source = readFileSync(join(here, 'AppHeader.vue'), 'utf8')
 
 test('header owns the global theme switch', () => {
+  assert.match(source, /Magic Claude Code/)
+  assert.match(source, /https:\/\/github\.com\/wakeya\/magic-claude-code/)
   assert.match(source, /useTheme/)
   assert.match(source, /persistTheme/)
   assert.match(source, /themeMode/)

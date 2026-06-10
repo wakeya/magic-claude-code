@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"claude_code_proxy_dns/internal/session"
+	"magic-claude-code/internal/session"
 )
 
 func (s *Server) handleSessionProjects(w http.ResponseWriter, r *http.Request) {

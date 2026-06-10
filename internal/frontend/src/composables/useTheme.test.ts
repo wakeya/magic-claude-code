@@ -32,6 +32,10 @@ class ThrowingStorage {
   }
 }
 
+test('theme storage key uses the current app brand', () => {
+  assert.equal(themeStorageKey, 'magic-claude-code-theme')
+})
+
 test('normalizeThemeMode falls back to light for invalid values', () => {
   assert.equal(normalizeThemeMode(null), 'light')
   assert.equal(normalizeThemeMode(''), 'light')

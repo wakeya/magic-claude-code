@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"claude_code_proxy_dns/internal/usage"
+	"magic-claude-code/internal/usage"
 )
 
 // handleLogin 处理登录

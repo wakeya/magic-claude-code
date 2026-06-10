@@ -13,12 +13,12 @@ import (
 	"syscall"
 	"time"
 
-	"claude_code_proxy_dns/internal/admin"
-	"claude_code_proxy_dns/internal/cert"
-	"claude_code_proxy_dns/internal/config"
-	"claude_code_proxy_dns/internal/frontend"
-	"claude_code_proxy_dns/internal/proxy"
-	"claude_code_proxy_dns/internal/usage"
+	"magic-claude-code/internal/admin"
+	"magic-claude-code/internal/cert"
+	"magic-claude-code/internal/config"
+	"magic-claude-code/internal/frontend"
+	"magic-claude-code/internal/proxy"
+	"magic-claude-code/internal/usage"
 )
 
 // generateRandomPassword 生成随机密码

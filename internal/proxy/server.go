@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"claude_code_proxy_dns/internal/config"
+	"magic-claude-code/internal/config"
 )
 
 // Server 代理服务器

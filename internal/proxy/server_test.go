@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"claude_code_proxy_dns/internal/config"
-	"claude_code_proxy_dns/internal/usage"
+	"magic-claude-code/internal/config"
+	"magic-claude-code/internal/usage"
 )
 
 func TestProxyHandler(t *testing.T) {

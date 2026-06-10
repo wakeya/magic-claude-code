@@ -1,4 +1,4 @@
-# Claude Code 透明代理
+# Magic Claude Code
 
 让 Claude Code 误以为在与官方 API 通信的透明代理服务。
 
@@ -22,14 +22,14 @@
 ```bash
 # 克隆项目
 git clone <repo-url>
-cd claude_code_proxy_dns
+cd magic-claude-code
 
 # 构建镜像
-docker build -t claude_code_proxy_dns .
+docker build -t magic-claude-code .
 
 # 运行容器
 docker run -d \
-  --name claude_code_proxy_dns \
+  --name mcc \
   -p 443:443 \
   -p 8442:8442 \
   -v ./data:/app/data \
@@ -38,10 +38,10 @@ docker run -d \
   -e CLAUDE_PROJECTS_DIR=/claude-projects \
   --cap-add NET_BIND_SERVICE \
   --restart=unless-stopped \
-  claude_code_proxy_dns
+  magic-claude-code
 
 # 查看日志获取配置提示
-docker logs claude_code_proxy_dns
+docker logs mcc
 ```
 
 #### 方式二：使用 docker-compose
@@ -49,7 +49,7 @@ docker logs claude_code_proxy_dns
 ```bash
 # 克隆项目
 git clone <repo-url>
-cd claude_code_proxy_dns
+cd magic-claude-code
 
 # 安装 docker-compose-plugin（如果未安装）
 sudo apt-get install docker-compose-plugin
@@ -58,7 +58,7 @@ sudo apt-get install docker-compose-plugin
 docker compose up -d
 
 # 查看日志获取配置提示
-docker logs claude_code_proxy_dns
+docker logs mcc
 ```
 
 ### 2. 测试构建和验证
@@ -68,7 +68,7 @@ docker logs claude_code_proxy_dns
 docker compose build
 
 # 2. 查看构建的镜像
-docker images | grep claude_code_proxy_dns
+docker images | grep magic-claude-code
 
 # 3. 启动服务
 docker compose up -d
@@ -95,7 +95,136 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-### 4. 安装 CA 证书
+### 4. 使用二进制运行（非 Docker）
+
+二进制运行适合不想使用 Docker 的环境。服务会固定监听：
+
+- `443`：代理服务入口，用于接收 `https://api.anthropic.com` 请求
+- `8442`：配置页面
+
+#### macOS / Linux
+
+从源码构建：
+
+```bash
+# 克隆项目
+git clone <repo-url>
+cd magic-claude-code
+
+# 构建前端静态资源
+npm --prefix internal/frontend ci
+npm --prefix internal/frontend run build
+
+# 构建二进制
+make build
+```
+
+启动服务：
+
+```bash
+# Linux 可先授予绑定 443 端口的能力
+sudo setcap 'cap_net_bind_service=+ep' ./bin/mcc
+
+# 启动，建议显式设置管理密码
+./bin/mcc -data ./data -password "your-admin-password"
+```
+
+如果没有 `setcap`，可以用管理员权限启动：
+
+```bash
+sudo ./bin/mcc -data ./data -password "your-admin-password"
+```
+
+添加 hosts 映射：
+
+```bash
+echo "127.0.0.1 api.anthropic.com" | sudo tee -a /etc/hosts
+```
+
+配置 Node.js 读取代理 CA：
+
+```bash
+echo 'export NODE_EXTRA_CA_CERTS=/absolute/path/to/magic-claude-code/data/ca.crt' >> ~/.bashrc
+source ~/.bashrc
+```
+
+#### Windows
+
+Windows 可直接使用 `mcc.exe`。如果在 Windows 本机从源码构建：
+
+```powershell
+npm --prefix internal/frontend ci
+npm --prefix internal/frontend run build
+go build -o mcc.exe ./cmd/server
+```
+
+也可以在 macOS/Linux 上交叉编译 Windows 版本：
+
+```bash
+GOOS=windows GOARCH=amd64 go build -o bin/mcc.exe ./cmd/server
+```
+
+推荐目录结构：
+
+```text
+C:\mcc\
+  mcc.exe
+  data\
+```
+
+用管理员 PowerShell 启动：
+
+```powershell
+cd C:\mcc
+.\mcc.exe -data .\data -password "your-admin-password"
+```
+
+添加 hosts 映射：
+
+```powershell
+Add-Content -Path "$env:WINDIR\System32\drivers\etc\hosts" -Value "`n127.0.0.1 api.anthropic.com"
+```
+
+导入 CA 证书到当前用户信任根：
+
+```powershell
+Import-Certificate -FilePath "C:\mcc\data\ca.crt" -CertStoreLocation Cert:\CurrentUser\Root
+```
+
+如果需要对所有用户生效，用管理员 PowerShell 导入到本机信任根：
+
+```powershell
+Import-Certificate -FilePath "C:\mcc\data\ca.crt" -CertStoreLocation Cert:\LocalMachine\Root
+```
+
+配置 Node.js 读取代理 CA：
+
+```powershell
+setx NODE_EXTRA_CA_CERTS "C:\mcc\data\ca.crt"
+```
+
+设置后关闭并重新打开终端，再启动 Claude Code。
+
+如果 443 或 8442 端口被占用，可以检查占用进程：
+
+```powershell
+netstat -ano | findstr ":443"
+netstat -ano | findstr ":8442"
+```
+
+如果 hosts 修改后不生效，可以刷新 DNS：
+
+```powershell
+ipconfig /flushdns
+```
+
+#### 二进制运行注意事项
+
+- 第一次启动会在 `data` 目录生成 `ca.crt`、`ca.key`、`server.crt`、`server.key` 和 `proxy.db`。
+- 建议始终通过 `-password` 或 `ADMIN_PASSWORD` 设置管理密码；未设置时程序会随机生成密码。
+- 使用统计默认读取当前用户的 Claude Code session 目录：`~/.claude/projects`。如需覆盖，可设置 `CLAUDE_PROJECTS_DIR`。
+
+### 5. 安装 CA 证书
 
 代理使用自签名 CA 证书，需要在客户端机器上安装信任。有以下三种方式：
 
@@ -214,7 +343,7 @@ sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keyc
 - ⚠️ Node.js 默认不会读取系统证书库
 - 需要配合方式一或方式二的 `NODE_OPTIONS` 使用
 
-### 5. 浏览器证书导入
+### 6. 浏览器证书导入
 
 系统证书库安装的 CA 证书只对命令行工具（curl、wget）生效。Chrome 和 Firefox 使用独立的 NSS 证书数据库，不读取系统 CA，需要单独导入。
 
@@ -302,18 +431,18 @@ sudo apt install firefox -y
 
 snap 版 Firefox 因为沙盒限制，即便 certutil 写入成功，Firefox 进程也可能读不到。因此 snap 版推荐 **通过 Firefox 界面导入** 或 **改用 apt 版**。
 
-### 6. 配置系统
+### 7. 配置系统
 
 ```bash
 # 添加 hosts 映射（将 api.anthropic.com 指向代理服务器）
 echo "127.0.0.1 api.anthropic.com" | sudo tee -a /etc/hosts
 ```
 
-### 7. 访问配置页面
+### 8. 访问配置页面
 
 打开浏览器访问: `https://localhost:8442`
 
-默认密码: `admin123`
+Docker 默认密码: `admin123`。二进制运行请使用启动时通过 `-password` 或 `ADMIN_PASSWORD` 设置的密码。
 
 ## 配置说明
 
@@ -336,10 +465,10 @@ cap_add:
 
 ```bash
 # 方式一：使用 setcap（推荐）
-sudo setcap 'cap_net_bind_service=+ep' ./claude_code_proxy_dns
+sudo setcap 'cap_net_bind_service=+ep' ./bin/mcc
 
 # 方式二：使用 sudo 运行
-sudo ./claude_code_proxy_dns -data ./data
+sudo ./bin/mcc -data ./data
 ```
 
 **注意：** 不推荐修改为非特权端口（如 8443），因为：
@@ -461,7 +590,7 @@ docker compose up -d --build
 ## 项目结构
 
 ```text
-claude_code_proxy_dns/
+magic-claude-code/
 ├── cmd/server/          # 应用入口
 ├── internal/
 │   ├── config/          # 配置管理

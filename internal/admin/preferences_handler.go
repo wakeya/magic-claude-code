@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"claude_code_proxy_dns/internal/config"
+	"magic-claude-code/internal/config"
 )
 
 type preferencesResponse struct {

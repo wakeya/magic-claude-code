@@ -1,5 +1,5 @@
 {
-  "name": "claude-code-proxy-dns",
+  "name": "magic-claude-code",
   "private": true,
   "scripts": {
     "test": "npm --prefix internal/frontend test",

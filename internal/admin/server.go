@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"claude_code_proxy_dns/internal/config"
-	"claude_code_proxy_dns/internal/usage"
+	"magic-claude-code/internal/config"
+	"magic-claude-code/internal/usage"
 )
 
 // StatsProvider 统计数据提供者接口

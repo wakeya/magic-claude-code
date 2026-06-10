@@ -4,7 +4,7 @@
 DEFAULT_BACKEND ?= https://open.bigmodel.cn/api/anthropic
 
 build:
-	CGO_ENABLED=0 go build -o bin/claude-proxy ./cmd/server
+	CGO_ENABLED=0 go build -o bin/mcc ./cmd/server
 
 run:
 	go run ./cmd/server
@@ -16,10 +16,10 @@ clean:
 	rm -rf bin/ coverage.out
 
 docker:
-	docker build -t claude-proxy .
+	docker build -t magic-claude-code .
 
 docker-run:
-	docker-compose up -d
+	docker compose up -d
 
 docker-stop:
-	docker-compose down
+	docker compose down

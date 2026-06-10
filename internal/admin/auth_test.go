@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"claude_code_proxy_dns/internal/usage"
+	"magic-claude-code/internal/usage"
 	_ "modernc.org/sqlite"
 )
 

@@ -1,7 +1,8 @@
 services:
-  claude_code_proxy_dns:
+  mcc:
     build: .
-    container_name: claude_code_proxy_dns
+    image: magic-claude-code
+    container_name: mcc
     ports:
       - "443:443"
       - "8442:8442"

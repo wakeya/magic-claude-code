@@ -12,7 +12,7 @@
 
 ```bash
 git clone <repo-url>
-cd claude-proxy
+cd magic-claude-code
 ```
 
 ### 2. 安装依赖
@@ -94,7 +94,7 @@ sudo go run ./cmd/server -data ./data
 
 ```bash
 # Docker 部署
-docker logs -f claude-proxy
+docker logs -f mcc
 
 # 本地运行
 # 日志直接输出到控制台
@@ -119,14 +119,15 @@ openssl x509 -in data/server.crt -text -noout
 
 ```bash
 # 构建发布镜像
-docker build -t claude-proxy:latest .
+docker build -t magic-claude-code:latest .
 
 # 运行发布镜像
 docker run -d \
+  --name mcc \
   -p 443:443 \
   -p 8442:8442 \
   -v ./data:/app/data \
   -e ADMIN_PASSWORD=your-password \
-  claude-proxy:latest
+  magic-claude-code:latest
 
 ```

@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"claude_code_proxy_dns/internal/config"
+	"magic-claude-code/internal/config"
 )
 
 func TestProviderAPIRoundTripsMultimodalConfig(t *testing.T) {

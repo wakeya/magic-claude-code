@@ -2,7 +2,7 @@ import { computed, ref } from 'vue'
 
 export type ThemeMode = 'light' | 'dark'
 
-export const themeStorageKey = 'claude-proxy-theme'
+export const themeStorageKey = 'magic-claude-code-theme'
 
 export interface ThemeStorage {
   getItem(key: string): string | null
