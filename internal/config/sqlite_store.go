@@ -96,6 +96,8 @@ func (s *SQLiteStore) migrateSchema() error {
 			api_url TEXT NOT NULL,
 			api_token TEXT NOT NULL DEFAULT '',
 			supports_thinking INTEGER NOT NULL DEFAULT 0,
+			multimodal_switch INTEGER NOT NULL DEFAULT 0,
+			multimodal_model TEXT NOT NULL DEFAULT '',
 			enabled INTEGER NOT NULL DEFAULT 1,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
@@ -117,12 +119,51 @@ func (s *SQLiteStore) migrateSchema() error {
 			return err
 		}
 	}
+	if err := s.ensureProviderColumns(); err != nil {
+		return err
+	}
 	_, err := s.db.Exec(
 		`INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)`,
 		sqliteSchemaVersion,
 		time.Now().UTC().Format(time.RFC3339Nano),
 	)
 	return err
+}
+
+func (s *SQLiteStore) ensureProviderColumns() error {
+	columns := map[string]string{
+		"multimodal_switch": `ALTER TABLE providers ADD COLUMN multimodal_switch INTEGER NOT NULL DEFAULT 0`,
+		"multimodal_model":  `ALTER TABLE providers ADD COLUMN multimodal_model TEXT NOT NULL DEFAULT ''`,
+	}
+	rows, err := s.db.Query(`PRAGMA table_info(providers)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	existing := make(map[string]struct{})
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return err
+		}
+		existing[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for name, stmt := range columns {
+		if _, ok := existing[name]; !ok {
+			if _, err := s.db.Exec(stmt); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (s *SQLiteStore) hasSchemaVersion() (bool, error) {
@@ -221,7 +262,7 @@ func (s *SQLiteStore) loadSettings() (map[string]string, error) {
 }
 
 func (s *SQLiteStore) loadProviders() ([]Provider, error) {
-	rows, err := s.db.Query(`SELECT id, name, api_url, api_token, supports_thinking, enabled, created_at, updated_at FROM providers ORDER BY created_at ASC, id ASC`)
+	rows, err := s.db.Query(`SELECT id, name, api_url, api_token, supports_thinking, multimodal_switch, multimodal_model, enabled, created_at, updated_at FROM providers ORDER BY created_at ASC, id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -230,12 +271,13 @@ func (s *SQLiteStore) loadProviders() ([]Provider, error) {
 	var providers []Provider
 	for rows.Next() {
 		var p Provider
-		var supportsThinking, enabled int
+		var supportsThinking, multimodalSwitch, enabled int
 		var createdAt, updatedAt string
-		if err := rows.Scan(&p.ID, &p.Name, &p.APIURL, &p.APIToken, &supportsThinking, &enabled, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.APIURL, &p.APIToken, &supportsThinking, &multimodalSwitch, &p.MultimodalModel, &enabled, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
 		p.SupportsThinking = supportsThinking == 1
+		p.MultimodalSwitch = multimodalSwitch == 1
 		p.Enabled = enabled == 1
 		p.CreatedAt = parseSQLiteTime(createdAt)
 		p.UpdatedAt = parseSQLiteTime(updatedAt)
@@ -352,13 +394,15 @@ func upsertProvider(tx *sql.Tx, provider Provider) error {
 	}
 
 	_, err := tx.Exec(
-		`INSERT INTO providers(id, name, api_url, api_token, supports_thinking, enabled, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO providers(id, name, api_url, api_token, supports_thinking, multimodal_switch, multimodal_model, enabled, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		 name = excluded.name,
 		 api_url = excluded.api_url,
 		 api_token = excluded.api_token,
 		 supports_thinking = excluded.supports_thinking,
+		 multimodal_switch = excluded.multimodal_switch,
+		 multimodal_model = excluded.multimodal_model,
 		 enabled = excluded.enabled,
 		 created_at = excluded.created_at,
 		 updated_at = excluded.updated_at`,
@@ -367,6 +411,8 @@ func upsertProvider(tx *sql.Tx, provider Provider) error {
 		provider.APIURL,
 		provider.APIToken,
 		boolToInt(provider.SupportsThinking),
+		boolToInt(provider.MultimodalSwitch),
+		provider.MultimodalModel,
 		boolToInt(provider.Enabled),
 		createdAt.UTC().Format(time.RFC3339Nano),
 		updatedAt.UTC().Format(time.RFC3339Nano),

@@ -115,7 +115,7 @@
           <button class="session-icon-button" @click="showOutline = false"><X class="h-4 w-4" /></button>
         </div>
         <SessionOutline :messages="detail.messages" @jump="jumpToMessage" />
-        <div class="flex justify-end pt-3">
+        <div class="sticky bottom-0 flex justify-end pt-3">
           <button class="session-icon-button" @click="scrollToTop(); showOutline = false">
             <ArrowUp class="h-4 w-4" />
             {{ t('sessions.back_to_top') }}

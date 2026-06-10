@@ -111,6 +111,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			log.Printf("Error transforming request: %v", err)
 			// 转换失败时使用原始请求体
 			modifiedBody = body
+		} else {
+			mappedModel = usage.ParseRequestMetadata(modifiedBody, r.Header).OriginalModel
 		}
 	}
 
@@ -413,7 +415,11 @@ func (h *Handler) transformRequest(body []byte, provider *config.Provider) ([]by
 
 	// 模型映射
 	if model, ok := req["model"].(string); ok {
-		if mapped := provider.MapModel(model); mapped != model {
+		mapped := provider.MapModel(model)
+		if provider.MultimodalSwitch && provider.MultimodalModel != "" && requestContainsNonTextContent(req) {
+			mapped = provider.MultimodalModel
+		}
+		if mapped != model {
 			req["model"] = mapped
 			changed = true
 		}
@@ -436,6 +442,55 @@ func (h *Handler) transformRequest(body []byte, provider *config.Provider) ([]by
 		return out, nil
 	}
 	return body, nil
+}
+
+func requestContainsNonTextContent(req map[string]any) bool {
+	for _, key := range []string{"messages", "system"} {
+		if containsNonTextContent(req[key]) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsNonTextContent(value any) bool {
+	switch v := value.(type) {
+	case []any:
+		for _, item := range v {
+			if containsNonTextContent(item) {
+				return true
+			}
+		}
+	case map[string]any:
+		if isNonTextContentBlock(v) {
+			return true
+		}
+		for _, item := range v {
+			if containsNonTextContent(item) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isNonTextContentBlock(block map[string]any) bool {
+	switch block["type"] {
+	case "image", "input_image", "document":
+		return true
+	}
+	source, ok := block["source"].(map[string]any)
+	if !ok {
+		return false
+	}
+	mediaType, ok := source["media_type"].(string)
+	if !ok {
+		return false
+	}
+	return strings.HasPrefix(mediaType, "image/") ||
+		strings.EqualFold(mediaType, "application/pdf") ||
+		strings.HasPrefix(mediaType, "video/") ||
+		strings.HasPrefix(mediaType, "audio/")
 }
 
 func shouldForwardRequestHeader(key string) bool {

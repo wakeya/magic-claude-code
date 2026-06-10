@@ -38,16 +38,18 @@ func (s *Server) listProviders(w http.ResponseWriter, _ *http.Request) {
 	providers := make([]map[string]interface{}, len(cfg.Providers))
 	for i, p := range cfg.Providers {
 		providers[i] = map[string]interface{}{
-			"id":              p.ID,
-			"name":            p.Name,
-			"api_url":         p.APIURL,
-			"api_token_mask":  maskToken(p.APIToken),
+			"id":                p.ID,
+			"name":              p.Name,
+			"api_url":           p.APIURL,
+			"api_token_mask":    maskToken(p.APIToken),
 			"supports_thinking": p.SupportsThinking,
-			"model_mappings":  p.ModelMappings,
-			"enabled":         p.Enabled,
-			"active":          p.ID == cfg.ActiveProviderID,
-			"created_at":      p.CreatedAt,
-			"updated_at":      p.UpdatedAt,
+			"multimodal_switch": p.MultimodalSwitch,
+			"multimodal_model":  p.MultimodalModel,
+			"model_mappings":    p.ModelMappings,
+			"enabled":           p.Enabled,
+			"active":            p.ID == cfg.ActiveProviderID,
+			"created_at":        p.CreatedAt,
+			"updated_at":        p.UpdatedAt,
 		}
 	}
 
@@ -60,11 +62,13 @@ func (s *Server) listProviders(w http.ResponseWriter, _ *http.Request) {
 // createProvider 创建供应商
 func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name          string            `json:"name"`
-		APIURL        string            `json:"api_url"`
-		APIToken      string            `json:"api_token"`
-		ModelMappings map[string]string `json:"model_mappings"`
+		Name             string            `json:"name"`
+		APIURL           string            `json:"api_url"`
+		APIToken         string            `json:"api_token"`
+		ModelMappings    map[string]string `json:"model_mappings"`
 		SupportsThinking bool              `json:"supports_thinking"`
+		MultimodalSwitch bool              `json:"multimodal_switch"`
+		MultimodalModel  string            `json:"multimodal_model"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -92,6 +96,11 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error": "api_url must use http or https scheme"}`, http.StatusBadRequest)
 		return
 	}
+	req.MultimodalModel = strings.TrimSpace(req.MultimodalModel)
+	if req.MultimodalSwitch && req.MultimodalModel == "" {
+		http.Error(w, `{"error": "multimodal_model is required when multimodal_switch is enabled"}`, http.StatusBadRequest)
+		return
+	}
 
 	// 加载配置
 	cfg, err := s.configStore.Load()
@@ -103,15 +112,17 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 	// 创建新供应商
 	now := time.Now()
 	provider := config.Provider{
-		ID:            generateProviderID(),
-		Name:          req.Name,
-		APIURL:        req.APIURL,
-		APIToken:      req.APIToken,
-		ModelMappings: req.ModelMappings,
+		ID:               generateProviderID(),
+		Name:             req.Name,
+		APIURL:           req.APIURL,
+		APIToken:         req.APIToken,
+		ModelMappings:    req.ModelMappings,
 		SupportsThinking: req.SupportsThinking,
-		Enabled:       true,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		MultimodalSwitch: req.MultimodalSwitch,
+		MultimodalModel:  req.MultimodalModel,
+		Enabled:          true,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 
 	cfg.Providers = append(cfg.Providers, provider)
@@ -173,27 +184,31 @@ func (s *Server) getProvider(w http.ResponseWriter, _ *http.Request, id string) 
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"id":             provider.ID,
-		"name":           provider.Name,
-		"api_url":        provider.APIURL,
-		"api_token_mask": maskToken(provider.APIToken),
-		"model_mappings": provider.ModelMappings,
+		"id":                provider.ID,
+		"name":              provider.Name,
+		"api_url":           provider.APIURL,
+		"api_token_mask":    maskToken(provider.APIToken),
+		"model_mappings":    provider.ModelMappings,
 		"supports_thinking": provider.SupportsThinking,
-		"enabled":        provider.Enabled,
-		"active":         provider.ID == cfg.ActiveProviderID,
-		"created_at":     provider.CreatedAt,
-		"updated_at":     provider.UpdatedAt,
+		"multimodal_switch": provider.MultimodalSwitch,
+		"multimodal_model":  provider.MultimodalModel,
+		"enabled":           provider.Enabled,
+		"active":            provider.ID == cfg.ActiveProviderID,
+		"created_at":        provider.CreatedAt,
+		"updated_at":        provider.UpdatedAt,
 	})
 }
 
 // updateProvider 更新供应商
 func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request, id string) {
 	var req struct {
-		Name          string            `json:"name"`
-		APIURL        string            `json:"api_url"`
-		APIToken      string            `json:"api_token"`
+		Name             string            `json:"name"`
+		APIURL           string            `json:"api_url"`
+		APIToken         string            `json:"api_token"`
 		ModelMappings    map[string]string `json:"model_mappings"`
-		SupportsThinking bool              `json:"supports_thinking"`
+		SupportsThinking *bool             `json:"supports_thinking"`
+		MultimodalSwitch *bool             `json:"multimodal_switch"`
+		MultimodalModel  *string           `json:"multimodal_model"`
 		Enabled          *bool             `json:"enabled"`
 	}
 
@@ -240,7 +255,19 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request, id strin
 	if req.Enabled != nil {
 		provider.Enabled = *req.Enabled
 	}
-		provider.SupportsThinking = req.SupportsThinking
+	if req.SupportsThinking != nil {
+		provider.SupportsThinking = *req.SupportsThinking
+	}
+	if req.MultimodalModel != nil {
+		provider.MultimodalModel = strings.TrimSpace(*req.MultimodalModel)
+	}
+	if req.MultimodalSwitch != nil {
+		provider.MultimodalSwitch = *req.MultimodalSwitch
+	}
+	if provider.MultimodalSwitch && strings.TrimSpace(provider.MultimodalModel) == "" {
+		http.Error(w, `{"error": "multimodal_model is required when multimodal_switch is enabled"}`, http.StatusBadRequest)
+		return
+	}
 	provider.UpdatedAt = time.Now()
 
 	if err := s.configStore.Save(cfg); err != nil {
@@ -654,6 +681,8 @@ func (s *Server) handleProviderDuplicate(w http.ResponseWriter, r *http.Request)
 		APIToken:         provider.APIToken,
 		ModelMappings:    provider.ModelMappings,
 		SupportsThinking: provider.SupportsThinking,
+		MultimodalSwitch: provider.MultimodalSwitch,
+		MultimodalModel:  provider.MultimodalModel,
 		Enabled:          true,
 		CreatedAt:        now,
 		UpdatedAt:        now,

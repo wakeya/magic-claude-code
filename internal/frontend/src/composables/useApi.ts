@@ -23,6 +23,8 @@ export interface Provider {
   api_token_mask: string
   model_mappings: Record<string, string>
   supports_thinking: boolean
+  multimodal_switch: boolean
+  multimodal_model: string
   enabled: boolean
   active: boolean
   created_at: string
@@ -250,6 +252,8 @@ export function useApi() {
     api_token: string
     model_mappings: Record<string, string>
     supports_thinking?: boolean
+    multimodal_switch?: boolean
+    multimodal_model?: string
   }): Promise<{ success: boolean; provider: Provider }> {
     const res = await fetch('/api/providers', {
       method: 'POST',
@@ -271,6 +275,8 @@ export function useApi() {
       api_token?: string
       model_mappings?: Record<string, string>
       supports_thinking?: boolean
+      multimodal_switch?: boolean
+      multimodal_model?: string
       enabled?: boolean
     }
   ): Promise<{ success: boolean; provider: Provider }> {

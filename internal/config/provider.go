@@ -30,6 +30,12 @@ type Provider struct {
 	// SupportsThinking 后端是否支持 thinking 字段
 	SupportsThinking bool `json:"supports_thinking"`
 
+	// MultimodalSwitch 请求含非文本内容时是否切换到多模态模型
+	MultimodalSwitch bool `json:"multimodal_switch"`
+
+	// MultimodalModel 多模态请求使用的模型 ID
+	MultimodalModel string `json:"multimodal_model"`
+
 	// Enabled 是否启用
 	Enabled bool `json:"enabled"`
 

@@ -17,6 +17,8 @@ func testProvider(id, name, apiURL, token string, enabled bool) Provider {
 		APIToken:         token,
 		ModelMappings:    map[string]string{"claude-opus-4-6": name + "-model"},
 		SupportsThinking: true,
+		MultimodalSwitch: true,
+		MultimodalModel:  name + "-vision-model",
 		Enabled:          enabled,
 		CreatedAt:        now,
 		UpdatedAt:        now,
@@ -52,7 +54,7 @@ func assertConfigEqual(t *testing.T, want, got *Config) {
 	for i := range want.Providers {
 		wp := want.Providers[i]
 		gp := got.Providers[i]
-		if gp.ID != wp.ID || gp.Name != wp.Name || gp.APIURL != wp.APIURL || gp.APIToken != wp.APIToken || gp.SupportsThinking != wp.SupportsThinking || gp.Enabled != wp.Enabled {
+		if gp.ID != wp.ID || gp.Name != wp.Name || gp.APIURL != wp.APIURL || gp.APIToken != wp.APIToken || gp.SupportsThinking != wp.SupportsThinking || gp.MultimodalSwitch != wp.MultimodalSwitch || gp.MultimodalModel != wp.MultimodalModel || gp.Enabled != wp.Enabled {
 			t.Fatalf("provider[%d] mismatch: want %#v, got %#v", i, wp, gp)
 		}
 		if gp.ModelMappings["claude-opus-4-6"] != wp.ModelMappings["claude-opus-4-6"] {
@@ -113,6 +115,62 @@ func TestSQLiteStorePersistsAdminThemeMode(t *testing.T) {
 	}
 	if loaded.AdminThemeMode != ThemeModeDark {
 		t.Fatalf("AdminThemeMode = %q, want %q", loaded.AdminThemeMode, ThemeModeDark)
+	}
+}
+
+func TestSQLiteStoreAddsMultimodalColumnsToExistingProviderTable(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "proxy.db")
+	db, err := sql.Open("sqlite", "file:"+dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	_, err = db.Exec(`
+		CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+		CREATE TABLE providers (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			api_url TEXT NOT NULL,
+			api_token TEXT NOT NULL DEFAULT '',
+			supports_thinking INTEGER NOT NULL DEFAULT 0,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);
+		CREATE TABLE provider_model_mappings (
+			provider_id TEXT NOT NULL,
+			source_model TEXT NOT NULL,
+			target_model TEXT NOT NULL,
+			PRIMARY KEY (provider_id, source_model)
+		);
+		CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+		INSERT INTO schema_migrations(version, applied_at) VALUES (1, '2026-06-01T00:00:00Z');
+		INSERT INTO providers(id, name, api_url, api_token, supports_thinking, enabled, created_at, updated_at)
+		VALUES ('provider-a', 'Legacy', 'https://legacy.example.com/anthropic', 'token', 1, 1, '2026-06-01T00:00:00Z', '2026-06-01T00:00:00Z');
+	`)
+	if err != nil {
+		db.Close()
+		t.Fatalf("create legacy schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	store, err := NewSQLiteStore(dbPath, filepath.Join(dir, "missing-config.json"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	cfg, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cfg.Providers) != 1 {
+		t.Fatalf("providers = %d", len(cfg.Providers))
+	}
+	if cfg.Providers[0].MultimodalSwitch || cfg.Providers[0].MultimodalModel != "" {
+		t.Fatalf("legacy multimodal defaults = %#v", cfg.Providers[0])
 	}
 }
 

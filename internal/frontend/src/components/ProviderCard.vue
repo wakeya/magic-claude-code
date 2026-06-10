@@ -12,6 +12,9 @@
       <div v-if="Object.keys(provider.model_mappings).length" class="flex flex-wrap gap-1.5 mt-2">
         <span v-for="(to, from) in provider.model_mappings" :key="from" class="bg-primary-light text-primary px-2.5 py-0.5 rounded-full text-xs font-semibold">{{ from }} &rarr; {{ to }}</span>
       </div>
+      <div v-if="provider.multimodal_switch && provider.multimodal_model" class="flex flex-wrap gap-1.5 mt-2">
+        <span class="bg-secondary-light text-secondary px-2.5 py-0.5 rounded-full text-xs font-semibold">{{ t('modal.multimodal_switch') }} &rarr; {{ provider.multimodal_model }}</span>
+      </div>
     </div>
 
     <div class="flex gap-2 flex-wrap">

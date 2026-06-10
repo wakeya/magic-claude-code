@@ -7,6 +7,25 @@
 
 ---
 
+## 2026-06-09
+
+### Added
+- Provider 配置新增“多模态切换”和“多模态模型 ID”，请求含图片、PDF、音频或视频等非文本内容时可自动切换到指定多模态模型
+- 代理请求转换支持递归检测 `messages` / `system` 中的非文本内容，覆盖截图工具返回的 `tool_result.content` 图片
+- SQLite Provider 表新增多模态配置字段，并支持旧数据库自动补列
+- Admin API 创建、查询、更新、复制 Provider 时保留多模态配置，并校验开启开关时必须填写多模态模型 ID
+- Provider 弹窗和卡片增加多模态配置 UI 与提示文案
+
+### Fixed
+- 修复 Mimo 文本模型收到截图图片时返回 `No endpoints found that support image input` 的配置层解决路径
+- 修复 Session Browser 移动端大纲返回顶部按钮缺少 sticky 底部定位的问题
+
+### Docs
+- 新增多模态模型切换 feature specs：`sdd-docs/features/2026-06-09-multimodal-model-switch/`
+- 同步英文主文档和中文 `_ZH` 文档：requirements、plan、decisions、validation、status
+
+---
+
 ## 2026-05-29
 
 ### Added

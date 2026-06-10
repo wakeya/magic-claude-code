@@ -390,6 +390,135 @@ func TestTransformRequestPreservesClaudeCodeContextFields(t *testing.T) {
 	}
 }
 
+func TestTransformRequestUsesMultimodalModelForImageToolResult(t *testing.T) {
+	provider := config.NewProvider("mimo", "https://example.com/anthropic", "provider-token")
+	provider.ModelMappings["claude-opus-4-6"] = "mimo-v2.5-pro"
+	provider.MultimodalSwitch = true
+	provider.MultimodalModel = "mimo-vl-pro"
+	handler := NewHandler(config.NewMockStore(nil), nil)
+
+	modified, err := handler.transformRequest([]byte(`{
+		"model":"claude-opus-4-6",
+		"messages":[{
+			"role":"user",
+			"content":[{
+				"type":"tool_result",
+				"tool_use_id":"screenshot",
+				"content":[
+					{"type":"text","text":"Took a screenshot."},
+					{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}}
+				]
+			}]
+		}]
+	}`), provider)
+	if err != nil {
+		t.Fatalf("transform request: %v", err)
+	}
+
+	var capturedBody map[string]any
+	if err := json.Unmarshal(modified, &capturedBody); err != nil {
+		t.Fatalf("decode transformed request body: %v", err)
+	}
+	if got := capturedBody["model"]; got != "mimo-vl-pro" {
+		t.Fatalf("model = %v, want multimodal model", got)
+	}
+}
+
+func TestTransformRequestUsesMultimodalModelForNonTextMediaTypes(t *testing.T) {
+	tests := []struct {
+		name  string
+		block string
+	}{
+		{
+			name:  "document block",
+			block: `{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0="}}`,
+		},
+		{
+			name:  "pdf media type",
+			block: `{"type":"file","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0="}}`,
+		},
+		{
+			name:  "audio media type",
+			block: `{"type":"file","source":{"type":"base64","media_type":"audio/mpeg","data":"SUQz"}}`,
+		},
+		{
+			name:  "video media type",
+			block: `{"type":"file","source":{"type":"base64","media_type":"video/mp4","data":"AAAA"}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider := config.NewProvider("mimo", "https://example.com/anthropic", "provider-token")
+			provider.ModelMappings["claude-opus-4-6"] = "mimo-v2.5-pro"
+			provider.MultimodalSwitch = true
+			provider.MultimodalModel = "mimo-vl-pro"
+			handler := NewHandler(config.NewMockStore(nil), nil)
+
+			body := `{"model":"claude-opus-4-6","messages":[{"role":"user","content":[` + tt.block + `]}]}`
+			modified, err := handler.transformRequest([]byte(body), provider)
+			if err != nil {
+				t.Fatalf("transform request: %v", err)
+			}
+
+			var capturedBody map[string]any
+			if err := json.Unmarshal(modified, &capturedBody); err != nil {
+				t.Fatalf("decode transformed request body: %v", err)
+			}
+			if got := capturedBody["model"]; got != "mimo-vl-pro" {
+				t.Fatalf("model = %v, want multimodal model", got)
+			}
+		})
+	}
+}
+
+func TestTransformRequestUsesMappedModelForTextWhenMultimodalSwitchEnabled(t *testing.T) {
+	provider := config.NewProvider("mimo", "https://example.com/anthropic", "provider-token")
+	provider.ModelMappings["claude-opus-4-6"] = "mimo-v2.5-pro"
+	provider.MultimodalSwitch = true
+	provider.MultimodalModel = "mimo-vl-pro"
+	handler := NewHandler(config.NewMockStore(nil), nil)
+
+	modified, err := handler.transformRequest([]byte(`{
+		"model":"claude-opus-4-6",
+		"messages":[{"role":"user","content":"hello"}]
+	}`), provider)
+	if err != nil {
+		t.Fatalf("transform request: %v", err)
+	}
+
+	var capturedBody map[string]any
+	if err := json.Unmarshal(modified, &capturedBody); err != nil {
+		t.Fatalf("decode transformed request body: %v", err)
+	}
+	if got := capturedBody["model"]; got != "mimo-v2.5-pro" {
+		t.Fatalf("model = %v, want mapped text model", got)
+	}
+}
+
+func TestTransformRequestKeepsMappedModelForImageWhenMultimodalSwitchDisabled(t *testing.T) {
+	provider := config.NewProvider("compatible", "https://example.com/anthropic", "provider-token")
+	provider.ModelMappings["claude-opus-4-6"] = "glm-5.1"
+	provider.MultimodalModel = "glm-v"
+	handler := NewHandler(config.NewMockStore(nil), nil)
+
+	modified, err := handler.transformRequest([]byte(`{
+		"model":"claude-opus-4-6",
+		"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}}]}]
+	}`), provider)
+	if err != nil {
+		t.Fatalf("transform request: %v", err)
+	}
+
+	var capturedBody map[string]any
+	if err := json.Unmarshal(modified, &capturedBody); err != nil {
+		t.Fatalf("decode transformed request body: %v", err)
+	}
+	if got := capturedBody["model"]; got != "glm-5.1" {
+		t.Fatalf("model = %v, want mapped model when multimodal switch is disabled", got)
+	}
+}
+
 func TestTransformRequestStripsThinkingWithoutModelMappings(t *testing.T) {
 	provider := config.NewProvider("no-thinking", "https://example.com/anthropic", "provider-token")
 	provider.SupportsThinking = false

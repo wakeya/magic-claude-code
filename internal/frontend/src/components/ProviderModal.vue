@@ -36,6 +36,22 @@
       </div>
 
       <div class="mb-5">
+        <div class="flex items-center gap-2 mb-2">
+          <label class="block text-[13px] font-semibold">{{ t('modal.multimodal_switch') }}</label>
+          <span class="inline-flex h-5 w-5 items-center justify-center rounded-full app-control text-xs font-bold cursor-help" :title="t('modal.multimodal_hint')">?</span>
+        </div>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input v-model="form.multimodal_switch" type="checkbox" class="w-4 h-4 accent-primary cursor-pointer" />
+          <span class="app-muted text-sm">{{ t('modal.multimodal_hint') }}</span>
+        </label>
+      </div>
+
+      <div v-if="form.multimodal_switch" class="mb-5">
+        <label class="block text-[13px] font-semibold mb-2">{{ t('modal.multimodal_model') }}</label>
+        <input v-model="form.multimodal_model" type="text" placeholder="mimo-vl-pro" class="app-control w-full px-4 py-3 rounded-lg text-sm transition-all duration-200 outline-none focus:border-primary" />
+      </div>
+
+      <div class="mb-5">
         <label class="block text-[13px] font-semibold mb-2">{{ t('modal.model_mappings') }}</label>
         <div class="space-y-2.5">
           <div v-for="(_, i) in mappings" :key="i" class="flex gap-2.5 items-center">
@@ -81,6 +97,8 @@ const form = reactive({
   api_url: '',
   api_token: '',
   supports_thinking: false,
+  multimodal_switch: false,
+  multimodal_model: '',
 })
 
 const mappings = ref<{ from: string; to: string }[]>([{ from: '', to: '' }])
@@ -94,6 +112,8 @@ onMounted(() => {
     form.api_url = props.provider.api_url
     form.api_token = props.provider.api_token_mask || ''
     form.supports_thinking = props.provider.supports_thinking || false
+    form.multimodal_switch = props.provider.multimodal_switch || false
+    form.multimodal_model = props.provider.multimodal_model || ''
     const entries = Object.entries(props.provider.model_mappings || {})
     mappings.value = entries.length > 0 ? entries.map(([from, to]) => ({ from, to })) : [{ from: '', to: '' }]
   }
@@ -114,6 +134,10 @@ async function save() {
     message.value = { text: t('modal.required'), ok: false }
     return
   }
+  if (form.multimodal_switch && !form.multimodal_model.trim()) {
+    message.value = { text: t('modal.required'), ok: false }
+    return
+  }
 
   const token = form.api_token.includes('****') ? '' : form.api_token
   const data = {
@@ -122,6 +146,8 @@ async function save() {
     api_token: token,
     model_mappings: collectMappings(),
     supports_thinking: form.supports_thinking,
+    multimodal_switch: form.multimodal_switch,
+    multimodal_model: form.multimodal_switch ? form.multimodal_model.trim() : '',
   }
 
   try {
