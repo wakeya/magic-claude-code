@@ -32,6 +32,18 @@ func generateRandomPassword() string {
 	return hex.EncodeToString(b)
 }
 
+type adminPasswordState struct {
+	Value           string
+	RandomGenerated bool
+}
+
+func resolveAdminPassword(value string, generate func() string) adminPasswordState {
+	if value != "" {
+		return adminPasswordState{Value: value}
+	}
+	return adminPasswordState{Value: generate(), RandomGenerated: true}
+}
+
 func main() {
 	// 命令行参数
 	dataDir := flag.String("data", "./data", "数据目录")
@@ -39,9 +51,9 @@ func main() {
 	flag.Parse()
 
 	// 设置默认密码
-	if *adminPassword == "" {
+	passwordState := resolveAdminPassword(*adminPassword, generateRandomPassword)
+	if passwordState.RandomGenerated {
 		log.Println("警告: 未设置密码，使用随机生成的密码")
-		*adminPassword = generateRandomPassword()
 	}
 
 	// 确保数据目录存在
@@ -105,7 +117,12 @@ func main() {
 	fmt.Printf("3. source ~/.bashrc\n")
 	fmt.Println()
 	fmt.Printf("配置页面: https://localhost:%d\n", cfg.AdminPort)
-	fmt.Println("密码: 请查看环境变量 ADMIN_PASSWORD 或启动参数 --password")
+	if passwordState.RandomGenerated {
+		fmt.Printf("随机生成的管理密码: %s\n", passwordState.Value)
+		fmt.Println("请保存此密码；下次未指定密码启动时会重新生成。")
+	} else {
+		fmt.Println("密码: 请查看环境变量 ADMIN_PASSWORD 或启动参数 --password")
+	}
 	fmt.Println("========================================")
 
 	// 创建代理服务器
@@ -113,7 +130,7 @@ func main() {
 
 	// 创建配置服务
 	adminServer := admin.NewServer(&admin.AdminConfig{
-		Password:   *adminPassword,
+		Password:   passwordState.Value,
 		CertFile:   certManager.GetServerCertPath(),
 		KeyFile:    filepath.Join(*dataDir, "server.key"),
 		ConfigPath: configPath,

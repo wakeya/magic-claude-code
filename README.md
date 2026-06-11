@@ -161,7 +161,7 @@ go build -o mcc.exe ./cmd/server
 也可以在 macOS/Linux 上交叉编译 Windows 版本：
 
 ```bash
-GOOS=windows GOARCH=amd64 go build -o bin/mcc.exe ./cmd/server
+GOOS=windows GOARCH=amd64 go build -o bin/mcc-windows-amd64/mcc.exe ./cmd/server
 ```
 
 推荐目录结构：
@@ -178,6 +178,8 @@ C:\mcc\
 cd C:\mcc
 .\mcc.exe -data .\data -password "your-admin-password"
 ```
+
+如果直接运行 `.\mcc.exe`，数据目录默认使用当前目录下的 `.\data`。未通过 `-password` 或 `ADMIN_PASSWORD` 指定密码时，程序会随机生成管理密码，并在启动输出中打印一次；后台运行时请从 stdout 日志中查看 `随机生成的管理密码`。
 
 添加 hosts 映射：
 
@@ -221,7 +223,7 @@ ipconfig /flushdns
 #### 二进制运行注意事项
 
 - 第一次启动会在 `data` 目录生成 `ca.crt`、`ca.key`、`server.crt`、`server.key` 和 `proxy.db`。
-- 建议始终通过 `-password` 或 `ADMIN_PASSWORD` 设置管理密码；未设置时程序会随机生成密码。
+- 建议始终通过 `-password` 或 `ADMIN_PASSWORD` 设置管理密码；未设置时程序会随机生成密码，并在启动输出中打印一次。
 - 使用统计默认读取当前用户的 Claude Code session 目录：`~/.claude/projects`。如需覆盖，可设置 `CLAUDE_PROJECTS_DIR`。
 
 ### 5. 安装 CA 证书
@@ -442,7 +444,7 @@ echo "127.0.0.1 api.anthropic.com" | sudo tee -a /etc/hosts
 
 打开浏览器访问: `https://localhost:8442`
 
-Docker 默认密码: `admin123`。二进制运行请使用启动时通过 `-password` 或 `ADMIN_PASSWORD` 设置的密码。
+Docker 默认密码: `admin123`。二进制运行请使用启动时通过 `-password` 或 `ADMIN_PASSWORD` 设置的密码；未设置时会随机生成并在启动输出中打印一次。
 
 ## 配置说明
 

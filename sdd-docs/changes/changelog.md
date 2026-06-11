@@ -22,11 +22,13 @@
 - 修复 Usage 覆盖率表头提示框被表格区域遮挡的问题，表格内提示改为向下弹出
 - 修复 Windows 清理命令路径提示：原生 `C:\Users\<user>\...` 路径保留盘符并替换用户名为 `用户名代理`
 - 修复 Windows 清理命令路径中的双引号、控制字符和 Windows 非法路径字符清洗问题，降低复制提示命令后的解析风险
+- 修复二进制未配置管理密码时生成随机密码但启动输出不展示的问题；随机密码现在会在启动输出中打印一次，显式密码不会回显
 
 ### Docs
 - 更新 Usage statistics specs，补充清除统计数据 API、前端交互、迁移场景和验证项
 - 更新 Session Browser specs，补充清理提示的 Linux/macOS 与 Windows 双平台命令、Windows 路径转换和安全清洗约束
 - 更新 Multimodal Model Switch specs，补充 Provider 弹窗宽度约束
+- 更新 Claude Proxy specs 和 README，说明二进制默认 `./data`、随机密码打印和 Windows 后台日志查看方式
 
 ---
 

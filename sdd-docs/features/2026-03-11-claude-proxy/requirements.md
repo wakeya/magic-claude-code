@@ -380,6 +380,15 @@ source ~/.bashrc
 #    https://localhost:8442
 ```
 
+### 7.2 二进制启动密码
+
+- 二进制默认数据目录为 `./data`，可通过 `-data` 覆盖。
+- 管理密码优先使用 `-password` 启动参数，其次使用 `ADMIN_PASSWORD` 环境变量。
+- 当 `-password` 和 `ADMIN_PASSWORD` 都为空时，服务必须生成随机管理密码。
+- 随机管理密码必须在启动输出中明确打印一次，便于直接运行二进制或后台日志重定向场景获取登录密码。
+- 显式传入的密码或环境变量密码不得回显到启动输出中。
+- Windows 平台包可提供后台启动脚本，将 stdout/stderr 重定向到 `logs/`，此时随机密码应可从 stdout 日志查看。
+
 ---
 
 ## 8. 错误处理
@@ -463,6 +472,7 @@ source ~/.bashrc
 | 项目 | 措施 |
 |------|------|
 | 密码存储 | bcrypt 哈希 |
+| 未配置密码 | 启动时生成随机密码并仅打印一次 |
 | Session | HttpOnly, Secure Cookie |
 | TLS | TLS 1.2+ |
 | 登录保护 | 5 次失败锁定 5 分钟 |
