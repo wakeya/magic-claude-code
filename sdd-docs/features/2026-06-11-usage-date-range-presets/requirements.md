@@ -1,107 +1,111 @@
-# 使用统计快捷日期范围
+# Usage Date Range Presets Requirements
 
-**版本：** 1.0
-**日期：** 2026-06-11
-**状态：** approved
-**生命周期：** approved
+**Version:** 1.0
+**Date:** 2026-06-11
+**Status:** planned
+**Lifecycle:** planned
 
 ---
 
-## 1. 目标
+## 1. Objective
 
-在“使用统计”页面的二级页签区域和筛选条件区域之间，新增一个紧凑的快捷日期范围块，提供 `今日`、`近7天`、`近30天` 三个选项。
+Add a compact date range preset bar to the Usage page between the Usage sub-tab switcher and the existing filter controls. The bar must provide three presets:
 
-用户点击快捷日期后，页面应自动同步现有的开始日期和结束日期，并基于更新后的日期范围刷新统计数据。该行为应覆盖使用统计下的所有二级页面：
+1. `今日`
+2. `近7天`
+3. `近30天`
 
-1. 概览
-2. 请求日志
+When a user selects a preset, the page must synchronize the existing start and end date fields, then refresh Usage data for all Usage sub-pages:
+
+1. Overview
+2. Requests
 3. Provider
-4. 模型
-5. Usage 覆盖率
+4. Models
+5. Usage Coverage
 
-## 2. 背景
+## 2. Background
 
-当前使用统计页面已经提供开始日期和结束日期筛选，并通过现有 `from`、`to`、`tz` 参数查询统计接口。用户频繁查看近期数据时，需要手动修改日期，操作成本偏高。
+The Usage page already supports date filtering through the existing `from`, `to`, and `tz` query parameters. Users can manually edit the start and end date fields, but common recent time windows require repetitive date entry.
 
-新增快捷日期范围的目标是降低常用时间窗口的操作成本，同时继续复用现有日期输入和查询链路，避免新增后端语义和接口复杂度。
+This feature lowers the cost of common date filtering while preserving the existing date inputs and API query path. It should not introduce a new backend range concept.
 
-## 3. 需求
+## 3. Requirements
 
-### 3.1 快捷日期块位置
+### 3.1 Placement and Layout
 
-快捷日期块放置在“使用统计”二级页签切换块和筛选条件块之间。
+The preset bar must appear between the Usage sub-tab switcher and the filter grid.
 
-布局要求：
+Layout requirements:
 
-1. 使用紧凑的一行工具条样式。
-2. 不使用高卡片或大段说明文案。
-3. 展示内容为一个短标签和三个快捷按钮，例如：
+1. Use a compact single-row toolbar.
+2. Do not use a tall card or long explanatory copy.
+3. Display a short label and three preset buttons, for example:
 
 ```text
 时间范围  今日  近7天  近30天
 ```
 
-### 3.2 日期范围语义
+### 3.2 Date Range Semantics
 
-日期范围以浏览器当前时区对应的自然日计算，并继续传递现有 `tz` 参数给后端。
+Date ranges are calculated as calendar days in the browser's current time zone. The frontend must continue sending the existing `tz` value to the backend.
 
-`今日`：
+`今日`:
 
-1. 包含今天。
-2. 设置开始日期为今天。
-3. 设置结束日期为今天。
-4. 后端现有 `to` 日期解析会将结束日期转换为次日 00:00 的半开区间上界。
+1. Includes today.
+2. Sets the start date to today.
+3. Sets the end date to today.
+4. The existing backend parser converts the `to` date into the exclusive upper bound at the next local midnight.
 
-`近7天`：
+`近7天`:
 
-1. 不包含今天。
-2. 使用今天之前已经完整结束的 7 个自然日。
-3. 设置结束日期为昨天。
-4. 设置开始日期为昨天往前数 6 天。
+1. Does not include today.
+2. Uses the 7 fully completed calendar days before today.
+3. Sets the end date to yesterday.
+4. Sets the start date to 6 days before yesterday.
 
-`近30天`：
+`近30天`:
 
-1. 不包含今天。
-2. 使用今天之前已经完整结束的 30 个自然日。
-3. 设置结束日期为昨天。
-4. 设置开始日期为昨天往前数 29 天。
+1. Does not include today.
+2. Uses the 30 fully completed calendar days before today.
+3. Sets the end date to yesterday.
+4. Sets the start date to 29 days before yesterday.
 
-示例：若浏览器当前日期为 `2026-06-10`：
+Example when the browser date is `2026-06-10`:
 
-| 快捷范围 | 开始日期 | 结束日期 | 说明 |
-|----------|----------|----------|------|
-| 今日 | 2026-06-10 | 2026-06-10 | 仅今天 |
-| 近7天 | 2026-06-03 | 2026-06-09 | 不含今天，7 个完整自然日 |
-| 近30天 | 2026-05-11 | 2026-06-09 | 不含今天，30 个完整自然日 |
+| Preset | Start date | End date | Notes |
+|--------|------------|----------|-------|
+| 今日 | 2026-06-10 | 2026-06-10 | Today only |
+| 近7天 | 2026-06-03 | 2026-06-09 | Excludes today; 7 complete calendar days |
+| 近30天 | 2026-05-11 | 2026-06-09 | Excludes today; 30 complete calendar days |
 
-### 3.3 默认状态
+### 3.3 Default State
 
-进入“使用统计”页面时，默认选中 `近7天`。
+The Usage page must default to `近7天`.
 
-默认开始日期和结束日期应按 `近7天` 语义初始化，即不包含今天，统计昨天之前的 7 个完整自然日。
+The initial start and end dates must follow the `近7天` semantics: the 7 fully completed calendar days before today, excluding today.
 
-### 3.4 点击行为
+### 3.4 Preset Click Behavior
 
-用户点击任一快捷按钮时：
+When a user clicks a preset:
 
-1. 同步更新现有 `usageFilters.from`。
-2. 同步更新现有 `usageFilters.to`。
-3. 保持其他筛选条件不变，例如 Provider、模型、状态、Usage 来源、统计口径、来源入口和搜索词。
-4. 复用现有筛选 watcher 自动刷新统计数据。
-5. 请求日志分页应回到第一页，沿用现有筛选变更行为。
+1. Update `usageFilters.from`.
+2. Update `usageFilters.to`.
+3. Preserve all other filters, including Provider, model, status, Usage source, statistics scope, source entrypoint, and search query.
+4. Reuse the existing filter watcher to refresh Usage data.
+5. Reset the request log pagination to the first page through the existing filter-change behavior.
 
-### 3.5 手动日期编辑和选中状态
+### 3.5 Manual Date Editing and Active State
 
-用户手动修改开始日期或结束日期时：
+When the user manually edits the start date or end date:
 
-1. 如果当前开始日期和结束日期正好匹配某个快捷范围，则高亮对应快捷按钮。
-2. 如果不匹配任何快捷范围，则三个快捷按钮都不高亮。
-3. 不应阻止用户输入自定义日期范围。
-4. 不应在用户输入自定义日期范围后强行回填为快捷范围。
+1. If the current dates exactly match a preset, highlight that preset.
+2. If the current dates do not match any preset, no preset button is highlighted.
+3. Custom date ranges must remain allowed.
+4. Custom date ranges must not be forced back into a preset.
 
-### 3.6 查询链路
+### 3.6 Query Path
 
-本功能复用现有 API 参数：
+This feature must reuse the existing API parameters:
 
 ```text
 from
@@ -109,25 +113,25 @@ to
 tz
 ```
 
-不新增后端 `range` 参数。前端只负责把快捷日期范围转换成现有的开始日期和结束日期。
+Do not add a backend `range` parameter. The frontend is responsible for mapping presets to the existing start and end date fields.
 
-## 4. 非目标
+## 4. Non-Goals
 
-1. 不新增后端 API 参数。
-2. 不改变后端 `from`、`to` 的半开区间解析逻辑。
-3. 不新增周、月、季度、自定义预设等更多快捷范围。
-4. 不改变 Provider、模型、状态、Usage 来源、统计口径、来源入口和搜索筛选语义。
-5. 不改变 Usage 统计口径、去重逻辑或聚合逻辑。
-6. 不新增图表类型或报表导出能力。
+1. Do not add a backend API parameter.
+2. Do not change backend `from` and `to` exclusive-upper-bound parsing.
+3. Do not add more presets such as week, month, quarter, or custom saved ranges.
+4. Do not change Provider, model, status, Usage source, statistics scope, source entrypoint, or search filtering semantics.
+5. Do not change Usage aggregation, deduplication, or statistics scope behavior.
+6. Do not add chart types or report export behavior.
 
-## 5. 成功标准
+## 5. Success Criteria
 
-1. 使用统计页面在二级页签和筛选条件之间显示紧凑快捷日期条。
-2. 默认进入页面时选中 `近7天`，日期范围不包含今天。
-3. 点击 `今日` 后，开始日期和结束日期同步为今天，并刷新所有统计视图。
-4. 点击 `近7天` 后，开始日期和结束日期同步为不含今天的 7 个完整自然日，并刷新所有统计视图。
-5. 点击 `近30天` 后，开始日期和结束日期同步为不含今天的 30 个完整自然日，并刷新所有统计视图。
-6. 手动日期正好匹配预设范围时，对应按钮高亮。
-7. 手动日期不匹配预设范围时，快捷按钮全部取消高亮。
-8. 现有筛选条件和请求日志分页行为保持一致。
-9. 前端测试和构建通过。
+1. The Usage page shows a compact preset bar between the Usage sub-tabs and the filter grid.
+2. The default preset is `近7天`, and the default date range excludes today.
+3. Clicking `今日` synchronizes both date fields to today and refreshes all Usage views.
+4. Clicking `近7天` synchronizes the date fields to the 7 complete calendar days before today and refreshes all Usage views.
+5. Clicking `近30天` synchronizes the date fields to the 30 complete calendar days before today and refreshes all Usage views.
+6. Manually selected dates that exactly match a preset highlight that preset.
+7. Manually selected dates that do not match a preset leave all preset buttons unselected.
+8. Existing filter behavior and request log pagination behavior remain unchanged.
+9. Frontend tests and frontend build pass.

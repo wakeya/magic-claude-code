@@ -1,40 +1,40 @@
-# 使用统计快捷日期范围 — 决策记录
+# Usage Date Range Presets — Decisions
 
-## D-001：前端预设映射到现有 from/to
+## D-001: Map presets to existing from/to filters in the frontend
 
-**日期：** 2026-06-11
-**状态：** accepted
+**Date:** 2026-06-11
+**Status:** accepted
 
-**背景：** 使用统计后端已经支持 `from`、`to`、`tz` 参数，所有统计视图都复用同一套筛选逻辑。新增后端 `range` 参数会扩大 API 行为和测试范围。
+**Context:** The Usage backend already supports `from`, `to`, and `tz`, and all Usage views share the same filter path. Adding a backend `range` parameter would expand API behavior and test scope.
 
-**决策：** 快捷日期范围只在前端转换为现有 `usageFilters.from` 和 `usageFilters.to`，查询继续使用现有 API 参数。
+**Decision:** Date presets are implemented as frontend mappings to the existing `usageFilters.from` and `usageFilters.to` fields. Queries continue to use the existing API parameters.
 
-**影响：** 变更范围小，所有统计视图自然复用现有刷新链路。日期预设语义由前端负责，后端保持稳定。
+**Impact:** The change remains small, and every Usage view naturally reuses the existing refresh path. Preset semantics live in the frontend.
 
-**重新评估条件：** 多个客户端都需要共享同一套预设范围语义，或后端需要对预设范围做权限、缓存、审计等专门处理。
+**Re-evaluation trigger:** Revisit this if multiple clients need to share the same preset semantics, or if the backend needs dedicated authorization, caching, or audit behavior for named ranges.
 
-## D-002：近7天和近30天不包含今天
+## D-002: Last 7 days and last 30 days exclude today
 
-**日期：** 2026-06-11
-**状态：** accepted
+**Date:** 2026-06-11
+**Status:** accepted
 
-**背景：** 今天的数据尚未完整结束。把今天纳入 `近7天` 或 `近30天` 会让窗口包含一个不完整自然日，影响对完整周期的比较。
+**Context:** Today's data is not complete until the day ends. Including today in `近7天` or `近30天` would mix a partial day into otherwise complete windows.
 
-**决策：** `近7天` 和 `近30天` 均不包含今天，只统计昨天及之前已经完整结束的自然日。`今日` 是唯一包含今天的快捷范围。
+**Decision:** `近7天` and `近30天` exclude today and cover only fully completed calendar days. `今日` is the only preset that includes today.
 
-**影响：** 近期窗口更稳定，避免今天未结束数据拉低或扭曲统计结果。用户需要查看今天数据时明确点击 `今日`。
+**Impact:** Recent windows are more stable and easier to compare. Users explicitly select `今日` when they want current-day data.
 
-**重新评估条件：** 后续增加“最近 7 天（含今天）”这类滚动窗口需求，或用户明确希望近期快捷项包含今天。
+**Re-evaluation trigger:** Revisit this if users request rolling windows that include today, such as "last 7 days including today".
 
-## D-003：手动日期不匹配预设时不高亮
+## D-003: Do not highlight a preset for non-matching custom ranges
 
-**日期：** 2026-06-11
-**状态：** accepted
+**Date:** 2026-06-11
+**Status:** accepted
 
-**背景：** 用户仍需要自定义任意日期范围。快捷按钮的高亮状态应表达“当前日期正好等于该预设”，而不是粗略归类。
+**Context:** Users still need arbitrary custom date ranges. Preset active state should mean "the current dates exactly equal this preset", not "the current dates roughly resemble this preset".
 
-**决策：** 手动日期正好匹配预设时高亮对应按钮；不匹配任何预设时，三个快捷按钮都不高亮。
+**Decision:** Manual dates highlight a preset only on an exact match. If the current dates do not match any preset, all preset buttons are unselected.
 
-**影响：** 状态表达清晰，不会误导用户以为自定义范围属于某个快捷预设。
+**Impact:** The UI state remains precise and avoids implying that a custom date range belongs to a preset.
 
-**重新评估条件：** 后续 UI 增加“自定义”显式选项，或需要展示当前范围与预设的近似关系。
+**Re-evaluation trigger:** Revisit this if the UI later adds an explicit "custom" state or needs to show approximate relationships to presets.

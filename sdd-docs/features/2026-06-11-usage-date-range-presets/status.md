@@ -1,31 +1,52 @@
-# 使用统计快捷日期范围 — 状态
+# Usage Date Range Presets — Status
 
-**功能：** 使用统计快捷日期范围
-**当前状态：** approved
-**生命周期：** approved
-**创建日期：** 2026-06-11
-**最后更新：** 2026-06-11
+**Feature:** Usage date range presets
+**Current status:** planned
+**Created:** 2026-06-11
+**Last updated:** 2026-06-11
+**Owner:** Local project maintainer
 
-## 范围
+## Lifecycle
 
-在使用统计页面新增紧凑快捷日期范围条，提供 `今日`、`近7天`、`近30天`，并同步现有开始日期和结束日期筛选。
+```text
+draft -> approved -> planned -> implementing -> implemented -> validating -> validated -> shipped
+```
 
-## 已确认
+Current position:
 
-1. 快捷日期条放在使用统计二级页签和筛选条件之间。
-2. UI 使用紧凑一行工具条，不使用高卡片。
-3. `今日` 包含今天。
-4. `近7天` 和 `近30天` 不包含今天，只统计完整自然日。
-5. 默认选中 `近7天`。
-6. 手动日期匹配预设时高亮，不匹配时不高亮。
-7. 复用现有 `from`、`to`、`tz` 查询参数，不新增后端范围参数。
+```text
+planned
+```
 
-## 下一步
+## Summary
 
-1. 编写实现计划 `plan.md`。
-2. 编写验证清单 `validation.md`。
-3. 按计划实现前端快捷日期条、同步逻辑和测试。
+The Usage page will add a compact preset bar with `今日`, `近7天`, and `近30天`. Preset selection updates the existing start and end date filters and reuses the existing Usage query flow.
 
-## 阻塞项
+`今日` includes today. `近7天` and `近30天` exclude today and cover fully completed calendar days before today.
 
-无。
+## Confirmed
+
+1. The preset bar appears between Usage sub-tabs and the filter grid.
+2. The UI uses a compact single-row toolbar.
+3. `今日` includes today.
+4. `近7天` and `近30天` exclude today.
+5. The default preset is `近7天`.
+6. Manual dates highlight a preset only on exact match.
+7. Queries reuse existing `from`, `to`, and `tz`; no backend range parameter is added.
+
+## Completed Documentation
+
+1. Requirements are recorded in `requirements.md` and `requirements_ZH.md`.
+2. Decisions are recorded in `decisions.md` and `decisions_ZH.md`.
+3. Implementation plans are recorded in `plan.md` and `plan_ZH.md`.
+4. Validation checklists are recorded in `validation.md` and `validation_ZH.md`.
+
+## Pending
+
+1. Implement frontend UI, date synchronization logic, and tests.
+2. Record verification evidence after implementation.
+3. Move status to `validated` after verification passes.
+
+## Blockers
+
+None.
