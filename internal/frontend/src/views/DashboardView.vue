@@ -202,11 +202,11 @@
         <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
           <div class="app-panel p-4 rounded-lg">
             <label class="block text-xs font-bold text-text-secondary uppercase tracking-widest mb-2">{{ t('usage.from') }}</label>
-            <input v-model="usageFilters.from" type="date" class="app-control w-full rounded-md px-3 py-2 text-sm" />
+            <input v-model="usageFilters.from" type="datetime-local" step="1" class="app-control w-full rounded-md px-3 py-2 text-sm" />
           </div>
           <div class="app-panel p-4 rounded-lg">
             <label class="block text-xs font-bold text-text-secondary uppercase tracking-widest mb-2">{{ t('usage.to') }}</label>
-            <input v-model="usageFilters.to" type="date" class="app-control w-full rounded-md px-3 py-2 text-sm" />
+            <input v-model="usageFilters.to" type="datetime-local" step="1" class="app-control w-full rounded-md px-3 py-2 text-sm" />
           </div>
           <div class="app-panel p-4 rounded-lg">
             <label class="block text-xs font-bold text-text-secondary uppercase tracking-widest mb-2">{{ t('usage.provider') }}</label>
@@ -872,38 +872,51 @@ function browserTimeZone(): string {
   }
 }
 
-function dateInputToday(): string {
-  return formatDateInput(new Date())
-}
-
-function dateInputDaysAgo(days: number): string {
+function dateTimeInputStartOfDaysAgo(days: number): string {
   const d = new Date()
   d.setDate(d.getDate() - days)
-  return formatDateInput(d)
+  return formatDateTimeInput(startOfLocalDay(d))
 }
 
-function formatDateInput(date: Date): string {
+function dateTimeInputEndOfDaysAgo(days: number): string {
+  const d = new Date()
+  d.setDate(d.getDate() - days)
+  return formatDateTimeInput(endOfLocalDay(d))
+}
+
+function startOfLocalDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0)
+}
+
+function endOfLocalDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 0)
+}
+
+function formatDateTimeInput(date: Date): string {
   const year = date.getFullYear()
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
+  const hour = String(date.getHours()).padStart(2, '0')
+  const minute = String(date.getMinutes()).padStart(2, '0')
+  const second = String(date.getSeconds()).padStart(2, '0')
+  return `${year}-${month}-${day}T${hour}:${minute}:${second}`
 }
 
-function relativeDateRange(startDaysAgo: number, endDaysAgo: number): { from: string; to: string } {
+function inclusiveDateTimeRange(startDaysAgo: number, endDaysAgo: number): { from: string; to: string } {
   return {
-    from: dateInputDaysAgo(startDaysAgo),
-    to: dateInputDaysAgo(endDaysAgo),
+    from: dateTimeInputStartOfDaysAgo(startDaysAgo),
+    to: dateTimeInputEndOfDaysAgo(endDaysAgo),
   }
 }
 
 function usageDateRangeForPreset(preset: UsageDateRangePreset): { from: string; to: string } {
   switch (preset) {
     case 'today':
-      return { from: dateInputToday(), to: dateInputToday() }
+      return inclusiveDateTimeRange(0, 0)
     case 'last_7_days':
-      return relativeDateRange(7, 1)
+      return inclusiveDateTimeRange(7, 1)
     case 'last_30_days':
-      return relativeDateRange(30, 1)
+      return inclusiveDateTimeRange(30, 1)
   }
 }
 

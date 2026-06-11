@@ -183,6 +183,19 @@ func parseFilterTime(value string, loc *time.Location, endOfDate bool) (time.Tim
 	if t, err := time.Parse(time.RFC3339Nano, value); err == nil {
 		return t, nil
 	}
+	for _, layout := range []string{
+		"2006-01-02T15:04:05",
+		"2006-01-02T15:04",
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04",
+	} {
+		if t, err := time.ParseInLocation(layout, value, loc); err == nil {
+			if endOfDate {
+				t = t.Add(time.Second)
+			}
+			return t.UTC(), nil
+		}
+	}
 	t, err := time.ParseInLocation("2006-01-02", value, loc)
 	if err != nil {
 		return time.Time{}, err

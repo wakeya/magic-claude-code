@@ -72,6 +72,31 @@ func TestUsageHandlerDateOnlyToIncludesWholeDay(t *testing.T) {
 	}
 }
 
+func TestUsageHandlerLocalDateTimeToIncludesSelectedSecond(t *testing.T) {
+	store := newTestStore(t)
+	before := time.Date(2026, 5, 18, 9, 59, 59, 0, time.UTC)
+	inside := time.Date(2026, 5, 18, 10, 30, 0, 0, time.UTC)
+	endBoundary := time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC)
+	after := time.Date(2026, 5, 18, 11, 0, 1, 0, time.UTC)
+	seedUsageRecord(t, store, "before", before, 200, "", UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 1})
+	seedUsageRecord(t, store, "inside", inside, 200, "", UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 1})
+	seedUsageRecord(t, store, "end-boundary", endBoundary, 200, "", UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 1})
+	seedUsageRecord(t, store, "after", after, 200, "", UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 1})
+
+	rec := serveUsageRequest(store, "/api/usage/summary?from=2026-05-18T10:00:00&to=2026-05-18T11:00:00&tz=UTC")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var got Summary
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode summary: %v", err)
+	}
+	if got.ProviderRequestsTotal != 2 {
+		t.Fatalf("ProviderRequestsTotal = %d", got.ProviderRequestsTotal)
+	}
+}
+
 func TestUsageRequestsHandlerReturnsSnakeCaseRows(t *testing.T) {
 	store := newTestStore(t)
 	started := time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)
