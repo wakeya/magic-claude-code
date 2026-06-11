@@ -47,7 +47,9 @@ npm run build
 8. Click an outline item and verify scroll positioning.
 9. Click "Export" and verify the downloaded HTML opens correctly in a browser.
 10. Open the cleanup hint and verify it shows `claude project purge --dry-run <project-path>` plus interactive terminal cleanup guidance, and that no files are deleted by the admin panel.
-11. Verify that the proxy continues to work normally (no proxy changes).
+11. Verify the cleanup hint displays Linux/macOS preview and interactive commands plus Windows preview and interactive commands.
+12. Verify Windows command paths use `C:\Users\用户名代理\...` for user-home paths, preserve native Windows drive letters, and sanitize embedded quotes/control characters before display.
+13. Verify that the proxy continues to work normally (no proxy changes).
 
 ## Evidence Log
 

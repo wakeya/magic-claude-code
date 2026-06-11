@@ -142,6 +142,13 @@ export interface UsageCoverageRow {
   last_seen_at: string
 }
 
+export interface UsageClearResult {
+  success: boolean
+  cleared_requests: number
+  cleared_tokens: number
+  reset_session_sync: boolean
+}
+
 export type UsageParams = Record<string, string | number | boolean | null | undefined>
 
 export interface PreferencesResponse {
@@ -189,7 +196,8 @@ export interface SessionCleanupHint {
   project_path: string
   preview_command: string
   interactive_command: string
-  note: string
+  windows_preview_command: string
+  windows_interactive_command: string
 }
 
 export function useApi() {
@@ -376,6 +384,16 @@ export function useApi() {
     return res.json()
   }
 
+  async function clearUsageData(resetSessionSync: boolean): Promise<UsageClearResult> {
+    const res = await fetch('/api/usage/clear', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reset_session_sync: resetSessionSync }),
+    })
+    if (!res.ok) throw new Error('Failed to clear usage data')
+    return res.json()
+  }
+
   async function getSessionProjects(): Promise<SessionProject[]> {
     const res = await fetch('/api/sessions/projects')
     if (!res.ok) throw new Error('Failed to fetch session projects')
@@ -429,6 +447,7 @@ export function useApi() {
     getUsageProviders,
     getUsageModels,
     getUsageCoverage,
+    clearUsageData,
     getSessionProjects,
     getSessionList,
     getSessionDetail,

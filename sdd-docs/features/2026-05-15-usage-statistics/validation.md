@@ -148,6 +148,13 @@
 - [ ] `GET /api/usage/models` 返回模型聚合
 - [ ] `GET /api/usage/coverage` 返回 provider/API 地址/模型/Claude Code 入口覆盖率
 - [ ] `GET /api/usage/coverage` 同时保留 Provider Usage 覆盖率和有效 Usage 覆盖率
+- [ ] `POST /api/usage/clear` 默认删除 `usage_requests` 和 `usage_tokens`
+- [ ] `POST /api/usage/clear` 默认保留 `session_log_sync`
+- [ ] `POST /api/usage/clear` 在 `reset_session_sync=true` 时删除 `session_log_sync`
+- [ ] 清除统计数据后 summary/trends/requests/providers/models/coverage 返回空统计或空列表
+- [ ] 清除统计数据后新的 provider 请求仍可继续写入统计表
+- [ ] 清除统计数据但保留 `session_log_sync` 后，历史 Session Log 不会立刻重新补回
+- [ ] 清除统计数据并重置 `session_log_sync` 后，当前机器 JSONL 可重新导入历史 usage
 - [ ] 所有 `/api/usage/*` 接口需要登录 session
 - [ ] 无效 `tz` 返回明确 400 错误
 
@@ -197,6 +204,16 @@
 - [ ] 切换每页条数时自动重置到第 1 页
 - [ ] 修改筛选条件时自动重置到第 1 页
 - [ ] 翻页后请求日志数据正确更新
+- [ ] `刷新` 按钮左侧显示 `清除数据` 按钮
+- [ ] 点击 `清除数据` 后显示确认弹窗
+- [ ] 确认弹窗说明不会删除本地 Claude Code JSONL
+- [ ] 确认弹窗说明会话记录不受影响
+- [ ] 确认弹窗说明清除后会重新记录新请求
+- [ ] 确认弹窗包含默认不勾选的 `同时重置 Session Log 同步状态`
+- [ ] 不勾选时调用清除接口并发送 `reset_session_sync=false`
+- [ ] 勾选时调用清除接口并发送 `reset_session_sync=true`
+- [ ] 清除成功后当前统计页面自动刷新
+- [ ] 清除失败时展示错误提示且页面数据不被前端清空
 
 ## 11. ECharts
 

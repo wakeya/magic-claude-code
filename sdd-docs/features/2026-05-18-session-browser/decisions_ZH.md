@@ -63,7 +63,7 @@ Claude Code 在文件系统布局中按项目目录组织会话（`~/.claude/pro
 
 **背景：** Claude Code 会话 JSONL 和附属目录属于 Claude Code 自身状态。管理面板直接删除这些文件会带来误删、路径逃逸、符号链接和并发写入风险，也可能破坏 Claude Code 对项目状态的管理假设。
 
-**决策：** 会话浏览器不提供删除 JSONL 文件或附属目录的 API，也不在前端执行删除操作。需要清理项目或会话状态时，界面仅展示 Claude Code CLI 命令提示。项目级提示优先使用 `claude project purge --dry-run <project-path>` 预览，再提示用户在终端自行运行 `claude project purge -i <project-path>` 进行交互确认。单会话清理以当前 Claude Code 版本的 CLI 帮助为准。
+**决策：** 会话浏览器不提供删除 JSONL 文件或附属目录的 API，也不在前端执行删除操作。需要清理项目或会话状态时，界面仅展示 Claude Code CLI 命令提示。项目级提示优先使用 `claude project purge --dry-run <project-path>` 预览，再提示用户在终端自行运行 `claude project purge -i <project-path>` 进行交互确认。清理提示同时展示 Linux/macOS 和 Windows 命令。Windows 命令使用 Windows 风格路径，用户名使用 `用户名代理` 占位，并在展示前清洗命令敏感路径字符。单会话清理以当前 Claude Code 版本的 CLI 帮助为准。
 
 **影响：** 功能保持只读，降低破坏性操作风险。用户仍可通过 Claude Code 官方命令行完成清理，但管理面板不承担文件删除职责。
 

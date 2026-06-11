@@ -136,6 +136,13 @@ type RequestPage struct {
 	PageSize int          `json:"page_size"`
 }
 
+type ClearResult struct {
+	Success          bool  `json:"success"`
+	ClearedRequests  int64 `json:"cleared_requests"`
+	ClearedTokens    int64 `json:"cleared_tokens"`
+	ResetSessionSync bool  `json:"reset_session_sync"`
+}
+
 type AggregateRow struct {
 	Name                  string  `json:"name"`
 	ProviderID            string  `json:"provider_id,omitempty"`

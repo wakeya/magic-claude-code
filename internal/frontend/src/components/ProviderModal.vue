@@ -1,6 +1,6 @@
 <template>
   <div class="fixed inset-0 bg-black/50 z-50 flex justify-center items-center" @click.self="$emit('close')">
-    <div class="app-panel p-8 rounded-lg w-[90%] max-w-[500px] max-h-[90vh] overflow-y-auto">
+    <div class="app-panel p-8 rounded-lg w-[90%] max-w-[1080px] max-h-[90vh] overflow-y-auto">
       <div class="flex justify-between items-center mb-6">
         <h2 class="text-lg font-bold m-0">{{ provider ? t('modal.edit_title') : t('modal.add_title') }}</h2>
         <button class="bg-transparent border-none text-2xl cursor-pointer app-muted hover:text-fg" @click="$emit('close')">&times;</button>

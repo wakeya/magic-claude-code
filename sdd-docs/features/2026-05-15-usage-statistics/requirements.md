@@ -498,6 +498,7 @@ CREATE INDEX IF NOT EXISTS idx_usage_tokens_parse_status ON usage_tokens(usage_p
 | `GET` | `/api/usage/providers` | 按 provider 聚合 |
 | `GET` | `/api/usage/models` | 按模型聚合 |
 | `GET` | `/api/usage/coverage` | 按 provider/API 地址/模型聚合 usage 覆盖率和无 usage 原因 |
+| `POST` | `/api/usage/clear` | 清除统计页面数据 |
 
 查询参数：
 
@@ -520,6 +521,52 @@ CREATE INDEX IF NOT EXISTS idx_usage_tokens_parse_status ON usage_tokens(usage_p
 `tz` 默认使用服务端本地时区。所有前端页面（包括状态页和使用统计页）都必须传入浏览器时区，确保”今日”相关统计与用户所在时区一致。状态页通过 `/api/status?tz=...` 传参，使用统计页通过 `/api/usage/*?tz=...` 传参。
 
 状态页可以复用 `/api/usage/summary` 的轻量摘要，也可以由 `/api/status` 内部组合返回。无论采用哪种接口形式，状态页显示的数据定义必须与使用统计页一致。
+
+### 11.1 清除统计数据 API
+
+`POST /api/usage/clear` 用于清除使用统计页面中的统计数据。该接口复用现有管理鉴权。
+
+请求体：
+
+```json
+{
+  "reset_session_sync": false
+}
+```
+
+行为：
+
+1. 始终删除 `usage_tokens` 和 `usage_requests` 中的全部记录。
+2. 默认保留 `session_log_sync`，避免清空后后台同步立即从本地 JSONL 重新导入历史 Session Log usage。
+3. 当 `reset_session_sync=true` 时，同时删除 `session_log_sync`，下次同步会基于当前机器的 `CLAUDE_PROJECTS_DIR` 重新扫描 JSONL 并导入历史补账记录。
+4. 不删除、修改或截断任何 Claude Code 本地 JSONL 文件。
+5. 不影响会话记录页面；会话记录仍从本地 JSONL 文件读取。
+6. 服务无需重启。清除完成后，新的实时 provider 请求会重新写入统计数据。
+
+响应体：
+
+```json
+{
+  "success": true,
+  "cleared_requests": 123,
+  "cleared_tokens": 123,
+  "reset_session_sync": false
+}
+```
+
+实现约束：
+
+1. 清除操作必须在事务中执行。
+2. 删除 `usage_tokens` 应先于 `usage_requests`，避免外键约束问题。
+3. `session_log_sync` 只在用户明确勾选重置时删除。
+4. 清除失败时返回非 2xx，并保留原有数据一致性。
+
+迁移场景：
+
+1. 常规清空统计页数据时，不应勾选 `reset_session_sync`。
+2. 将 Linux 机器的 `data/proxy.db` 迁移到 Windows、macOS 或另一台 Linux 机器时，旧 `session_log_sync.file_path` 可能不再匹配当前机器路径。
+3. 更换 `CLAUDE_PROJECTS_DIR` 或迁移 data 目录后，如果希望当前机器重新建立 Session Log 同步状态，可以勾选 `reset_session_sync`。
+4. 勾选后可能重新导入当前机器 JSONL 中的历史 usage，这是预期行为。
 
 ---
 
@@ -613,6 +660,38 @@ max-w-[1440px]
 2. 后续如果增加 provider/model 对比、堆叠图或更多交互，不需要重新替换图表库。
 3. 虽然 ECharts 体积更大，但管理后台不是首屏营销页，首版可以接受体积换取成熟交互和维护成本更低。
 
+### 12.7 清除统计数据交互
+
+在使用统计页顶部操作区，在 `刷新` 按钮左侧新增 `清除数据` 按钮。
+
+点击后弹出确认框或确认弹窗，必须明确说明：
+
+1. 将清除全部统计页面数据。
+2. 不会删除本地 Claude Code JSONL 文件。
+3. 会话记录页面不受影响。
+4. 清除后服务会继续记录新的实时请求。
+5. 默认不会重置 Session Log 同步状态，避免历史 JSONL usage 立即补回。
+
+确认弹窗包含一个默认不勾选的选项：
+
+```text
+同时重置 Session Log 同步状态
+```
+
+该选项旁或下方需要解释：
+
+```text
+迁移 data 目录、更换系统或更换 session 日志目录时使用；勾选后会重新扫描当前机器 JSONL，可能重新导入历史 Session Log usage。
+```
+
+确认后：
+
+1. 前端调用 `POST /api/usage/clear`。
+2. 请求体中的 `reset_session_sync` 等于 checkbox 状态。
+3. 成功后刷新当前使用统计数据。
+4. 失败时保留当前页面数据，并展示可理解的错误提示。
+5. 清除动作不应重置 Provider 配置、证书、主题偏好或会话记录。
+
 ---
 
 ## 13. 数据聚合口径
@@ -701,6 +780,8 @@ usage_retention_days = 90
 5. provider 记录与 Session Log 记录四项 token 相同、模型相同、时间接近时，默认有效统计只计入 provider 记录。
 6. 请求日志切换到 `session_log` 或 `raw` 口径时，重复 Session Log 记录仍可见，并带有重复标记。
 7. 非重复 Session Log 记录在有效统计中计入 token 消耗。
+8. 清除统计数据但保留 `session_log_sync` 后，再次同步不会重新导入已处理的历史 JSONL 行。
+9. 清除统计数据并重置 `session_log_sync` 后，再次同步会基于当前 `CLAUDE_PROJECTS_DIR` 重新导入可用历史 JSONL usage。
 
 ### 15.3 聚合测试
 
@@ -710,6 +791,16 @@ usage_retention_days = 90
 4. providers/models 接口聚合请求数、token、失败数、平均耗时和覆盖率。
 5. coverage 接口按 provider/API 地址/模型/Claude Code 入口聚合无 usage 原因，并同时保留 Provider Usage 覆盖率和有效 Usage 覆盖率。
 6. 今日统计按 `tz` 参数切换时区后结果正确。
+
+### 15.3A 清除统计数据测试
+
+1. `POST /api/usage/clear` 默认删除 `usage_tokens` 和 `usage_requests`。
+2. 默认清除不删除 `session_log_sync`。
+3. `reset_session_sync=true` 时同时删除 `session_log_sync`。
+4. 清除操作在事务中执行；发生错误时不留下部分删除状态。
+5. 清除后 summary、trends、requests、providers、models、coverage 均返回空统计或空列表。
+6. 清除后新的 provider 请求仍可正常写入统计表。
+7. 清除接口必须要求管理鉴权。
 
 ### 15.4 前端验证
 
@@ -721,6 +812,12 @@ usage_retention_days = 90
 6. 请求日志表底部有分页控件，分页控件左侧显示总条数，切换每页条数和翻页正常工作。
 7. 统计口径切换控件能在“有效统计 / 实时请求 / Session Log / 全部原始”之间切换。
 8. 重复 Session Log 行在 Session Log 和全部原始视图中可见，但不会影响默认有效统计总量。
+9. 使用统计页顶部 `刷新` 按钮左侧显示 `清除数据` 按钮。
+10. 点击 `清除数据` 后展示确认弹窗，文案说明不会删除本地 JSONL、不会影响会话记录、清除后会重新记录新请求。
+11. 确认弹窗包含默认不勾选的 `同时重置 Session Log 同步状态` 选项。
+12. 不勾选时，请求体发送 `reset_session_sync=false`。
+13. 勾选时，请求体发送 `reset_session_sync=true`，并提示可能重新导入当前机器 JSONL 历史 usage。
+14. 清除成功后自动刷新当前统计页面。
 
 ---
 
@@ -751,6 +848,9 @@ usage_retention_days = 90
 | 统计写库拖慢请求 | 增加代理延迟 | 请求结束后小事务写入；写入失败只打日志，不影响响应 |
 | 错误摘要泄露敏感内容 | 日志表暴露 provider 返回的敏感片段 | `error_message` 只保存短摘要，避免保存完整 body 或 token |
 | Session Log 重复识别误判 | 默认有效统计少计或多计 token | 使用保守条件：模型相同、四项 token 相同、时间接近；原始 provider/session_log 记录都保留，可切换到 `raw` 口径审计 |
+| 清除统计后历史 Session Log 立即补回 | 用户以为清空失败 | 默认保留 `session_log_sync`，只删除统计记录；明确在确认弹窗中说明 |
+| 迁移 data 目录后 `session_log_sync` 路径失效 | 新机器无法按预期补账或审计历史 | 在清除弹窗提供“同时重置 Session Log 同步状态”选项，供迁移或更换日志目录时使用 |
+| 误勾选重置同步状态 | 历史 JSONL usage 被重新导入 | checkbox 默认不勾选，并在说明中明确“可能重新导入历史 Session Log usage” |
 
 ---
 

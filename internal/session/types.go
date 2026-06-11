@@ -26,14 +26,15 @@ type Message struct {
 }
 
 type SessionDetail struct {
-	Session       Session   `json:"session"`
-	Messages      []Message `json:"messages"`
-	MessageCount  int       `json:"message_count"`
+	Session      Session   `json:"session"`
+	Messages     []Message `json:"messages"`
+	MessageCount int       `json:"message_count"`
 }
 
 type CleanupHint struct {
-	ProjectPath        string `json:"project_path"`
-	PreviewCommand     string `json:"preview_command"`
-	InteractiveCommand string `json:"interactive_command"`
-	Note               string `json:"note"`
+	ProjectPath               string `json:"project_path"`
+	PreviewCommand            string `json:"preview_command"`
+	InteractiveCommand        string `json:"interactive_command"`
+	WindowsPreviewCommand     string `json:"windows_preview_command"`
+	WindowsInteractiveCommand string `json:"windows_interactive_command"`
 }

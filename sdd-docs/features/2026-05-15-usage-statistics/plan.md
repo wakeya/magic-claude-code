@@ -1070,3 +1070,73 @@ git commit -m "fix: 完成 usage 统计验证"
 ```
 
 预期：如果前面所有任务都干净通过，则不需要提交。
+
+---
+
+## 任务 11：增加统计数据清除能力
+
+**状态：** 已实现（2026-06-11）
+
+**文件规划：**
+
+后端：
+
+1. `internal/usage/store.go`
+2. `internal/usage/store_test.go`
+3. `internal/usage/handler.go`
+4. `internal/usage/handler_test.go`
+
+前端：
+
+1. `internal/frontend/src/composables/useApi.ts`
+2. `internal/frontend/src/composables/useI18n.ts`
+3. `internal/frontend/src/views/DashboardView.vue`
+4. `internal/frontend/src/views/DashboardUsageRequests.test.ts`
+5. `internal/frontend/dist/*`
+
+### 任务 11.1：存储层清除接口
+
+- [x] 在 `Store` 中增加清除统计数据方法。
+- [x] 使用事务删除 `usage_tokens` 和 `usage_requests`。
+- [x] 默认保留 `session_log_sync`。
+- [x] 当 `resetSessionSync=true` 时删除 `session_log_sync`。
+- [x] 返回删除的 request/token 数量，便于 API 响应和测试断言。
+- [x] 增加测试：默认清除不删除 `session_log_sync`。
+- [x] 增加测试：重置同步状态时删除 `session_log_sync`。
+- [x] 增加测试：清除后新的 usage 记录仍可写入。
+
+### 任务 11.2：管理 API
+
+- [x] 增加 `POST /api/usage/clear`。
+- [x] 请求体支持 `reset_session_sync`，默认 false。
+- [x] 接口复用管理鉴权。
+- [x] 成功返回 `success`、`cleared_requests`、`cleared_tokens`、`reset_session_sync`。
+- [x] 错误时返回非 2xx，且不留下部分删除状态。
+- [x] 增加 handler 测试覆盖默认清除、重置同步状态、鉴权。
+
+### 任务 11.3：前端清除数据交互
+
+- [x] 在使用统计页顶部 `刷新` 按钮左侧增加 `清除数据` 按钮。
+- [x] 点击后展示确认弹窗。
+- [x] 弹窗说明会清除全部统计数据，不删除本地 JSONL，不影响会话记录，清除后会继续记录新请求。
+- [x] 弹窗包含默认不勾选的 `同时重置 Session Log 同步状态` checkbox。
+- [x] checkbox 说明迁移 data 目录、更换系统或更换 session 日志目录时使用，勾选后可能重新导入当前机器 JSONL 历史 usage。
+- [x] 确认后调用 `POST /api/usage/clear`。
+- [x] 成功后刷新当前统计页面。
+- [x] 失败时展示错误并保留当前页面状态。
+
+### 任务 11.4：验证
+
+- [x] `go test ./internal/usage ./internal/admin`
+- [x] `go test ./...`
+- [x] `npm --prefix internal/frontend test`
+- [x] `npm --prefix internal/frontend run build`
+- [ ] 手动验证默认清除后历史 Session Log 不会立刻补回。
+- [ ] 手动验证勾选重置同步状态后，当前机器 JSONL 可重新补账。
+
+### 实现记录（2026-06-11）
+
+- `internal/usage/store.go` 新增 `ClearUsageData(resetSessionSync bool)`，事务内删除 `usage_tokens`、`usage_requests`，并按需删除 `session_log_sync`。
+- `internal/usage/handler.go` 新增 `POST /api/usage/clear`，请求体使用 `reset_session_sync`。
+- `internal/frontend/src/views/DashboardView.vue` 新增清除数据按钮、确认弹窗、Session Log 同步状态重置 checkbox、成功后刷新当前 Usage 数据。
+- 自动化验证已通过：`go test ./... -count=1`、`npm --prefix internal/frontend test`、`npm --prefix internal/frontend run build`。

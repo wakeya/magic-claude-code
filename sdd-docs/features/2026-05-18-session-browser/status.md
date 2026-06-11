@@ -3,7 +3,7 @@
 **Feature:** Claude Code 会话记录浏览器
 **Current state:** shipped
 **Created:** 2026-05-18
-**Last updated:** 2026-05-21
+**Last updated:** 2026-06-11
 **Owner:** local project maintainer
 
 ## Lifecycle
@@ -47,3 +47,10 @@ None. This feature is independent of proxy logic and usage statistics.
 ## Revisit Trigger
 
 None. The file-based approach uses Claude Code's native sessionId, eliminating the grouping uncertainty from the previous proxy-capture approach.
+
+## 2026-06-11 Update
+
+- Cleanup hint now displays separate Linux/macOS and Windows command blocks.
+- Windows cleanup command paths use `C:\Users\用户名代理\...` as the user placeholder for user-home paths.
+- Native Windows paths keep their drive letter and mask the username segment.
+- Windows cleanup command paths are sanitized before display to remove embedded quotes, control characters, and invalid Windows path characters.

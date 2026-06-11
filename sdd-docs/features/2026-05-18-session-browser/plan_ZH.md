@@ -250,7 +250,7 @@ mux.HandleFunc("/api/sessions/", s.authMiddlewareFunc(s.handleSessionRoutes))
 2. `handleSessions`：解析 `project` 查询参数，调用 `session.ScanSessions(root, project)`，返回带分页的 JSON。
 3. `handleSessionRoutes`：按方法和路径后缀分发：
    - `GET .../export`：调用 `session.ExportHTML`，返回 `text/html`。
-   - `GET .../cleanup-hint`：返回 Claude Code CLI 清理命令提示 JSON，不执行删除。
+   - `GET .../cleanup-hint`：返回 Claude Code CLI 清理命令提示 JSON，不执行删除。响应包含 Linux/macOS 预览命令、交互命令，以及 Windows 预览命令、交互命令。
    - `GET`（详情）：解析 `source` 查询参数，调用 `session.ParseMessages`，返回 JSON。
    - 不提供 `DELETE` 路由；删除或清理只能通过 Claude Code CLI 提示完成，服务端不得移除 JSONL 文件或附属目录。
 4. `page_size` 限制在 `1..100`。
@@ -262,6 +262,19 @@ mux.HandleFunc("/api/sessions/", s.authMiddlewareFunc(s.handleSessionRoutes))
 运行：`go test ./internal/admin -run TestSession -v`
 
 预期：全部通过。
+
+### 任务 4.1：Windows 清理命令提示
+
+已于 2026-06-11 实现。
+
+- `internal/session/types.go`：`CleanupHint` 增加 `windows_preview_command` 和 `windows_interactive_command`。
+- `internal/admin/session_handler.go`：`handleSessionCleanupHint` 同时生成 Linux/macOS 和 Windows 命令提示。
+- Windows 路径转换：
+  - `/home/<user>/...` 和 `/Users/<user>/...` 转为 `C:\Users\用户名代理\...`。
+  - `/mnt/c/...` 转为 `C:\...`。
+  - 原生 `C:\Users\<user>\...` 路径保留盘符，并将用户名替换为 `用户名代理`。
+  - 展示前清洗命令敏感字符和 Windows 非法路径字符。
+- `internal/admin/session_handler_test.go`：覆盖 Linux home 路径转换、原生 Windows 盘符路径转换和危险字符清洗。
 
 ## 任务 5：创建前端组件
 

@@ -30,8 +30,9 @@ The Provider configuration now supports an optional multimodal model switch. Whe
 4. Updated Admin API create, list, detail, update, and duplicate behavior.
 5. Added `多模态切换`, tooltip, and `多模态模型 ID` to the Provider modal.
 6. Added Provider card summary for multimodal configuration.
-7. Verified backend tests, frontend tests, and frontend build.
-8. Verified by user against the real Mimo multimodal model `mimo-v2.5`.
+7. Widened the Provider modal on desktop to about three quarters of the providers page content width for more comfortable editing.
+8. Verified backend tests, frontend tests, and frontend build.
+9. Verified by user against the real Mimo multimodal model `mimo-v2.5`.
 
 ## Pending Release
 

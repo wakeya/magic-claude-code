@@ -170,9 +170,33 @@
             </button>
           </div>
 
-          <button class="app-control px-4 py-2 rounded-lg text-sm font-semibold cursor-pointer" @click="loadUsageData">
-            {{ t('usage.refresh') }}
-          </button>
+          <div class="flex flex-wrap items-center gap-2">
+            <button class="app-control px-4 py-2 rounded-lg text-sm font-semibold cursor-pointer text-danger" @click="openUsageClearModal">
+              {{ t('usage.clear_data') }}
+            </button>
+            <button class="app-control px-4 py-2 rounded-lg text-sm font-semibold cursor-pointer" @click="loadUsageData">
+              {{ t('usage.refresh') }}
+            </button>
+          </div>
+        </div>
+
+        <div class="app-panel flex flex-wrap items-center gap-2 px-3 py-2 rounded-lg">
+          <span class="text-xs font-bold text-text-secondary uppercase tracking-widest whitespace-nowrap">{{ t('usage.date_range') }}</span>
+          <div class="flex flex-wrap gap-1">
+            <button
+              v-for="preset in usageDateRangePresets"
+              :key="preset.key"
+              :class="[
+                'px-3 py-1.5 rounded-md text-sm font-semibold cursor-pointer transition-all duration-150 border-none',
+                activeUsageDateRangePreset === preset.key
+                  ? 'bg-primary text-white'
+                  : 'bg-transparent text-text-secondary hover:text-fg',
+              ]"
+              @click="applyUsageDateRangePreset(preset.key)"
+            >
+              {{ t(preset.labelKey) }}
+            </button>
+          </div>
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
@@ -216,7 +240,10 @@
             </select>
           </div>
           <div class="app-panel p-4 rounded-lg">
-            <label class="block text-xs font-bold text-text-secondary uppercase tracking-widest mb-2">{{ t('usage.stats_scope') }}</label>
+            <label class="relative mb-2 flex items-center gap-1.5 text-xs font-bold text-text-secondary uppercase tracking-widest group">
+              <span>{{ t('usage.stats_scope') }}</span>
+              <UsageStatsScopeHelp />
+            </label>
             <select v-model="usageFilters.stats_scope" class="app-control w-full rounded-md px-3 py-2 text-sm">
               <option value="effective">{{ t('usage.stats_scope_effective') }}</option>
               <option value="provider">{{ t('usage.stats_scope_provider') }}</option>
@@ -440,7 +467,7 @@
           <div v-if="!usageModels.length" class="py-10 text-center text-text-secondary">{{ t('usage.empty') }}</div>
         </div>
 
-        <div v-if="activeUsageTab === 'coverage'" class="app-panel p-5 rounded-lg" style="overflow-x:clip;overflow-y:visible">
+        <div v-if="activeUsageTab === 'coverage'" class="app-panel p-5 rounded-lg overflow-x-auto">
           <div class="mb-4 text-sm font-bold uppercase tracking-widest text-text-secondary">{{ t('usage.coverage') }}</div>
           <table class="min-w-[1400px] w-full text-sm">
             <thead>
@@ -453,7 +480,7 @@
                 <th class="py-3 pr-4 group relative">
                   <span class="inline-flex items-center gap-1.5">
                     <span>{{ t('usage.usage_coverage') }}</span>
-                    <UsageCoverageHelp />
+                    <UsageCoverageHelp placement="bottom" />
                   </span>
                 </th>
                 <th class="py-3 pr-4">{{ t('usage.usage_status') }}</th>
@@ -479,6 +506,28 @@
 
       <div v-if="activeTab === 'sessions'">
         <SessionBrowser />
+      </div>
+    </div>
+
+    <div v-if="showUsageClearModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4">
+      <div class="app-panel w-full max-w-lg rounded-lg p-6 shadow-xl">
+        <h3 class="text-lg font-bold">{{ t('usage.clear_data_title') }}</h3>
+        <p class="mt-3 text-sm leading-6 text-text-secondary">{{ t('usage.clear_data_confirm') }}</p>
+        <label class="mt-5 flex items-start gap-3 text-sm">
+          <input v-model="resetUsageSessionSync" type="checkbox" class="mt-1" />
+          <span>
+            <span class="block font-semibold">{{ t('usage.clear_data_reset_session_sync') }}</span>
+            <span class="mt-1 block text-text-secondary">{{ t('usage.clear_data_reset_session_sync_hint') }}</span>
+          </span>
+        </label>
+        <div class="mt-6 flex justify-end gap-2">
+          <button class="app-control rounded-lg px-4 py-2 text-sm font-semibold" :disabled="usageClearLoading" @click="closeUsageClearModal">
+            {{ t('modal.cancel') }}
+          </button>
+          <button class="rounded-lg border-none bg-danger px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60" :disabled="usageClearLoading" @click="confirmUsageClear">
+            {{ t('usage.clear_data') }}
+          </button>
+        </div>
       </div>
     </div>
 
@@ -508,6 +557,7 @@ import AppHeader from '@/components/AppHeader.vue'
 import ProviderCard from '@/components/ProviderCard.vue'
 import ProviderModal from '@/components/ProviderModal.vue'
 import UsageCoverageHelp from '@/components/UsageCoverageHelp.vue'
+import UsageStatsScopeHelp from '@/components/UsageStatsScopeHelp.vue'
 import SessionBrowser from '@/components/SessionBrowser.vue'
 import { formatPercent } from '@/utils/formatters'
 
@@ -518,6 +568,7 @@ const { syncTheme, themeMode } = useTheme()
 
 type MainTab = 'status' | 'providers' | 'certs' | 'usage' | 'sessions'
 type UsageTab = 'overview' | 'requests' | 'providers' | 'models' | 'coverage'
+type UsageDateRangePreset = 'today' | 'last_7_days' | 'last_30_days'
 
 const tabs: Array<{ key: MainTab; labelKey: string }> = [
   { key: 'status', labelKey: 'tab.status' },
@@ -533,6 +584,12 @@ const usageTabs: Array<{ key: UsageTab; labelKey: string }> = [
   { key: 'providers', labelKey: 'usage.providers' },
   { key: 'models', labelKey: 'usage.models' },
   { key: 'coverage', labelKey: 'usage.coverage' },
+]
+
+const usageDateRangePresets: Array<{ key: UsageDateRangePreset; labelKey: string }> = [
+  { key: 'today', labelKey: 'usage.range_today' },
+  { key: 'last_7_days', labelKey: 'usage.range_last_7_days' },
+  { key: 'last_30_days', labelKey: 'usage.range_last_30_days' },
 ]
 
 const activeTab = ref<MainTab>('status')
@@ -558,10 +615,11 @@ const usageChartEl = ref<HTMLDivElement | null>(null)
 let echartsModule: { init: (dom: HTMLDivElement) => EChartsType } | null = null
 let usageChart: EChartsType | null = null
 let statusRefreshTimer: number | null = null
+const defaultUsageDateRange = usageDateRangeForPreset('last_7_days')
 
 const usageFilters = reactive({
-  from: dateInputDaysAgo(7),
-  to: dateInputToday(),
+  from: defaultUsageDateRange.from,
+  to: defaultUsageDateRange.to,
   provider_id: 'all',
   model: 'all',
   status: 'all',
@@ -575,12 +633,24 @@ const usageFilters = reactive({
 const activeProvider = computed(() => providers.value.find((p) => p.id === activeProviderId.value))
 const providerOptions = computed(() => providers.value.map((provider) => ({ value: provider.id, label: provider.name })))
 const modelOptions = computed(() => uniqueValues(usageModels.value.map((row) => row.mapped_model || row.name)))
+const activeUsageDateRangePreset = computed(() => {
+  for (const preset of usageDateRangePresets) {
+    const range = usageDateRangeForPreset(preset.key)
+    if (usageFilters.from === range.from && usageFilters.to === range.to) {
+      return preset.key
+    }
+  }
+  return ''
+})
 const usageRequestTotalPages = computed(() =>
   Math.max(1, Math.ceil((usageRequests.value?.total ?? 0) / usageRequestPageSize.value))
 )
 
 const showModal = ref(false)
 const editingProvider = ref<Provider | null>(null)
+const showUsageClearModal = ref(false)
+const resetUsageSessionSync = ref(false)
+const usageClearLoading = ref(false)
 
 function openAddModal() {
   editingProvider.value = null
@@ -595,9 +665,42 @@ function closeModal() {
   editingProvider.value = null
 }
 
+function openUsageClearModal() {
+  resetUsageSessionSync.value = false
+  showUsageClearModal.value = true
+}
+
+function closeUsageClearModal() {
+  if (usageClearLoading.value) return
+  showUsageClearModal.value = false
+  resetUsageSessionSync.value = false
+}
+
 function goToUsageRequestPage(page: number) {
   usageRequestPage.value = Math.max(1, Math.min(page, usageRequestTotalPages.value))
   void loadUsageData()
+}
+
+function applyUsageDateRangePreset(preset: UsageDateRangePreset) {
+  const range = usageDateRangeForPreset(preset)
+  usageFilters.from = range.from
+  usageFilters.to = range.to
+}
+
+async function confirmUsageClear() {
+  usageClearLoading.value = true
+  try {
+    await api.clearUsageData(resetUsageSessionSync.value)
+    showUsageClearModal.value = false
+    resetUsageSessionSync.value = false
+    usageRequestPage.value = 1
+    await loadUsageData()
+    alert(t('usage.clear_data_success'))
+  } catch {
+    alert(t('usage.clear_data_failed'))
+  } finally {
+    usageClearLoading.value = false
+  }
 }
 
 async function handleSaved() {
@@ -770,13 +873,38 @@ function browserTimeZone(): string {
 }
 
 function dateInputToday(): string {
-  return new Date().toISOString().slice(0, 10)
+  return formatDateInput(new Date())
 }
 
 function dateInputDaysAgo(days: number): string {
   const d = new Date()
   d.setDate(d.getDate() - days)
-  return d.toISOString().slice(0, 10)
+  return formatDateInput(d)
+}
+
+function formatDateInput(date: Date): string {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function relativeDateRange(startDaysAgo: number, endDaysAgo: number): { from: string; to: string } {
+  return {
+    from: dateInputDaysAgo(startDaysAgo),
+    to: dateInputDaysAgo(endDaysAgo),
+  }
+}
+
+function usageDateRangeForPreset(preset: UsageDateRangePreset): { from: string; to: string } {
+  switch (preset) {
+    case 'today':
+      return { from: dateInputToday(), to: dateInputToday() }
+    case 'last_7_days':
+      return relativeDateRange(7, 1)
+    case 'last_30_days':
+      return relativeDateRange(30, 1)
+  }
 }
 
 function uniqueValues(values: string[]): string[] {

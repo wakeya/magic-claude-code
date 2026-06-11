@@ -16,7 +16,9 @@ test('usage coverage help uses a custom hover tooltip', () => {
 test('usage coverage help renders tooltip matching provider card style', () => {
   assert.match(source, /bg-gray-700/)
   assert.match(source, /text-white/)
-  assert.match(source, /absolute bottom-full/)
+  assert.match(source, /bottom-full/)
+  assert.match(source, /top-full/)
+  assert.match(source, /placement/)
 })
 
 test('usage coverage help relies on parent group for hover trigger', () => {

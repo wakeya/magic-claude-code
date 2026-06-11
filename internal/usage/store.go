@@ -217,6 +217,41 @@ func (s *Store) recordIfAbsent(req RequestRecord, tok TokenRecord) (bool, error)
 	return true, tx.Commit()
 }
 
+func (s *Store) ClearUsageData(resetSessionSync bool) (ClearResult, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return ClearResult{}, err
+	}
+	defer tx.Rollback()
+
+	tokenResult, err := tx.Exec(`DELETE FROM usage_tokens`)
+	if err != nil {
+		return ClearResult{}, err
+	}
+	requestResult, err := tx.Exec(`DELETE FROM usage_requests`)
+	if err != nil {
+		return ClearResult{}, err
+	}
+	if resetSessionSync {
+		if _, err := tx.Exec(`DELETE FROM session_log_sync`); err != nil {
+			return ClearResult{}, err
+		}
+	}
+
+	clearedTokens, _ := tokenResult.RowsAffected()
+	clearedRequests, _ := requestResult.RowsAffected()
+	result := ClearResult{
+		Success:          true,
+		ClearedRequests:  clearedRequests,
+		ClearedTokens:    clearedTokens,
+		ResetSessionSync: resetSessionSync,
+	}
+	if err := tx.Commit(); err != nil {
+		return ClearResult{}, err
+	}
+	return result, nil
+}
+
 func (s *Store) Summary(filter Filter) (Summary, error) {
 	rows, err := s.queryRows(filter, false)
 	if err != nil {

@@ -135,11 +135,13 @@ func (s *Server) handleSessionCleanupHint(w http.ResponseWriter, r *http.Request
 		return
 	}
 	quotedPath := shellQuote(sess.ProjectPath)
+	windowsQuotedPath := windowsShellQuote(windowsCleanupPath(sess.ProjectPath))
 	writeSessionJSON(w, session.CleanupHint{
-		ProjectPath:        sess.ProjectPath,
-		PreviewCommand:     "claude project purge --dry-run " + quotedPath,
-		InteractiveCommand: "claude project purge -i " + quotedPath,
-		Note:               "管理面板不会删除 JSONL 文件。请在终端中运行 Claude Code CLI 命令，并先使用 --dry-run 预览。",
+		ProjectPath:               sess.ProjectPath,
+		PreviewCommand:            "claude project purge --dry-run " + quotedPath,
+		InteractiveCommand:        "claude project purge -i " + quotedPath,
+		WindowsPreviewCommand:     "claude project purge --dry-run " + windowsQuotedPath,
+		WindowsInteractiveCommand: "claude project purge -i " + windowsQuotedPath,
 	}, nil)
 }
 
@@ -236,4 +238,80 @@ func safeDownloadName(title string) string {
 
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+}
+
+func windowsCleanupPath(path string) string {
+	normalized := strings.ReplaceAll(path, "\\", "/")
+	if len(normalized) >= 3 && isASCIIAlpha(normalized[0]) && normalized[1] == ':' && normalized[2] == '/' {
+		drive := strings.ToUpper(normalized[:1])
+		parts := windowsPathParts(normalized[3:])
+		if len(parts) >= 2 && strings.EqualFold(parts[0], "Users") {
+			parts[1] = "用户名代理"
+		}
+		if len(parts) == 0 {
+			return drive + `:\`
+		}
+		return drive + `:\` + strings.Join(parts, `\`)
+	}
+	parts := windowsPathParts(normalized)
+	if len(parts) >= 3 && strings.EqualFold(parts[0], "mnt") && len(parts[1]) == 1 {
+		drive := strings.ToUpper(parts[1])
+		return drive + `:\` + strings.Join(parts[2:], `\`)
+	}
+	if len(parts) >= 2 && (parts[0] == "home" || parts[0] == "Users") {
+		return `C:\Users\用户名代理\` + strings.Join(parts[2:], `\`)
+	}
+	if len(parts) == 0 {
+		return `C:\Users\用户名代理`
+	}
+	return `C:\Users\用户名代理\` + strings.Join(parts, `\`)
+}
+
+func windowsShellQuote(value string) string {
+	return `"` + value + `"`
+}
+
+func windowsPathParts(path string) []string {
+	rawParts := strings.FieldsFunc(path, func(r rune) bool { return r == '/' })
+	parts := make([]string, 0, len(rawParts))
+	for _, part := range rawParts {
+		cleaned := sanitizeWindowsPathPart(part)
+		if cleaned != "" {
+			parts = append(parts, cleaned)
+		}
+	}
+	return parts
+}
+
+func sanitizeWindowsPathPart(part string) string {
+	var builder strings.Builder
+	lastUnderscore := false
+	for _, r := range part {
+		if isUnsafeWindowsPathRune(r) {
+			if !lastUnderscore {
+				builder.WriteByte('_')
+				lastUnderscore = true
+			}
+			continue
+		}
+		builder.WriteRune(r)
+		lastUnderscore = false
+	}
+	return strings.Trim(builder.String(), " ._")
+}
+
+func isUnsafeWindowsPathRune(r rune) bool {
+	if r < 0x20 || r == 0x7f {
+		return true
+	}
+	switch r {
+	case '<', '>', ':', '"', '|', '?', '*':
+		return true
+	default:
+		return false
+	}
+}
+
+func isASCIIAlpha(b byte) bool {
+	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
 }

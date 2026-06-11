@@ -85,6 +85,66 @@ func TestRecordRequestAlwaysWritesTokenRow(t *testing.T) {
 	}
 }
 
+func TestClearUsageDataKeepsSessionSyncByDefault(t *testing.T) {
+	store := newTestStore(t)
+	started := time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)
+	seedUsageRecord(t, store, "clear-1", started, 200, "", UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 1})
+	if err := store.recordSessionSyncFile("/claude/projects/session.jsonl", 123, 10); err != nil {
+		t.Fatalf("recordSessionSyncFile() error = %v", err)
+	}
+
+	result, err := store.ClearUsageData(false)
+	if err != nil {
+		t.Fatalf("ClearUsageData() error = %v", err)
+	}
+
+	if result.ClearedRequests != 1 || result.ClearedTokens != 1 || result.ResetSessionSync {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	if got := sqliteCount(t, store.db, "usage_requests"); got != 0 {
+		t.Fatalf("usage_requests count = %d", got)
+	}
+	if got := sqliteCount(t, store.db, "usage_tokens"); got != 0 {
+		t.Fatalf("usage_tokens count = %d", got)
+	}
+	if got := sqliteCount(t, store.db, "session_log_sync"); got != 1 {
+		t.Fatalf("session_log_sync count = %d", got)
+	}
+	if err := store.Record(testUsageRequest("after-clear", started.Add(time.Minute)), TokenRecord{RequestID: "after-clear", UsageSource: UsageSourceNone, UsageParseStatus: ParseStatusMissing}); err != nil {
+		t.Fatalf("Record() after clear error = %v", err)
+	}
+	if got := sqliteCount(t, store.db, "usage_requests"); got != 1 {
+		t.Fatalf("usage_requests after record count = %d", got)
+	}
+}
+
+func TestClearUsageDataCanResetSessionSync(t *testing.T) {
+	store := newTestStore(t)
+	started := time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)
+	seedUsageRecord(t, store, "clear-reset-1", started, 200, "", UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 1})
+	if err := store.recordSessionSyncFile("/claude/projects/session.jsonl", 123, 10); err != nil {
+		t.Fatalf("recordSessionSyncFile() error = %v", err)
+	}
+
+	result, err := store.ClearUsageData(true)
+	if err != nil {
+		t.Fatalf("ClearUsageData() error = %v", err)
+	}
+
+	if result.ClearedRequests != 1 || result.ClearedTokens != 1 || !result.ResetSessionSync {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	if got := sqliteCount(t, store.db, "usage_requests"); got != 0 {
+		t.Fatalf("usage_requests count = %d", got)
+	}
+	if got := sqliteCount(t, store.db, "usage_tokens"); got != 0 {
+		t.Fatalf("usage_tokens count = %d", got)
+	}
+	if got := sqliteCount(t, store.db, "session_log_sync"); got != 0 {
+		t.Fatalf("session_log_sync count = %d", got)
+	}
+}
+
 func TestSummaryAggregatesProviderUsageOnly(t *testing.T) {
 	store := newTestStore(t)
 	started := time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)
@@ -498,4 +558,13 @@ func sqliteColumnExists(t *testing.T, db *sql.DB, table, column string) bool {
 		t.Fatalf("table_info rows: %v", err)
 	}
 	return false
+}
+
+func sqliteCount(t *testing.T, db *sql.DB, table string) int {
+	t.Helper()
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&count); err != nil {
+		t.Fatalf("count %s: %v", table, err)
+	}
+	return count
 }

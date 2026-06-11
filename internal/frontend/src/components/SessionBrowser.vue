@@ -130,9 +130,11 @@
           <div class="text-lg font-bold session-heading">{{ t('sessions.cleanup') }}</div>
           <button class="session-icon-button" @click="cleanupHint = null"><X class="h-4 w-4" /></button>
         </div>
-        <p class="mb-4 text-sm session-muted">{{ cleanupHint.note || t('sessions.cleanup_note') }}</p>
+        <p class="mb-4 text-sm session-muted">{{ t('sessions.cleanup_note') }}</p>
         <CommandBlock :label="t('sessions.preview_command')" :command="cleanupHint.preview_command" />
         <CommandBlock :label="t('sessions.interactive_command')" :command="cleanupHint.interactive_command" />
+        <CommandBlock :label="t('sessions.preview_command_windows')" :command="cleanupHint.windows_preview_command" />
+        <CommandBlock :label="t('sessions.interactive_command_windows')" :command="cleanupHint.windows_interactive_command" />
       </div>
     </div>
   </div>

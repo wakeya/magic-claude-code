@@ -219,6 +219,9 @@ The cleanup hint dialog only displays commands and never executes deletion. Comm
 3. Lightweight highlighting for command keywords, flags, and paths; frontend token splitting is enough and a full syntax-highlighting library is not required.
 4. Copy button remains visible at the top-right or right side of the code box with clear hover state.
 5. Preview and interactive commands are shown as separate labeled code blocks.
+6. The dialog must support both Linux/macOS commands and Windows commands.
+7. Windows command hints must use a Windows-style path. When the original project path is under a Unix home directory, the Windows path should use `C:\Users\用户名代理\...` as the user placeholder. When the original project path is already a native Windows path such as `C:\Users\Alice\project`, keep the drive letter and replace the username segment with `用户名代理`.
+8. Windows command paths must sanitize command-sensitive or invalid Windows path characters before display, including control characters, `"`, `<`, `>`, `:`, `|`, `?`, and `*`. The admin UI still only displays commands and never executes them.
 
 ### 8.4 States
 
@@ -247,7 +250,7 @@ The cleanup hint dialog only displays commands and never executes deletion. Comm
 4. Missing `cwd`: fall back to `"Unknown Project"`.
 5. Missing `sessionId`: use filename stem as ID.
 6. Agent session files (`agent-*`): skip in v1.
-7. Cleanup hint: show commands only; do not execute deletion from the admin panel. For project-level cleanup, prefer `claude project purge --dry-run <project-path>` as a preview, then tell the user to run `claude project purge -i <project-path>` in a terminal for interactive confirmation. Session-level cleanup commands are version-dependent and should be checked with the current `claude --help` / `claude project --help`.
+7. Cleanup hint: show commands only; do not execute deletion from the admin panel. For project-level cleanup, prefer `claude project purge --dry-run <project-path>` as a preview, then tell the user to run `claude project purge -i <project-path>` in a terminal for interactive confirmation. The dialog must display Linux/macOS commands and Windows commands separately. Session-level cleanup commands are version-dependent and should be checked with the current `claude --help` / `claude project --help`.
 8. Concurrent Claude Code writes: JSONL files are append-only; partial last line is expected and should be handled gracefully.
 9. Symlinked project paths: resolve to real path for deduplication.
 

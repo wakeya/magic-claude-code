@@ -26,6 +26,7 @@ func (h *Handler) Register(mux *http.ServeMux, wrap func(http.HandlerFunc) http.
 	mux.HandleFunc("/api/usage/providers", wrap(h.handleProviders))
 	mux.HandleFunc("/api/usage/models", wrap(h.handleModels))
 	mux.HandleFunc("/api/usage/coverage", wrap(h.handleCoverage))
+	mux.HandleFunc("/api/usage/clear", wrap(h.handleClear))
 }
 
 func (h *Handler) handleSummary(w http.ResponseWriter, r *http.Request) {
@@ -79,6 +80,24 @@ func (h *Handler) handleCoverage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := h.store.Coverage(filter)
+	writeUsageJSON(w, result, err)
+}
+
+func (h *Handler) handleClear(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		ResetSessionSync bool `json:"reset_session_sync"`
+	}
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+			return
+		}
+	}
+	result, err := h.store.ClearUsageData(req.ResetSessionSync)
 	writeUsageJSON(w, result, err)
 }
 

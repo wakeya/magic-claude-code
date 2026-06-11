@@ -1,6 +1,7 @@
 package usage
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -120,6 +121,69 @@ func TestUsageCoverageHandler(t *testing.T) {
 	}
 }
 
+func TestUsageClearHandlerKeepsSessionSyncByDefault(t *testing.T) {
+	store := newTestStore(t)
+	started := time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)
+	seedUsageRecord(t, store, "clear-handler-1", started, 200, "", UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 1})
+	if err := store.recordSessionSyncFile("/claude/projects/session.jsonl", 123, 10); err != nil {
+		t.Fatalf("recordSessionSyncFile() error = %v", err)
+	}
+
+	rec := serveUsageRequestWithMethod(store, http.MethodPost, "/api/usage/clear", []byte(`{}`))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var got ClearResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode clear result: %v", err)
+	}
+	if !got.Success || got.ClearedRequests != 1 || got.ClearedTokens != 1 || got.ResetSessionSync {
+		t.Fatalf("clear result = %#v", got)
+	}
+	if count := sqliteCount(t, store.db, "usage_requests"); count != 0 {
+		t.Fatalf("usage_requests count = %d", count)
+	}
+	if count := sqliteCount(t, store.db, "session_log_sync"); count != 1 {
+		t.Fatalf("session_log_sync count = %d", count)
+	}
+}
+
+func TestUsageClearHandlerCanResetSessionSync(t *testing.T) {
+	store := newTestStore(t)
+	started := time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)
+	seedUsageRecord(t, store, "clear-handler-reset-1", started, 200, "", UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 1})
+	if err := store.recordSessionSyncFile("/claude/projects/session.jsonl", 123, 10); err != nil {
+		t.Fatalf("recordSessionSyncFile() error = %v", err)
+	}
+
+	rec := serveUsageRequestWithMethod(store, http.MethodPost, "/api/usage/clear", []byte(`{"reset_session_sync":true}`))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var got ClearResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode clear result: %v", err)
+	}
+	if !got.Success || got.ClearedRequests != 1 || got.ClearedTokens != 1 || !got.ResetSessionSync {
+		t.Fatalf("clear result = %#v", got)
+	}
+	if count := sqliteCount(t, store.db, "session_log_sync"); count != 0 {
+		t.Fatalf("session_log_sync count = %d", count)
+	}
+}
+
+func TestUsageClearHandlerRejectsGet(t *testing.T) {
+	store := newTestStore(t)
+
+	rec := serveUsageRequest(store, "/api/usage/clear")
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestUsageHandlersRejectInvalidTimezone(t *testing.T) {
 	store := newTestStore(t)
 
@@ -141,10 +205,14 @@ func TestUsageHandlersRejectInvalidStatsScope(t *testing.T) {
 }
 
 func serveUsageRequest(store *Store, target string) *httptest.ResponseRecorder {
+	return serveUsageRequestWithMethod(store, http.MethodGet, target, nil)
+}
+
+func serveUsageRequestWithMethod(store *Store, method, target string, body []byte) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
 	NewHandler(store).Register(mux, func(next http.HandlerFunc) http.HandlerFunc { return next })
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, target, nil)
+	req := httptest.NewRequest(method, target, bytes.NewReader(body))
 	mux.ServeHTTP(rec, req)
 	return rec
 }

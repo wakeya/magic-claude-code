@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const source = readFileSync(join(here, 'SessionBrowser.vue'), 'utf8')
+const i18nSource = readFileSync(join(here, '..', 'composables', 'useI18n.ts'), 'utf8')
 
 test('desktop session outline panel scrolls independently when many user messages exist', () => {
   assert.match(source, /sticky top-4[^"]*max-h-\[calc\(100vh-2rem\)\][^"]*overflow-y-auto/)
@@ -29,4 +30,24 @@ test('session outline has back to top button in desktop and mobile views', () =>
   assert.match(source, /sessions\.back_to_top/)
   assert.match(source, /sticky bottom-0/)
   assert.match(source, /scrollToTop\(\); showOutline = false/)
+})
+
+test('cleanup hint note is localized and includes Windows terminal guidance', () => {
+  assert.match(source, /\{\{\s*t\('sessions\.cleanup_note'\)\s*\}\}/)
+  assert.doesNotMatch(source, /cleanupHint\.note/)
+
+  assert.match(i18nSource, /'sessions\.cleanup_note': '管理面板不会删除 JSONL 文件。.*Windows.*PowerShell.*CMD.*--dry-run/)
+  assert.match(i18nSource, /'sessions\.cleanup_note': 'The admin panel does not delete JSONL files\..*Windows.*PowerShell.*CMD.*--dry-run/)
+})
+
+test('cleanup hint shows Windows preview and interactive commands', () => {
+  assert.match(source, /t\('sessions\.preview_command_windows'\)/)
+  assert.match(source, /cleanupHint\.windows_preview_command/)
+  assert.match(source, /t\('sessions\.interactive_command_windows'\)/)
+  assert.match(source, /cleanupHint\.windows_interactive_command/)
+
+  assert.match(i18nSource, /'sessions\.preview_command_windows': 'Windows 预览命令'/)
+  assert.match(i18nSource, /'sessions\.interactive_command_windows': 'Windows 交互清理'/)
+  assert.match(i18nSource, /'sessions\.preview_command_windows': 'Windows Preview Command'/)
+  assert.match(i18nSource, /'sessions\.interactive_command_windows': 'Windows Interactive Cleanup'/)
 })

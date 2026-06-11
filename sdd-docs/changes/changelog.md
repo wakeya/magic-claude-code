@@ -7,6 +7,29 @@
 
 ---
 
+## 2026-06-11
+
+### Added
+- 使用统计页新增快捷日期范围：今日、近 7 天、近 30 天；默认近 7 天，近 7/30 天不包含今天
+- 使用统计页新增 `清除数据` 操作，支持默认保留 `session_log_sync`，也支持勾选后重置 Session Log 同步状态
+- Admin API 新增 `POST /api/usage/clear`，用于清除 usage 统计数据并可选重置 Session Log 同步状态
+- 会话记录清理提示新增 Windows 预览命令和 Windows 交互清理命令
+- 统计口径筛选项新增问号提示，解释有效统计、实时请求、Session Log、全部原始
+- 编辑供应商弹窗桌面端宽度加宽至约供应商列表内容区的四分之三，提升模型映射和多模态配置编辑体验
+
+### Fixed
+- 修复 Usage 覆盖率表格横向内容被遮挡且缺少底部横向滚动条的问题
+- 修复 Usage 覆盖率表头提示框被表格区域遮挡的问题，表格内提示改为向下弹出
+- 修复 Windows 清理命令路径提示：原生 `C:\Users\<user>\...` 路径保留盘符并替换用户名为 `用户名代理`
+- 修复 Windows 清理命令路径中的双引号、控制字符和 Windows 非法路径字符清洗问题，降低复制提示命令后的解析风险
+
+### Docs
+- 更新 Usage statistics specs，补充清除统计数据 API、前端交互、迁移场景和验证项
+- 更新 Session Browser specs，补充清理提示的 Linux/macOS 与 Windows 双平台命令、Windows 路径转换和安全清洗约束
+- 更新 Multimodal Model Switch specs，补充 Provider 弹窗宽度约束
+
+---
+
 ## 2026-06-09
 
 ### Added

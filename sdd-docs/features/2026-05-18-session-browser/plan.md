@@ -250,7 +250,7 @@ Handler responsibilities:
 2. `handleSessions`: parse `project` query param, call `session.ScanSessions(root, project)`, return JSON with pagination.
 3. `handleSessionRoutes`: dispatch by method and path suffix:
    - `GET .../export`: call `session.ExportHTML`, return `text/html`.
-   - `GET .../cleanup-hint`: return Claude Code CLI cleanup command hint JSON, without deleting anything.
+   - `GET .../cleanup-hint`: return Claude Code CLI cleanup command hint JSON, without deleting anything. The response includes Linux/macOS preview and interactive commands plus Windows preview and interactive commands.
    - `GET` (detail): parse `source` query param, call `session.ParseMessages`, return JSON.
    - Do not provide a `DELETE` route; deletion/cleanup is only represented as Claude Code CLI command hints, and the server must not remove JSONL files or sidecar directories.
 4. Clamp `page_size` to `1..100`.
@@ -262,6 +262,19 @@ Handler responsibilities:
 Run: `go test ./internal/admin -run TestSession -v`
 
 Expected: PASS.
+
+### Task 4.1: Windows cleanup command hints
+
+Implemented on 2026-06-11.
+
+- `internal/session/types.go`: `CleanupHint` includes `windows_preview_command` and `windows_interactive_command`.
+- `internal/admin/session_handler.go`: `handleSessionCleanupHint` generates Linux/macOS and Windows command hints.
+- Windows path conversion:
+  - `/home/<user>/...` and `/Users/<user>/...` become `C:\Users\用户名代理\...`.
+  - `/mnt/c/...` becomes `C:\...`.
+  - Native `C:\Users\<user>\...` paths keep the drive letter and replace the username with `用户名代理`.
+  - Command-sensitive or invalid Windows path characters are sanitized before display.
+- `internal/admin/session_handler_test.go`: regression coverage for Linux home path conversion, native Windows drive path conversion, and unsafe character sanitization.
 
 ## Task 5: Add Frontend Components
 

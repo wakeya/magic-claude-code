@@ -122,6 +122,44 @@ func TestSessionCleanupHintReturnsCommands(t *testing.T) {
 		!strings.Contains(hint["interactive_command"], "claude project purge -i") {
 		t.Fatalf("hint = %#v", hint)
 	}
+	if !strings.Contains(hint["windows_preview_command"], `claude project purge --dry-run "C:\Users\用户名代理\work\project-a"`) ||
+		!strings.Contains(hint["windows_interactive_command"], `claude project purge -i "C:\Users\用户名代理\work\project-a"`) {
+		t.Fatalf("windows hint = %#v", hint)
+	}
+	if _, ok := hint["note"]; ok {
+		t.Fatalf("cleanup hint note should be localized by frontend, got %#v", hint)
+	}
+}
+
+func TestWindowsCleanupPathFromLinuxHome(t *testing.T) {
+	got := windowsCleanupPath(`/home/www/workspace/MyProjects/2026/pm0511-lvshixiehui`)
+	want := `C:\Users\用户名代理\workspace\MyProjects\2026\pm0511-lvshixiehui`
+	if got != want {
+		t.Fatalf("windowsCleanupPath = %q, want %q", got, want)
+	}
+}
+
+func TestWindowsCleanupPathPreservesNativeDriveAndMasksUser(t *testing.T) {
+	got := windowsCleanupPath(`C:\Users\Alice\workspace\MyProjects\2026\pm0511-lvshixiehui`)
+	want := `C:\Users\用户名代理\workspace\MyProjects\2026\pm0511-lvshixiehui`
+	if got != want {
+		t.Fatalf("windowsCleanupPath = %q, want %q", got, want)
+	}
+}
+
+func TestWindowsCleanupPathSanitizesUnsafeCommandCharacters(t *testing.T) {
+	got := windowsCleanupPath("/home/www/workspace/bad\"name\nnext")
+	want := `C:\Users\用户名代理\workspace\bad_name_next`
+	if got != want {
+		t.Fatalf("windowsCleanupPath = %q, want %q", got, want)
+	}
+	quoted := windowsShellQuote(got)
+	if !strings.HasPrefix(quoted, `"`) || !strings.HasSuffix(quoted, `"`) {
+		t.Fatalf("windowsShellQuote should wrap path in quotes: %q", quoted)
+	}
+	if strings.ContainsAny(strings.Trim(quoted, `"`), "\"\r\n") {
+		t.Fatalf("windowsShellQuote contains unsafe embedded quote/control characters: %q", quoted)
+	}
 }
 
 func TestSessionRoutesDoNotDeleteFiles(t *testing.T) {

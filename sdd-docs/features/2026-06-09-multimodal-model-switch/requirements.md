@@ -92,6 +92,7 @@ UI behavior:
 2. Enabling the switch shows the `多模态模型 ID` input.
 3. Saving with the switch enabled requires a non-empty model ID.
 4. Provider cards show a compact multimodal switch summary for troubleshooting.
+5. The Provider modal should remain comfortable after adding multimodal controls and model mappings; on desktop its maximum width should be about three quarters of the providers page content width, while small screens remain constrained to the viewport.
 
 ## 4. Non-Goals
 
