@@ -1,0 +1,200 @@
+stages:
+  - release
+
+variables:
+  GO_VERSION: "1.26.2"
+  NODE_VERSION: "24"
+  PRODUCT_NAME: "Magic-Claude-Code"
+  BINARY_NAME: "mcc"
+  PACKAGE_NAME: "magic-claude-code"
+
+release:binaries:
+  stage: release
+  image: node:${NODE_VERSION}-bookworm
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v[0-9]+(\.[0-9]+){1,2}([.-][0-9A-Za-z.-]+)?$/'
+    - when: never
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends ca-certificates curl tar zip
+    - rm -rf /var/lib/apt/lists/*
+    - curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tgz
+    - rm -rf /usr/local/go
+    - tar -C /usr/local -xzf /tmp/go.tgz
+    - export PATH="/usr/local/go/bin:${PATH}"
+    - go version
+    - node --version
+    - npm --version
+  script:
+    - export PATH="/usr/local/go/bin:${PATH}"
+    - npm ci --prefix internal/frontend
+    - npm run build --prefix internal/frontend
+    - go test ./...
+    - rm -rf dist/release
+    - mkdir -p dist/release
+    - |
+      build_target() {
+        goos="$1"
+        goarch="$2"
+        platform="$3"
+        arch_label="$4"
+        format="$5"
+        exe_suffix=""
+
+        if [ "${goos}" = "windows" ]; then
+          exe_suffix=".exe"
+        fi
+
+        package_file_base="${PRODUCT_NAME}-${CI_COMMIT_TAG}-${platform}-${arch_label}"
+        package_dir="dist/release/${package_file_base}"
+        mkdir -p "${package_dir}"
+
+        GOOS="${goos}" GOARCH="${goarch}" CGO_ENABLED=0 \
+          go build -trimpath -ldflags="-s -w" \
+          -o "${package_dir}/${BINARY_NAME}${exe_suffix}" ./cmd/server
+
+        cp README.md "${package_dir}/README.md"
+
+        if [ "${format}" = "zip" ]; then
+          (cd dist/release && zip -qr "${package_file_base}.zip" "${package_file_base}")
+        else
+          tar -C dist/release -czf "dist/release/${package_file_base}.tar.gz" "${package_file_base}"
+        fi
+
+        rm -rf "${package_dir}"
+      }
+
+      build_target linux amd64 Linux x86_64 tar.gz
+      build_target linux arm64 Linux arm64 tar.gz
+      build_target darwin amd64 macOS x86_64 tar.gz
+      build_target darwin arm64 macOS arm64 tar.gz
+      build_target windows amd64 Windows x86_64 zip
+      build_target windows arm64 Windows arm64 zip
+    - (cd dist/release && sha256sum * > SHA256SUMS.txt)
+    - |
+      for file in dist/release/*; do
+        name="$(basename "${file}")"
+        curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+          --upload-file "${file}" \
+          "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${CI_COMMIT_TAG}/${name}"
+      done
+    - |
+      cat > release-description.md <<'EOF'
+      # Magic Claude Code
+
+      Magic Claude Code 是一个面向 Claude Code 的本地透明代理服务。它让 Claude Code 继续按官方 Anthropic API 的方式发起请求，同时在本地完成证书、代理、供应商切换、模型映射、配置管理和用量统计。
+
+      ## 核心功能
+
+      - 透明代理 Claude Code API 请求，可将 `api.anthropic.com` 请求转发到你配置的后端供应商。
+      - 多供应商管理，支持在配置页面中维护多个 API 供应商并灵活切换。
+      - 模型映射，可把 Claude Code 请求中的模型名映射到供应商实际支持的模型。
+      - 自动生成本地 CA 证书和服务端证书，便于 Claude Code 以 HTTPS 方式访问本地代理。
+      - Web 配置页面，默认监听 `https://localhost:8442`，支持密码保护。
+      - Docker 部署和二进制部署两种运行方式。
+
+      ## 更快启动 Claude Code
+
+      对 Claude Code 的部分非模型对话端点做了更直接的处理。对于部分数据上报、统计或低优先级辅助接口，代理会直接返回空数据，避免这些端点在网络不稳定或后端不可达时反复超时重试。
+
+      这可以减少 Claude Code 启动和进入项目时等待非核心请求的时间，避免非模型对话接口拖慢真实对话流程。模型对话请求仍按配置转发到后端供应商。
+
+      ## 功能页面
+
+      - 供应商配置页：维护后端地址、API Key、启用状态和默认供应商。
+      - 模型映射页：配置 Claude 模型名到目标供应商模型名的映射关系。
+      - 用量统计页：查看请求量、Token 用量、时间范围筛选和统计范围筛选。
+      - 请求日志页：查看模型请求、Token 字段、来源和分页日志。
+      - 会话浏览页：读取本地 Claude Code 会话，浏览历史消息、会话概要和导出内容。
+      - 主题系统：支持浅色和深色主题，并会同步保存偏好。
+      EOF
+    - |
+      release_payload="$(
+        node <<'NODE'
+      const fs = require('node:fs');
+
+      const tag = process.env.CI_COMMIT_TAG;
+      const baseUrl = `${process.env.CI_API_V4_URL}/projects/${process.env.CI_PROJECT_ID}/packages/generic/${process.env.PACKAGE_NAME}/${tag}`;
+      const files = fs.readdirSync('dist/release').sort();
+      const payload = {
+        name: `Magic Claude Code ${tag}`,
+        tag_name: tag,
+        description: fs.readFileSync('release-description.md', 'utf8'),
+      };
+
+      process.stdout.write(JSON.stringify(payload));
+      NODE
+      )"
+      status="$(
+        curl --silent --output /tmp/gitlab-release-response.json --write-out "%{http_code}" \
+          --request POST \
+          --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+          --header "Content-Type: application/json" \
+          --data "${release_payload}" \
+          "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/releases"
+      )"
+
+      if [ "${status}" = "409" ]; then
+        status="$(
+          curl --silent --output /tmp/gitlab-release-response.json --write-out "%{http_code}" \
+            --request PUT \
+            --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data "${release_payload}" \
+            "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/releases/${CI_COMMIT_TAG}"
+        )"
+      fi
+
+      if [ "${status}" -lt 200 ] || [ "${status}" -ge 300 ]; then
+        cat /tmp/gitlab-release-response.json
+        exit 1
+      fi
+    - |
+      links_status="$(
+        curl --silent --output /tmp/gitlab-release-links.json --write-out "%{http_code}" \
+          --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+          "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/releases/${CI_COMMIT_TAG}/assets/links"
+      )"
+
+      if [ "${links_status}" -ge 200 ] && [ "${links_status}" -lt 300 ]; then
+        node -e 'const fs = require("node:fs"); const links = JSON.parse(fs.readFileSync(0, "utf8")); for (const link of links) process.stdout.write(`${link.id}\n`);' \
+          < /tmp/gitlab-release-links.json | while read -r link_id; do
+          curl --fail --silent --show-error \
+            --request DELETE \
+            --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+            "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/releases/${CI_COMMIT_TAG}/assets/links/${link_id}"
+        done
+      else
+        cat /tmp/gitlab-release-links.json
+        exit 1
+      fi
+
+      for file in dist/release/*; do
+        name="$(basename "${file}")"
+        link_payload="$(
+          ASSET_NAME="${name}" node <<'NODE'
+      const name = process.env.ASSET_NAME;
+      const tag = process.env.CI_COMMIT_TAG;
+      const baseUrl = `${process.env.CI_API_V4_URL}/projects/${process.env.CI_PROJECT_ID}/packages/generic/${process.env.PACKAGE_NAME}/${tag}`;
+
+      process.stdout.write(JSON.stringify({
+        name,
+        url: `${baseUrl}/${encodeURIComponent(name)}`,
+        direct_asset_path: `/binaries/${name}`,
+        link_type: 'package',
+      }));
+      NODE
+        )"
+
+        curl --fail --silent --show-error \
+          --request POST \
+          --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+          --header "Content-Type: application/json" \
+          --data "${link_payload}" \
+          "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/releases/${CI_COMMIT_TAG}/assets/links"
+      done
+  artifacts:
+    name: "${PACKAGE_NAME}-${CI_COMMIT_TAG}"
+    expire_in: 7 days
+    paths:
+      - dist/release/
