@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -119,6 +120,29 @@ func TestCopyWithHeartbeatAndObserverObservesUpstreamChunks(t *testing.T) {
 	}
 }
 
+func TestCopyWithHeartbeatReturnsWhenObserverIsComplete(t *testing.T) {
+	rec := httptest.NewRecorder()
+	hw := newHeartbeatWriter(rec)
+	observer := &terminalChunkObserver{}
+	reader := &oneChunkBlockingReader{
+		chunk: []byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"),
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- copyWithHeartbeatAndObserver(hw, reader, observer)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("copy did not return after observer reported completion")
+	}
+}
+
 func TestCopyWithHeartbeat_StopsCleanly(t *testing.T) {
 	// 测试完成后 stop channel 被正确关闭
 	rec := httptest.NewRecorder()
@@ -147,6 +171,35 @@ type recordingChunkObserver struct {
 func (o *recordingChunkObserver) Observe(chunk []byte) {
 	o.chunks = append(o.chunks, append([]byte(nil), chunk...))
 }
+
+type terminalChunkObserver struct {
+	complete bool
+}
+
+func (o *terminalChunkObserver) Observe(chunk []byte) {
+	if bytes.Contains(chunk, []byte("message_stop")) {
+		o.complete = true
+	}
+}
+
+func (o *terminalChunkObserver) IsComplete() bool {
+	return o.complete
+}
+
+type oneChunkBlockingReader struct {
+	chunk []byte
+	sent  bool
+}
+
+func (r *oneChunkBlockingReader) Read(p []byte) (int, error) {
+	if !r.sent {
+		r.sent = true
+		return copy(p, r.chunk), nil
+	}
+	select {}
+}
+
+var _ io.Reader = (*oneChunkBlockingReader)(nil)
 
 func TestSSEStreamProxyWithHeartbeat(t *testing.T) {
 	// 创建返回 SSE 流的模拟后端

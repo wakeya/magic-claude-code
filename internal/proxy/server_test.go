@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"magic-claude-code/internal/config"
 	"magic-claude-code/internal/usage"
@@ -311,6 +312,49 @@ func TestProxyRecordsStreamingUsage(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
+
+	record := recorder.onlyRecord(t)
+	if record.tok.UsageSource != usage.UsageSourceProvider || record.tok.UsageParseStatus != usage.ParseStatusOK {
+		t.Fatalf("token status = %#v", record.tok)
+	}
+	if record.tok.InputTokens != 8 || record.tok.OutputTokens != 6 || record.tok.CacheReadInputTokens != 4 {
+		t.Fatalf("tokens = %#v", record.tok)
+	}
+	if record.req.ResponseBytes != int64(len(sse)) {
+		t.Fatalf("ResponseBytes = %d", record.req.ResponseBytes)
+	}
+}
+
+func TestProxyRecordsStreamingUsageWhenUpstreamDoesNotCloseAfterMessageStop(t *testing.T) {
+	recorder := &fakeUsageRecorder{}
+	sse := "event: message_start\ndata: {\"message\":{\"usage\":{\"input_tokens\":8,\"cache_read_input_tokens\":4}}}\n\n" +
+		"event: message_delta\ndata: {\"usage\":{\"output_tokens\":6}}\n\n" +
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(sse))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-r.Context().Done()
+	}))
+	defer backend.Close()
+
+	handler := NewHandler(config.NewMockStore(testProxyConfig(testProxyProvider(backend.URL))), http.DefaultTransport.(*http.Transport), recorder)
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"claude-sonnet","stream":true,"messages":[]}`))
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("handler did not finish after message_stop")
+	}
 
 	record := recorder.onlyRecord(t)
 	if record.tok.UsageSource != usage.UsageSourceProvider || record.tok.UsageParseStatus != usage.ParseStatusOK {

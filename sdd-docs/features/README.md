@@ -1,11 +1,21 @@
 # 功能文档结构
 
-本目录按功能（而非文档类型）组织文档。每个功能将需求、实现计划、验证清单、决策记录和生命周期状态集中管理。
+本目录按功能（而非文档类型）组织文档。新的功能文档优先使用单文件规格格式：英文 `spec.md` 与中文 `spec_zh.md` 成对维护。
+
+旧功能目录中仍可能存在 `requirements.md`、`plan.md`、`validation.md`、`decisions.md`、`status.md` 等拆分文档；这些文档保持历史兼容，后续修改时可逐步合并为新的 `spec.md` 格式。
 
 ## 目录布局
 
 ```text
-docs/features/<yyyy-mm-dd-feature-name>/
+sdd-docs/features/<yyyy-mm-dd-feature-name>/
+  spec.md
+  spec_zh.md
+```
+
+历史拆分格式：
+
+```text
+sdd-docs/features/<yyyy-mm-dd-feature-name>/
   requirements.md
   plan.md
   validation.md
@@ -17,11 +27,55 @@ docs/features/<yyyy-mm-dd-feature-name>/
 
 | 文件 | 用途 |
 |------|------|
+| `spec.md` | 英文功能规格，集中记录背景、目标、需求、实现摘要、验证证据、风险和完成状态。 |
+| `spec_zh.md` | 中文功能规格，与 `spec.md` 保持语义一致，用于中文协作和审阅。 |
 | `requirements.md` | 定义范围、目标、约束、边界条件和验收意图。是功能"做什么"的唯一事实来源。 |
 | `plan.md` | 定义具体实现步骤、涉及的文件、需编写的测试、执行的命令和提交检查点。 |
 | `validation.md` | 定义验证清单，并在实现后记录实际验证证据。 |
 | `decisions.md` | 记录带日期的决策，包括上下文、选择、影响和重新评估触发条件。 |
 | `status.md` | 跟踪生命周期状态、负责人、时间戳、阻塞项和下一步转换。 |
+
+## 新规格模板
+
+新的 `spec.md` / `spec_zh.md` 建议包含以下章节：
+
+```markdown
+# Feature Name Spec
+
+Local routes / runtime target / stack / last updated / progress
+
+---
+
+## Problem Analysis
+## Requirements
+## Implementation Summary
+## Validation
+## Risks and Boundaries
+## Completion Status
+```
+
+中文文档使用同等结构：
+
+```markdown
+# 功能名称规格
+
+本地页面 / 运行目标 / 技术栈 / 最后更新 / 进度
+
+---
+
+## 问题分析
+## 需求
+## 实现摘要
+## 验证
+## 风险与边界
+## 完成状态
+```
+
+## 当前新格式规格
+
+| 功能 | 英文 | 中文 |
+|------|------|------|
+| Windows Usage Statistics Reliability Fixes | `2026-06-12-windows-usage-statistics-fixes/spec.md` | `2026-06-12-windows-usage-statistics-fixes/spec_zh.md` |
 
 ## 状态生命周期
 

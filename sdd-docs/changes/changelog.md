@@ -7,6 +7,20 @@
 
 ---
 
+## 2026-06-12
+
+### Fixed
+- 修复 Windows 二进制缺少 IANA 时区数据导致 `tz=Asia/Shanghai` 等浏览器时区查询失败，进而使服务状态和使用统计页面显示 0 的问题
+- 修复部分上游 SSE 在 `message_stop` 后不关闭连接时，代理等待 EOF 导致流式 usage 迟迟不落库的问题
+- 修复兼容 provider 将 usage 放在 `message_stop` payload 中时，终止事件 usage 可能被跳过的问题
+
+### Docs
+- 新增 Windows 使用统计可靠性修复 feature specs：`sdd-docs/features/2026-06-12-windows-usage-statistics-fixes/`
+- 新增对应 change specs：`sdd-docs/changes/2026-06-12-windows-usage-statistics-fixes/`
+- 更新 `sdd-docs/features/README.md`，说明新的 `spec.md` / `spec_zh.md` 双语单文件规格格式
+
+---
+
 ## 2026-06-11
 
 ### Added

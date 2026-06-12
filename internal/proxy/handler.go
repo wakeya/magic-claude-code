@@ -404,6 +404,10 @@ func (o *streamUsageObserver) Bytes() int64 {
 	return o.bytes
 }
 
+func (o *streamUsageObserver) IsComplete() bool {
+	return o.usage.IsComplete()
+}
+
 // transformRequest 转换请求体（模型映射 + 按供应商能力剥离 thinking）
 func (h *Handler) transformRequest(body []byte, provider *config.Provider) ([]byte, error) {
 	var req map[string]any

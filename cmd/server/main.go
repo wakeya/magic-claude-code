@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+	_ "time/tzdata"
 
 	"magic-claude-code/internal/admin"
 	"magic-claude-code/internal/cert"

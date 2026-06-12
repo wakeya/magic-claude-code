@@ -38,6 +38,11 @@ type ChunkObserver interface {
 	Observe(chunk []byte)
 }
 
+type TerminalObserver interface {
+	ChunkObserver
+	IsComplete() bool
+}
+
 // newHeartbeatWriter 创建带心跳功能的 ResponseWriter
 func newHeartbeatWriter(w http.ResponseWriter) *heartbeatWriter {
 	return &heartbeatWriter{
@@ -154,6 +159,9 @@ func copyWithHeartbeatAndObserver(dst *heartbeatWriter, src io.Reader, observer 
 			}
 			// SSE 数据通常需要立即刷新
 			dst.Flush()
+			if terminal, ok := observer.(TerminalObserver); ok && terminal.IsComplete() {
+				return nil
+			}
 		}
 		if err != nil {
 			if err == io.EOF {

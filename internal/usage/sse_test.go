@@ -91,3 +91,47 @@ func TestSSEObserverTracksFirstDataChunk(t *testing.T) {
 		t.Fatalf("first byte latency = %d", *firstByte)
 	}
 }
+
+func TestSSEObserverMarksTerminalEventsComplete(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{
+			name: "message_stop event",
+			data: []byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"),
+		},
+		{
+			name: "done marker",
+			data: []byte("data: [DONE]\n\n"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			observer := NewSSEObserver(time.Now())
+			observer.Observe(tt.data)
+
+			if !observer.IsComplete() {
+				t.Fatal("expected observer to mark stream complete")
+			}
+		})
+	}
+}
+
+func TestSSEObserverMergesUsageFromMessageStopBeforeCompleting(t *testing.T) {
+	observer := NewSSEObserver(time.Now())
+	observer.Observe([]byte("event: message_stop\ndata: {\"type\":\"message_stop\",\"usage\":{\"output_tokens\":9}}\n\n"))
+
+	values, source, status, _ := observer.Result()
+
+	if !observer.IsComplete() {
+		t.Fatal("expected observer to mark stream complete")
+	}
+	if source != UsageSourceProvider || status != ParseStatusOK {
+		t.Fatalf("source/status = %q/%q", source, status)
+	}
+	if values.OutputTokens != 9 {
+		t.Fatalf("values = %#v", values)
+	}
+}

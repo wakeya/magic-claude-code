@@ -12,6 +12,7 @@ type SSEObserver struct {
 	buffer     []byte
 	usage      UsageValues
 	parseError bool
+	complete   bool
 	firstByte  *int64
 }
 
@@ -64,6 +65,10 @@ func (o *SSEObserver) Result() (UsageValues, string, string, *int64) {
 	return UsageValues{}, UsageSourceNone, ParseStatusMissing, o.firstByte
 }
 
+func (o *SSEObserver) IsComplete() bool {
+	return o.complete
+}
+
 func (o *SSEObserver) observeBlock(block string) {
 	var event string
 	var dataLines []string
@@ -81,10 +86,12 @@ func (o *SSEObserver) observeBlock(block string) {
 	}
 	data := strings.Join(dataLines, "\n")
 	if data == "[DONE]" {
+		o.complete = true
 		return
 	}
 
 	var payload struct {
+		Type    string    `json:"type"`
 		Usage   usageJSON `json:"usage"`
 		Message struct {
 			Usage usageJSON `json:"usage"`
@@ -96,6 +103,9 @@ func (o *SSEObserver) observeBlock(block string) {
 	}
 	o.merge(payload.Message.Usage)
 	o.merge(payload.Usage)
+	if event == "message_stop" || payload.Type == "message_stop" {
+		o.complete = true
+	}
 }
 
 func (o *SSEObserver) merge(values usageJSON) {
