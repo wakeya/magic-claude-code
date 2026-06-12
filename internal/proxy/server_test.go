@@ -141,6 +141,276 @@ func TestProxyRecordsNonStreamingProviderUsage(t *testing.T) {
 	}
 }
 
+func TestProxyOpenAIChatProviderRewritesEndpointAndConvertsResponse(t *testing.T) {
+	recorder := &fakeUsageRecorder{}
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("backend path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		// Verify Anthropic headers are stripped for non-Anthropic providers
+		if v := r.Header.Get("Anthropic-Version"); v != "" {
+			t.Fatalf("Anthropic-Version should be stripped, got %q", v)
+		}
+		if v := r.Header.Get("Anthropic-Beta"); v != "" {
+			t.Fatalf("Anthropic-Beta should be stripped, got %q", v)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read backend request: %v", err)
+		}
+		var captured map[string]any
+		if err := json.Unmarshal(body, &captured); err != nil {
+			t.Fatalf("decode backend request: %v body=%s", err, body)
+		}
+		if captured["model"] != "mapped-sonnet" {
+			t.Fatalf("model = %#v, want mapped-sonnet", captured["model"])
+		}
+		messages := captured["messages"].([]any)
+		if messages[0].(map[string]any)["role"] != "user" || messages[0].(map[string]any)["content"] != "hello" {
+			t.Fatalf("messages = %#v", messages)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"chatcmpl_1",
+			"model":"mapped-sonnet",
+			"choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":4,"completion_tokens":2}
+		}`))
+	}))
+	defer backend.Close()
+
+	provider := testProxyProvider(backend.URL + "/v1")
+	provider.APIFormat = config.APIFormatOpenAIChat
+	handler := NewHandler(config.NewMockStore(testProxyConfig(provider)), http.DefaultTransport.(*http.Transport), recorder)
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{
+		"model":"claude-sonnet",
+		"stream":false,
+		"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]
+	}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v body=%s", err, rec.Body.String())
+	}
+	if got["type"] != "message" {
+		t.Fatalf("response was not converted to Anthropic message: %#v", got)
+	}
+	content := got["content"].([]any)
+	if content[0].(map[string]any)["text"] != "hi" {
+		t.Fatalf("content = %#v", content)
+	}
+	record := recorder.onlyRecord(t)
+	if record.tok.InputTokens != 4 || record.tok.OutputTokens != 2 {
+		t.Fatalf("tokens = %#v", record.tok)
+	}
+}
+
+func TestProxyOpenAIChatProviderConvertsStreamingResponse(t *testing.T) {
+	recorder := &fakeUsageRecorder{}
+	openAISSE := "data: {\"id\":\"chatcmpl_1\",\"model\":\"mapped-sonnet\",\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":2}}\n\n" +
+		"data: [DONE]\n\n"
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("backend path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		// Verify Anthropic headers are stripped for non-Anthropic providers
+		if v := r.Header.Get("Anthropic-Version"); v != "" {
+			t.Fatalf("Anthropic-Version should be stripped, got %q", v)
+		}
+		if v := r.Header.Get("Anthropic-Beta"); v != "" {
+			t.Fatalf("Anthropic-Beta should be stripped, got %q", v)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(openAISSE))
+	}))
+	defer backend.Close()
+
+	provider := testProxyProvider(backend.URL + "/v1")
+	provider.APIFormat = config.APIFormatOpenAIChat
+	handler := NewHandler(config.NewMockStore(testProxyConfig(provider)), http.DefaultTransport.(*http.Transport), recorder)
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{
+		"model":"claude-sonnet",
+		"stream":true,
+		"messages":[{"role":"user","content":"hello"}]
+	}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: message_start") || !strings.Contains(body, `"text":"hi"`) || !strings.Contains(body, "event: message_stop") {
+		t.Fatalf("response was not converted to Anthropic SSE:\n%s", body)
+	}
+	record := recorder.onlyRecord(t)
+	if record.tok.InputTokens != 4 || record.tok.OutputTokens != 2 {
+		t.Fatalf("tokens = %#v", record.tok)
+	}
+}
+
+func TestProxyOpenAIResponsesProviderRewritesEndpointAndConvertsResponse(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("backend path = %q, want /v1/responses", r.URL.Path)
+		}
+		// Verify Anthropic headers are stripped for non-Anthropic providers
+		if v := r.Header.Get("Anthropic-Version"); v != "" {
+			t.Fatalf("Anthropic-Version should be stripped, got %q", v)
+		}
+		if v := r.Header.Get("Anthropic-Beta"); v != "" {
+			t.Fatalf("Anthropic-Beta should be stripped, got %q", v)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read backend request: %v", err)
+		}
+		var captured map[string]any
+		if err := json.Unmarshal(body, &captured); err != nil {
+			t.Fatalf("decode backend request: %v body=%s", err, body)
+		}
+		if captured["model"] != "mapped-sonnet" {
+			t.Fatalf("model = %#v, want mapped-sonnet", captured["model"])
+		}
+		if _, ok := captured["input"].([]any); !ok {
+			t.Fatalf("input missing from Responses request: %#v", captured)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_1",
+			"model":"mapped-sonnet",
+			"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}],
+			"usage":{"input_tokens":4,"output_tokens":2}
+		}`))
+	}))
+	defer backend.Close()
+
+	provider := testProxyProvider(backend.URL + "/v1")
+	provider.APIFormat = config.APIFormatOpenAIResponses
+	handler := NewHandler(config.NewMockStore(testProxyConfig(provider)), http.DefaultTransport.(*http.Transport))
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{
+		"model":"claude-sonnet",
+		"messages":[{"role":"user","content":"hello"}]
+	}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v body=%s", err, rec.Body.String())
+	}
+	if got["type"] != "message" {
+		t.Fatalf("response was not converted to Anthropic message: %#v", got)
+	}
+	content := got["content"].([]any)
+	if content[0].(map[string]any)["text"] != "hi" {
+		t.Fatalf("content = %#v", content)
+	}
+}
+
+func TestProxyOpenAIResponsesProviderConvertsStreamingResponse(t *testing.T) {
+	recorder := &fakeUsageRecorder{}
+	responsesSSE := "event: response.output_text.delta\ndata: {\"delta\":\"hi\"}\n\n" +
+		"event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":4,\"output_tokens\":2}}}\n\n"
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("backend path = %q, want /v1/responses", r.URL.Path)
+		}
+		// Verify Anthropic headers are stripped for non-Anthropic providers
+		if v := r.Header.Get("Anthropic-Version"); v != "" {
+			t.Fatalf("Anthropic-Version should be stripped, got %q", v)
+		}
+		if v := r.Header.Get("Anthropic-Beta"); v != "" {
+			t.Fatalf("Anthropic-Beta should be stripped, got %q", v)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(responsesSSE))
+	}))
+	defer backend.Close()
+
+	provider := testProxyProvider(backend.URL + "/v1")
+	provider.APIFormat = config.APIFormatOpenAIResponses
+	handler := NewHandler(config.NewMockStore(testProxyConfig(provider)), http.DefaultTransport.(*http.Transport), recorder)
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{
+		"model":"claude-sonnet",
+		"stream":true,
+		"messages":[{"role":"user","content":"hello"}]
+	}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: message_start") || !strings.Contains(body, `"text":"hi"`) || !strings.Contains(body, "event: message_stop") {
+		t.Fatalf("response was not converted to Anthropic SSE:\n%s", body)
+	}
+	record := recorder.onlyRecord(t)
+	if record.tok.InputTokens != 4 || record.tok.OutputTokens != 2 {
+		t.Fatalf("tokens = %#v", record.tok)
+	}
+}
+
+func TestBuildUpstreamURLKeepsFullOpenAICompatibleEndpoints(t *testing.T) {
+	tests := []struct {
+		name       string
+		baseURL    string
+		format     config.APIFormat
+		wantSuffix string
+	}{
+		{
+			name:       "openai chat full endpoint",
+			baseURL:    "https://example.com/v1/chat/completions",
+			format:     config.APIFormatOpenAIChat,
+			wantSuffix: "/v1/chat/completions",
+		},
+		{
+			name:       "openai responses full endpoint",
+			baseURL:    "https://example.com/v1/responses",
+			format:     config.APIFormatOpenAIResponses,
+			wantSuffix: "/v1/responses",
+		},
+		{
+			name:       "openai chat base url",
+			baseURL:    "https://example.com/v1",
+			format:     config.APIFormatOpenAIChat,
+			wantSuffix: "/v1/chat/completions",
+		},
+		{
+			name:       "openai responses base url",
+			baseURL:    "https://example.com/v1",
+			format:     config.APIFormatOpenAIResponses,
+			wantSuffix: "/v1/responses",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildUpstreamURL(tt.baseURL, "/v1/messages", tt.format)
+			if !strings.HasSuffix(got, tt.wantSuffix) {
+				t.Fatalf("buildUpstreamURL() = %q, want suffix %q", got, tt.wantSuffix)
+			}
+		})
+	}
+}
+
 func TestProxyRecordsUsageNoneWhenUsageMissing(t *testing.T) {
 	recorder := &fakeUsageRecorder{}
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -626,4 +896,124 @@ func testProxyProvider(apiURL string) *config.Provider {
 	provider.ID = "provider-a"
 	provider.ModelMappings["claude-sonnet"] = "mapped-sonnet"
 	return provider
+}
+
+func TestStripAnthropicQueryParams(t *testing.T) {
+	tests := []struct {
+		name      string
+		query     string
+		apiFormat config.APIFormat
+		want      string
+	}{
+		{"anthropic format keeps all", "beta=true&foo=bar", config.APIFormatAnthropic, "beta=true&foo=bar"},
+		{"openai_chat strips beta", "beta=true&foo=bar", config.APIFormatOpenAIChat, "foo=bar"},
+		{"openai_responses strips beta", "beta=true", config.APIFormatOpenAIResponses, ""},
+		{"only beta removed", "beta=true", config.APIFormatOpenAIChat, ""},
+		{"no beta untouched", "foo=bar&baz=1", config.APIFormatOpenAIChat, "foo=bar&baz=1"},
+		{"empty query", "", config.APIFormatOpenAIChat, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stripAnthropicQueryParams(tt.query, tt.apiFormat)
+			if got != tt.want {
+				t.Errorf("stripAnthropicQueryParams(%q, %s) = %q, want %q", tt.query, tt.apiFormat, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCopyUpstreamHeadersFiltersAnthropicHeaders(t *testing.T) {
+	tests := []struct {
+		name          string
+		apiFormat     config.APIFormat
+		inputHeaders  http.Header
+		wantPresent   []string
+		wantAbsent    []string
+	}{
+		{
+			name:      "anthropic format keeps Anthropic-Version and Anthropic-Beta",
+			apiFormat: config.APIFormatAnthropic,
+			inputHeaders: http.Header{
+				"Anthropic-Version": {"2023-06-01"},
+				"Anthropic-Beta":    {"interleaved-thinking-2025-05-14"},
+				"Content-Type":      {"application/json"},
+				"Accept-Encoding":   {"gzip"},
+			},
+			wantPresent: []string{"Anthropic-Version", "Anthropic-Beta", "Content-Type"},
+			wantAbsent:  []string{"Accept-Encoding"},
+		},
+		{
+			name:      "openai_chat strips Anthropic headers",
+			apiFormat: config.APIFormatOpenAIChat,
+			inputHeaders: http.Header{
+				"Anthropic-Version": {"2023-06-01"},
+				"Anthropic-Beta":    {"interleaved-thinking-2025-05-14"},
+				"Content-Type":      {"application/json"},
+			},
+			wantPresent: []string{"Content-Type"},
+			wantAbsent:  []string{"Anthropic-Version", "Anthropic-Beta"},
+		},
+		{
+			name:      "openai_responses strips Anthropic headers",
+			apiFormat: config.APIFormatOpenAIResponses,
+			inputHeaders: http.Header{
+				"Anthropic-Version": {"2023-06-01"},
+				"Anthropic-Beta":    {"interleaved-thinking-2025-05-14"},
+				"Content-Type":      {"application/json"},
+			},
+			wantPresent: []string{"Content-Type"},
+			wantAbsent:  []string{"Anthropic-Version", "Anthropic-Beta"},
+		},
+		{
+			name:      "apiToken replaces Authorization and X-Api-Key",
+			apiFormat: config.APIFormatOpenAIChat,
+			inputHeaders: http.Header{
+				"Authorization": {"Bearer original-token"},
+				"X-Api-Key":     {"original-key"},
+				"Content-Type":  {"application/json"},
+			},
+			wantPresent: []string{"Content-Type"},
+			wantAbsent:  []string{},
+		},
+		{
+			name:      "Host and TE are always filtered",
+			apiFormat: config.APIFormatAnthropic,
+			inputHeaders: http.Header{
+				"Host":         {"original-host"},
+				"TE":           {"trailers"},
+				"Content-Type": {"application/json"},
+			},
+			wantPresent: []string{"Content-Type"},
+			wantAbsent:  []string{"Host", "TE"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dst := httptest.NewRequest("POST", "/test", nil)
+			copyUpstreamHeaders(dst, tt.inputHeaders, "provider-token", tt.apiFormat)
+
+			for _, h := range tt.wantPresent {
+				if got := dst.Header.Get(h); got == "" {
+					t.Errorf("expected header %q to be present, but it was absent", h)
+				}
+			}
+			for _, h := range tt.wantAbsent {
+				if got := dst.Header.Get(h); got != "" {
+					t.Errorf("expected header %q to be absent, got %q", h, got)
+				}
+			}
+
+			// apiToken cases: provider token replaces original auth
+			if tt.inputHeaders.Get("Authorization") != "" || tt.inputHeaders.Get("X-Api-Key") != "" {
+				got := dst.Header.Get("Authorization")
+				if got == "" {
+					got = dst.Header.Get("X-Api-Key")
+				}
+				if got != "Bearer provider-token" && got != "provider-token" {
+					t.Errorf("auth header = %q, want provider token", got)
+				}
+			}
+		})
+	}
 }

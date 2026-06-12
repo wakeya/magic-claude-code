@@ -8,6 +8,15 @@ import (
 	"time"
 )
 
+// APIFormat describes the upstream provider API protocol.
+type APIFormat string
+
+const (
+	APIFormatAnthropic       APIFormat = "anthropic"
+	APIFormatOpenAIChat      APIFormat = "openai_chat"
+	APIFormatOpenAIResponses APIFormat = "openai_responses"
+)
+
 // Provider API 供应商配置
 type Provider struct {
 	// ID 唯一标识符
@@ -21,6 +30,16 @@ type Provider struct {
 
 	// APIToken API 密钥
 	APIToken string `json:"api_token"`
+
+	// APIFormat 上游 API 协议格式
+	APIFormat APIFormat `json:"api_format"`
+
+	// OpenAIExtraParams OpenAI-Compatible 请求额外参数
+	OpenAIExtraParams map[string]any `json:"openai_extra_params,omitempty"`
+
+	// ClaudeCodeCompatHint controls whether OpenAI-Compatible requests receive
+	// Claude Code tool-use guidance. nil keeps the format-specific default.
+	ClaudeCodeCompatHint *bool `json:"claude_code_compat_hint,omitempty"`
 
 	// ModelMappings 模型映射规则
 	// key: 客户端请求的模型名（如 claude-sonnet-4）
@@ -53,6 +72,7 @@ func NewProvider(name, apiURL, apiToken string) *Provider {
 		Name:          name,
 		APIURL:        apiURL,
 		APIToken:      apiToken,
+		APIFormat:     APIFormatAnthropic,
 		ModelMappings: make(map[string]string),
 		Enabled:       true,
 		CreatedAt:     time.Now(),
@@ -62,6 +82,8 @@ func NewProvider(name, apiURL, apiToken string) *Provider {
 
 // Validate 验证供应商配置
 func (p *Provider) Validate() error {
+	p.normalizeDefaults()
+
 	if p.Name == "" {
 		return fmt.Errorf("provider name is required")
 	}
@@ -84,7 +106,35 @@ func (p *Provider) Validate() error {
 		return fmt.Errorf("api_url must have a host")
 	}
 
+	if !p.APIFormat.IsValid() {
+		return fmt.Errorf("unsupported api_format: %s", p.APIFormat)
+	}
+
 	return nil
+}
+
+func (p *Provider) normalizeDefaults() {
+	if p.APIFormat == "" {
+		p.APIFormat = APIFormatAnthropic
+	}
+}
+
+// UseClaudeCodeCompatHint reports the effective Claude Code tool-use hint setting.
+func (p *Provider) UseClaudeCodeCompatHint() bool {
+	if p.ClaudeCodeCompatHint != nil {
+		return *p.ClaudeCodeCompatHint
+	}
+	return p.APIFormat == APIFormatOpenAIChat || p.APIFormat == APIFormatOpenAIResponses
+}
+
+// IsValid reports whether the API format is supported by this phase.
+func (f APIFormat) IsValid() bool {
+	switch f {
+	case APIFormatAnthropic, APIFormatOpenAIChat, APIFormatOpenAIResponses:
+		return true
+	default:
+		return false
+	}
 }
 
 // MapModel 映射模型名称

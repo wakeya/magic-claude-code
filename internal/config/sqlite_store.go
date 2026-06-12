@@ -2,6 +2,7 @@ package config
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -98,6 +99,7 @@ func (s *SQLiteStore) migrateSchema() error {
 			supports_thinking INTEGER NOT NULL DEFAULT 0,
 			multimodal_switch INTEGER NOT NULL DEFAULT 0,
 			multimodal_model TEXT NOT NULL DEFAULT '',
+			claude_code_compat_hint INTEGER,
 			enabled INTEGER NOT NULL DEFAULT 1,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
@@ -132,8 +134,11 @@ func (s *SQLiteStore) migrateSchema() error {
 
 func (s *SQLiteStore) ensureProviderColumns() error {
 	columns := map[string]string{
-		"multimodal_switch": `ALTER TABLE providers ADD COLUMN multimodal_switch INTEGER NOT NULL DEFAULT 0`,
-		"multimodal_model":  `ALTER TABLE providers ADD COLUMN multimodal_model TEXT NOT NULL DEFAULT ''`,
+		"multimodal_switch":       `ALTER TABLE providers ADD COLUMN multimodal_switch INTEGER NOT NULL DEFAULT 0`,
+		"multimodal_model":        `ALTER TABLE providers ADD COLUMN multimodal_model TEXT NOT NULL DEFAULT ''`,
+		"api_format":              `ALTER TABLE providers ADD COLUMN api_format TEXT NOT NULL DEFAULT 'anthropic'`,
+		"openai_extra_params":     `ALTER TABLE providers ADD COLUMN openai_extra_params TEXT NOT NULL DEFAULT '{}'`,
+		"claude_code_compat_hint": `ALTER TABLE providers ADD COLUMN claude_code_compat_hint INTEGER`,
 	}
 	rows, err := s.db.Query(`PRAGMA table_info(providers)`)
 	if err != nil {
@@ -262,7 +267,7 @@ func (s *SQLiteStore) loadSettings() (map[string]string, error) {
 }
 
 func (s *SQLiteStore) loadProviders() ([]Provider, error) {
-	rows, err := s.db.Query(`SELECT id, name, api_url, api_token, supports_thinking, multimodal_switch, multimodal_model, enabled, created_at, updated_at FROM providers ORDER BY created_at ASC, id ASC`)
+	rows, err := s.db.Query(`SELECT id, name, api_url, api_token, api_format, openai_extra_params, supports_thinking, multimodal_switch, multimodal_model, claude_code_compat_hint, enabled, created_at, updated_at FROM providers ORDER BY created_at ASC, id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -272,12 +277,22 @@ func (s *SQLiteStore) loadProviders() ([]Provider, error) {
 	for rows.Next() {
 		var p Provider
 		var supportsThinking, multimodalSwitch, enabled int
-		var createdAt, updatedAt string
-		if err := rows.Scan(&p.ID, &p.Name, &p.APIURL, &p.APIToken, &supportsThinking, &multimodalSwitch, &p.MultimodalModel, &enabled, &createdAt, &updatedAt); err != nil {
+		var claudeCodeCompatHint sql.NullBool
+		var openAIExtraParams, createdAt, updatedAt string
+		if err := rows.Scan(&p.ID, &p.Name, &p.APIURL, &p.APIToken, &p.APIFormat, &openAIExtraParams, &supportsThinking, &multimodalSwitch, &p.MultimodalModel, &claudeCodeCompatHint, &enabled, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
+		p.normalizeDefaults()
+		params, err := decodeOpenAIExtraParams(openAIExtraParams)
+		if err != nil {
+			return nil, fmt.Errorf("decode provider %s openai_extra_params: %w", p.ID, err)
+		}
+		p.OpenAIExtraParams = params
 		p.SupportsThinking = supportsThinking == 1
 		p.MultimodalSwitch = multimodalSwitch == 1
+		if claudeCodeCompatHint.Valid {
+			p.ClaudeCodeCompatHint = &claudeCodeCompatHint.Bool
+		}
 		p.Enabled = enabled == 1
 		p.CreatedAt = parseSQLiteTime(createdAt)
 		p.UpdatedAt = parseSQLiteTime(updatedAt)
@@ -384,6 +399,7 @@ func saveProviders(tx *sql.Tx, providers []Provider) error {
 }
 
 func upsertProvider(tx *sql.Tx, provider Provider) error {
+	provider.normalizeDefaults()
 	createdAt := provider.CreatedAt
 	if createdAt.IsZero() {
 		createdAt = time.Now().UTC()
@@ -393,16 +409,24 @@ func upsertProvider(tx *sql.Tx, provider Provider) error {
 		updatedAt = createdAt
 	}
 
-	_, err := tx.Exec(
-		`INSERT INTO providers(id, name, api_url, api_token, supports_thinking, multimodal_switch, multimodal_model, enabled, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	openAIExtraParams, err := encodeOpenAIExtraParams(provider.OpenAIExtraParams)
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.Exec(
+		`INSERT INTO providers(id, name, api_url, api_token, api_format, openai_extra_params, supports_thinking, multimodal_switch, multimodal_model, claude_code_compat_hint, enabled, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		 name = excluded.name,
 		 api_url = excluded.api_url,
 		 api_token = excluded.api_token,
+		 api_format = excluded.api_format,
+		 openai_extra_params = excluded.openai_extra_params,
 		 supports_thinking = excluded.supports_thinking,
 		 multimodal_switch = excluded.multimodal_switch,
 		 multimodal_model = excluded.multimodal_model,
+		 claude_code_compat_hint = excluded.claude_code_compat_hint,
 		 enabled = excluded.enabled,
 		 created_at = excluded.created_at,
 		 updated_at = excluded.updated_at`,
@@ -410,14 +434,42 @@ func upsertProvider(tx *sql.Tx, provider Provider) error {
 		provider.Name,
 		provider.APIURL,
 		provider.APIToken,
+		provider.APIFormat,
+		openAIExtraParams,
 		boolToInt(provider.SupportsThinking),
 		boolToInt(provider.MultimodalSwitch),
 		provider.MultimodalModel,
+		nullableBool(provider.ClaudeCodeCompatHint),
 		boolToInt(provider.Enabled),
 		createdAt.UTC().Format(time.RFC3339Nano),
 		updatedAt.UTC().Format(time.RFC3339Nano),
 	)
 	return err
+}
+
+func encodeOpenAIExtraParams(params map[string]any) (string, error) {
+	if params == nil {
+		return "{}", nil
+	}
+	data, err := json.Marshal(params)
+	if err != nil {
+		return "", fmt.Errorf("encode openai_extra_params: %w", err)
+	}
+	return string(data), nil
+}
+
+func decodeOpenAIExtraParams(value string) (map[string]any, error) {
+	if value == "" {
+		return nil, nil
+	}
+	var params map[string]any
+	if err := json.Unmarshal([]byte(value), &params); err != nil {
+		return nil, err
+	}
+	if len(params) == 0 {
+		return nil, nil
+	}
+	return params, nil
 }
 
 func (s *SQLiteStore) shouldMigrateLegacyJSON(schemaInitialized bool) (bool, error) {
@@ -491,4 +543,11 @@ func boolToInt(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+func nullableBool(value *bool) any {
+	if value == nil {
+		return nil
+	}
+	return boolToInt(*value)
 }

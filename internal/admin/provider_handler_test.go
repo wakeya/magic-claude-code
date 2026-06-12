@@ -86,6 +86,108 @@ func TestProviderAPIRoundTripsMultimodalConfig(t *testing.T) {
 	}
 }
 
+func TestProviderAPIRoundTripsAPIFormatAndOpenAIExtraParams(t *testing.T) {
+	cfg := config.DefaultConfig()
+	store := config.NewMockStore(cfg)
+	server := NewServer(&AdminConfig{Password: "secret"}, store, nil)
+
+	body := bytes.NewBufferString(`{
+		"name":"Agnes",
+		"api_url":"https://apihub.agnes-ai.com/v1",
+		"api_token":"token",
+		"api_format":"openai_chat",
+		"claude_code_compat_hint":false,
+		"openai_extra_params":{
+			"allowed_openai_params":["thinking","context_management"],
+			"litellm_settings":{"drop_params":true}
+		}
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/providers", body)
+	rec := httptest.NewRecorder()
+
+	server.handleProviders(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		Provider config.Provider `json:"provider"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	if created.Provider.APIFormat != config.APIFormatOpenAIChat {
+		t.Fatalf("created APIFormat = %q, want %q", created.Provider.APIFormat, config.APIFormatOpenAIChat)
+	}
+	if created.Provider.ClaudeCodeCompatHint == nil || *created.Provider.ClaudeCodeCompatHint {
+		t.Fatalf("created ClaudeCodeCompatHint = %#v, want explicit false", created.Provider.ClaudeCodeCompatHint)
+	}
+	settings, ok := created.Provider.OpenAIExtraParams["litellm_settings"].(map[string]any)
+	if !ok || settings["drop_params"] != true {
+		t.Fatalf("created OpenAIExtraParams = %#v", created.Provider.OpenAIExtraParams)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/providers", nil)
+	rec = httptest.NewRecorder()
+
+	server.handleProviders(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var listed struct {
+		Providers []struct {
+			APIFormat         config.APIFormat `json:"api_format"`
+			OpenAIExtraParams map[string]any   `json:"openai_extra_params"`
+			ClaudeCodeCompat  bool             `json:"claude_code_compat_hint"`
+		} `json:"providers"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(listed.Providers) != 1 {
+		t.Fatalf("listed providers = %d", len(listed.Providers))
+	}
+	if listed.Providers[0].APIFormat != config.APIFormatOpenAIChat {
+		t.Fatalf("listed APIFormat = %q, want %q", listed.Providers[0].APIFormat, config.APIFormatOpenAIChat)
+	}
+	if listed.Providers[0].OpenAIExtraParams["allowed_openai_params"] == nil {
+		t.Fatalf("listed OpenAIExtraParams = %#v", listed.Providers[0].OpenAIExtraParams)
+	}
+	if listed.Providers[0].OpenAIExtraParams["claude_code_compat_hint"] != nil {
+		t.Fatalf("Claude Code compat hint leaked into OpenAIExtraParams: %#v", listed.Providers[0].OpenAIExtraParams)
+	}
+	if listed.Providers[0].ClaudeCodeCompat {
+		t.Fatalf("listed ClaudeCodeCompat = true, want false")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/providers/"+created.Provider.ID, nil)
+	rec = httptest.NewRecorder()
+
+	server.handleProvider(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var detail struct {
+		APIFormat         config.APIFormat `json:"api_format"`
+		OpenAIExtraParams map[string]any   `json:"openai_extra_params"`
+		ClaudeCodeCompat  bool             `json:"claude_code_compat_hint"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("decode detail response: %v", err)
+	}
+	if detail.APIFormat != config.APIFormatOpenAIChat {
+		t.Fatalf("detail APIFormat = %q, want %q", detail.APIFormat, config.APIFormatOpenAIChat)
+	}
+	if detail.OpenAIExtraParams["litellm_settings"] == nil {
+		t.Fatalf("detail OpenAIExtraParams = %#v", detail.OpenAIExtraParams)
+	}
+	if detail.ClaudeCodeCompat {
+		t.Fatalf("detail ClaudeCodeCompat = true, want false")
+	}
+}
+
 func TestCreateProviderRejectsMultimodalSwitchWithoutModel(t *testing.T) {
 	cfg := config.DefaultConfig()
 	store := config.NewMockStore(cfg)
@@ -107,12 +209,59 @@ func TestCreateProviderRejectsMultimodalSwitchWithoutModel(t *testing.T) {
 	}
 }
 
+func TestCreateProviderRejectsUnsupportedAPIFormat(t *testing.T) {
+	cfg := config.DefaultConfig()
+	store := config.NewMockStore(cfg)
+	server := NewServer(&AdminConfig{Password: "secret"}, store, nil)
+
+	body := bytes.NewBufferString(`{
+		"name":"Gemini",
+		"api_url":"https://gemini.example.com/v1",
+		"api_token":"token",
+		"api_format":"gemini_native"
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/providers", body)
+	rec := httptest.NewRecorder()
+
+	server.handleProviders(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCreateProviderRejectsNonObjectOpenAIExtraParams(t *testing.T) {
+	cfg := config.DefaultConfig()
+	store := config.NewMockStore(cfg)
+	server := NewServer(&AdminConfig{Password: "secret"}, store, nil)
+
+	body := bytes.NewBufferString(`{
+		"name":"Agnes",
+		"api_url":"https://apihub.agnes-ai.com/v1",
+		"api_token":"token",
+		"api_format":"openai_chat",
+		"openai_extra_params":["not-an-object"]
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/providers", body)
+	rec := httptest.NewRecorder()
+
+	server.handleProviders(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestUpdateProviderPreservesMultimodalConfigWhenOmitted(t *testing.T) {
 	provider := config.Provider{
-		ID:               "provider-a",
-		Name:             "Mimo",
-		APIURL:           "https://token-plan-cn.xiaomimimo.com/anthropic",
-		APIToken:         "token",
+		ID:        "provider-a",
+		Name:      "Mimo",
+		APIURL:    "https://token-plan-cn.xiaomimimo.com/anthropic",
+		APIToken:  "token",
+		APIFormat: config.APIFormatOpenAIChat,
+		OpenAIExtraParams: map[string]any{
+			"litellm_settings": map[string]any{"drop_params": true},
+		},
 		ModelMappings:    map[string]string{"claude-opus-4-6": "mimo-v2.5-pro"},
 		MultimodalSwitch: true,
 		MultimodalModel:  "mimo-vl-pro",
@@ -147,15 +296,21 @@ func TestUpdateProviderPreservesMultimodalConfigWhenOmitted(t *testing.T) {
 }
 
 func TestDuplicateProviderPreservesMultimodalConfig(t *testing.T) {
+	disabled := false
 	provider := config.Provider{
-		ID:               "provider-a",
-		Name:             "Mimo",
-		APIURL:           "https://token-plan-cn.xiaomimimo.com/anthropic",
-		APIToken:         "token",
-		ModelMappings:    map[string]string{"claude-opus-4-6": "mimo-v2.5-pro"},
-		MultimodalSwitch: true,
-		MultimodalModel:  "mimo-vl-pro",
-		Enabled:          true,
+		ID:        "provider-a",
+		Name:      "Mimo",
+		APIURL:    "https://token-plan-cn.xiaomimimo.com/anthropic",
+		APIToken:  "token",
+		APIFormat: config.APIFormatOpenAIChat,
+		OpenAIExtraParams: map[string]any{
+			"litellm_settings": map[string]any{"drop_params": true},
+		},
+		ClaudeCodeCompatHint: &disabled,
+		ModelMappings:        map[string]string{"claude-opus-4-6": "mimo-v2.5-pro"},
+		MultimodalSwitch:     true,
+		MultimodalModel:      "mimo-vl-pro",
+		Enabled:              true,
 	}
 	cfg := config.DefaultConfig()
 	cfg.Providers = []config.Provider{provider}
@@ -179,5 +334,14 @@ func TestDuplicateProviderPreservesMultimodalConfig(t *testing.T) {
 	}
 	if !duplicated.Provider.MultimodalSwitch || duplicated.Provider.MultimodalModel != "mimo-vl-pro" {
 		t.Fatalf("duplicated multimodal config = %#v", duplicated.Provider)
+	}
+	if duplicated.Provider.APIFormat != config.APIFormatOpenAIChat {
+		t.Fatalf("duplicated APIFormat = %q", duplicated.Provider.APIFormat)
+	}
+	if duplicated.Provider.OpenAIExtraParams["litellm_settings"] == nil {
+		t.Fatalf("duplicated OpenAIExtraParams = %#v", duplicated.Provider.OpenAIExtraParams)
+	}
+	if duplicated.Provider.ClaudeCodeCompatHint == nil || *duplicated.Provider.ClaudeCodeCompatHint {
+		t.Fatalf("duplicated ClaudeCodeCompatHint = %#v, want explicit false", duplicated.Provider.ClaudeCodeCompatHint)
 	}
 }

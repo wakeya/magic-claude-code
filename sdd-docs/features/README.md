@@ -1,6 +1,8 @@
 # 功能文档结构
 
-本目录按功能（而非文档类型）组织文档。新的功能文档优先使用单文件规格格式：英文 `spec.md` 与中文 `spec_zh.md` 成对维护。
+本目录按功能（而非文档类型）组织文档。新的功能文档优先使用单文件规格格式：英文 `spec.md` 与中文 `spec_ZH.md` 成对维护。
+
+历史功能目录中可能存在小写 `spec_zh.md`；该命名保持兼容，新的功能规格统一使用 `spec_ZH.md`。
 
 旧功能目录中仍可能存在 `requirements.md`、`plan.md`、`validation.md`、`decisions.md`、`status.md` 等拆分文档；这些文档保持历史兼容，后续修改时可逐步合并为新的 `spec.md` 格式。
 
@@ -9,7 +11,7 @@
 ```text
 sdd-docs/features/<yyyy-mm-dd-feature-name>/
   spec.md
-  spec_zh.md
+  spec_ZH.md
 ```
 
 历史拆分格式：
@@ -27,8 +29,9 @@ sdd-docs/features/<yyyy-mm-dd-feature-name>/
 
 | 文件 | 用途 |
 |------|------|
-| `spec.md` | 英文功能规格，集中记录背景、目标、需求、实现摘要、验证证据、风险和完成状态。 |
-| `spec_zh.md` | 中文功能规格，与 `spec.md` 保持语义一致，用于中文协作和审阅。 |
+| `spec.md` | 英文功能规格，集中记录整体分析、开发检查清单、需求和任务详情。 |
+| `spec_ZH.md` | 中文功能规格，与 `spec.md` 保持语义一致，用于中文协作和审阅。 |
+| `spec_zh.md` | 历史小写中文规格命名，保持兼容；新功能不再使用。 |
 | `requirements.md` | 定义范围、目标、约束、边界条件和验收意图。是功能"做什么"的唯一事实来源。 |
 | `plan.md` | 定义具体实现步骤、涉及的文件、需编写的测试、执行的命令和提交检查点。 |
 | `validation.md` | 定义验证清单，并在实现后记录实际验证证据。 |
@@ -37,21 +40,17 @@ sdd-docs/features/<yyyy-mm-dd-feature-name>/
 
 ## 新规格模板
 
-新的 `spec.md` / `spec_zh.md` 建议包含以下章节：
+新的 `spec.md` / `spec_ZH.md` 必须包含以下四个一级章节：
 
 ```markdown
 # Feature Name Spec
 
-Local routes / runtime target / stack / last updated / progress
+Local page / proxy entry / reference sources / stack / last updated / progress
 
----
-
-## Problem Analysis
+## Overall Analysis (Source Analysis)
+## Development Checklist
 ## Requirements
-## Implementation Summary
-## Validation
-## Risks and Boundaries
-## Completion Status
+## Task Details
 ```
 
 中文文档使用同等结构：
@@ -59,16 +58,50 @@ Local routes / runtime target / stack / last updated / progress
 ```markdown
 # 功能名称规格
 
-本地页面 / 运行目标 / 技术栈 / 最后更新 / 进度
+本地页面 / 代理入口 / 参考源站 / 技术栈 / 最后更新 / 进度
 
----
-
-## 问题分析
+## 整体分析（源站分析）
+## 开发检查清单
 ## 需求
-## 实现摘要
-## 验证
-## 风险与边界
-## 完成状态
+## 任务详情
+```
+
+`Task Details` / `任务详情` 下每个任务应包含：
+
+```markdown
+### Task N: Task Name
+
+#### Requirements
+
+**Objective** - ...
+**Outcomes** - ...
+**Evidence** - ...
+**Constraints** - ...
+**Edge Cases** - ...
+**Verification** - ...
+
+#### Plan
+
+#### Verification
+```
+
+中文任务详情使用同等结构：
+
+```markdown
+### 任务 N：任务名称
+
+#### 需求
+
+**Objective（目标）** — ...
+**Outcomes（成果）** — ...
+**Evidence（证据）** — ...
+**Constraints（约束）** — ...
+**Edge Cases（边界）** — ...
+**Verification（验证）** — ...
+
+#### 计划
+
+#### 验证
 ```
 
 ## 当前新格式规格
@@ -76,6 +109,7 @@ Local routes / runtime target / stack / last updated / progress
 | 功能 | 英文 | 中文 |
 |------|------|------|
 | Windows Usage Statistics Reliability Fixes | `2026-06-12-windows-usage-statistics-fixes/spec.md` | `2026-06-12-windows-usage-statistics-fixes/spec_zh.md` |
+| OpenAI-Compatible API Format Support | `2026-06-12-openai-compatible-api-format/spec.md` | `2026-06-12-openai-compatible-api-format/spec_ZH.md` |
 
 ## 状态生命周期
 

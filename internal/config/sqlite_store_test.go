@@ -95,6 +95,55 @@ func TestSQLiteStoreSaveAndLoad(t *testing.T) {
 	assertConfigEqual(t, cfg, loaded)
 }
 
+func TestSQLiteStorePersistsProviderAPIFormatAndOpenAIExtraParams(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewSQLiteStore(filepath.Join(dir, "proxy.db"), filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	provider := testProvider("provider-openai", "OpenAI", "https://openai.example.com/v1", "token", true)
+	provider.APIFormat = APIFormatOpenAIChat
+	disabled := false
+	provider.ClaudeCodeCompatHint = &disabled
+	provider.OpenAIExtraParams = map[string]any{
+		"allowed_openai_params": []any{"thinking", "context_management"},
+		"litellm_settings": map[string]any{
+			"drop_params": true,
+		},
+	}
+	cfg := DefaultConfig()
+	cfg.Providers = []Provider{provider}
+	cfg.ActiveProviderID = provider.ID
+
+	if err := store.Save(cfg); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	got := loaded.GetProviderByID(provider.ID)
+	if got == nil {
+		t.Fatal("provider missing after load")
+	}
+	if got.APIFormat != APIFormatOpenAIChat {
+		t.Fatalf("APIFormat = %q, want %q", got.APIFormat, APIFormatOpenAIChat)
+	}
+	if got.ClaudeCodeCompatHint == nil || *got.ClaudeCodeCompatHint {
+		t.Fatalf("ClaudeCodeCompatHint = %#v, want explicit false", got.ClaudeCodeCompatHint)
+	}
+	settings, ok := got.OpenAIExtraParams["litellm_settings"].(map[string]any)
+	if !ok {
+		t.Fatalf("litellm_settings = %#v", got.OpenAIExtraParams["litellm_settings"])
+	}
+	if settings["drop_params"] != true {
+		t.Fatalf("drop_params = %#v, want true", settings["drop_params"])
+	}
+}
+
 func TestSQLiteStorePersistsAdminThemeMode(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := NewSQLiteStore(filepath.Join(tmpDir, "config.db"), filepath.Join(tmpDir, "config.json"))

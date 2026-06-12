@@ -2,9 +2,9 @@ package admin
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"magic-claude-code/internal/usage"
@@ -277,44 +277,30 @@ func (s *Server) handleTestBackend(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// isInternalIP 检查是否为内网地址
+// isInternalIP checks whether the host resolves to an internal or loopback address.
+// It performs DNS resolution to detect DNS rebinding attacks and covers both IPv4 and IPv6.
 func isInternalIP(host string) bool {
-	// 禁止 localhost 和内网地址
-	internalHosts := []string{
-		"localhost",
-		"127.0.0.1",
-		"0.0.0.0",
-		"::1",
+	if host == "localhost" {
+		return true
 	}
-
-	for _, h := range internalHosts {
-		if host == h {
+	// Try parsing as IP first (fast path, no DNS lookup)
+	if ip := net.ParseIP(host); ip != nil {
+		return isReservedIP(ip)
+	}
+	// Hostname: resolve and check all resulting IPs
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return true // unresolvable host -> block
+	}
+	for _, ip := range ips {
+		if isReservedIP(ip) {
 			return true
 		}
 	}
-
-	// 检查内网 IP 段
-	if strings.HasPrefix(host, "10.") ||
-		strings.HasPrefix(host, "192.168.") ||
-		strings.HasPrefix(host, "172.16.") ||
-		strings.HasPrefix(host, "172.17.") ||
-		strings.HasPrefix(host, "172.18.") ||
-		strings.HasPrefix(host, "172.19.") ||
-		strings.HasPrefix(host, "172.20.") ||
-		strings.HasPrefix(host, "172.21.") ||
-		strings.HasPrefix(host, "172.22.") ||
-		strings.HasPrefix(host, "172.23.") ||
-		strings.HasPrefix(host, "172.24.") ||
-		strings.HasPrefix(host, "172.25.") ||
-		strings.HasPrefix(host, "172.26.") ||
-		strings.HasPrefix(host, "172.27.") ||
-		strings.HasPrefix(host, "172.28.") ||
-		strings.HasPrefix(host, "172.29.") ||
-		strings.HasPrefix(host, "172.30.") ||
-		strings.HasPrefix(host, "172.31.") ||
-		strings.HasPrefix(host, "169.254.") {
-		return true
-	}
-
 	return false
+}
+
+// isReservedIP reports whether an IP is loopback, private, link-local, or unspecified.
+func isReservedIP(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
 }

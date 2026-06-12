@@ -62,6 +62,8 @@ func NormalizeThemeMode(mode string) string {
 
 // Validate 验证配置
 func (c *Config) Validate() error {
+	c.NormalizeDefaults()
+
 	// 如果有供应商配置，则不需要 BackendURL
 	if len(c.Providers) == 0 && c.BackendURL == "" {
 		return fmt.Errorf("backend_url or providers is required")
@@ -91,6 +93,23 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// NormalizeDefaults fills backward-compatible default values.
+func (c *Config) NormalizeDefaults() {
+	if c.ProxyPort == 0 {
+		c.ProxyPort = 443
+	}
+	if c.AdminPort == 0 {
+		c.AdminPort = 8442
+	}
+	if c.DataDir == "" {
+		c.DataDir = "./data"
+	}
+	c.AdminThemeMode = NormalizeThemeMode(c.AdminThemeMode)
+	for i := range c.Providers {
+		c.Providers[i].normalizeDefaults()
+	}
 }
 
 // GetActiveProvider 获取当前激活的供应商

@@ -13,7 +13,32 @@
 
       <div class="mb-5">
         <label class="block text-[13px] font-semibold mb-2">{{ t('modal.api_url') }}</label>
-        <input v-model="form.api_url" type="text" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" class="app-control w-full px-4 py-3 rounded-lg text-sm transition-all duration-200 outline-none focus:border-primary" />
+        <input v-model="form.api_url" type="text" :placeholder="apiURLPlaceholder" class="app-control w-full px-4 py-3 rounded-lg text-sm transition-all duration-200 outline-none focus:border-primary" />
+        <p class="app-muted text-xs mt-1.5">{{ t('modal.api_url_hint') }}</p>
+      </div>
+
+      <div class="mb-5">
+        <label class="block text-[13px] font-semibold mb-2">{{ t('modal.api_format') }}</label>
+        <select v-model="form.api_format" class="app-control w-full px-4 py-3 rounded-lg text-sm transition-all duration-200 outline-none focus:border-primary">
+          <option value="anthropic">{{ t('modal.api_format_anthropic') }}</option>
+          <option value="openai_chat">{{ t('modal.api_format_openai_chat') }}</option>
+          <option value="openai_responses">{{ t('modal.api_format_openai_responses') }}</option>
+        </select>
+      </div>
+
+      <div v-if="isOpenAICompatible" class="mb-5">
+        <label class="flex items-center gap-2 cursor-pointer mb-4">
+          <input v-model="form.claude_code_compat_hint" type="checkbox" class="w-4 h-4 accent-primary cursor-pointer" />
+          <span class="app-muted text-sm">{{ t('modal.claude_code_compat_hint') }}</span>
+        </label>
+        <label class="block text-[13px] font-semibold mb-2">{{ t('modal.openai_extra_params') }}</label>
+        <textarea
+          v-model="openAIExtraParamsText"
+          rows="7"
+          spellcheck="false"
+          class="app-control w-full px-4 py-3 rounded-lg text-sm font-mono transition-all duration-200 outline-none focus:border-primary"
+        ></textarea>
+        <p class="app-muted text-xs mt-1.5">{{ t('modal.openai_extra_params_hint') }}</p>
       </div>
 
       <div class="mb-5">
@@ -82,7 +107,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, computed, watch } from 'vue'
 import { useApi, type Provider } from '@/composables/useApi'
 import { useI18n } from '@/composables/useI18n'
 
@@ -96,24 +121,38 @@ const form = reactive({
   name: '',
   api_url: '',
   api_token: '',
+  api_format: 'anthropic' as 'anthropic' | 'openai_chat' | 'openai_responses',
+  claude_code_compat_hint: true,
   supports_thinking: false,
   multimodal_switch: false,
   multimodal_model: '',
 })
 
 const mappings = ref<{ from: string; to: string }[]>([{ from: '', to: '' }])
+const openAIExtraParamsText = ref(formatOpenAIExtraParams(defaultOpenAIExtraParams()))
 const message = ref<{ text: string; ok: boolean }>({ text: '', ok: false })
 const showToken = ref(false)
 const tokenRevealed = ref(false)
+const isOpenAICompatible = computed(() => form.api_format === 'openai_chat' || form.api_format === 'openai_responses')
+const apiURLPlaceholder = computed(() => isOpenAICompatible.value ? 'https://example.com/v1' : 'https://api.anthropic.com')
+
+watch(() => form.api_format, (newFormat) => {
+  if (newFormat === 'openai_chat' || newFormat === 'openai_responses') {
+    form.claude_code_compat_hint = true
+  }
+})
 
 onMounted(() => {
   if (props.provider) {
     form.name = props.provider.name
     form.api_url = props.provider.api_url
     form.api_token = props.provider.api_token_mask || ''
+    form.api_format = props.provider.api_format || 'anthropic'
+    form.claude_code_compat_hint = props.provider.claude_code_compat_hint ?? true
     form.supports_thinking = props.provider.supports_thinking || false
     form.multimodal_switch = props.provider.multimodal_switch || false
     form.multimodal_model = props.provider.multimodal_model || ''
+    openAIExtraParamsText.value = formatOpenAIExtraParams(props.provider.openai_extra_params || defaultOpenAIExtraParams())
     const entries = Object.entries(props.provider.model_mappings || {})
     mappings.value = entries.length > 0 ? entries.map(([from, to]) => ({ from, to })) : [{ from: '', to: '' }]
   }
@@ -138,12 +177,20 @@ async function save() {
     message.value = { text: t('modal.required'), ok: false }
     return
   }
+  const openAIExtraParams = parseOpenAIExtraParams()
+  if (!openAIExtraParams.ok) {
+    message.value = { text: openAIExtraParams.error, ok: false }
+    return
+  }
 
   const token = form.api_token.includes('****') ? '' : form.api_token
   const data = {
     name: form.name,
     api_url: form.api_url,
     api_token: token,
+    api_format: form.api_format,
+    ...(isOpenAICompatible.value ? { claude_code_compat_hint: form.claude_code_compat_hint } : {}),
+    openai_extra_params: isOpenAICompatible.value ? openAIExtraParams.value : {},
     model_mappings: collectMappings(),
     supports_thinking: form.supports_thinking,
     multimodal_switch: form.multimodal_switch,
@@ -160,6 +207,36 @@ async function save() {
     setTimeout(() => emit('saved'), 800)
   } catch (e: any) {
     message.value = { text: e.message || t('modal.save_failed'), ok: false }
+  }
+}
+
+function defaultOpenAIExtraParams(): Record<string, unknown> {
+  return {
+    allowed_openai_params: ['thinking', 'context_management'],
+    litellm_settings: { drop_params: true },
+  }
+}
+
+function formatOpenAIExtraParams(params: Record<string, unknown>): string {
+  return JSON.stringify(params, null, 2)
+}
+
+function parseOpenAIExtraParams(): { ok: true; value: Record<string, unknown> } | { ok: false; error: string } {
+  if (!isOpenAICompatible.value) {
+    return { ok: true, value: {} }
+  }
+  const raw = openAIExtraParamsText.value.trim()
+  if (!raw) {
+    return { ok: true, value: {} }
+  }
+  try {
+    const parsed = JSON.parse(raw)
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
+      return { ok: false, error: t('modal.openai_extra_params_invalid') }
+    }
+    return { ok: true, value: parsed as Record<string, unknown> }
+  } catch {
+    return { ok: false, error: t('modal.openai_extra_params_invalid') }
   }
 }
 

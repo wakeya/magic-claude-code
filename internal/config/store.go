@@ -41,16 +41,7 @@ func (s *Store) Load() (*Config, error) {
 	}
 
 	// 填充默认值
-	if cfg.ProxyPort == 0 {
-		cfg.ProxyPort = 443
-	}
-	if cfg.AdminPort == 0 {
-		cfg.AdminPort = 8442
-	}
-	if cfg.DataDir == "" {
-		cfg.DataDir = "./data"
-	}
-	cfg.AdminThemeMode = NormalizeThemeMode(cfg.AdminThemeMode)
+	cfg.NormalizeDefaults()
 
 	return cfg, nil
 }

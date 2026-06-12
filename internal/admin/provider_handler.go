@@ -38,18 +38,21 @@ func (s *Server) listProviders(w http.ResponseWriter, _ *http.Request) {
 	providers := make([]map[string]interface{}, len(cfg.Providers))
 	for i, p := range cfg.Providers {
 		providers[i] = map[string]interface{}{
-			"id":                p.ID,
-			"name":              p.Name,
-			"api_url":           p.APIURL,
-			"api_token_mask":    maskToken(p.APIToken),
-			"supports_thinking": p.SupportsThinking,
-			"multimodal_switch": p.MultimodalSwitch,
-			"multimodal_model":  p.MultimodalModel,
-			"model_mappings":    p.ModelMappings,
-			"enabled":           p.Enabled,
-			"active":            p.ID == cfg.ActiveProviderID,
-			"created_at":        p.CreatedAt,
-			"updated_at":        p.UpdatedAt,
+			"id":                      p.ID,
+			"name":                    p.Name,
+			"api_url":                 p.APIURL,
+			"api_token_mask":          maskToken(p.APIToken),
+			"api_format":              p.APIFormat,
+			"openai_extra_params":     p.OpenAIExtraParams,
+			"claude_code_compat_hint": p.UseClaudeCodeCompatHint(),
+			"supports_thinking":       p.SupportsThinking,
+			"multimodal_switch":       p.MultimodalSwitch,
+			"multimodal_model":        p.MultimodalModel,
+			"model_mappings":          p.ModelMappings,
+			"enabled":                 p.Enabled,
+			"active":                  p.ID == cfg.ActiveProviderID,
+			"created_at":              p.CreatedAt,
+			"updated_at":              p.UpdatedAt,
 		}
 	}
 
@@ -62,13 +65,16 @@ func (s *Server) listProviders(w http.ResponseWriter, _ *http.Request) {
 // createProvider 创建供应商
 func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name             string            `json:"name"`
-		APIURL           string            `json:"api_url"`
-		APIToken         string            `json:"api_token"`
-		ModelMappings    map[string]string `json:"model_mappings"`
-		SupportsThinking bool              `json:"supports_thinking"`
-		MultimodalSwitch bool              `json:"multimodal_switch"`
-		MultimodalModel  string            `json:"multimodal_model"`
+		Name                 string            `json:"name"`
+		APIURL               string            `json:"api_url"`
+		APIToken             string            `json:"api_token"`
+		APIFormat            config.APIFormat  `json:"api_format"`
+		OpenAIExtraParams    map[string]any    `json:"openai_extra_params"`
+		ClaudeCodeCompatHint *bool             `json:"claude_code_compat_hint"`
+		ModelMappings        map[string]string `json:"model_mappings"`
+		SupportsThinking     bool              `json:"supports_thinking"`
+		MultimodalSwitch     bool              `json:"multimodal_switch"`
+		MultimodalModel      string            `json:"multimodal_model"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -112,17 +118,25 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 	// 创建新供应商
 	now := time.Now()
 	provider := config.Provider{
-		ID:               generateProviderID(),
-		Name:             req.Name,
-		APIURL:           req.APIURL,
-		APIToken:         req.APIToken,
-		ModelMappings:    req.ModelMappings,
-		SupportsThinking: req.SupportsThinking,
-		MultimodalSwitch: req.MultimodalSwitch,
-		MultimodalModel:  req.MultimodalModel,
-		Enabled:          true,
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		ID:                   generateProviderID(),
+		Name:                 req.Name,
+		APIURL:               req.APIURL,
+		APIToken:             req.APIToken,
+		APIFormat:            req.APIFormat,
+		OpenAIExtraParams:    req.OpenAIExtraParams,
+		ClaudeCodeCompatHint: req.ClaudeCodeCompatHint,
+		ModelMappings:        req.ModelMappings,
+		SupportsThinking:     req.SupportsThinking,
+		MultimodalSwitch:     req.MultimodalSwitch,
+		MultimodalModel:      req.MultimodalModel,
+		Enabled:              true,
+		CreatedAt:            now,
+		UpdatedAt:            now,
+	}
+	if err := provider.Validate(); err != nil {
+		jsonErr, _ := json.Marshal(map[string]string{"error": err.Error()})
+		http.Error(w, string(jsonErr), http.StatusBadRequest)
+		return
 	}
 
 	cfg.Providers = append(cfg.Providers, provider)
@@ -140,7 +154,22 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success":  true,
-		"provider": provider,
+		"provider": map[string]interface{}{
+			"id":                      provider.ID,
+			"name":                    provider.Name,
+			"api_url":                 provider.APIURL,
+			"api_token_mask":          maskToken(provider.APIToken),
+			"api_format":              provider.APIFormat,
+			"openai_extra_params":     provider.OpenAIExtraParams,
+			"claude_code_compat_hint": provider.UseClaudeCodeCompatHint(),
+			"model_mappings":          provider.ModelMappings,
+			"supports_thinking":       provider.SupportsThinking,
+			"multimodal_switch":       provider.MultimodalSwitch,
+			"multimodal_model":        provider.MultimodalModel,
+			"enabled":                 provider.Enabled,
+			"created_at":              provider.CreatedAt,
+			"updated_at":              provider.UpdatedAt,
+		},
 	})
 }
 
@@ -184,32 +213,38 @@ func (s *Server) getProvider(w http.ResponseWriter, _ *http.Request, id string) 
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"id":                provider.ID,
-		"name":              provider.Name,
-		"api_url":           provider.APIURL,
-		"api_token_mask":    maskToken(provider.APIToken),
-		"model_mappings":    provider.ModelMappings,
-		"supports_thinking": provider.SupportsThinking,
-		"multimodal_switch": provider.MultimodalSwitch,
-		"multimodal_model":  provider.MultimodalModel,
-		"enabled":           provider.Enabled,
-		"active":            provider.ID == cfg.ActiveProviderID,
-		"created_at":        provider.CreatedAt,
-		"updated_at":        provider.UpdatedAt,
+		"id":                      provider.ID,
+		"name":                    provider.Name,
+		"api_url":                 provider.APIURL,
+		"api_token_mask":          maskToken(provider.APIToken),
+		"api_format":              provider.APIFormat,
+		"openai_extra_params":     provider.OpenAIExtraParams,
+		"claude_code_compat_hint": provider.UseClaudeCodeCompatHint(),
+		"model_mappings":          provider.ModelMappings,
+		"supports_thinking":       provider.SupportsThinking,
+		"multimodal_switch":       provider.MultimodalSwitch,
+		"multimodal_model":        provider.MultimodalModel,
+		"enabled":                 provider.Enabled,
+		"active":                  provider.ID == cfg.ActiveProviderID,
+		"created_at":              provider.CreatedAt,
+		"updated_at":              provider.UpdatedAt,
 	})
 }
 
 // updateProvider 更新供应商
 func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request, id string) {
 	var req struct {
-		Name             string            `json:"name"`
-		APIURL           string            `json:"api_url"`
-		APIToken         string            `json:"api_token"`
-		ModelMappings    map[string]string `json:"model_mappings"`
-		SupportsThinking *bool             `json:"supports_thinking"`
-		MultimodalSwitch *bool             `json:"multimodal_switch"`
-		MultimodalModel  *string           `json:"multimodal_model"`
-		Enabled          *bool             `json:"enabled"`
+		Name                 string            `json:"name"`
+		APIURL               string            `json:"api_url"`
+		APIToken             string            `json:"api_token"`
+		APIFormat            *config.APIFormat `json:"api_format"`
+		OpenAIExtraParams    map[string]any    `json:"openai_extra_params"`
+		ClaudeCodeCompatHint *bool             `json:"claude_code_compat_hint"`
+		ModelMappings        map[string]string `json:"model_mappings"`
+		SupportsThinking     *bool             `json:"supports_thinking"`
+		MultimodalSwitch     *bool             `json:"multimodal_switch"`
+		MultimodalModel      *string           `json:"multimodal_model"`
+		Enabled              *bool             `json:"enabled"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -249,6 +284,15 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request, id strin
 	if req.APIToken != "" {
 		provider.APIToken = req.APIToken
 	}
+	if req.APIFormat != nil {
+		provider.APIFormat = *req.APIFormat
+	}
+	if req.OpenAIExtraParams != nil {
+		provider.OpenAIExtraParams = req.OpenAIExtraParams
+	}
+	if req.ClaudeCodeCompatHint != nil {
+		provider.ClaudeCodeCompatHint = req.ClaudeCodeCompatHint
+	}
 	if req.ModelMappings != nil {
 		provider.ModelMappings = req.ModelMappings
 	}
@@ -268,6 +312,11 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request, id strin
 		http.Error(w, `{"error": "multimodal_model is required when multimodal_switch is enabled"}`, http.StatusBadRequest)
 		return
 	}
+	if err := provider.Validate(); err != nil {
+		jsonErr, _ := json.Marshal(map[string]string{"error": err.Error()})
+		http.Error(w, string(jsonErr), http.StatusBadRequest)
+		return
+	}
 	provider.UpdatedAt = time.Now()
 
 	if err := s.configStore.Save(cfg); err != nil {
@@ -278,7 +327,22 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request, id strin
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success":  true,
-		"provider": provider,
+		"provider": map[string]interface{}{
+			"id":                      provider.ID,
+			"name":                    provider.Name,
+			"api_url":                 provider.APIURL,
+			"api_token_mask":          maskToken(provider.APIToken),
+			"api_format":              provider.APIFormat,
+			"openai_extra_params":     provider.OpenAIExtraParams,
+			"claude_code_compat_hint": provider.UseClaudeCodeCompatHint(),
+			"model_mappings":          provider.ModelMappings,
+			"supports_thinking":       provider.SupportsThinking,
+			"multimodal_switch":       provider.MultimodalSwitch,
+			"multimodal_model":        provider.MultimodalModel,
+			"enabled":                 provider.Enabled,
+			"created_at":              provider.CreatedAt,
+			"updated_at":              provider.UpdatedAt,
+		},
 	})
 }
 
@@ -675,17 +739,20 @@ func (s *Server) handleProviderDuplicate(w http.ResponseWriter, r *http.Request)
 
 	now := time.Now()
 	newProvider := config.Provider{
-		ID:               generateProviderID(),
-		Name:             provider.Name + " 复制",
-		APIURL:           provider.APIURL,
-		APIToken:         provider.APIToken,
-		ModelMappings:    provider.ModelMappings,
-		SupportsThinking: provider.SupportsThinking,
-		MultimodalSwitch: provider.MultimodalSwitch,
-		MultimodalModel:  provider.MultimodalModel,
-		Enabled:          true,
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		ID:                   generateProviderID(),
+		Name:                 provider.Name + " 复制",
+		APIURL:               provider.APIURL,
+		APIToken:             provider.APIToken,
+		APIFormat:            provider.APIFormat,
+		OpenAIExtraParams:    provider.OpenAIExtraParams,
+		ClaudeCodeCompatHint: provider.ClaudeCodeCompatHint,
+		ModelMappings:        provider.ModelMappings,
+		SupportsThinking:     provider.SupportsThinking,
+		MultimodalSwitch:     provider.MultimodalSwitch,
+		MultimodalModel:      provider.MultimodalModel,
+		Enabled:              true,
+		CreatedAt:            now,
+		UpdatedAt:            now,
 	}
 	cfg.Providers = append(cfg.Providers, newProvider)
 
@@ -696,8 +763,24 @@ func (s *Server) handleProviderDuplicate(w http.ResponseWriter, r *http.Request)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":  true,
-		"provider": newProvider,
+		"success": true,
+		"provider": map[string]interface{}{
+			"id":                     newProvider.ID,
+			"name":                   newProvider.Name,
+			"api_url":                newProvider.APIURL,
+			"api_token_mask":         maskToken(newProvider.APIToken),
+			"api_format":             newProvider.APIFormat,
+			"openai_extra_params":    newProvider.OpenAIExtraParams,
+			"claude_code_compat_hint": newProvider.UseClaudeCodeCompatHint(),
+			"model_mappings":         newProvider.ModelMappings,
+			"supports_thinking":      newProvider.SupportsThinking,
+			"multimodal_switch":      newProvider.MultimodalSwitch,
+			"multimodal_model":       newProvider.MultimodalModel,
+			"enabled":                newProvider.Enabled,
+			"active":                 false,
+			"created_at":             newProvider.CreatedAt,
+			"updated_at":             newProvider.UpdatedAt,
+		},
 	})
 }
 

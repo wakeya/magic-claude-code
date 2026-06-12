@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"magic-claude-code/internal/config"
+	apitransform "magic-claude-code/internal/proxy/transform"
 	"magic-claude-code/internal/usage"
 )
 
@@ -109,8 +110,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		modifiedBody, err = h.transformRequest(body, activeProvider)
 		if err != nil {
 			log.Printf("Error transforming request: %v", err)
-			// 转换失败时使用原始请求体
-			modifiedBody = body
+			http.Error(w, "Error transforming request", http.StatusBadRequest)
+			return
 		} else {
 			mappedModel = usage.ParseRequestMetadata(modifiedBody, r.Header).OriginalModel
 		}
@@ -128,9 +129,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reqID, r.Method, r.URL.Path, modelStr, isStream, msgs, tools, len(body))
 
 	// 创建后端请求
-	backendURL = strings.TrimSuffix(backendURL, "/") + r.URL.Path
+	backendURL = buildUpstreamURL(backendURL, r.URL.Path, providerAPIFormat(activeProvider))
 	if r.URL.RawQuery != "" {
-		backendURL += "?" + r.URL.RawQuery
+		upstreamQuery := stripAnthropicQueryParams(r.URL.RawQuery, providerAPIFormat(activeProvider))
+		if upstreamQuery != "" {
+			backendURL += "?" + upstreamQuery
+		}
 	}
 	usageReq := h.newUsageRequest(r, activeProvider, backendURL, metadata, mappedModel, len(modifiedBody))
 	shouldRecordUsage := h.recorder != nil && shouldRecordUsagePath(r.URL.Path)
@@ -144,38 +148,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 复制所有 header（跳过 Host 和 Accept-Encoding，防止上游压缩 SSE 响应）
-	// Go 的 http.Transport 不会自动解压应用层显式设置的 Accept-Encoding，
-	// 导致压缩后的 SSE 数据无法被 SSEObserver 解析
-	hasAuth := false
-	for key, values := range r.Header {
-		if !shouldForwardRequestHeader(key) {
-			continue
-		}
-		// 不转发 Accept-Encoding 和 TE，防止上游压缩 SSE 响应
-		if strings.EqualFold(key, "Accept-Encoding") || strings.EqualFold(key, "TE") {
-			continue
-		}
-		// 如果有供应商配置的 Token，替换认证头
-		if apiToken != "" && (strings.EqualFold(key, "Authorization") || strings.EqualFold(key, "X-Api-Key")) {
-			if !hasAuth {
-				if strings.EqualFold(key, "Authorization") {
-					backendReq.Header.Set("Authorization", "Bearer "+apiToken)
-				} else {
-					backendReq.Header.Set("X-Api-Key", apiToken)
-				}
-				hasAuth = true
-			}
-			continue
-		}
-		for _, value := range values {
-			backendReq.Header.Add(key, value)
-		}
-	}
-
-	// 如果没有认证头且供应商有 Token，添加认证
-	if !hasAuth && apiToken != "" {
-		backendReq.Header.Set("Authorization", "Bearer "+apiToken)
-	}
+	copyUpstreamHeaders(backendReq, r.Header, apiToken, providerAPIFormat(activeProvider))
 
 	// 发送请求到后端
 	// AI API 请求可能需要较长时间（特别是流式响应），设置较长的超时
@@ -209,7 +182,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// 反应式错误恢复：400 时尝试清理请求并重试
 	if resp.StatusCode == 400 && shouldRecordUsagePath(r.URL.Path) && activeProvider != nil {
-		retried, restoredBody := h.tryRectify(r, modifiedBody, resp, backendURL, apiToken, client)
+		retried, restoredBody := h.tryRectify(r, modifiedBody, resp, backendURL, apiToken, client, providerAPIFormat(activeProvider))
 		if retried != nil {
 			resp = retried
 			defer resp.Body.Close()
@@ -224,6 +197,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// 复制响应 header
 	for key, values := range resp.Header {
+		if !shouldForwardResponseHeader(key, providerAPIFormat(activeProvider)) {
+			continue
+		}
 		for _, value := range values {
 			w.Header().Add(key, value)
 		}
@@ -246,7 +222,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			streamObserver = newStreamUsageObserver(requestStarted)
 			observer = streamObserver
 		}
-		if err := copyWithHeartbeatAndObserver(hw, resp.Body, observer); err != nil {
+		streamBody := resp.Body
+		if resp.StatusCode < 400 && providerAPIFormat(activeProvider) != config.APIFormatAnthropic {
+			streamBody = streamOpenAIStreamingResponse(resp.Body, providerAPIFormat(activeProvider))
+		}
+		if err := copyWithHeartbeatAndObserver(hw, streamBody, observer); err != nil {
 			log.Printf("Stream interrupted for %s: %v (this is normal if client disconnected)", backendURL, err)
 			usageReq.ErrorType = usage.ErrorClientAborted
 			usageReq.ErrorMessage = usage.SanitizeErrorMessage(err.Error())
@@ -260,7 +240,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// 非 SSE 响应，直接复制
 		observer := newResponseObserver(requestStarted, 4*1024*1024)
-		_, err = io.Copy(io.MultiWriter(w, observer), resp.Body)
+		responseBody := resp.Body
+		if resp.StatusCode < 400 && providerAPIFormat(activeProvider) != config.APIFormatAnthropic {
+			converted, convertErr := convertOpenAINonStreamingResponse(resp.Body, providerAPIFormat(activeProvider))
+			if convertErr != nil {
+				log.Printf("Error converting OpenAI response: %v", convertErr)
+				usageReq.ErrorType = usage.ErrorHTTP
+				usageReq.ErrorMessage = usage.SanitizeErrorMessage(convertErr.Error())
+				responseBody = io.NopCloser(strings.NewReader(`{"error":"response conversion failed"}`))
+			} else {
+				responseBody = io.NopCloser(bytes.NewReader(converted))
+			}
+		}
+		_, err = io.Copy(io.MultiWriter(w, observer), responseBody)
 		if err != nil {
 			log.Printf("Stream interrupted for %s: %v (this is normal if client disconnected)", backendURL, err)
 			usageReq.ErrorType = usage.ErrorClientAborted
@@ -288,6 +280,110 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func shouldRecordUsagePath(path string) bool {
 	return path == "/v1/messages" || path == "/anthropic/v1/messages"
+}
+
+func providerAPIFormat(provider *config.Provider) config.APIFormat {
+	if provider == nil || provider.APIFormat == "" {
+		return config.APIFormatAnthropic
+	}
+	return provider.APIFormat
+}
+
+func buildUpstreamURL(baseURL, requestPath string, apiFormat config.APIFormat) string {
+	base := strings.TrimSuffix(baseURL, "/")
+	switch apiFormat {
+	case config.APIFormatOpenAIChat:
+		if strings.HasSuffix(base, "/chat/completions") {
+			return base
+		}
+		return base + "/chat/completions"
+	case config.APIFormatOpenAIResponses:
+		if strings.HasSuffix(base, "/responses") {
+			return base
+		}
+		return base + "/responses"
+	default:
+		return base + requestPath
+	}
+}
+
+// stripAnthropicQueryParams removes Anthropic-specific query parameters
+// (e.g. beta=true) when forwarding to non-Anthropic upstream providers.
+func stripAnthropicQueryParams(query string, apiFormat config.APIFormat) string {
+	if apiFormat == config.APIFormatAnthropic {
+		return query
+	}
+	parts := strings.Split(query, "&")
+	filtered := parts[:0]
+	for _, p := range parts {
+		if p != "" && !strings.HasPrefix(p, "beta=") {
+			filtered = append(filtered, p)
+		}
+	}
+	return strings.Join(filtered, "&")
+}
+
+func shouldForwardResponseHeader(key string, apiFormat config.APIFormat) bool {
+	if apiFormat == config.APIFormatAnthropic {
+		return true
+	}
+	switch {
+	case strings.EqualFold(key, "Content-Length"):
+		return false
+	case strings.HasPrefix(key, "Openai-"), strings.HasPrefix(key, "X-Ratelimit-"):
+		return false
+	default:
+		return true
+	}
+}
+
+func convertOpenAINonStreamingResponse(body io.Reader, apiFormat config.APIFormat) ([]byte, error) {
+	data, err := io.ReadAll(body)
+	if err != nil {
+		return nil, err
+	}
+	switch apiFormat {
+	case config.APIFormatOpenAIChat:
+		return apitransform.OpenAIChatToAnthropic(data)
+	case config.APIFormatOpenAIResponses:
+		return apitransform.OpenAIResponsesToAnthropic(data)
+	default:
+		return data, nil
+	}
+}
+
+func streamOpenAIStreamingResponse(body io.Reader, apiFormat config.APIFormat) io.ReadCloser {
+	pr, pw := io.Pipe()
+	go func() {
+		var err error
+		switch apiFormat {
+		case config.APIFormatOpenAIChat:
+			err = apitransform.StreamOpenAIChatSSEToAnthropic(body, pw)
+		case config.APIFormatOpenAIResponses:
+			err = apitransform.StreamOpenAIResponsesSSEToAnthropic(body, pw)
+		default:
+			_, err = io.Copy(pw, body)
+		}
+		if err != nil {
+			_ = pw.CloseWithError(err)
+			return
+		}
+		_ = pw.Close()
+	}()
+	return pr
+}
+
+func convertOpenAIStreamingResponse(body io.Reader, apiFormat config.APIFormat) ([]byte, error) {
+	data, err := io.ReadAll(streamOpenAIStreamingResponse(body, apiFormat))
+	if err != nil {
+		return nil, err
+	}
+	switch apiFormat {
+	case config.APIFormatOpenAIChat, config.APIFormatOpenAIResponses:
+		return data, nil
+	default:
+		return data, nil
+	}
 }
 
 func (h *Handler) newUsageRequest(r *http.Request, provider *config.Provider, backendURL string, metadata usage.RequestMetadata, mappedModel string, requestBytes int) usage.RequestRecord {
@@ -437,6 +533,33 @@ func (h *Handler) transformRequest(body []byte, provider *config.Provider) ([]by
 		}
 	}
 
+	if providerAPIFormat(provider) == config.APIFormatOpenAIChat {
+		anthropicBody := body
+		if changed {
+			out, err := json.Marshal(req)
+			if err != nil {
+				return body, err
+			}
+			anthropicBody = out
+		}
+		return apitransform.AnthropicToOpenAIChatWithOptions(anthropicBody, provider.OpenAIExtraParams, apitransform.Options{
+			ClaudeCodeCompatHint: provider.UseClaudeCodeCompatHint(),
+		})
+	}
+	if providerAPIFormat(provider) == config.APIFormatOpenAIResponses {
+		anthropicBody := body
+		if changed {
+			out, err := json.Marshal(req)
+			if err != nil {
+				return body, err
+			}
+			anthropicBody = out
+		}
+		return apitransform.AnthropicToOpenAIResponsesWithOptions(anthropicBody, provider.OpenAIExtraParams, apitransform.Options{
+			ClaudeCodeCompatHint: provider.UseClaudeCodeCompatHint(),
+		})
+	}
+
 	// 非流式请求也尝试转换（兼容性兜底）
 	if changed {
 		out, err := json.Marshal(req)
@@ -499,6 +622,39 @@ func isNonTextContentBlock(block map[string]any) bool {
 
 func shouldForwardRequestHeader(key string) bool {
 	return !strings.EqualFold(key, "Host")
+}
+
+// copyUpstreamHeaders copies request headers to dst with provider-aware filtering:
+//   - Skips Host, Accept-Encoding, TE
+//   - Skips Anthropic-Version/Anthropic-Beta for non-Anthropic apiFormat
+//   - Replaces Authorization/X-Api-Key with provider token if apiToken is set
+func copyUpstreamHeaders(dst *http.Request, src http.Header, apiToken string, apiFormat config.APIFormat) {
+	isAnthropic := apiFormat == config.APIFormatAnthropic
+	hasAuth := false
+	for key, values := range src {
+		if !shouldForwardRequestHeader(key) {
+			continue
+		}
+		if !isAnthropic && (strings.EqualFold(key, "Anthropic-Version") || strings.EqualFold(key, "Anthropic-Beta")) {
+			continue
+		}
+		if strings.EqualFold(key, "Accept-Encoding") || strings.EqualFold(key, "TE") {
+			continue
+		}
+		if apiToken != "" && (strings.EqualFold(key, "Authorization") || strings.EqualFold(key, "X-Api-Key")) {
+			if !hasAuth {
+				hasAuth = true
+				dst.Header.Set("Authorization", "Bearer "+apiToken)
+			}
+			continue
+		}
+		for _, value := range values {
+			dst.Header.Add(key, value)
+		}
+	}
+	if !hasAuth && apiToken != "" {
+		dst.Header.Set("Authorization", "Bearer "+apiToken)
+	}
 }
 
 // summarizeRequestParams 生成请求参数摘要（用于错误日志）
@@ -567,6 +723,7 @@ func (h *Handler) tryRectify(
 	backendURL string,
 	apiToken string,
 	client *http.Client,
+	apiFormat config.APIFormat,
 ) (*http.Response, io.ReadCloser) {
 	// 缓冲错误体
 	errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodySize))
@@ -597,29 +754,7 @@ func (h *Handler) tryRectify(
 	}
 
 	// 复制原始请求头
-	hasAuth := false
-	for key, values := range origReq.Header {
-		if !shouldForwardRequestHeader(key) {
-			continue
-		}
-		if apiToken != "" && (strings.EqualFold(key, "Authorization") || strings.EqualFold(key, "X-Api-Key")) {
-			if !hasAuth {
-				if strings.EqualFold(key, "Authorization") {
-					retryReq.Header.Set("Authorization", "Bearer "+apiToken)
-				} else {
-					retryReq.Header.Set("X-Api-Key", apiToken)
-				}
-				hasAuth = true
-			}
-			continue
-		}
-		for _, value := range values {
-			retryReq.Header.Add(key, value)
-		}
-	}
-	if !hasAuth && apiToken != "" {
-		retryReq.Header.Set("Authorization", "Bearer "+apiToken)
-	}
+	copyUpstreamHeaders(retryReq, origReq.Header, apiToken, apiFormat)
 
 	retryResp, err := client.Do(retryReq)
 	if err != nil {

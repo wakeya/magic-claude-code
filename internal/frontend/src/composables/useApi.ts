@@ -21,6 +21,9 @@ export interface Provider {
   name: string
   api_url: string
   api_token_mask: string
+  api_format: 'anthropic' | 'openai_chat' | 'openai_responses'
+  openai_extra_params?: Record<string, unknown>
+  claude_code_compat_hint: boolean
   model_mappings: Record<string, string>
   supports_thinking: boolean
   multimodal_switch: boolean
@@ -258,6 +261,9 @@ export function useApi() {
     name: string
     api_url: string
     api_token: string
+    api_format?: 'anthropic' | 'openai_chat' | 'openai_responses'
+    openai_extra_params?: Record<string, unknown>
+    claude_code_compat_hint?: boolean
     model_mappings: Record<string, string>
     supports_thinking?: boolean
     multimodal_switch?: boolean
@@ -281,6 +287,9 @@ export function useApi() {
       name?: string
       api_url?: string
       api_token?: string
+      api_format?: 'anthropic' | 'openai_chat' | 'openai_responses'
+      openai_extra_params?: Record<string, unknown>
+      claude_code_compat_hint?: boolean
       model_mappings?: Record<string, string>
       supports_thinking?: boolean
       multimodal_switch?: boolean
