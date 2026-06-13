@@ -45,17 +45,17 @@ GitCode（CSDN 运营）是国内开源代码平台。经 API 实际验证：
 由于 GitCode release 不支持上传自定义二进制资产，预编译二进制存储在仓库的 `dist/release/{tag}/` 目录下。下载 URL 通过 GitCode raw 文件 API 构造：
 
 ```
-https://gitcode.com/{owner}/{repo}/raw/main/dist/release/{tag}/{asset_name}
+https://api.gitcode.com/api/v5/repos/{owner}/{repo}/raw/dist/release/{tag}/{asset_name}
 ```
 
 例如：
 ```
-https://gitcode.com/wakeya/magic-claude-code/raw/main/dist/release/v0.2.0/Magic-Claude-Code-v0.2.0-Linux-x86_64.tar.gz
+https://api.gitcode.com/api/v5/repos/wakeya/magic-claude-code/raw/dist/release/v0.2.0/Magic-Claude-Code-v0.2.0-Linux-x86_64.tar.gz
 ```
 
 SHA256SUMS.txt 与二进制包同目录：
 ```
-https://gitcode.com/wakeya/magic-claude-code/raw/main/dist/release/v0.2.0/SHA256SUMS.txt
+https://api.gitcode.com/api/v5/repos/wakeya/magic-claude-code/raw/dist/release/v0.2.0/SHA256SUMS.txt
 ```
 
 本地 `dist/release/` 目录只保留最新版本的二进制文件；旧版本仅保留空目录和 `.gitkeep` 占位。
