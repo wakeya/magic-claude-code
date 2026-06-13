@@ -110,6 +110,7 @@ Local page / proxy entry / reference sources / stack / last updated / progress
 |------|------|------|
 | Windows Usage Statistics Reliability Fixes | `2026-06-12-windows-usage-statistics-fixes/spec.md` | `2026-06-12-windows-usage-statistics-fixes/spec_zh.md` |
 | OpenAI-Compatible API Format Support | `2026-06-12-openai-compatible-api-format/spec.md` | `2026-06-12-openai-compatible-api-format/spec_ZH.md` |
+| Auto-Update | `2026-06-13-auto-update/spec.md` | `2026-06-13-auto-update/spec_ZH.md` |
 
 ## 状态生命周期
 

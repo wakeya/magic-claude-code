@@ -3,12 +3,13 @@ node_modules/
 .npm/
 
 # --- 构建输出 ---
-dist/
+dist/*
 dist-ssr/
 *.local
 /server
 bin/
-!internal/frontend/dist/
+!internal/frontend/dist/*
+!dist/release/
 
 # --- 日志 ---
 npm-debug.log*
