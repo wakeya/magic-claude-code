@@ -302,7 +302,7 @@ func (s *GitHubSource) AssetURL(tag, assetName string) string {
 // NOTE: GitCode releases do NOT support custom binary asset uploads.
 // Only auto-generated source archives are available. Pre-compiled binaries
 // are stored in the repo under dist/release/{tag}/ and downloaded via raw URL:
-//   https://raw.gitcode.com/{owner}/{repo}/raw/main/dist/release/{tag}/{asset_name}
+//   https://gitcode.com/{owner}/{repo}/raw/main/dist/release/{tag}/{asset_name}
 //
 // This source queries the releases API for the latest tag, then constructs
 // download URLs for the expected asset names using the raw file path pattern.
@@ -310,7 +310,7 @@ type GitCodeSource struct {
 	owner    string
 	repo     string
 	apiBase  string // defaults to "https://api.gitcode.com/api/v5"
-	rawBase  string // defaults to "https://raw.gitcode.com"
+	rawBase  string // defaults to "https://gitcode.com"
 	token    string // optional PRIVATE-TOKEN for authenticated requests
 }
 
@@ -319,7 +319,7 @@ func NewGitCodeSource(owner, repo, token string) *GitCodeSource {
 		owner:   owner,
 		repo:    repo,
 		apiBase: "https://api.gitcode.com/api/v5",
-		rawBase: "https://raw.gitcode.com",
+		rawBase: "https://gitcode.com",
 		token:   token,
 	}
 }
@@ -414,7 +414,7 @@ func TestGitCodeSource_FetchLatestRelease(t *testing.T) {
 		owner:   "wakeya",
 		repo:    "magic-claude-code",
 		apiBase: server.URL + "/api/v5",
-		rawBase: "https://raw.gitcode.com",
+		rawBase: "https://gitcode.com",
 		token:   "test-token",
 	}
 
@@ -428,7 +428,7 @@ func TestGitCodeSource_FetchLatestRelease(t *testing.T) {
 
 	// GitCodeSource does not populate assets (方案 B: raw URL download)
 	assetURL := src.AssetURL("v0.3.0", "Magic-Claude-Code-v0.3.0-Linux-x86_64.tar.gz")
-	expected := "https://raw.gitcode.com/wakeya/magic-claude-code/raw/main/dist/release/v0.3.0/Magic-Claude-Code-v0.3.0-Linux-x86_64.tar.gz"
+	expected := "https://gitcode.com/wakeya/magic-claude-code/raw/main/dist/release/v0.3.0/Magic-Claude-Code-v0.3.0-Linux-x86_64.tar.gz"
 	if assetURL != expected {
 		t.Errorf("AssetURL: got %q, want %q", assetURL, expected)
 	}
@@ -1605,7 +1605,7 @@ git commit -m "feat: wire updater with startup auto-check and Docker detection"
 
 ### GitCode Release Mirroring
 
-For the GitCode fallback to work, pre-compiled binaries and `SHA256SUMS.txt` must be available in the repo under `dist/release/{tag}/`. Download URLs use the raw file pattern: `https://raw.gitcode.com/{owner}/{repo}/raw/main/dist/release/{tag}/{asset_name}`. Steps after each GitHub release:
+For the GitCode fallback to work, pre-compiled binaries and `SHA256SUMS.txt` must be available in the repo under `dist/release/{tag}/`. Download URLs use the raw file pattern: `https://gitcode.com/{owner}/{repo}/raw/main/dist/release/{tag}/{asset_name}`. Steps after each GitHub release:
 1. Download all release assets from GitHub
 2. Place them under `dist/release/{tag}/` in the local repo
 3. Push to GitCode (the raw URLs become immediately downloadable)

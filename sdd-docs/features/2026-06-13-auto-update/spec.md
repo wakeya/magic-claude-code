@@ -45,17 +45,17 @@ GitCode (operated by CSDN) is a Chinese open-source code platform. Verification 
 Since GitCode does not support uploading custom binary assets to releases, pre-compiled binaries are stored in the repository under `dist/release/{tag}/`. The download URL is constructed via the GitCode raw file API:
 
 ```
-https://raw.gitcode.com/{owner}/{repo}/raw/main/dist/release/{tag}/{asset_name}
+https://gitcode.com/{owner}/{repo}/raw/main/dist/release/{tag}/{asset_name}
 ```
 
 For example:
 ```
-https://raw.gitcode.com/wakeya/magic-claude-code/raw/main/dist/release/v0.2.0/Magic-Claude-Code-v0.2.0-Linux-x86_64.tar.gz
+https://gitcode.com/wakeya/magic-claude-code/raw/main/dist/release/v0.2.0/Magic-Claude-Code-v0.2.0-Linux-x86_64.tar.gz
 ```
 
 SHA256SUMS.txt is stored alongside the binaries:
 ```
-https://raw.gitcode.com/wakeya/magic-claude-code/raw/main/dist/release/v0.2.0/SHA256SUMS.txt
+https://gitcode.com/wakeya/magic-claude-code/raw/main/dist/release/v0.2.0/SHA256SUMS.txt
 ```
 
 Local `dist/release/` directory only keeps the latest version's binaries; older versions retain empty directories with `.gitkeep` as placeholders.
