@@ -12,15 +12,13 @@ on:
 
 jobs:
   release:
+    name: Release binaries
     runs-on: euleros-2.10.1
     env:
       PRODUCT_NAME: Magic-Claude-Code
       BINARY_NAME: mcc
 
     steps:
-      - name: 检出代码
-        uses: checkout-action@0.0.1
-
       - name: 配置 Go 环境
         uses: setup-go@0.0.1
         with:
@@ -30,6 +28,34 @@ jobs:
         uses: setup-node@0.0.1
         with:
           node-version: '24'
+
+      - name: 检出代码
+        run: |
+          set -e
+          export GIT_TERMINAL_PROMPT=0
+
+          rm -rf repo_workspace
+          if [ -n "${{ secrets.GITCODE_TOKEN }}" ]; then
+            git clone "https://x-access-token:${{ secrets.GITCODE_TOKEN }}@gitcode.com/${{ github.repository }}.git" repo_workspace
+          else
+            git clone "https://gitcode.com/${{ github.repository }}.git" repo_workspace
+          fi
+
+          cd repo_workspace
+          git fetch --tags origin
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            git checkout "refs/tags/${{ github.event.inputs.tag }}" || {
+              echo "ERROR: tag not found: ${{ github.event.inputs.tag }}" >&2
+              exit 1
+            }
+          elif echo "${GITHUB_REF}" | grep -q '^refs/tags/'; then
+            git checkout "${GITHUB_REF#refs/tags/}" || {
+              echo "ERROR: tag not found: ${GITHUB_REF#refs/tags/}" >&2
+              exit 1
+            }
+          elif [ -n "${GITHUB_SHA}" ]; then
+            git checkout "${GITHUB_SHA}"
+          fi
 
       - name: 确定 RELEASE_TAG
         run: |
