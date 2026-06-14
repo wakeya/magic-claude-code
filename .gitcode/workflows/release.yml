@@ -19,16 +19,6 @@ jobs:
       BINARY_NAME: mcc
 
     steps:
-      - name: 配置 Go 环境
-        uses: setup-go@0.0.1
-        with:
-          go-version: '1.26'
-
-      - name: 配置 Node.js 环境
-        uses: setup-node@0.0.1
-        with:
-          node-version: '24'
-
       - name: 检出代码
         run: |
           set -e
@@ -56,6 +46,63 @@ jobs:
           elif [ -n "${GITHUB_SHA}" ]; then
             git checkout "${GITHUB_SHA}"
           fi
+
+      - name: 配置 Go 环境
+        run: |
+          set -e
+          GO_VERSION="$(awk '/^go / {print $2}' repo_workspace/go.mod)"
+          ARCH="$(uname -m)"
+          case "${ARCH}" in
+            x86_64) GO_ARCH="amd64" ;;
+            aarch64|arm64) GO_ARCH="arm64" ;;
+            *) echo "Unsupported runner architecture for Go: ${ARCH}" >&2; exit 1 ;;
+          esac
+
+          curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${GO_ARCH}.tar.gz" -o /tmp/go.tar.gz
+          rm -rf /tmp/go-install
+          mkdir -p /tmp/go-install
+          tar -C /tmp/go-install -xzf /tmp/go.tar.gz
+          export PATH="/tmp/go-install/go/bin:${PATH}"
+          if [ -n "${GITHUB_PATH:-}" ]; then
+            echo "/tmp/go-install/go/bin" >> "${GITHUB_PATH}"
+          fi
+          echo "PATH=/tmp/go-install/go/bin:${PATH}" >> "${GITHUB_ENV}"
+          go version
+
+      - name: 配置 Node.js 环境
+        run: |
+          set -e
+          ARCH="$(uname -m)"
+          case "${ARCH}" in
+            x86_64) NODE_ARCH="x64" ;;
+            aarch64|arm64) NODE_ARCH="arm64" ;;
+            *) echo "Unsupported runner architecture for Node.js: ${ARCH}" >&2; exit 1 ;;
+          esac
+
+          NODE_VERSION="$(curl -fsSL https://nodejs.org/dist/index.json | sed -n 's/.*"version":"\(v24\.[^"]*\)".*/\1/p' | head -n 1)"
+          if [ -z "${NODE_VERSION}" ]; then
+            echo "Failed to resolve latest Node.js v24 release" >&2
+            exit 1
+          fi
+
+          if ! which xz >/dev/null 2>&1; then
+            yum install -y xz || apt-get install -y xz || {
+              echo "ERROR: xz is required to extract Node.js but could not be installed" >&2
+              exit 1
+            }
+          fi
+
+          curl -fsSL "https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" -o /tmp/node.tar.xz
+          rm -rf /tmp/node-install
+          mkdir -p /tmp/node-install
+          tar -C /tmp/node-install --strip-components=1 -xJf /tmp/node.tar.xz
+          export PATH="/tmp/node-install/bin:${PATH}"
+          if [ -n "${GITHUB_PATH:-}" ]; then
+            echo "/tmp/node-install/bin" >> "${GITHUB_PATH}"
+          fi
+          echo "PATH=/tmp/node-install/bin:${PATH}" >> "${GITHUB_ENV}"
+          node --version
+          npm --version
 
       - name: 确定 RELEASE_TAG
         run: |
