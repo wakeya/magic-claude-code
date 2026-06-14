@@ -1,0 +1,171 @@
+name: Release binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, e.g. v0.2.0"
+        required: true
+
+jobs:
+  release:
+    runs-on: euleros-2.10.1
+    env:
+      PRODUCT_NAME: Magic-Claude-Code
+      BINARY_NAME: mcc
+
+    steps:
+      - name: 检出代码
+        uses: checkout-action@0.0.1
+
+      - name: 配置 Go 环境
+        uses: setup-go@0.0.1
+        with:
+          go-version: '1.26'
+
+      - name: 配置 Node.js 环境
+        uses: setup-node@0.0.1
+        with:
+          node-version: '24'
+
+      - name: 确定 RELEASE_TAG
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "RELEASE_TAG=${{ github.event.inputs.tag }}" >> $GITHUB_ENV
+          else
+            echo "RELEASE_TAG=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+          fi
+
+      - name: 验证版本号格式
+        run: |
+          if ! echo "${RELEASE_TAG}" | grep -qE '^v[0-9]+(\.[0-9]+){1,2}([.-][0-9A-Za-z.-]+)?$'; then
+            echo "Release tag must look like v0.1.0, got: ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+
+      - name: 安装 zip 工具
+        run: |
+          if ! which zip >/dev/null 2>&1; then
+            yum install -y zip || apt-get install -y zip || {
+              echo "ERROR: zip is required for Windows packages but could not be installed" >&2
+              exit 1
+            }
+          fi
+
+      - name: 安装前端依赖
+        run: cd repo_workspace/internal/frontend && npm ci
+
+      - name: 构建前端
+        run: cd repo_workspace/internal/frontend && npm run build
+
+      - name: 运行测试
+        run: cd repo_workspace && go test ./...
+
+      - name: 构建发布归档
+        run: |
+          cd repo_workspace
+          RELEASE_DIR="dist/release/${RELEASE_TAG}"
+          rm -rf "${RELEASE_DIR}"
+          mkdir -p "${RELEASE_DIR}"
+
+          build_target() {
+            goos="$1"
+            goarch="$2"
+            platform="$3"
+            arch_label="$4"
+            format="$5"
+            exe_suffix=""
+
+            if [ "${goos}" = "windows" ]; then
+              exe_suffix=".exe"
+            fi
+
+            package_name="${PRODUCT_NAME}-${RELEASE_TAG}-${platform}-${arch_label}"
+            package_dir="${RELEASE_DIR}/${package_name}"
+            mkdir -p "${package_dir}"
+
+            GOOS="${goos}" GOARCH="${goarch}" CGO_ENABLED=0 \
+              go build -trimpath -ldflags="-s -w -X magic-claude-code/internal/version.Version=${RELEASE_TAG}" \
+              -o "${package_dir}/${BINARY_NAME}${exe_suffix}" ./cmd/server
+
+            cp README.md "${package_dir}/README.md"
+
+            if [ "${format}" = "zip" ]; then
+              (cd "${RELEASE_DIR}" && zip -qr "${package_name}.zip" "${package_name}")
+            else
+              tar -C "${RELEASE_DIR}" -czf "${RELEASE_DIR}/${package_name}.tar.gz" "${package_name}"
+            fi
+
+            rm -rf "${package_dir}"
+          }
+
+          build_target linux amd64 Linux x86_64 tar.gz
+          build_target linux arm64 Linux arm64 tar.gz
+          build_target darwin amd64 macOS x86_64 tar.gz
+          build_target darwin arm64 macOS arm64 tar.gz
+          build_target windows amd64 Windows x86_64 zip
+          build_target windows arm64 Windows arm64 zip
+
+          (cd "${RELEASE_DIR}" && sha256sum * > SHA256SUMS.txt)
+
+          ARTIFACT_COUNT=$(ls -1 "${RELEASE_DIR}" | wc -l)
+          if [ "${ARTIFACT_COUNT}" -ne 7 ]; then
+            echo "ERROR: expected 7 artifacts (6 archives + SHA256SUMS.txt), got ${ARTIFACT_COUNT}" >&2
+            ls -lh "${RELEASE_DIR}/"
+            exit 1
+          fi
+
+          echo "=== Build artifacts (${ARTIFACT_COUNT} files) ==="
+          ls -lh "${RELEASE_DIR}/"
+
+      - name: 保存产物到临时目录
+        run: |
+          cp -r repo_workspace/dist/release/${RELEASE_TAG} /tmp/artifacts
+
+      - name: 切换到 main 分支
+        run: |
+          cd repo_workspace
+          git fetch origin main
+          git checkout -B main origin/main
+
+      - name: 提交产物到仓库
+        run: |
+          cd repo_workspace
+          mkdir -p dist/release
+          rm -rf "dist/release/${RELEASE_TAG}"
+          cp -r /tmp/artifacts "dist/release/${RELEASE_TAG}"
+
+          git config user.name "gitcode-ci"
+          git config user.email "ci@gitcode.local"
+          git add dist/release/
+          git commit -m "release: ${RELEASE_TAG} build artifacts" || {
+            echo "No changes to commit — artifacts may already exist"
+            exit 0
+          }
+          git push "https://x-access-token:${{ secrets.GITCODE_TOKEN }}@gitcode.com/${{ github.repository }}.git" HEAD:main || {
+            echo "Push failed — ensure GITCODE_TOKEN secret is configured with repo write access"
+            exit 1
+          }
+          echo "✅ Build artifacts pushed to dist/release/${RELEASE_TAG}/"
+
+      - name: 创建 GitCode Release
+        run: |
+          STATUS=$(curl -s -o /tmp/release-response.json -w "%{http_code}" \
+            -X POST \
+            -H "PRIVATE-TOKEN: ${{ secrets.GITCODE_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"tag_name\":\"${RELEASE_TAG}\",\"name\":\"${RELEASE_TAG}\"}" \
+            "https://api.gitcode.com/api/v5/repos/${{ github.repository }}/releases")
+
+          if [ "${STATUS}" = "409" ] || [ "${STATUS}" = "422" ]; then
+            echo "Release already exists for ${RELEASE_TAG} — skipping creation"
+          elif [ "${STATUS}" -ge 200 ] && [ "${STATUS}" -lt 300 ]; then
+            echo "✅ GitCode Release created for ${RELEASE_TAG}"
+          else
+            echo "ERROR: Release creation returned ${STATUS} — updater needs a release to detect new versions" >&2
+            cat /tmp/release-response.json
+            exit 1
+          fi

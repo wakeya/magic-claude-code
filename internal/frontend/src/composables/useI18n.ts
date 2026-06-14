@@ -215,6 +215,20 @@ const messages: Record<Locale, Record<string, string>> = {
     // Test results
     'test.activate_failed': '激活供应商失败',
     'test.toggle_failed': '操作失败',
+
+    // Update
+    'update.available': '有新版本',
+    'update.checking': '检查更新中...',
+    'update.current': '当前版本',
+    'update.latest': '最新版本',
+    'update.apply': '立即更新',
+    'update.applying': '正在更新...',
+    'update.success': '更新成功，请手动重启服务以使用新版本。',
+    'update.error': '更新失败',
+    'update.up_to_date': '已是最新版本',
+    'update.title': '版本更新',
+    'update.confirm': '更新会替换当前二进制文件。完成后需要手动重启服务以使用新版本。',
+    'update.cancel': '取消',
   },
   en: {
     'login.subtitle': 'Enter your admin password to continue',
@@ -411,6 +425,20 @@ const messages: Record<Locale, Record<string, string>> = {
 
     'test.activate_failed': 'Failed to activate provider',
     'test.toggle_failed': 'Failed to toggle provider',
+
+    // Update
+    'update.available': 'Update available',
+    'update.checking': 'Checking...',
+    'update.current': 'Current',
+    'update.latest': 'Latest',
+    'update.apply': 'Update Now',
+    'update.applying': 'Updating...',
+    'update.success': 'Update successful. Please restart the service manually to use the new version.',
+    'update.error': 'Update failed',
+    'update.up_to_date': 'Up to date',
+    'update.title': 'Software Update',
+    'update.confirm': 'The update will replace the current binary. Restart the service manually after it completes.',
+    'update.cancel': 'Cancel',
   },
 }
 

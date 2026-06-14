@@ -28,3 +28,20 @@ test('header exposes theme sync error', () => {
   assert.match(source, /syncError/)
   assert.match(source, /v-if="syncError"/)
 })
+
+test('update apply success reloads only when backend is restarting', () => {
+  assert.match(source, /updateMessage/)
+  assert.match(source, /result\.message \|\| t\('update\.success'\)/)
+  assert.match(source, /if \(result\.restarting\)/)
+  assert.match(source, /window\.location\.reload/)
+  assert.doesNotMatch(source, /alert\(t\('update\.success'\)\)/)
+})
+
+test('update check is throttled to once every 24 hours per browser', () => {
+  assert.match(source, /updateCheckStorageKey/)
+  assert.match(source, /updateCheckIntervalMs = 24 \* 60 \* 60 \* 1000/)
+  assert.match(source, /function shouldCheckForUpdate/)
+  assert.match(source, /function markUpdateChecked/)
+  assert.match(source, /if \(!shouldCheckForUpdate\(\)\) return/)
+  assert.match(source, /markUpdateChecked\(\)\s+try \{\s+const result = await api\.checkForUpdate\(\)/)
+})

@@ -203,6 +203,23 @@ export interface SessionCleanupHint {
   windows_interactive_command: string
 }
 
+export interface UpdateCheckResult {
+  current_version: string
+  latest_version: string
+  update_available: boolean
+  source?: string
+  release_url?: string
+  error?: string
+}
+
+export interface UpdateApplyResult {
+  success: boolean
+  new_version?: string
+  message?: string
+  restarting?: boolean
+  error?: string
+}
+
 export function useApi() {
   function buildQuery(params?: UsageParams): string {
     const search = new URLSearchParams()
@@ -433,6 +450,21 @@ export function useApi() {
     return res.json()
   }
 
+  async function checkForUpdate(): Promise<UpdateCheckResult> {
+    const res = await fetch('/api/update/check')
+    if (!res.ok) throw new Error('Failed to check for update')
+    return res.json()
+  }
+
+  async function applyUpdate(): Promise<UpdateApplyResult> {
+    const res = await fetch('/api/update/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    })
+    if (!res.ok) throw new Error('Failed to apply update')
+    return res.json()
+  }
+
   return {
     login,
     logout,
@@ -462,5 +494,7 @@ export function useApi() {
     getSessionDetail,
     exportSessionHTML,
     getSessionCleanupHint,
+    checkForUpdate,
+    applyUpdate,
   }
 }

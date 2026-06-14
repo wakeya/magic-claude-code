@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"magic-claude-code/internal/usage"
+	"magic-claude-code/internal/version"
 )
 
 // handleLogin 处理登录
@@ -185,6 +186,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"running":                 true,
+		"version":                 version.Version,
 		"backend_url":             backendURL,
 		"uptime":                  uptime.String(),
 		"requests_total":          requestsTotal,

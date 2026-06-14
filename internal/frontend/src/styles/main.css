@@ -504,3 +504,11 @@ body {
 .session-token-text {
   color: #e2e8f0;
 }
+
+@keyframes update-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--app-accent-soft); }
+  50% { box-shadow: 0 0 0 4px transparent; }
+}
+.update-pulse {
+  animation: update-pulse 2s ease-in-out infinite;
+}

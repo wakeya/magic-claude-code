@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   release:
@@ -82,7 +83,7 @@ jobs:
             mkdir -p "${package_dir}"
 
             GOOS="${goos}" GOARCH="${goarch}" CGO_ENABLED=0 \
-              go build -trimpath -ldflags="-s -w" \
+              go build -trimpath -ldflags="-s -w -X magic-claude-code/internal/version.Version=${RELEASE_TAG}" \
               -o "${package_dir}/${BINARY_NAME}${exe_suffix}" ./cmd/server
 
             cp README.md "${package_dir}/README.md"
@@ -121,4 +122,135 @@ jobs:
               --repo "${GITHUB_REPOSITORY}" \
               --title "${RELEASE_TAG}" \
               --generate-notes
+          fi
+
+  docker:
+    name: Build and push Docker image
+    runs-on: ubuntu-latest
+    needs: release
+
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Extract owner lowercase
+        id: owner
+        run: echo "name=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare Docker metadata
+        id: docker-meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          image="ghcr.io/${{ steps.owner.outputs.name }}/magic-claude-code"
+          {
+            echo "tags<<EOF"
+            echo "${image}:${RELEASE_TAG}"
+            if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+              echo "${image}:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            APP_VERSION=${{ env.RELEASE_TAG }}
+          tags: ${{ steps.docker-meta.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ env.RELEASE_TAG }}
+
+  sync-gitee:
+    name: Sync release artifacts to Gitee
+    runs-on: ubuntu-latest
+    needs: release
+
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+    steps:
+      - name: Check out main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Download release assets from GitHub
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "dist/release/${RELEASE_TAG}"
+          gh release download "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --dir "dist/release/${RELEASE_TAG}"
+
+      - name: Push artifacts to Gitee repo
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          if [ -z "${GITEE_TOKEN}" ]; then
+            echo "GITEE_TOKEN not configured — skipping Gitee sync"
+            exit 0
+          fi
+
+          git config user.name "github-ci"
+          git config user.email "ci@github.local"
+          git add dist/release/
+          git commit -m "release: ${RELEASE_TAG} build artifacts" || {
+            echo "No changes to commit — artifacts may already exist"
+            exit 0
+          }
+          git push "https://x-access-token:${GITEE_TOKEN}@gitee.com/wakeya/magic-claude-code.git" HEAD:main || {
+            echo "Push failed — ensure GITEE_TOKEN secret has repo write access"
+            exit 1
+          }
+          echo "Artifacts pushed to Gitee dist/release/${RELEASE_TAG}/"
+
+      - name: Create Gitee Release
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          if [ -z "${GITEE_TOKEN}" ]; then
+            exit 0
+          fi
+
+          STATUS=$(curl -s -o /tmp/release-response.json -w "%{http_code}" \
+            -X POST \
+            -H "Authorization: Bearer ${GITEE_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{\"tag_name\":\"${RELEASE_TAG}\",\"name\":\"${RELEASE_TAG}\",\"target_commitish\":\"main\"}" \
+            "https://gitee.com/api/v5/repos/wakeya/magic-claude-code/releases")
+
+          if [ "${STATUS}" -ge 200 ] && [ "${STATUS}" -lt 300 ]; then
+            echo "Gitee Release created for ${RELEASE_TAG}"
+          elif [ "${STATUS}" = "409" ]; then
+            echo "Release already exists — skipping"
+          else
+            echo "WARNING: Release creation returned ${STATUS}"
+            cat /tmp/release-response.json
           fi

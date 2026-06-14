@@ -11,7 +11,7 @@
 
 ### 当前项目状态
 
-本项目是一个 Go 单二进制透明代理（`mcc`），支持裸机部署和 Docker 部署。发布物由 GitHub Actions（`.github/workflows/release.yml`）和 GitLab CI（`.gitlab-ci.yml`）构建，产出各平台压缩包：
+本项目是一个 Go 单二进制透明代理（`mcc`），支持裸机部署和 Docker 部署。发布物由 GitHub Actions（`.github/workflows/release.yml`）、GitLab CI（`.gitlab-ci.yml`）和 GitCode CI（`.gitcode/workflows/release.yml`）构建，产出各平台压缩包：
 
 ```
 Magic-Claude-Code-{tag}-{Platform}-{Arch}.tar.gz   (Linux, macOS)
@@ -31,7 +31,7 @@ GitHub 提供 REST API 查询发布元数据：
 GET https://api.github.com/repos/{owner}/{repo}/releases/latest
 ```
 
-响应包含 `tag_name`、`html_url` 以及 `assets` 数组（每个资产有 `name` 和 `browser_download_url`）。API 文档完善、稳定、返回 JSON。未认证请求限速 60 次/小时，足以支撑启动检查 + 按需触发。
+响应包含 `tag_name`、`html_url` 以及 `assets` 数组（每个资产有 `name` 和 `browser_download_url`）。API 文档完善、稳定、返回 JSON。未认证请求限速 60 次/小时，足以支撑前端按浏览器每 24 小时一次的检查 + 应用更新时的按需检查。
 
 ### GitCode Releases API 与二进制分发
 
@@ -62,25 +62,25 @@ https://api.gitcode.com/api/v5/repos/wakeya/magic-claude-code/raw/dist/release/v
 
 ### 连通性检测策略
 
-不做单独的连通性探测，而是按顺序尝试源站：先 GitHub，失败后回退 GitCode。每个源站请求继承 HTTP 客户端的 30 秒超时。如果第一个源站超时或返回网络错误，自动尝试下一个。无需缓存——检查频率低（启动一次 + 手动触发）。
+不做单独的连通性探测，而是按顺序尝试源站：先 GitHub，失败后回退 GitCode。每个源站请求继承 HTTP 客户端的 30 秒超时。如果第一个源站超时或返回网络错误，自动尝试下一个。前端页面加载检查通过浏览器本地状态限制为每 24 小时一次。
 
 ### 二进制自更新约束
 
 | 平台 | 能否覆盖运行中的二进制？ | 说明 |
 | --- | --- | --- |
-| Linux | 可以 | `os.Rename` + `os.WriteFile`；通过备份 + 重命名实现原子替换 |
+| Linux | 可以 | 临时文件 + 备份 + 重命名替换 |
 | macOS | 可以 | 同 Linux |
-| Windows | 不可以 | 运行中的 `.exe` 被锁定；自更新返回错误 |
-| Docker | 不适用 | 容器文件系统是临时的；引导用户通过镜像更新 |
+| Windows | 可以 | 临时文件 + 备份 + 重命名替换；不自动重启 |
+| Docker | 仅检查 | 容器文件系统是临时的；显示新版本通知，但引导用户通过镜像更新 |
 
 ### 风险总结
 
 1. 版本注入需要修改 CI（`-ldflags -X`）；如果 CI 遗漏，二进制会报告 `dev` 版本，导致永远显示"需要更新"。
 2. SHA256 校验是强制的——缺失或不匹配的校验和必须阻止更新。
 3. 二进制替换必须原子化，并自动回滚，避免损坏安装。
-4. Docker 检测（`/.dockerenv`）必须禁用自更新，避免用户执行一个在容器重建后会丢失的失败更新。
+4. Docker 检测（`/.dockerenv`）必须保留更新检查能力，但禁用应用内自更新，并引导用户通过容器镜像更新。
 5. GitCode API 格式已验证：releases API 可用于 tag 检测，但自定义二进制资产通过仓库 raw URL（`dist/release/{tag}/`）分发，而非 release 附件。
-6. v1 版本更新后不自动重启进程；磁盘上的二进制已替换，但运行中的进程仍使用旧二进制，需要手动重启。
+6. 更新后的重启策略：Linux/macOS 通过 `syscall.Exec` 自动重启；Windows 需要手动重启（磁盘上的二进制已替换，但运行中的进程仍使用旧二进制，直到手动重启）。
 
 ## 开发检查清单
 
@@ -91,7 +91,7 @@ https://api.gitcode.com/api/v5/repos/wakeya/magic-claude-code/raw/dist/release/v
 | 3 | 已规划 | 核心逻辑（检查、下载、校验、应用） | `internal/updater/updater.go` | 核心单元测试（SHA256、解包、资产映射） |
 | 4 | 已规划 | 管理端更新 API | `internal/admin/update_handler.go`、服务路由 | Handler 测试（无 updater 时 503、检查、应用） |
 | 5 | 已规划 | 前端版本标签 + 更新通知 UI | `AppHeader.vue`、`useApi.ts`、`useI18n.ts` | 前端构建；手动检查标签 + 对话框 |
-| 6 | 已规划 | 启动时自动检查与 Docker 检测 | `cmd/server/main.go` 接线 | 构建；验证启动日志消息 |
+| 6 | 已规划 | Updater 接线与 Docker 检测 | `cmd/server/main.go` 接线 | 构建；验证 Docker 引导日志 |
 | 7 | 已规划 | 端到端手动验证 | 验证记录 | Mock 发布服务器全链路测试 |
 
 ## 需求
@@ -104,14 +104,14 @@ https://api.gitcode.com/api/v5/repos/wakeya/magic-claude-code/raw/dist/release/v
    - `ReleaseSource` 接口，含 `GitHubSource` 和 `GitCodeSource` 实现。
    - `GitHubSource` 查询 GitHub Releases API，从 release 附件返回资产下载 URL。
    - `GitCodeSource` 查询 GitCode Releases API 进行 tag 检测，但二进制下载 URL 从仓库 raw 文件路径构造（`dist/release/{tag}/`）。
-   - `CheckForUpdate` 按顺序查询源站，返回 `UpdateInfo`（当前版本 vs. 最新版本、下载 URL、发布页 URL）。
+   - `CheckForUpdate` 按顺序查询源站，返回 `UpdateInfo`（当前版本 vs. 最新版本、下载 URL、发布页 URL，以及源站特定的下载请求头）。
    - `DownloadAndApply` 下载对应平台的压缩包，通过 `SHA256SUMS.txt` 校验 SHA256，解压 `mcc` 二进制，通过原子备份 + 回滚替换运行中的二进制。
 4. 管理 API 端点：
    - `GET /api/update/check` — 返回当前版本、最新版本、是否有更新、使用的源站。
-   - `POST /api/update/apply` — 下载并应用更新；返回成功或错误。
+   - `POST /api/update/apply` — 下载并应用更新；返回成功、错误，以及显式的 `restarting` 布尔值表示服务是否正在自动重启。
 5. 前端在标题旁始终显示当前版本标签。有新版本时，标签变为高亮可点击元素，展示"vX.Y.Z → vA.B.C"及箭头图标；点击打开对话框，展示版本详情和"立即更新"按钮。
-6. 启动时非阻塞 goroutine 延迟 10 秒后检查更新，并记录日志。
-7. Docker 环境（存在 `/.dockerenv`）禁用自更新，输出引导消息。
+6. 启动时服务端只为管理 API 接线 updater，不自行发起自动更新检查。
+7. Docker 环境（存在 `/.dockerenv`）保留 `/api/update/check`，禁用 `/api/update/apply`，并输出引导消息。
 8. 单元测试覆盖源站解析、SHA256 校验、二进制解包、资产名映射和版本比较逻辑。
 9. 详细执行计划维护在 `sdd-docs/superpowers/plans/2026-06-13-auto-update.md`。
 
@@ -133,7 +133,7 @@ internal/
     handler.go          （修改：状态响应添加 version 字段）
 cmd/
   server/
-    main.go             （修改：接线 updater、启动检查）
+    main.go             （修改：接线 updater、Docker 检测）
 dist/
   release/              （GitCode 二进制分发）
     v0.1.0/.gitkeep     （空占位）
@@ -164,11 +164,13 @@ type UpdateInfo struct {
     ReleaseURL     string
     AssetName      string
     DownloadURL    string
+    DownloadHeaders map[string]string
 }
 
 type ApplyResult struct {
     NewVersion string
     Message    string
+    Restarting bool
 }
 ```
 
@@ -189,14 +191,15 @@ type ApplyResult struct {
 
 1. SHA256 校验是强制的——如果 `SHA256SUMS.txt` 缺失或校验和不匹配，更新必须失败并返回明确错误。
 2. 二进制替换必须使用备份 + 重命名策略；写入失败时自动恢复备份。
-3. Docker 环境（存在 `/.dockerenv`）不得实例化 updater；管理 API 必须返回 HTTP 503 及引导消息。
-4. Windows 自更新在 v1 中不支持；updater 必须返回明确错误引导手动更新。
-5. Updater 不得以后台轮询循环运行——仅在启动时（一次）和手动 API 触发时执行。
+3. Docker 环境（存在 `/.dockerenv`）必须实例化 updater 用于更新检查，但 `POST /api/update/apply` 必须返回明确业务错误，提示用户通过更新容器镜像升级。
+4. 支持 Windows 自更新：通过临时文件 + 备份 + 重命名替换二进制；Windows 不支持自动重启，用户必须手动重启。
+5. Updater 不得以后台轮询循环运行，也不得在服务端启动时自动检查。检查由认证后的管理 API 触发，前端页面加载检查按浏览器每 24 小时一次节流。
 6. 用于发布检查的 HTTP 客户端必须有超时（30 秒），避免阻塞管理服务。
-7. 版本比较使用简单字符串排序（`latest > current`）；`dev` 版本始终视为比任何 tag 旧。
-8. 启动自动检查 goroutine 必须是非阻塞的，不得延迟服务启动。
+7. 版本比较使用语义版本解析；`dev` 版本始终视为比任何有效发布 tag 旧。
+8. 服务端启动不得发起外部更新检查请求。
 9. 管理 API `apply` 端点必须使用更长的超时（5 分钟），以适应慢速网络下的大文件下载。
-10. 前端更新通知必须是尽力而为——检查失败不得显示错误徽章或阻塞正常使用。
+10. 压缩包下载限制为 200 MB；`SHA256SUMS.txt` 下载限制为 1 MB；超出限制时必须以明确的大小限制错误失败。
+11. 前端更新通知必须是尽力而为——检查失败不得显示错误徽章或阻塞正常使用。
 
 ### 边界情况
 
@@ -207,18 +210,18 @@ type ApplyResult struct {
 5. 压缩包中不包含预期的 `mcc` 二进制——`extractBinary` 返回明确错误。
 6. SHA256SUMS.txt 格式有多余空格或空行——`parseSHA256Sums` 使用 `strings.Fields` 健壮解析。
 7. 更新被触发但版本已经是最新的——返回明确的"已是最新版本"消息。
-8. 网络完全不可达——两个源站都失败；检查端点返回明确错误；启动日志记录失败。
-9. 管理服务未配置 updater（Docker 环境）——更新端点返回 HTTP 503。
+8. 网络完全不可达——两个源站都失败；检查端点返回明确错误；前端记录本次检查尝试，24 小时内页面加载不再重试。
+9. 管理服务未配置 updater——更新端点返回 HTTP 503。Docker 环境仍配置 updater 用于检查，仅禁用 apply。
 10. 下载中断或损坏——`io.ReadAll` 返回部分数据；SHA256 校验失败；更新被拒绝。
 
 ### 非目标
 
-1. 不在二进制替换后实现自动进程重启（未来通过 `syscall.Exec` 或 systemd notify 增强）。
+1. ~~不在二进制替换后实现自动进程重启~~ —— **2026-06-13 更新**：按用户要求，Linux/macOS 已通过 `syscall.Exec` 实现自动重启；Windows 仍需手动重启。
 2. 不实现后台轮询循环检查更新。
-3. 不在本期实现 Windows 自更新。
+3. ~~不在本期实现 Windows 自更新~~ —— **2026-06-13 更新**：按用户要求，Windows 已支持二进制替换自更新，但不自动重启。
 4. 不实现回滚到历史版本（仅在写入步骤失败时自动回滚）。
 5. 不在前端渲染发布说明。
-6. 不在 CI 中实现 GitCode 发布自动化（作为手动步骤或未来 CI 步骤记录）。
+6. ~~不在 CI 中实现 GitCode 发布自动化~~ — **2026-06-13 更新**：已通过 GitCode CI 工作流（`.gitcode/workflows/release.yml`）自动构建并提交产物到 `dist/release/{tag}/`。
 
 ## 任务详情
 
@@ -293,7 +296,7 @@ type ApplyResult struct {
 
 **Evidence（证据）** — 单元测试覆盖 `assetNameFor`（全部 6 种平台/架构组合 + 无效输入）、`parseSHA256Sums`（标准格式 + 边界情况）、`verifyChecksum`（匹配 + 不匹配）、`extractBinary`（含嵌套二进制的 tar.gz）、`isNewer`（版本比较逻辑）。
 
-**Constraints（约束）** — 二进制替换仅支持 Linux/macOS；Windows 返回错误；使用备份 + 重命名策略保证原子性，失败自动回滚。
+**Constraints（约束）** — 二进制替换支持 Linux/macOS/Windows；Linux/macOS 通过 `syscall.Exec` 自动重启；Windows 替换二进制但需要手动重启；替换必须先完整写入临时文件，再进行路径替换，安装失败时自动回滚；压缩包下载超过 200 MB 或校验和下载超过 1 MB 时必须拒绝。
 
 **Edge Cases（边界）** — 不支持的 OS/arch；压缩包中缺少二进制；SHA256 不匹配；可执行文件路径含符号链接；备份后写入失败（必须回滚）。
 
@@ -324,13 +327,13 @@ type ApplyResult struct {
 
 **Objective（目标）** — 通过认证的管理 API 端点暴露更新检查和应用功能。
 
-**Outcomes（成果）** — `GET /api/update/check` 返回版本比较信息；`POST /api/update/apply` 触发下载和应用；两者均在 `authMiddlewareFunc` 之后；未配置 updater（Docker）时返回 HTTP 503。
+**Outcomes（成果）** — `GET /api/update/check` 返回版本比较信息；`POST /api/update/apply` 触发下载和应用；两者均在 `authMiddlewareFunc` 之后；未配置 updater 时返回 HTTP 503；Docker 环境下 check 保持可用，apply 返回明确业务错误，提示用户通过镜像更新。
 
 **Evidence（证据）** — Handler 测试验证 updater 为 nil 时返回 503；检查端点返回正确 JSON 结构；应用端点拒绝非 POST 方法。
 
 **Constraints（约束）** — 保持现有 `NewServer` 签名不变；使用 `SetUpdater` setter 保持向后兼容；检查超时 15 秒；应用超时 5 分钟。
 
-**Edge Cases（边界）** — Updater 未配置；所有源站失败；已是最新版本；下载或校验失败；用 GET 方法调用 apply。
+**Edge Cases（边界）** — Updater 未配置；Docker 环境禁用 apply 但保留 check；所有源站失败；已是最新版本；下载或校验失败；用 GET 方法调用 apply。
 
 **Verification（验证）** — 管理 handler 单元测试通过；手动 curl 测试显示正确响应。
 
@@ -359,9 +362,9 @@ type ApplyResult struct {
 
 **Evidence（证据）** — 前端构建无错误；版本标签始终在标题旁可见；有更新时标签外观变化；点击高亮标签打开对话框；对话框显示正确版本信息；点击"立即更新"调用应用 API。
 
-**Constraints（约束）** — 检查失败必须静默（标签保持静态版本文字，无错误指示）；标签在两种状态间切换时不得改变 header 布局；对话框必须显示服务中断确认消息；更新按钮在更新过程中必须显示加载状态。
+**Constraints（约束）** — 检查失败必须静默（标签保持静态版本文字，无错误指示）；页面加载触发的更新检查必须通过 local storage 按浏览器限制为每 24 小时一次，且必须在网络请求前记录本次尝试，避免失败后 24 小时内反复重试；标签在两种状态间切换时不得改变 header 布局；对话框必须显示服务中断确认消息；更新按钮在更新过程中必须显示加载状态。
 
-**Edge Cases（边界）** — 版本为 `dev`（本地构建未注入 ldflags）— 标签显示 `dev` 且始终提示更新；更新检查静默失败 — 标签保持静态版本文字；应用失败并显示错误消息；应用成功且服务重启（UI 显示"正在重启"消息）；用户关闭对话框。
+**Edge Cases（边界）** — 版本为 `dev`（本地构建未注入 ldflags）— 在允许执行的更新检查返回新版本前标签显示 `dev`；更新检查静默失败 — 标签保持静态版本文字，且页面加载检查 24 小时内不再重试；应用失败并显示错误消息；应用成功且服务重启（UI 显示"正在重启"消息）；用户关闭对话框。
 
 **Verification（验证）** — 前端构建通过；手动验证两种状态下标签 + 对话框交互。
 
@@ -374,7 +377,7 @@ type ApplyResult struct {
    - 静态状态：灰色 `text-[11px]` 显示当前版本。
    - 更新状态：高亮背景 + 主题色文字显示 `vX.Y.Z → vA.B.C` 带向上箭头图标，可点击打开对话框。
 5. 添加更新确认对话框（Teleport to body）。
-6. 组件挂载时调用 `checkUpdate()`（尽力而为，失败静默）。
+6. 组件挂载时仅在上次页面加载检查超过 24 小时时调用 `checkUpdate()`（尽力而为，失败静默）。
 
 #### 验证
 
@@ -385,18 +388,19 @@ type ApplyResult struct {
 - [ ] 对话框显示当前版本和最新版本。
 - [ ] 更新按钮触发更新 API。
 - [ ] 检查失败不改变标签外观（保持静态灰色）。
+- [ ] 上次检查尝试在 24 小时内时，页面加载不再请求更新检查接口。
 
-### 任务 6：启动自动检查与 Docker 检测
+### 任务 6：Updater 接线与 Docker 检测
 
 #### 需求
 
-**Objective（目标）** — 将 updater 接入 `main.go`，实现非阻塞启动检查和 Docker 环境检测。
+**Objective（目标）** — 将 updater 接入 `main.go`，实现 Docker 环境检测，并取消服务端启动自动更新检查。
 
-**Outcomes（成果）** — 非 Docker 环境下启动时，goroutine 延迟 10 秒后检查更新并记录日志；Docker 下不实例化 updater 并输出引导消息；管理服务通过 `SetUpdater` 获得 updater。
+**Outcomes（成果）** — 裸机和 Docker 环境启动时都实例化 updater 并通过 `SetUpdater` 注入管理服务；Docker 下禁用 apply 并输出镜像更新引导消息，同时保留检查能力。
 
-**Evidence（证据）** — 应用成功启动；日志输出显示版本检查结果或 Docker 检测消息；非 Docker 环境下管理更新端点正常工作。
+**Evidence（证据）** — 应用成功启动；Docker 日志输出镜像更新引导消息；Docker 和非 Docker 环境下管理更新检查端点正常工作；Docker 环境下应用更新端点被阻止。
 
-**Constraints（约束）** — 启动检查不得阻塞服务启动；10 秒延迟确保服务绑定后再发起外部请求；goroutine 使用 15 秒 context 超时。
+**Constraints（约束）** — 服务端启动不得发起外部更新检查；更新检查必须通过认证后的管理 API 请求执行；Docker 环境不得执行应用内二进制替换。
 
 **Edge Cases（边界）** — 运行在 Docker 中（通过 `/.dockerenv` 检测）；两个源站都不可达；已是最新版本；有新版本可用。
 
@@ -408,14 +412,15 @@ type ApplyResult struct {
 2. 检查 `/.dockerenv` 检测 Docker 环境。
 3. 使用 `GitHubSource` 和 `GitCodeSource` 实例化 `Updater`。
 4. 调用 `adminServer.SetUpdater(updaterInstance)`。
-5. 启动 goroutine，休眠 10 秒后检查更新并记录日志。
+5. 不启动用于更新检查的启动 goroutine。
 
 #### 验证
 
-- [ ] 非 Docker 启动记录版本检查结果。
-- [ ] Docker 启动记录引导消息且不创建 updater。
-- [ ] 管理更新端点返回 200（非 Docker）或 503（Docker）。
-- [ ] 启动不被更新检查延迟。
+- [ ] 非 Docker 启动接线 updater，但不发起外部更新检查。
+- [ ] Docker 启动记录引导消息且仍创建 updater 用于检查。
+- [ ] Docker 环境下源站可达时，管理更新检查端点返回 200。
+- [ ] Docker 环境下管理更新应用端点返回 200 业务错误，并包含 `restarting:false`。
+- [ ] 启动不被任何更新检查延迟。
 
 ### 任务 7：端到端手动验证
 
@@ -448,4 +453,4 @@ type ApplyResult struct {
 - [ ] 应用端点下载、校验并替换二进制。
 - [ ] SHA256 校验拒绝篡改的压缩包。
 - [ ] 重启后新版本已激活。
-- [ ] Docker 检测正确禁用自更新。
+- [ ] Docker 检测保留更新检查能力，并仅禁用应用内自更新。

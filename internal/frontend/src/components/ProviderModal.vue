@@ -110,6 +110,7 @@
 import { ref, reactive, onMounted, computed, watch } from 'vue'
 import { useApi, type Provider } from '@/composables/useApi'
 import { useI18n } from '@/composables/useI18n'
+import { isOpenAICompatibleFormat, shouldDefaultClaudeCodeCompatHint, type ProviderAPIFormat } from '@/utils/providerForm'
 
 const props = defineProps<{ provider: Provider | null }>()
 const emit = defineEmits<{ close: []; saved: [] }>()
@@ -121,7 +122,7 @@ const form = reactive({
   name: '',
   api_url: '',
   api_token: '',
-  api_format: 'anthropic' as 'anthropic' | 'openai_chat' | 'openai_responses',
+  api_format: 'anthropic' as ProviderAPIFormat,
   claude_code_compat_hint: true,
   supports_thinking: false,
   multimodal_switch: false,
@@ -133,11 +134,11 @@ const openAIExtraParamsText = ref(formatOpenAIExtraParams(defaultOpenAIExtraPara
 const message = ref<{ text: string; ok: boolean }>({ text: '', ok: false })
 const showToken = ref(false)
 const tokenRevealed = ref(false)
-const isOpenAICompatible = computed(() => form.api_format === 'openai_chat' || form.api_format === 'openai_responses')
+const isOpenAICompatible = computed(() => isOpenAICompatibleFormat(form.api_format))
 const apiURLPlaceholder = computed(() => isOpenAICompatible.value ? 'https://example.com/v1' : 'https://api.anthropic.com')
 
-watch(() => form.api_format, (newFormat) => {
-  if (newFormat === 'openai_chat' || newFormat === 'openai_responses') {
+watch(() => form.api_format, (newFormat, oldFormat) => {
+  if (shouldDefaultClaudeCodeCompatHint(oldFormat, newFormat)) {
     form.claude_code_compat_hint = true
   }
 })

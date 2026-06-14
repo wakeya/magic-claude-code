@@ -19,6 +19,7 @@ import (
 	"magic-claude-code/internal/config"
 	"magic-claude-code/internal/frontend"
 	"magic-claude-code/internal/proxy"
+	"magic-claude-code/internal/updater"
 	"magic-claude-code/internal/usage"
 )
 
@@ -137,6 +138,18 @@ func main() {
 		ConfigPath: configPath,
 	}, configStore, proxyServer, usageHandler)
 
+	// 配置自动更新器
+	updaterInstance := updater.New(
+		updater.NewGitHubSource("wakeya", "magic-claude-code"),
+		updater.NewGitCodeSource("wakeya", "magic-claude-code", os.Getenv("GITCODE_TOKEN")),
+		updater.NewGiteeSource("wakeya", "magic-claude-code", os.Getenv("GITEE_TOKEN")),
+	)
+	adminServer.SetUpdater(updaterInstance)
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		log.Println("运行在 Docker 容器中，应用内自更新已禁用；仍会检查新版本，请通过镜像更新")
+		adminServer.DisableUpdateApply("Docker 环境不支持应用内自更新，请通过更新镜像并重新创建容器完成升级。")
+	}
+
 	// 启动服务
 	go func() {
 		if err := proxyServer.Start(":443", certManager.GetServerCertPath(), filepath.Join(*dataDir, "server.key")); err != nil {
@@ -150,12 +163,22 @@ func main() {
 		}
 	}()
 
-	// 优雅关闭
+	// 优雅关闭 / 自动重启
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
 
-	log.Println("Shutting down...")
+	var restartCh <-chan struct{}
+	if updaterInstance != nil {
+		restartCh = updaterInstance.RestartSignal()
+	}
+
+	select {
+	case <-quit:
+		log.Println("Shutting down...")
+	case <-restartCh:
+		log.Println("Update applied, restarting service...")
+	}
+
 	stopUsageSync()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -163,6 +186,18 @@ func main() {
 
 	proxyServer.Stop(ctx)
 	adminServer.Stop(ctx)
+
+	if updaterInstance != nil && updaterInstance.ShouldRestart() {
+		configStore.Close()
+		log.Println("Restarting service...")
+		exe, err := os.Executable()
+		if err != nil {
+			log.Printf("auto-restart: cannot find executable: %v", err)
+		} else if execErr := syscall.Exec(exe, os.Args, os.Environ()); execErr != nil {
+			log.Printf("auto-restart not supported on this platform: %v", execErr)
+			log.Println("Please restart the service manually to apply the update.")
+		}
+	}
 
 	log.Println("Server stopped")
 }

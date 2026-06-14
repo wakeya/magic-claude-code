@@ -1,0 +1,139 @@
+version: '1.0'
+name: release
+displayName: Release Pipeline
+
+triggers:
+  push:
+    tags:
+      prefix:
+        - v
+
+variables:
+  PRODUCT_NAME: Magic-Claude-Code
+  BINARY_NAME: mcc
+
+stages:
+  - stage:
+    name: build
+    displayName: 构建发布制品
+    trigger: auto
+    strategy: fast
+    steps:
+      - step: shell@agent
+        name: build_release
+        displayName: 构建并发布
+        script: |
+          set -euo pipefail
+
+          # 获取 tag 名称
+          if [ -n "${GITEE_COMMIT:-}" ]; then
+            RELEASE_TAG="${GITEE_COMMIT}"
+          else
+            RELEASE_TAG=$(git describe --tags --exact-match 2>/dev/null || echo "")
+          fi
+
+          if [ -z "${RELEASE_TAG}" ]; then
+            echo "ERROR: No tag found" >&2
+            exit 1
+          fi
+
+          # 验证版本号
+          if ! echo "${RELEASE_TAG}" | grep -qE '^v[0-9]+(\.[0-9]+){1,2}([.-][0-9A-Za-z.-]+)?$'; then
+            echo "ERROR: Invalid tag format: ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+
+          # 安装 Go
+          GO_VERSION="1.26.0"
+          if ! which go >/dev/null 2>&1; then
+            wget -q "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -O /tmp/go.tar.gz
+            tar -C /usr/local -xzf /tmp/go.tar.gz
+            rm /tmp/go.tar.gz
+            export PATH=$PATH:/usr/local/go/bin
+          fi
+
+          # 安装 Node.js
+          if ! which node >/dev/null 2>&1; then
+            curl -fsSL "https://nodejs.org/dist/v24.0.0/node-v24.0.0-linux-x64.tar.xz" | tar -xJ -C /usr/local --strip-components=1
+          fi
+
+          # 构建前端
+          cd internal/frontend
+          npm ci
+          npm run build
+          cd ../..
+
+          # 运行测试
+          go test ./...
+
+          # 构建发布归档
+          RELEASE_DIR="dist/release/${RELEASE_TAG}"
+          rm -rf "${RELEASE_DIR}"
+          mkdir -p "${RELEASE_DIR}"
+
+          build_target() {
+            goos="$1"; goarch="$2"; platform="$3"; arch_label="$4"; format="$5"
+            exe_suffix=""
+            [ "${goos}" = "windows" ] && exe_suffix=".exe"
+
+            package_name="${PRODUCT_NAME}-${RELEASE_TAG}-${platform}-${arch_label}"
+            package_dir="${RELEASE_DIR}/${package_name}"
+            mkdir -p "${package_dir}"
+
+            GOOS="${goos}" GOARCH="${goarch}" CGO_ENABLED=0 \
+              go build -trimpath -ldflags="-s -w -X magic-claude-code/internal/version.Version=${RELEASE_TAG}" \
+              -o "${package_dir}/${BINARY_NAME}${exe_suffix}" ./cmd/server
+
+            cp README.md "${package_dir}/README.md"
+
+            if [ "${format}" = "zip" ]; then
+              (cd "${RELEASE_DIR}" && zip -qr "${package_name}.zip" "${package_name}")
+            else
+              tar -C "${RELEASE_DIR}" -czf "${RELEASE_DIR}/${package_name}.tar.gz" "${package_name}"
+            fi
+            rm -rf "${package_dir}"
+          }
+
+          build_target linux amd64 Linux x86_64 tar.gz
+          build_target linux arm64 Linux arm64 tar.gz
+          build_target darwin amd64 macOS x86_64 tar.gz
+          build_target darwin arm64 macOS arm64 tar.gz
+
+          if which zip >/dev/null 2>&1; then
+            build_target windows amd64 Windows x86_64 zip
+            build_target windows arm64 Windows arm64 zip
+          else
+            echo "WARNING: zip not found, skipping Windows packages"
+          fi
+
+          (cd "${RELEASE_DIR}" && sha256sum * > SHA256SUMS.txt)
+
+          echo "=== Build artifacts ==="
+          ls -lh "${RELEASE_DIR}/"
+
+          # 提交产物到仓库
+          git config user.name "gitee-ci"
+          git config user.email "ci@gitee.local"
+          git add dist/release/
+          git commit -m "release: ${RELEASE_TAG} build artifacts" || {
+            echo "No changes to commit"
+          }
+          git push "https://x-access-token:${GITEE_TOKEN}@gitee.com/${GITEE_REPO}.git" HEAD:main || {
+            echo "ERROR: Push failed — ensure GITEE_TOKEN secret is configured" >&2
+            exit 1
+          }
+
+          # 创建 Gitee Release
+          STATUS=$(curl -s -o /tmp/release-response.json -w "%{http_code}" \
+            -X POST \
+            -H "Authorization: Bearer ${GITEE_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{\"tag_name\":\"${RELEASE_TAG}\",\"name\":\"${RELEASE_TAG}\"}" \
+            "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases")
+
+          if [ "${STATUS}" -ge 200 ] && [ "${STATUS}" -lt 300 ]; then
+            echo "Gitee Release created for ${RELEASE_TAG}"
+          else
+            echo "WARNING: Release creation returned ${STATUS}" >&2
+            cat /tmp/release-response.json
+          fi

@@ -7,6 +7,22 @@
         </svg>
       </div>
       <h1 class="text-[17px] font-bold tracking-tight">Magic Claude Code</h1>
+      <span v-if="!updateAvailable"
+        class="text-[11px] app-muted font-mono"
+      >{{ currentVersion }}</span>
+      <button v-else
+        type="button"
+        class="update-pulse text-[12px] font-mono font-semibold px-2 py-0.5 rounded-md cursor-pointer transition-all duration-200 flex items-center gap-1"
+        style="background: var(--app-accent-soft); color: var(--app-accent);"
+        @click="showUpdateDialog = true"
+        :title="t('update.title')"
+      >
+        {{ currentVersion }}
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+        </svg>
+        {{ updateInfo?.latest_version }}
+      </button>
     </div>
     <div class="flex flex-wrap items-center justify-end gap-2 sm:gap-3">
       <a href="https://github.com/wakeya/magic-claude-code" target="_blank" rel="noopener noreferrer"
@@ -66,13 +82,46 @@
         {{ t('header.logout') }}
       </button>
     </div>
+    <!-- Update Dialog -->
+    <Teleport to="body">
+      <div v-if="showUpdateDialog" class="fixed inset-0 z-[100] flex items-center justify-center" style="background: rgba(0,0,0,0.5);">
+        <div class="app-panel rounded-xl p-6 max-w-md w-full mx-4 shadow-2xl">
+          <h3 class="text-lg font-bold mb-4">{{ t('update.title') }}</h3>
+          <div class="space-y-2 mb-4 text-sm">
+            <div class="flex justify-between">
+              <span class="app-muted">{{ t('update.current') }}:</span>
+              <span class="font-mono">{{ updateInfo?.current_version }}</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="app-muted">{{ t('update.latest') }}:</span>
+              <span class="font-mono font-bold" style="color: var(--app-accent);">{{ updateInfo?.latest_version }}</span>
+            </div>
+          </div>
+          <p v-if="updateMessage" class="text-sm mb-3" style="color: var(--app-success);">{{ updateMessage }}</p>
+          <p v-if="updateError" class="text-sm mb-3" style="color: var(--app-danger);">{{ updateError }}</p>
+          <p class="text-xs app-muted mb-4">{{ t('update.confirm') }}</p>
+          <div class="flex gap-3 justify-end">
+            <button type="button" class="app-control px-4 py-2 rounded-lg text-sm font-semibold cursor-pointer" :disabled="updating"
+              @click="showUpdateDialog = false">
+              {{ t('update.cancel') }}
+            </button>
+            <button type="button" class="px-4 py-2 rounded-lg text-sm font-semibold text-white cursor-pointer transition-all duration-200"
+              style="background: var(--app-accent);"
+              :disabled="updating"
+              @click="doApplyUpdate">
+              {{ updating ? t('update.applying') : t('update.apply') }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </header>
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Moon, Sun } from 'lucide-vue-next'
-import { useApi } from '@/composables/useApi'
+import { useApi, type UpdateCheckResult } from '@/composables/useApi'
 import { useI18n } from '@/composables/useI18n'
 import { useTheme } from '@/composables/useTheme'
 
@@ -87,6 +136,72 @@ const langOptions = [
   { value: 'zh' as const, label: '中文' },
   { value: 'en' as const, label: 'English' },
 ]
+
+const updateAvailable = ref(false)
+const updateInfo = ref<UpdateCheckResult | null>(null)
+const showUpdateDialog = ref(false)
+const updating = ref(false)
+const updateMessage = ref('')
+const updateError = ref('')
+const updateCheckStorageKey = 'magic-claude-code:last-update-check-at'
+const updateCheckIntervalMs = 24 * 60 * 60 * 1000
+
+const currentVersion = computed(() => updateInfo.value?.current_version || 'dev')
+
+function shouldCheckForUpdate(now = Date.now()) {
+  try {
+    const lastChecked = Number(window.localStorage.getItem(updateCheckStorageKey) || '0')
+    return !Number.isFinite(lastChecked) || lastChecked <= 0 || now - lastChecked >= updateCheckIntervalMs
+  } catch {
+    return true
+  }
+}
+
+function markUpdateChecked(now = Date.now()) {
+  try {
+    window.localStorage.setItem(updateCheckStorageKey, String(now))
+  } catch {
+    // Ignore storage failures; update checks remain best-effort.
+  }
+}
+
+async function checkUpdate() {
+  if (!shouldCheckForUpdate()) return
+  markUpdateChecked()
+  try {
+    const result = await api.checkForUpdate()
+    updateInfo.value = result
+    updateAvailable.value = result.update_available
+  } catch {
+    // silently ignore — update check is best-effort
+  }
+}
+
+async function doApplyUpdate() {
+  updating.value = true
+  updateMessage.value = ''
+  updateError.value = ''
+  try {
+    const result = await api.applyUpdate()
+    if (result.success) {
+      updateAvailable.value = false
+      updateMessage.value = result.message || t('update.success')
+      if (result.restarting) {
+        setTimeout(() => window.location.reload(), 3000)
+      }
+    } else {
+      updateError.value = result.error || t('update.error')
+    }
+  } catch (e) {
+    updateError.value = String(e)
+  } finally {
+    updating.value = false
+  }
+}
+
+onMounted(() => {
+  checkUpdate()
+})
 
 function closeLanguageMenuOnOutsideClick(e: MouseEvent) {
   const target = e.target as Node | null

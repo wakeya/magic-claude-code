@@ -14,6 +14,8 @@ RUN npm run build
 # 阶段2: 构建 Go 二进制
 FROM golang:1.26-alpine AS builder
 
+ARG APP_VERSION=dev
+
 WORKDIR /app
 
 # 复制依赖文件
@@ -27,10 +29,12 @@ COPY . .
 COPY --from=frontend-builder /frontend/dist ./internal/frontend/dist
 
 # 构建
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o mcc ./cmd/server
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w -X magic-claude-code/internal/version.Version=${APP_VERSION}" -o mcc ./cmd/server
 
 # 阶段3: 运行
 FROM alpine:latest
+
+LABEL org.opencontainers.image.source="https://github.com/wakeya/magic-claude-code"
 
 # 安装 CA 证书和时区数据
 RUN apk --no-cache add ca-certificates tzdata

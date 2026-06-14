@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"magic-claude-code/internal/config"
+	"magic-claude-code/internal/updater"
 	"magic-claude-code/internal/usage"
 )
 
@@ -20,13 +21,15 @@ type StatsProvider interface {
 
 // Server 配置服务
 type Server struct {
-	config        *AdminConfig
-	auth          *Auth
-	server        *http.Server
-	startTime     time.Time
-	configStore   config.ConfigStore
-	statsProvider StatsProvider
-	usageHandler  *usage.Handler
+	config                     *AdminConfig
+	auth                       *Auth
+	server                     *http.Server
+	startTime                  time.Time
+	configStore                config.ConfigStore
+	statsProvider              StatsProvider
+	usageHandler               *usage.Handler
+	updater                    *updater.Updater
+	updateApplyDisabledMessage string
 }
 
 // AdminConfig 配置服务配置
@@ -71,6 +74,8 @@ func (s *Server) Start(addr string, frontendFS embed.FS) error {
 	mux.HandleFunc("/api/status", s.authMiddlewareFunc(s.handleStatus))
 	mux.HandleFunc("/api/certificates", s.authMiddlewareFunc(s.handleCertificates))
 	mux.HandleFunc("/api/config/test", s.authMiddlewareFunc(s.handleTestBackend))
+	mux.HandleFunc("/api/update/check", s.authMiddlewareFunc(s.handleUpdateCheck))
+	mux.HandleFunc("/api/update/apply", s.authMiddlewareFunc(s.handleUpdateApply))
 
 	// 供应商 API 路由
 	mux.HandleFunc("/api/providers", s.authMiddlewareFunc(s.handleProviders))
@@ -145,4 +150,14 @@ func (s *Server) authMiddlewareFunc(next http.HandlerFunc) http.HandlerFunc {
 // GetAuth 获取认证管理器
 func (s *Server) GetAuth() *Auth {
 	return s.auth
+}
+
+// SetUpdater 注入更新器，使 /api/update/* 端点可用
+func (s *Server) SetUpdater(u *updater.Updater) {
+	s.updater = u
+}
+
+// DisableUpdateApply keeps update checks available while preventing in-place binary replacement.
+func (s *Server) DisableUpdateApply(message string) {
+	s.updateApplyDisabledMessage = message
 }
