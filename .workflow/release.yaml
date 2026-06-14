@@ -118,7 +118,7 @@ stages:
           git commit -m "release: ${RELEASE_TAG} build artifacts" || {
             echo "No changes to commit"
           }
-          git push "https://x-access-token:${GITEE_TOKEN}@gitee.com/${GITEE_REPO}.git" HEAD:main || {
+          git push "https://wakeya:${GITEE_TOKEN}@gitee.com/${GITEE_REPO}.git" HEAD:main || {
             echo "ERROR: Push failed — ensure GITEE_TOKEN secret is configured" >&2
             exit 1
           }

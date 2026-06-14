@@ -225,7 +225,7 @@ jobs:
             echo "No changes to commit — artifacts may already exist"
             exit 0
           }
-          git push "https://x-access-token:${GITEE_TOKEN}@gitee.com/wakeya/magic-claude-code.git" HEAD:main || {
+          git push "https://wakeya:${GITEE_TOKEN}@gitee.com/wakeya/magic-claude-code.git" HEAD:main || {
             echo "Push failed — ensure GITEE_TOKEN secret has repo write access"
             exit 1
           }
