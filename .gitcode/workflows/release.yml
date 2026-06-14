@@ -226,11 +226,12 @@ jobs:
 
       - name: 创建 GitCode Release
         run: |
+          RELEASE_BODY="Magic Claude Code ${RELEASE_TAG} release. Binary archives are available under dist/release/${RELEASE_TAG}/ for Linux, macOS, and Windows on x86_64 and arm64."
           STATUS=$(curl -s -o /tmp/release-response.json -w "%{http_code}" \
             -X POST \
             -H "PRIVATE-TOKEN: ${{ secrets.GITCODE_TOKEN }}" \
             -H "Content-Type: application/json" \
-            -d "{\"tag_name\":\"${RELEASE_TAG}\",\"name\":\"${RELEASE_TAG}\"}" \
+            -d "{\"tag_name\":\"${RELEASE_TAG}\",\"name\":\"${RELEASE_TAG}\",\"body\":\"${RELEASE_BODY}\"}" \
             "https://api.gitcode.com/api/v5/repos/${{ github.repository }}/releases")
 
           if [ "${STATUS}" = "409" ] || [ "${STATUS}" = "422" ]; then
