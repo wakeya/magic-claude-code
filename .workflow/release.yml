@@ -95,8 +95,11 @@ stages:
           - mkdir -p /tmp/go-install
           - curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${GO_ARCH}.tar.gz" -o /tmp/go.tar.gz
           - tar -C /tmp/go-install -xzf /tmp/go.tar.gz
+          - export GOROOT="/tmp/go-install/go"
           - export PATH="/tmp/go-install/go/bin:${PATH}"
+          - export GOTOOLCHAIN=local
           - go version
+          - go env GOROOT GOTOOLDIR GOVERSION GOTOOLCHAIN
           - ''
           - '# 始终安装 Node.js 24，确保前端构建环境可重复。'
           - NODE_VERSION="$(curl -fsSL https://nodejs.org/dist/index.json | sed -n 's/.*"version":"\(v24\.[^"]*\)".*/\1/p' | head -n 1)"
