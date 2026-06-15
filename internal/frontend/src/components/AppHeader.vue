@@ -145,8 +145,9 @@ const updateMessage = ref('')
 const updateError = ref('')
 const updateCheckStorageKey = 'magic-claude-code:last-update-check-at'
 const updateCheckIntervalMs = 24 * 60 * 60 * 1000
+const statusVersion = ref('dev')
 
-const currentVersion = computed(() => updateInfo.value?.current_version || 'dev')
+const currentVersion = computed(() => statusVersion.value)
 
 function shouldCheckForUpdate(now = Date.now()) {
   try {
@@ -162,6 +163,15 @@ function markUpdateChecked(now = Date.now()) {
     window.localStorage.setItem(updateCheckStorageKey, String(now))
   } catch {
     // Ignore storage failures; update checks remain best-effort.
+  }
+}
+
+async function fetchStatusVersion() {
+  try {
+    const status = await api.getStatus()
+    if (status.version) statusVersion.value = status.version
+  } catch {
+    // silently ignore — version display is best-effort
   }
 }
 
@@ -200,6 +210,7 @@ async function doApplyUpdate() {
 }
 
 onMounted(() => {
+  fetchStatusVersion()
   checkUpdate()
 })
 

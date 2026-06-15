@@ -4,6 +4,7 @@ export type { ThemeMode } from './useTheme'
 
 export interface StatusInfo {
   running: boolean
+  version?: string
   backend_url: string
   uptime: string
   requests_total: number
