@@ -106,6 +106,19 @@ jobs:
 
           (cd dist/release && sha256sum * > SHA256SUMS.txt)
 
+      - name: Prepare release notes
+        shell: bash
+        run: |
+          cat > release-notes.md <<'EOF'
+          ## 最近更新
+
+          - 修复 Header 版本号刷新后从正式版本回退为 `dev` 的问题，版本显示现在始终从 `/api/status` 获取。
+          - 新增前端回归测试，锁定版本显示不再依赖 `/api/update/check` 的节流状态。
+          - 新增版本显示修复 spec 文档，记录根因、修复数据流和边界情况。
+          - 新增并修复 Gitee ReleasePipeline，支持通过 `v*` tag push 构建 Linux、macOS、Windows 的 x86_64/arm64 二进制资产。
+          - Gitee 发布流水线改为引用 `release_token` 通用变量，避免将 token 明文写入仓库 YAML。
+          EOF
+
       - name: Publish GitHub release assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -114,6 +127,9 @@ jobs:
           set -euo pipefail
 
           if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release edit "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --notes-file release-notes.md
             gh release upload "${RELEASE_TAG}" dist/release/* \
               --repo "${GITHUB_REPOSITORY}" \
               --clobber
@@ -121,7 +137,7 @@ jobs:
             gh release create "${RELEASE_TAG}" dist/release/* \
               --repo "${GITHUB_REPOSITORY}" \
               --title "${RELEASE_TAG}" \
-              --generate-notes
+              --notes-file release-notes.md
           fi
 
   docker:

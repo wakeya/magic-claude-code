@@ -226,7 +226,7 @@ jobs:
 
       - name: 创建 GitCode Release
         run: |
-          RELEASE_BODY="Magic Claude Code ${RELEASE_TAG} release. Binary archives are available under dist/release/${RELEASE_TAG}/ for Linux, macOS, and Windows on x86_64 and arm64."
+          RELEASE_BODY="Magic Claude Code ${RELEASE_TAG} release. 最近更新：修复 Header 版本号刷新后回退为 dev 的问题，版本显示改为始终从 /api/status 获取；新增版本显示回归测试和修复 spec；新增并修复 Gitee ReleasePipeline，支持通过 v* tag push 构建 Linux、macOS、Windows 的 x86_64/arm64 二进制资产；Gitee 发布流水线改为引用 release_token 通用变量，避免 token 明文进入仓库 YAML。Binary archives are available under dist/release/${RELEASE_TAG}/."
           STATUS=$(curl -s -o /tmp/release-response.json -w "%{http_code}" \
             -X POST \
             -H "PRIVATE-TOKEN: ${{ secrets.GITCODE_TOKEN }}" \
