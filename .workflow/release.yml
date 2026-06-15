@@ -7,6 +7,9 @@ triggers:
     tags:
       prefix:
         - v
+variables:
+  global:
+    - release_token
 stages:
   - name: build
     displayName: 构建发布制品
