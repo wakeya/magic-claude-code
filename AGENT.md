@@ -112,22 +112,67 @@ openssl x509 -in data/server.crt -text -noout
 
 ## 发布流程
 
-1. 更新版本号
-2. 运行完整测试套件
-3. 构建发布镜像
-4. 推送到镜像仓库
+发布由 `v*` tag 触发 CI。GitHub/GitLab 会构建并上传 Release/Package 二进制资产；GitCode/Gitee 国内回退源由对应 CI 或同步流程维护 `dist/release/{tag}/` 资产。
+
+### 1. 提交代码
+
+提交前确认只包含本次改动：
 
 ```bash
-# 构建发布镜像
-docker build -t magic-claude-code:latest .
-
-# 运行发布镜像
-docker run -d \
-  --name mcc \
-  -p 443:443 \
-  -p 8442:8442 \
-  -v ./data:/app/data \
-  -e ADMIN_PASSWORD=your-password \
-  magic-claude-code:latest
-
+git status --short
+git diff --stat
 ```
+
+运行验证：
+
+```bash
+go test ./...
+npm --prefix internal/frontend test
+npm --prefix internal/frontend run build
+```
+
+说明：
+
+- 修改前端源码时，`internal/frontend/dist` 会随构建产物变化，可以一起提交。
+- 普通功能提交不要手动修改 `dist/release`。如果本地 `dist/release` 和 GitCode/Gitee 远端不一致，以远端发布资产为准，不要用本地内容覆盖远端。
+
+提交并推送：
+
+```bash
+git add <本次相关文件>
+git commit -m "feat: ..."
+git push origin main
+```
+
+### 2. 打 tag 发布
+
+确认 `main` 已推送后创建版本 tag：
+
+```bash
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
+
+tag 名必须符合 `v0.1.0` 这类语义版本格式。CI 会执行前端构建、Go 测试、跨平台二进制构建、SHA256SUMS 生成和发布资产上传。
+
+### 3. 发布后检查
+
+检查 GitHub/GitLab Release 或 Package 中是否包含：
+
+```text
+Magic-Claude-Code-vX.Y.Z-Linux-x86_64.tar.gz
+Magic-Claude-Code-vX.Y.Z-Linux-arm64.tar.gz
+Magic-Claude-Code-vX.Y.Z-macOS-x86_64.tar.gz
+Magic-Claude-Code-vX.Y.Z-macOS-arm64.tar.gz
+Magic-Claude-Code-vX.Y.Z-Windows-x86_64.zip
+Magic-Claude-Code-vX.Y.Z-Windows-arm64.zip
+SHA256SUMS.txt
+```
+
+如果启用了 GitCode/Gitee 同步，还要确认远端仓库存在：
+
+```text
+dist/release/vX.Y.Z/
+```
+
+该目录用于国内回退源 raw 下载，不应由普通开发提交手动维护。

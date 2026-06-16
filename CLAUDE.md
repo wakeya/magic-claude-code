@@ -57,6 +57,34 @@ go test ./internal/cert/... -v
 go test -cover ./...
 ```
 
+## 提交与发布约束
+
+1. 提交前必须检查工作区，只提交本次任务相关文件：
+
+```bash
+git status --short
+git diff --stat
+```
+
+2. 后端或代理逻辑变更至少运行：
+
+```bash
+go test ./...
+```
+
+3. 前端源码变更必须运行：
+
+```bash
+npm --prefix internal/frontend test
+npm --prefix internal/frontend run build
+```
+
+4. `internal/frontend/dist` 是 Go 二进制内嵌前端资源，前端源码变更后可以随构建结果一起提交。
+
+5. `dist/release` 是发布资产目录，普通功能提交不得手动修改或覆盖。GitCode/Gitee 回退源的二进制资产以远端发布仓库为准，本地过期或不完整的 `dist/release` 不得推送覆盖远端。
+
+6. 发布版本通过 `v*` tag 触发 CI 构建和同步资产。不要手工打包后直接替换远端发布资产，除非这是一次单独的发布修复任务。
+
 ## 常见问题
 
 ### Q: 证书过期怎么办？
