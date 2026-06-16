@@ -1,9 +1,13 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"magic-claude-code/internal/i18n"
+)
 
 func TestResolveAdminPasswordUsesProvidedPassword(t *testing.T) {
-	got := resolveAdminPassword("secret", func() string {
+	got := resolveAdminPassword("secret", i18n.Messages{}, func(i18n.Messages) string {
 		t.Fatal("generate should not be called")
 		return ""
 	})
@@ -14,7 +18,7 @@ func TestResolveAdminPasswordUsesProvidedPassword(t *testing.T) {
 }
 
 func TestResolveAdminPasswordGeneratesWhenEmpty(t *testing.T) {
-	got := resolveAdminPassword("", func() string {
+	got := resolveAdminPassword("", i18n.Messages{}, func(i18n.Messages) string {
 		return "generated-secret"
 	})
 

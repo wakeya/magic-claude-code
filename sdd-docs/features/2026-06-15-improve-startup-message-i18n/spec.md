@@ -5,7 +5,7 @@ Proxy entry: None (admin service :8442)
 Reference sources: System locale detection (`LANG`/`LC_ALL`), Claude Code official docs  
 Tech stack: Go 1.26 standard library  
 Last updated: 2026-06-15  
-Progress: 0 / 4 planned
+Progress: 4 / 4 completed
 
 ## Overall Analysis
 
@@ -58,10 +58,10 @@ All i18n-relevant text is concentrated in `cmd/server/main.go`:
 
 | No. | Status | Task | Output | Verification |
 | --- | --- | --- | --- | --- |
-| 1 | Planned | Create `internal/i18n` message table and locale detection | `internal/i18n/i18n.go` | Unit test: various locale prefixes return correct language |
-| 2 | Planned | i18n `cmd/server/main.go` startup banner and config hints | `cmd/server/main.go` | Manual verification: Chinese vs English startup log comparison |
-| 3 | Planned | Add Windows config examples and dual-domain hints | `cmd/server/main.go` | Manual check: Windows/Unix output difference |
-| 4 | Planned | i18n `internal/admin` user-facing messages | Relevant handlers in `internal/admin/` | Manual check: admin panel hints |
+| 1 | Completed | Create `internal/i18n` message table and locale detection | `internal/i18n/i18n.go` | Unit test: various locale prefixes return correct language |
+| 2 | Completed | i18n `cmd/server/main.go` startup banner and config hints | `cmd/server/main.go` | Manual verification: Chinese vs English startup log comparison |
+| 3 | Completed | Add Windows config examples and dual-domain hints | `cmd/server/main.go` | Manual check: Windows/Unix output difference |
+| 4 | Completed | Verify no user-facing Chinese logs remain in `internal/admin`; i18n Docker update disabled hint passed from `cmd/server/main.go` | `cmd/server/main.go`, `internal/admin/` | `grep` check: no Chinese logs; admin panel shows locale-aware update disabled message |
 
 ## Requirements
 
@@ -85,15 +85,19 @@ type Messages struct {
     AdminPort           string
     BackendURL          string
     ConfigInstructions  string
-    HostsCommand        string
-    CACertCommand       string
-    SourceCommand       string
+    HostsCommandUnix    string
+    HostsCommandWindows string
+    CACertCommandUnix   string
+    CACertCommandWindows string
+    SourceCommandUnix   string
+    SourceCommandWindows string
     AdminPage           string
     AdminPageAlt        string
     RandomPassword      string
     PasswordSaveHint    string
     PasswordEnvHint     string
-    DockerUpdateHint    string
+    DockerRunningHint   string
+    DisableUpdateReason string
     // ... other messages
 }
 
@@ -104,8 +108,8 @@ func Load(locale string) Messages { ... }
 
 The backend URL line in startup hints, while displaying the actual URL, appends a note about configurable endpoints:
 
-- **Chinese**: `Backend URL: %s (can be configured to other Anthropic or OpenAI Chat compatible endpoints)`
-- **English**: `Backend URL: %s (configurable to other Anthropic or OpenAI Chat compatible endpoints)`
+- **Chinese**: `后端地址: %s（可配置其他兼容 Anthropic 或 OpenAI Chat 的接口地址）`
+- **English**: `Backend URL: %s (configurable to use other Anthropic or OpenAI Chat compatible endpoints)`
 
 ### Requirement 3: Platform-Specific Config Examples
 
@@ -123,7 +127,7 @@ The `hosts` modification and CA certificate environment variable config examples
 
 ```
 1. Run as administrator PowerShell:
-   Add-Content -Path "$env:WINDIR\System32\drivers\etc\hosts" -Value "`n127.0.0.1 api.anthropic.com"
+   Add-Content -Path "$env:WINDIR\System32\drivers\etc\hosts" -Value "127.0.0.1 api.anthropic.com"
 2. Set Node.js CA certificate environment variable:
    [Environment]::SetEnvironmentVariable("NODE_EXTRA_CA_CERTS", "%s", "User")
 3. Close and reopen terminal
@@ -137,13 +141,13 @@ The admin panel URL shows both forms:
 
 - **Chinese**:
   ```
-  Admin panel:
+  配置页面（以下两个地址等价）：
     https://localhost:%d
     https://api.anthropic.com:%d
   ```
 - **English**:
   ```
-  Admin panel:
+  Admin panel (both URLs point to the same service):
     https://localhost:%d
     https://api.anthropic.com:%d
   ```
@@ -158,7 +162,7 @@ The admin panel URL shows both forms:
 
 **Outcomes** — Backend has lightweight internationalization without external dependencies.
 
-**Evidence** — Unit tests cover `zh_CN`, `zh`, `en_US`, `en`, `ja`, `''` locale inputs, asserting correct language set returned.
+**Evidence** — Unit tests cover `zh_CN`, `zh`, `en_US`, `en`, `ja`, `''` locale inputs, asserting correct language set returned. Additional tests verify `MCC_LANG` priority over `LANG` and `LC_ALL` fallback when `LANG` is absent.
 
 **Constraints** — Do not use `golang.org/x/text` or other external packages; keep pure standard library. Message table uses Go struct + map for compile-time type safety.
 
@@ -176,7 +180,8 @@ The admin panel URL shows both forms:
 2. Create `internal/i18n/i18n_test.go`:
    - Test various locale prefix parsing.
    - Test unknown locale fallback to English.
-   - Test `MCC_LANG` priority over `LANG`.
+   - Test `MCC_LANG` priority over `LANG` and `LC_ALL`.
+   - Test `LC_ALL` fallback when `LANG` is absent.
 
 #### Verification
 
@@ -204,7 +209,8 @@ Run `go test ./internal/i18n/... -v`, all cases pass.
 2. Replace startup banner area (lines 109–128) with `msg := i18n.Load(i18n.ResolveLocale())`.
 3. All `fmt.Println`/`fmt.Printf` calls use message table fields.
 4. Replace Docker detection hint (line 149) with i18n message.
-5. Internationalize user-facing parts of shutdown/restart logs (lines 177–202).
+5. Internationalize the Chinese string passed to `adminServer.DisableUpdateApply()` (line 150).
+6. Internationalize user-facing parts of shutdown/restart logs (lines 177–202).
 
 #### Verification
 

@@ -5,7 +5,7 @@
 参考源站：系统 locale 检测（`LANG`/`LC_ALL`）、Claude Code 官方文档  
 技术栈：Go 1.26 标准库
 最后更新：2026-06-15
-进度：0 / 4 已规划
+进度：4 / 4 已完成
 
 ## 整体分析（源站分析）
 
@@ -58,10 +58,10 @@
 
 | 序号 | 状态 | 任务 | 产出 | 验证 |
 | --- | --- | --- | --- | --- |
-| 1 | 已规划 | 创建 `internal/i18n` 消息表与 locale 检测 | `internal/i18n/i18n.go` | 单元测试：各 locale 前缀返回正确语言 |
-| 2 | 已规划 | 国际化 `cmd/server/main.go` 启动横幅与配置提示 | `cmd/server/main.go` | 中英文启动日志对比验证 |
-| 3 | 已规划 | 补充 Windows 配置示例与双域名提示 | `cmd/server/main.go` | 手动检查 Windows/Unix 输出差异 |
-| 4 | 已规划 | 国际化 `internal/admin` 中面向用户的消息 | `internal/admin/` 中相关 handler | 手动检查管理面板提示 |
+| 1 | 已完成 | 创建 `internal/i18n` 消息表与 locale 检测 | `internal/i18n/i18n.go` | 单元测试：各 locale 前缀返回正确语言 |
+| 2 | 已完成 | 国际化 `cmd/server/main.go` 启动横幅与配置提示 | `cmd/server/main.go` | 中英文启动日志对比验证 |
+| 3 | 已完成 | 补充 Windows 配置示例与双域名提示 | `cmd/server/main.go` | 手动检查 Windows/Unix 输出差异 |
+| 4 | 已完成 | 确认 `internal/admin` 无面向终端用户的中文日志；`cmd/server/main.go` 传入的 Docker 更新禁用提示已国际化 | `cmd/server/main.go`、`internal/admin/` | `grep` 检查无中文日志；管理面板显示跟随 locale 的更新禁用提示 |
 
 ## 需求
 
@@ -85,15 +85,19 @@ type Messages struct {
     AdminPort           string
     BackendURL          string
     ConfigInstructions  string
-    HostsCommand        string
-    CACertCommand       string
-    SourceCommand       string
+    HostsCommandUnix    string
+    HostsCommandWindows string
+    CACertCommandUnix   string
+    CACertCommandWindows string
+    SourceCommandUnix   string
+    SourceCommandWindows string
     AdminPage           string
     AdminPageAlt        string
     RandomPassword      string
     PasswordSaveHint    string
     PasswordEnvHint     string
-    DockerUpdateHint    string
+    DockerRunningHint   string
+    DisableUpdateReason string
     // ... 其他消息
 }
 
@@ -105,7 +109,7 @@ func Load(locale string) Messages { ... }
 启动提示中的后端地址行，在显示实际 URL 的同时，追加说明可配置其他兼容端点：
 
 - **中文**：`后端地址: %s（可配置其他兼容 Anthropic 或 OpenAI Chat 的接口地址）`
-- **英文**：`Backend URL: %s (configurable to other Anthropic or OpenAI Chat compatible endpoints)`
+- **英文**：`Backend URL: %s (configurable to use other Anthropic or OpenAI Chat compatible endpoints)`
 
 ### 需求 3：按平台输出配置示例
 
@@ -123,7 +127,7 @@ func Load(locale string) Messages { ... }
 
 ```
 1. 以管理员 PowerShell 运行：
-   Add-Content -Path "$env:WINDIR\System32\drivers\etc\hosts" -Value "`n127.0.0.1 api.anthropic.com"
+   Add-Content -Path "$env:WINDIR\System32\drivers\etc\hosts" -Value "127.0.0.1 api.anthropic.com"
 2. 设置 Node.js CA 证书环境变量：
    [Environment]::SetEnvironmentVariable("NODE_EXTRA_CA_CERTS", "%s", "User")
 3. 关闭并重新打开终端
@@ -137,13 +141,13 @@ func Load(locale string) Messages { ... }
 
 - **中文**：
   ```
-  配置页面:
+  配置页面（以下两个地址等价）：
     https://localhost:%d
     https://api.anthropic.com:%d
   ```
 - **英文**：
   ```
-  Admin panel:
+  Admin panel (both URLs point to the same service):
     https://localhost:%d
     https://api.anthropic.com:%d
   ```
@@ -158,7 +162,7 @@ func Load(locale string) Messages { ... }
 
 **Outcomes（成果）** — 后端具备轻量级国际化能力，不引入外部依赖。
 
-**Evidence（证据）** — 单元测试覆盖 `zh_CN`、`zh`、`en_US`、`en`、`ja`、`''` 等 locale 输入，断言返回正确语言集。
+**Evidence（证据）** — 单元测试覆盖 `zh_CN`、`zh`、`en_US`、`en`、`ja`、`''` 等 locale 输入，断言返回正确语言集。额外测试验证 `MCC_LANG` 优先于 `LANG`，以及 `LANG` 缺失时 `LC_ALL` 回退路径。
 
 **Constraints（约束）** — 不使用 `golang.org/x/text` 等外部包；保持纯标准库。消息表用 Go struct + map，编译期类型安全。
 
@@ -176,7 +180,8 @@ func Load(locale string) Messages { ... }
 2. 创建 `internal/i18n/i18n_test.go`：
    - 测试各 locale 前缀解析。
    - 测试未知 locale 回退英文。
-   - 测试 `MCC_LANG` 优先于 `LANG`。
+   - 测试 `MCC_LANG` 优先于 `LANG` 和 `LC_ALL`。
+   - 测试 `LANG` 缺失时 `LC_ALL` 回退路径。
 
 #### 验证
 
@@ -204,7 +209,8 @@ func Load(locale string) Messages { ... }
 2. 将启动横幅区域（行 109–128）替换为 `msg := i18n.Load(i18n.ResolveLocale())`。
 3. 所有 `fmt.Println`/`fmt.Printf` 调用改用消息表字段。
 4. 将 Docker 检测提示（行 149）替换为国际化消息。
-5. 将关闭/重启日志（行 177–202）中面向用户的部分国际化。
+5. 将传入 `adminServer.DisableUpdateApply()` 的中文提示（行 150）也替换为国际化消息。
+6. 将关闭/重启日志（行 177–202）中面向用户的部分国际化。
 
 #### 验证
 
