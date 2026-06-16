@@ -61,6 +61,14 @@
       </div>
 
       <div class="mb-5">
+        <label class="block text-[13px] font-semibold mb-2">{{ t('modal.strip_unknown_content_blocks') }}</label>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input v-model="form.strip_unknown_content_blocks" type="checkbox" class="w-4 h-4 accent-primary cursor-pointer" />
+          <span class="app-muted text-sm">{{ t('modal.strip_unknown_content_blocks_hint') }}</span>
+        </label>
+      </div>
+
+      <div class="mb-5">
         <div class="flex items-center gap-2 mb-2">
           <label class="block text-[13px] font-semibold">{{ t('modal.multimodal_switch') }}</label>
           <span class="inline-flex h-5 w-5 items-center justify-center rounded-full app-control text-xs font-bold cursor-help" :title="t('modal.multimodal_hint')">?</span>
@@ -127,6 +135,7 @@ const form = reactive({
   supports_thinking: false,
   multimodal_switch: false,
   multimodal_model: '',
+  strip_unknown_content_blocks: false,
 })
 
 const mappings = ref<{ from: string; to: string }[]>([{ from: '', to: '' }])
@@ -153,6 +162,7 @@ onMounted(() => {
     form.supports_thinking = props.provider.supports_thinking || false
     form.multimodal_switch = props.provider.multimodal_switch || false
     form.multimodal_model = props.provider.multimodal_model || ''
+    form.strip_unknown_content_blocks = props.provider.strip_unknown_content_blocks || false
     openAIExtraParamsText.value = formatOpenAIExtraParams(props.provider.openai_extra_params || defaultOpenAIExtraParams())
     const entries = Object.entries(props.provider.model_mappings || {})
     mappings.value = entries.length > 0 ? entries.map(([from, to]) => ({ from, to })) : [{ from: '', to: '' }]
@@ -196,6 +206,7 @@ async function save() {
     supports_thinking: form.supports_thinking,
     multimodal_switch: form.multimodal_switch,
     multimodal_model: form.multimodal_switch ? form.multimodal_model.trim() : '',
+    strip_unknown_content_blocks: form.strip_unknown_content_blocks,
   }
 
   try {

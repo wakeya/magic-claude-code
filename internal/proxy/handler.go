@@ -513,6 +513,12 @@ func (h *Handler) transformRequest(body []byte, provider *config.Provider) ([]by
 
 	changed := false
 
+	if providerAPIFormat(provider) == config.APIFormatAnthropic && provider.StripUnknownContentBlocks {
+		if cleanChanged := proactiveCleanUnknownContentTypes(req); cleanChanged {
+			changed = true
+		}
+	}
+
 	// 模型映射
 	if model, ok := req["model"].(string); ok {
 		mapped := provider.MapModel(model)
@@ -697,6 +703,26 @@ func summarizeCompatHeaders(header http.Header) string {
 		parts = append(parts, "Authorization: ***")
 	}
 	return strings.Join(parts, ", ")
+}
+
+// proactiveCleanUnknownContentTypes strips non-standard content blocks from messages
+// before forwarding to third-party upstreams. Returns true if any blocks were removed.
+func proactiveCleanUnknownContentTypes(req map[string]any) bool {
+	messages, ok := req["messages"].([]any)
+	if !ok {
+		return false
+	}
+	changed := false
+	for _, m := range messages {
+		msg, ok := m.(map[string]any)
+		if !ok {
+			continue
+		}
+		if filterContentBlocks(msg) {
+			changed = true
+		}
+	}
+	return changed
 }
 
 // requestBodySummary 从请求体中提取关键统计信息

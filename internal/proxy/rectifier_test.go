@@ -429,3 +429,19 @@ func TestMatchErrorPattern_ThoughtSignatureNotValid(t *testing.T) {
 		t.Errorf("expected PatternThinkingSignature, got %v", got)
 	}
 }
+
+func TestMatchErrorPattern_UnsupportedContentType(t *testing.T) {
+	body := []byte(`{"error":{"type":"invalid_request_error","message":"failed to convert tool result content: unsupported content type in ContentBlockParamUnion: tool_reference"}}`)
+	got := matchErrorPattern(body)
+	if got != PatternGenericBadRequest {
+		t.Errorf("expected PatternGenericBadRequest for unsupported content type error, got %v", got)
+	}
+}
+
+func TestMatchErrorPattern_UnknownContentType(t *testing.T) {
+	body := []byte(`{"error":{"message":"unknown content type in request"}}`)
+	got := matchErrorPattern(body)
+	if got != PatternGenericBadRequest {
+		t.Errorf("expected PatternGenericBadRequest for unknown content type error, got %v", got)
+	}
+}

@@ -134,11 +134,12 @@ func (s *SQLiteStore) migrateSchema() error {
 
 func (s *SQLiteStore) ensureProviderColumns() error {
 	columns := map[string]string{
-		"multimodal_switch":       `ALTER TABLE providers ADD COLUMN multimodal_switch INTEGER NOT NULL DEFAULT 0`,
-		"multimodal_model":        `ALTER TABLE providers ADD COLUMN multimodal_model TEXT NOT NULL DEFAULT ''`,
-		"api_format":              `ALTER TABLE providers ADD COLUMN api_format TEXT NOT NULL DEFAULT 'anthropic'`,
-		"openai_extra_params":     `ALTER TABLE providers ADD COLUMN openai_extra_params TEXT NOT NULL DEFAULT '{}'`,
-		"claude_code_compat_hint": `ALTER TABLE providers ADD COLUMN claude_code_compat_hint INTEGER`,
+		"multimodal_switch":            `ALTER TABLE providers ADD COLUMN multimodal_switch INTEGER NOT NULL DEFAULT 0`,
+		"multimodal_model":             `ALTER TABLE providers ADD COLUMN multimodal_model TEXT NOT NULL DEFAULT ''`,
+		"api_format":                   `ALTER TABLE providers ADD COLUMN api_format TEXT NOT NULL DEFAULT 'anthropic'`,
+		"openai_extra_params":          `ALTER TABLE providers ADD COLUMN openai_extra_params TEXT NOT NULL DEFAULT '{}'`,
+		"claude_code_compat_hint":      `ALTER TABLE providers ADD COLUMN claude_code_compat_hint INTEGER`,
+		"strip_unknown_content_blocks": `ALTER TABLE providers ADD COLUMN strip_unknown_content_blocks INTEGER NOT NULL DEFAULT 0`,
 	}
 	rows, err := s.db.Query(`PRAGMA table_info(providers)`)
 	if err != nil {
@@ -267,7 +268,7 @@ func (s *SQLiteStore) loadSettings() (map[string]string, error) {
 }
 
 func (s *SQLiteStore) loadProviders() ([]Provider, error) {
-	rows, err := s.db.Query(`SELECT id, name, api_url, api_token, api_format, openai_extra_params, supports_thinking, multimodal_switch, multimodal_model, claude_code_compat_hint, enabled, created_at, updated_at FROM providers ORDER BY created_at ASC, id ASC`)
+	rows, err := s.db.Query(`SELECT id, name, api_url, api_token, api_format, openai_extra_params, supports_thinking, multimodal_switch, multimodal_model, claude_code_compat_hint, strip_unknown_content_blocks, enabled, created_at, updated_at FROM providers ORDER BY created_at ASC, id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -276,10 +277,10 @@ func (s *SQLiteStore) loadProviders() ([]Provider, error) {
 	var providers []Provider
 	for rows.Next() {
 		var p Provider
-		var supportsThinking, multimodalSwitch, enabled int
+		var supportsThinking, multimodalSwitch, enabled, stripUnknownContentBlocks int
 		var claudeCodeCompatHint sql.NullBool
 		var openAIExtraParams, createdAt, updatedAt string
-		if err := rows.Scan(&p.ID, &p.Name, &p.APIURL, &p.APIToken, &p.APIFormat, &openAIExtraParams, &supportsThinking, &multimodalSwitch, &p.MultimodalModel, &claudeCodeCompatHint, &enabled, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.APIURL, &p.APIToken, &p.APIFormat, &openAIExtraParams, &supportsThinking, &multimodalSwitch, &p.MultimodalModel, &claudeCodeCompatHint, &stripUnknownContentBlocks, &enabled, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
 		p.normalizeDefaults()
@@ -290,6 +291,7 @@ func (s *SQLiteStore) loadProviders() ([]Provider, error) {
 		p.OpenAIExtraParams = params
 		p.SupportsThinking = supportsThinking == 1
 		p.MultimodalSwitch = multimodalSwitch == 1
+		p.StripUnknownContentBlocks = stripUnknownContentBlocks == 1
 		if claudeCodeCompatHint.Valid {
 			p.ClaudeCodeCompatHint = &claudeCodeCompatHint.Bool
 		}
@@ -415,8 +417,8 @@ func upsertProvider(tx *sql.Tx, provider Provider) error {
 	}
 
 	_, err = tx.Exec(
-		`INSERT INTO providers(id, name, api_url, api_token, api_format, openai_extra_params, supports_thinking, multimodal_switch, multimodal_model, claude_code_compat_hint, enabled, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO providers(id, name, api_url, api_token, api_format, openai_extra_params, supports_thinking, multimodal_switch, multimodal_model, claude_code_compat_hint, strip_unknown_content_blocks, enabled, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		 name = excluded.name,
 		 api_url = excluded.api_url,
@@ -427,6 +429,7 @@ func upsertProvider(tx *sql.Tx, provider Provider) error {
 		 multimodal_switch = excluded.multimodal_switch,
 		 multimodal_model = excluded.multimodal_model,
 		 claude_code_compat_hint = excluded.claude_code_compat_hint,
+		 strip_unknown_content_blocks = excluded.strip_unknown_content_blocks,
 		 enabled = excluded.enabled,
 		 created_at = excluded.created_at,
 		 updated_at = excluded.updated_at`,
@@ -440,6 +443,7 @@ func upsertProvider(tx *sql.Tx, provider Provider) error {
 		boolToInt(provider.MultimodalSwitch),
 		provider.MultimodalModel,
 		nullableBool(provider.ClaudeCodeCompatHint),
+		boolToInt(provider.StripUnknownContentBlocks),
 		boolToInt(provider.Enabled),
 		createdAt.UTC().Format(time.RFC3339Nano),
 		updatedAt.UTC().Format(time.RFC3339Nano),

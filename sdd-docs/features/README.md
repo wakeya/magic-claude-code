@@ -112,6 +112,8 @@ Local page / proxy entry / reference sources / stack / last updated / progress
 | OpenAI-Compatible API Format Support | `2026-06-12-openai-compatible-api-format/spec.md` | `2026-06-12-openai-compatible-api-format/spec_ZH.md` |
 | Auto-Update | `2026-06-13-auto-update/spec.md` | `2026-06-13-auto-update/spec_ZH.md` |
 | Version Display Fix | `2026-06-14-version-display-fix/spec.md` | `2026-06-14-version-display-fix/spec_ZH.md` |
+| Proactive Content Block Cleanup | `2026-06-15-proactive-content-block-cleanup/spec.md` | `2026-06-15-proactive-content-block-cleanup/spec_ZH.md` |
+| Provider Rate-Limit Queue | `2026-06-16-provider-rate-limit-queue/spec.md` | `2026-06-16-provider-rate-limit-queue/spec_ZH.md` |
 
 ## 状态生命周期
 

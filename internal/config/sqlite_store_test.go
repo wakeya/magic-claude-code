@@ -144,6 +144,58 @@ func TestSQLiteStorePersistsProviderAPIFormatAndOpenAIExtraParams(t *testing.T) 
 	}
 }
 
+func TestSQLiteStorePersistsStripUnknownContentBlocks(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewSQLiteStore(filepath.Join(dir, "proxy.db"), filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	provider := testProvider("provider-kimi", "Kimi", "https://api.moonshot.cn/anthropic", "token", true)
+	provider.APIFormat = APIFormatAnthropic
+	provider.StripUnknownContentBlocks = true
+
+	cfg := DefaultConfig()
+	cfg.Providers = []Provider{provider}
+	cfg.ActiveProviderID = provider.ID
+
+	if err := store.Save(cfg); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	got := loaded.GetProviderByID(provider.ID)
+	if got == nil {
+		t.Fatal("provider missing after load")
+	}
+	if !got.StripUnknownContentBlocks {
+		t.Fatalf("StripUnknownContentBlocks = false, want true")
+	}
+
+	// 测试默认值（未设置时应为 false）
+	provider2 := testProvider("provider-glm", "GLM", "https://open.bigmodel.cn/api/anthropic", "token", true)
+	cfg2 := DefaultConfig()
+	cfg2.Providers = []Provider{provider2}
+	if err := store.Save(cfg2); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	loaded2, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	got2 := loaded2.GetProviderByID(provider2.ID)
+	if got2 == nil {
+		t.Fatal("provider2 missing after load")
+	}
+	if got2.StripUnknownContentBlocks {
+		t.Fatalf("StripUnknownContentBlocks = true, want false by default")
+	}
+}
+
 func TestSQLiteStorePersistsAdminThemeMode(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := NewSQLiteStore(filepath.Join(tmpDir, "config.db"), filepath.Join(tmpDir, "config.json"))

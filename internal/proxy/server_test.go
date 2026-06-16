@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"crypto/tls"
 	"encoding/json"
 	"io"
@@ -924,11 +925,11 @@ func TestStripAnthropicQueryParams(t *testing.T) {
 
 func TestCopyUpstreamHeadersFiltersAnthropicHeaders(t *testing.T) {
 	tests := []struct {
-		name          string
-		apiFormat     config.APIFormat
-		inputHeaders  http.Header
-		wantPresent   []string
-		wantAbsent    []string
+		name         string
+		apiFormat    config.APIFormat
+		inputHeaders http.Header
+		wantPresent  []string
+		wantAbsent   []string
 	}{
 		{
 			name:      "anthropic format keeps Anthropic-Version and Anthropic-Beta",
@@ -1015,5 +1016,137 @@ func TestCopyUpstreamHeadersFiltersAnthropicHeaders(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+const toolReferenceBody = `{
+	"model":"claude-opus-4-6",
+	"messages":[{
+		"role":"user",
+		"content":[{
+			"type":"tool_result",
+			"tool_use_id":"tool_123",
+			"content":[
+				{"type":"tool_reference","tool_name":"WebSearch"},
+				{"type":"text","text":"Search results here"}
+			]
+		}]
+	}]
+}`
+
+func findToolReference(content []any) bool {
+	for _, c := range content {
+		cb, ok := c.(map[string]any)
+		if !ok {
+			continue
+		}
+		if cb["type"] == "tool_reference" {
+			return true
+		}
+		if inner, ok := cb["content"].([]any); ok {
+			if findToolReference(inner) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// 场景 1：anthropic + strip=false → tool_reference 保留，保持透传
+func TestProactiveClean_AnthropicDefault_PreservesToolReference(t *testing.T) {
+	provider := config.NewProvider("glm", "https://open.bigmodel.cn/api/anthropic", "token")
+	provider.APIFormat = config.APIFormatAnthropic
+
+	handler := NewHandler(config.NewMockStore(nil), nil)
+	modified, err := handler.transformRequest([]byte(toolReferenceBody), provider)
+	if err != nil {
+		t.Fatalf("transform request: %v", err)
+	}
+
+	var req map[string]any
+	json.Unmarshal(modified, &req)
+	messages := req["messages"].([]any)
+	msg := messages[0].(map[string]any)
+	content := msg["content"].([]any)
+	if !findToolReference(content) {
+		t.Fatalf("tool_reference should be preserved when strip_unknown_content_blocks=false")
+	}
+}
+
+// 场景 2：anthropic + strip=true → tool_reference 被主动清洗
+func TestProactiveClean_AnthropicStripEnabled_RemovesToolReference(t *testing.T) {
+	provider := config.NewProvider("kimi", "https://api.moonshot.cn/anthropic", "token")
+	provider.APIFormat = config.APIFormatAnthropic
+	provider.StripUnknownContentBlocks = true
+
+	handler := NewHandler(config.NewMockStore(nil), nil)
+	modified, err := handler.transformRequest([]byte(toolReferenceBody), provider)
+	if err != nil {
+		t.Fatalf("transform request: %v", err)
+	}
+
+	var req map[string]any
+	json.Unmarshal(modified, &req)
+	messages := req["messages"].([]any)
+	msg := messages[0].(map[string]any)
+	content := msg["content"].([]any)
+	if findToolReference(content) {
+		t.Fatalf("tool_reference should have been stripped when strip_unknown_content_blocks=true")
+	}
+}
+
+// 场景 3：official anthropic（strip=false 默认）→ 不清洗
+func TestProactiveClean_OfficialAnthropic_PreservesToolReference(t *testing.T) {
+	provider := config.NewProvider("official", "https://api.anthropic.com", "token")
+	provider.APIFormat = config.APIFormatAnthropic
+
+	handler := NewHandler(config.NewMockStore(nil), nil)
+	modified, err := handler.transformRequest([]byte(toolReferenceBody), provider)
+	if err != nil {
+		t.Fatalf("transform request: %v", err)
+	}
+
+	var req map[string]any
+	json.Unmarshal(modified, &req)
+	messages := req["messages"].([]any)
+	msg := messages[0].(map[string]any)
+	content := msg["content"].([]any)
+	if !findToolReference(content) {
+		t.Fatalf("tool_reference should be preserved for official Anthropic API")
+	}
+}
+
+// 场景 4：openai_chat + strip=true → 仍不调用 proactiveCleanUnknownContentTypes，由转换层处理
+func TestProactiveClean_OpenAIChat_StripFlagHasNoEffect(t *testing.T) {
+	provider := config.NewProvider("glm", "https://open.bigmodel.cn/api/paas/v4", "token")
+	provider.APIFormat = config.APIFormatOpenAIChat
+	provider.ModelMappings["claude-opus-4-6"] = "glm-4-plus"
+
+	handler := NewHandler(config.NewMockStore(nil), nil)
+	body := []byte(toolReferenceBody)
+
+	provider.StripUnknownContentBlocks = false
+	withoutStrip, err := handler.transformRequest(body, provider)
+	if err != nil {
+		t.Fatalf("transform without strip: %v", err)
+	}
+
+	provider.StripUnknownContentBlocks = true
+	withStrip, err := handler.transformRequest(body, provider)
+	if err != nil {
+		t.Fatalf("transform with strip: %v", err)
+	}
+
+	if !bytes.Equal(withoutStrip, withStrip) {
+		t.Fatalf("OpenAI Chat output must be identical regardless of strip flag — proactive cleanup should not run for non-anthropic format")
+	}
+}
+
+// 场景 5：Kimi 错误 "unsupported content type..." 命中 PatternGenericBadRequest
+func TestMatchErrorPattern_KimiUnsupportedContentType(t *testing.T) {
+	body := []byte(`{"error":{"type":"invalid_request_error","message":"failed to convert tool result content: unsupported content type in ContentBlockParamUnion: tool_reference"}}`)
+	got := matchErrorPattern(body)
+	if got != PatternGenericBadRequest {
+		t.Errorf("expected PatternGenericBadRequest, got %v", got)
 	}
 }

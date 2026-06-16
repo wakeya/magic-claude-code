@@ -164,6 +164,9 @@ func isToolValidationError(lower string) bool {
 	if strings.Contains(lower, "tool_use") && strings.Contains(lower, "without") && strings.Contains(lower, "tool_result") {
 		return true
 	}
+	if strings.Contains(lower, "unsupported content type") || strings.Contains(lower, "unknown content type") {
+		return false
+	}
 	if !hasGenericInvalidRequestPhrase(lower) {
 		return false
 	}
@@ -175,7 +178,9 @@ func hasGenericInvalidRequestPhrase(lower string) bool {
 		strings.Contains(lower, "invalid_request_error") ||
 		strings.Contains(lower, "invalid params") ||
 		strings.Contains(lower, "非法请求") ||
-		strings.Contains(lower, "illegal request")
+		strings.Contains(lower, "illegal request") ||
+		strings.Contains(lower, "unsupported content type") ||
+		strings.Contains(lower, "unknown content type")
 }
 
 func hasToolErrorContext(lower string) bool {
@@ -352,6 +357,7 @@ func findLastAssistantMessage(messages []any) map[string]any {
 var knownContentTypes = map[string]bool{
 	"text": true, "image": true, "tool_use": true, "tool_result": true,
 	"thinking": true, "redacted_thinking": true,
+	"document": true, "file": true,
 }
 
 // cleanUnknownContentTypes removes non-standard content blocks (e.g. tool_reference)

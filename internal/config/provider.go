@@ -55,6 +55,11 @@ type Provider struct {
 	// MultimodalModel 多模态请求使用的模型 ID
 	MultimodalModel string `json:"multimodal_model"`
 
+	// StripUnknownContentBlocks controls whether non-standard content blocks
+	// (e.g. tool_reference) are proactively stripped before forwarding.
+	// Enable for providers with strict content-type validation (e.g. Kimi).
+	StripUnknownContentBlocks bool `json:"strip_unknown_content_blocks"`
+
 	// Enabled 是否启用
 	Enabled bool `json:"enabled"`
 

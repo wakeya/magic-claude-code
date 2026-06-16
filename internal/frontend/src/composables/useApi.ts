@@ -29,6 +29,7 @@ export interface Provider {
   supports_thinking: boolean
   multimodal_switch: boolean
   multimodal_model: string
+  strip_unknown_content_blocks: boolean
   enabled: boolean
   active: boolean
   created_at: string
