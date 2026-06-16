@@ -85,6 +85,8 @@ npm --prefix internal/frontend run build
 
 6. 发布版本通过 `v*` tag 触发 CI 构建和同步资产。不要手工打包后直接替换远端发布资产，除非这是一次单独的发布修复任务。
 
+7. 发版前在 `sdd-docs/changes/release-notes/vX.Y.Z.md` 编写发布说明并提交。CI 会优先使用此文件作为 Release 描述；未提供时从 git log 自动生成。
+
 ## 常见问题
 
 ### Q: 证书过期怎么办？

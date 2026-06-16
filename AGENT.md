@@ -144,7 +144,37 @@ git commit -m "feat: ..."
 git push origin main
 ```
 
-### 2. 打 tag 发布
+### 2. 编写发布说明
+
+在 `sdd-docs/changes/release-notes/` 下创建 `vX.Y.Z.md` 文件，记录本次版本变更摘要：
+
+```bash
+# 参考格式
+cat > sdd-docs/changes/release-notes/v0.4.0.md <<'EOF'
+## v0.4.0 更新内容
+
+### Added
+- 新功能描述
+
+### Changed
+- 变更描述
+
+### Fixed
+- 修复描述
+EOF
+```
+
+CI 发布时会优先读取此文件作为 GitHub Release 描述。如果文件不存在，CI 会从 git log 自动生成（仅 commit 标题，不含详情）。
+
+提交发布说明：
+
+```bash
+git add sdd-docs/changes/release-notes/vX.Y.Z.md
+git commit -m "docs: add release notes for vX.Y.Z"
+git push origin main
+```
+
+### 3. 打 tag 发布
 
 确认 `main` 已推送后创建版本 tag：
 
@@ -155,7 +185,7 @@ git push origin vX.Y.Z
 
 tag 名必须符合 `v0.1.0` 这类语义版本格式。CI 会执行前端构建、Go 测试、跨平台二进制构建、SHA256SUMS 生成和发布资产上传。
 
-### 3. 发布后检查
+### 4. 发布后检查
 
 检查 GitHub/GitLab Release 或 Package 中是否包含：
 
