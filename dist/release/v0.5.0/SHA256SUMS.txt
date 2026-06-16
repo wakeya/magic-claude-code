@@ -1,0 +1,6 @@
+5e97ac308abe667b29016d5322031704522b2aca5333259b11a3a9c41158266b  Magic-Claude-Code-v0.5.0-Linux-arm64.tar.gz
+1314c647938dac1f180a5a47aca649ff062454fe8b7d18044c2d844130df2242  Magic-Claude-Code-v0.5.0-Linux-x86_64.tar.gz
+a45692dc97b762f226d15295124cd4c2af2216b85670e7083c5edd6281af4c83  Magic-Claude-Code-v0.5.0-macOS-arm64.tar.gz
+bb36c29b624ef2f1734a3a5d7b847d3fc7e071b4ea563ea85be0aceedc9b6e09  Magic-Claude-Code-v0.5.0-macOS-x86_64.tar.gz
+d2b2d0ba5ad3cecec4d05369ef7f5970cfbd35ea38269c648b72bae977310c41  Magic-Claude-Code-v0.5.0-Windows-arm64.zip
+15920547f5907ac0c377078690544f57100d399c06243efaa67a5e308367812c  Magic-Claude-Code-v0.5.0-Windows-x86_64.zip
