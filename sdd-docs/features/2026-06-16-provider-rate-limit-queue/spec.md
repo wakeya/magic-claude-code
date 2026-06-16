@@ -5,7 +5,7 @@ Proxy entry: `internal/proxy/handler.go` ServeHTTP / upstream request path aroun
 Reference sources: User-provided provider rate-limit guidance (error codes 1302, 1305)  
 Stack: Go 1.26 stdlib (`sync`, `time`, `container/list` or channels) + Vue 3 + SQLite config store  
 Last updated: 2026-06-16  
-Progress: 0 / 6 planned
+Progress: 6 / 6 done
 
 ## Overall Analysis (Source Analysis)
 
@@ -73,12 +73,12 @@ Use two layers:
 
 | Order | Status | Task | Output | Verification |
 | --- | --- | --- | --- | --- |
-| 1 | Planned | Provider rate-limit config model | Provider fields, SQLite schema, admin API | Config round-trip tests |
-| 2 | Planned | Provider concurrency pool and queue | `internal/proxy/ratelimit` or equivalent component | Concurrency, queue, timeout tests |
-| 3 | Planned | Proxy request-path wiring | Acquire/release around upstream request path | Streaming release tests |
-| 4 | Planned | 429 backoff retry | 1302/1305 detection, Retry-After, exponential backoff | Mock upstream 429 retry tests |
-| 5 | Planned | Admin UI config | ProviderModal, useApi, i18n | Frontend build and interaction check |
-| 6 | Planned | Observability and safety verification | Request logs, queue rejection errors, test record | `go test ./...`, frontend build |
+| 1 | Done | Provider rate-limit config model | Provider fields, SQLite schema, admin API | Config round-trip tests |
+| 2 | Done | Provider concurrency pool and queue | `internal/proxy/ratelimit` or equivalent component | Concurrency, queue, timeout tests |
+| 3 | Done | Proxy request-path wiring | Acquire/release around upstream request path | Streaming release tests |
+| 4 | Done | 429 backoff retry | 1302/1305 detection, Retry-After, exponential backoff | Mock upstream 429 retry tests |
+| 5 | Done | Admin UI config | ProviderModal, useApi, i18n | Frontend build and interaction check |
+| 6 | Done | Observability and safety verification | Request logs, queue rejection errors, test record | `go test ./...`, frontend build |
 
 ## Requirements
 
@@ -258,10 +258,10 @@ Validation:
 
 #### Verification
 
-- [ ] Old database auto-adds columns.
-- [ ] Admin create returns the fields.
-- [ ] Admin update persists the fields.
-- [ ] Duplicate Provider keeps the rate-limit config.
+- [x] Old database auto-adds columns.
+- [x] Admin create returns the fields.
+- [x] Admin update persists the fields.
+- [x] Duplicate Provider keeps the rate-limit config.
 
 ### Task 2: Provider Concurrency Pool and Queue
 
@@ -288,10 +288,10 @@ Validation:
 
 #### Verification
 
-- [ ] Concurrency limit is stable.
-- [ ] FIFO order is stable.
-- [ ] Timeout does not leak slots or queue entries.
-- [ ] Cancellation does not leak slots or queue entries.
+- [x] Concurrency limit is stable.
+- [x] FIFO order is stable.
+- [x] Timeout does not leak slots or queue entries.
+- [x] Cancellation does not leak slots or queue entries.
 
 ### Task 3: Proxy Request-Path Wiring
 
@@ -319,10 +319,10 @@ Validation:
 
 #### Verification
 
-- [ ] Non-streaming success and failure release slots.
-- [ ] Streaming EOF releases slots.
-- [ ] Client disconnect releases slots.
-- [ ] HTTP 400 rectifier still works.
+- [x] Non-streaming success and failure release slots.
+- [x] Streaming EOF releases slots.
+- [x] Client disconnect releases slots.
+- [x] HTTP 400 rectifier still works.
 
 ### Task 4: 429 Backoff Retry
 
@@ -350,10 +350,10 @@ Validation:
 
 #### Verification
 
-- [ ] 1302 retries according to config.
-- [ ] 1305 retries with backoff.
-- [ ] Retry-After has priority over local delay calculation.
-- [ ] Retry stops at the configured maximum attempts.
+- [x] 1302 retries according to config.
+- [x] 1305 retries with backoff.
+- [x] Retry-After has priority over local delay calculation.
+- [x] Retry stops at the configured maximum attempts.
 
 ### Task 5: Admin UI Config
 
@@ -380,13 +380,13 @@ Validation:
 
 #### Verification
 
-- [ ] New Provider can save rate-limit fields.
-- [ ] Edit Provider can render rate-limit fields.
-- [ ] The default UI shows only the collapsed entry point or master switches, not every advanced numeric field.
-- [ ] Checking "Enable request queue" reveals queue numeric fields.
-- [ ] Checking "Enable 429 backoff retry" reveals retry numeric fields.
-- [ ] Invalid config is blocked by frontend or backend.
-- [ ] Frontend build passes.
+- [x] New Provider can save rate-limit fields.
+- [x] Edit Provider can render rate-limit fields.
+- [x] The default UI shows only the collapsed entry point or master switches, not every advanced numeric field.
+- [x] Checking "Enable request queue" reveals queue numeric fields.
+- [x] Checking "Enable 429 backoff retry" reveals retry numeric fields.
+- [x] Invalid config is blocked by frontend or backend.
+- [x] Frontend build passes.
 
 ### Task 6: Observability and Safety Verification
 
@@ -413,6 +413,6 @@ Validation:
 
 #### Verification
 
-- [ ] `go test ./...` passes.
-- [ ] Logs contain no sensitive data.
-- [ ] Queue full, timeout, and retry exhaustion are easy to diagnose.
+- [x] `go test ./...` passes.
+- [x] Logs contain no sensitive data.
+- [x] Queue full, timeout, and retry exhaustion are easy to diagnose.
