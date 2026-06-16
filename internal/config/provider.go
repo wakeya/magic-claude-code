@@ -60,6 +60,33 @@ type Provider struct {
 	// Enable for providers with strict content-type validation (e.g. Kimi).
 	StripUnknownContentBlocks bool `json:"strip_unknown_content_blocks"`
 
+	// RateLimitQueueEnabled enables local concurrency queue for this provider.
+	RateLimitQueueEnabled bool `json:"rate_limit_queue_enabled"`
+
+	// MaxConcurrentRequests caps simultaneous in-flight upstream requests.
+	// 0 means unlimited (no concurrency control).
+	MaxConcurrentRequests int `json:"max_concurrent_requests"`
+
+	// MaxQueueSize caps waiting requests when concurrency is full.
+	// 0 means reject immediately when concurrency is full.
+	MaxQueueSize int `json:"max_queue_size"`
+
+	// QueueTimeoutMS is the max wait time in milliseconds for a queued request.
+	QueueTimeoutMS int `json:"queue_timeout_ms"`
+
+	// Retry429Enabled enables bounded exponential-backoff retry for upstream 429.
+	Retry429Enabled bool `json:"retry_429_enabled"`
+
+	// Retry429MaxAttempts is the max retry count (excluding the initial request).
+	Retry429MaxAttempts int `json:"retry_429_max_attempts"`
+
+	// Retry429InitialDelayMS is the initial back-off delay in milliseconds
+	// when no Retry-After header is present.
+	Retry429InitialDelayMS int `json:"retry_429_initial_delay_ms"`
+
+	// Retry429MaxDelayMS caps each single back-off delay in milliseconds.
+	Retry429MaxDelayMS int `json:"retry_429_max_delay_ms"`
+
 	// Enabled 是否启用
 	Enabled bool `json:"enabled"`
 
@@ -115,12 +142,60 @@ func (p *Provider) Validate() error {
 		return fmt.Errorf("unsupported api_format: %s", p.APIFormat)
 	}
 
+	if p.MaxConcurrentRequests < 0 {
+		return fmt.Errorf("max_concurrent_requests must not be negative")
+	}
+	if p.MaxQueueSize < 0 {
+		return fmt.Errorf("max_queue_size must not be negative")
+	}
+	if p.QueueTimeoutMS < 0 {
+		return fmt.Errorf("queue_timeout_ms must not be negative")
+	}
+	if p.Retry429MaxAttempts < 0 {
+		return fmt.Errorf("retry_429_max_attempts must not be negative")
+	}
+	if p.Retry429InitialDelayMS < 0 {
+		return fmt.Errorf("retry_429_initial_delay_ms must not be negative")
+	}
+	if p.Retry429MaxDelayMS < 0 {
+		return fmt.Errorf("retry_429_max_delay_ms must not be negative")
+	}
+
+	if p.RateLimitQueueEnabled {
+		if p.MaxConcurrentRequests <= 0 {
+			return fmt.Errorf("max_concurrent_requests must be > 0 when rate_limit_queue_enabled")
+		}
+		if p.MaxQueueSize > 0 && p.QueueTimeoutMS <= 0 {
+			return fmt.Errorf("queue_timeout_ms must be > 0 when max_queue_size > 0")
+		}
+	}
+
+	if p.Retry429Enabled {
+		if p.Retry429MaxAttempts <= 0 {
+			return fmt.Errorf("retry_429_max_attempts must be > 0 when retry_429_enabled")
+		}
+	}
+
 	return nil
 }
 
 func (p *Provider) normalizeDefaults() {
 	if p.APIFormat == "" {
 		p.APIFormat = APIFormatAnthropic
+	}
+	if p.QueueTimeoutMS == 0 && p.RateLimitQueueEnabled {
+		p.QueueTimeoutMS = 60000
+	}
+	if p.Retry429Enabled {
+		if p.Retry429MaxAttempts == 0 {
+			p.Retry429MaxAttempts = 2
+		}
+		if p.Retry429InitialDelayMS == 0 {
+			p.Retry429InitialDelayMS = 1000
+		}
+		if p.Retry429MaxDelayMS == 0 {
+			p.Retry429MaxDelayMS = 10000
+		}
 	}
 }
 

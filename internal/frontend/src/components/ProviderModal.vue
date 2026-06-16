@@ -84,6 +84,52 @@
         <input v-model="form.multimodal_model" type="text" placeholder="mimo-vl-pro" class="app-control w-full px-4 py-3 rounded-lg text-sm transition-all duration-200 outline-none focus:border-primary" />
       </div>
 
+      <div class="mb-5 pt-4" style="border-top: 1px solid var(--app-border)">
+        <h3 class="text-sm font-bold mb-3">{{ t('modal.rate_limit_section') }}</h3>
+
+        <label class="flex items-center gap-2 cursor-pointer mb-2">
+          <input v-model="form.rate_limit_queue_enabled" type="checkbox" class="w-4 h-4 accent-primary cursor-pointer" />
+          <span class="text-sm font-semibold">{{ t('modal.rate_limit_queue_enabled') }}</span>
+        </label>
+        <p class="app-muted text-xs mb-3">{{ t('modal.rate_limit_queue_hint') }}</p>
+
+        <div v-if="form.rate_limit_queue_enabled" class="grid grid-cols-3 gap-3 mb-4">
+          <div>
+            <label class="block text-xs font-semibold mb-1">{{ t('modal.max_concurrent_requests') }}</label>
+            <input v-model.number="form.max_concurrent_requests" type="number" min="1" class="app-control w-full px-3 py-2 rounded-md text-sm outline-none focus:border-primary" />
+          </div>
+          <div>
+            <label class="block text-xs font-semibold mb-1">{{ t('modal.max_queue_size') }}</label>
+            <input v-model.number="form.max_queue_size" type="number" min="0" class="app-control w-full px-3 py-2 rounded-md text-sm outline-none focus:border-primary" />
+          </div>
+          <div>
+            <label class="block text-xs font-semibold mb-1">{{ t('modal.queue_timeout_ms') }}</label>
+            <input v-model.number="form.queue_timeout_ms" type="number" min="1000" class="app-control w-full px-3 py-2 rounded-md text-sm outline-none focus:border-primary" />
+          </div>
+        </div>
+
+        <label class="flex items-center gap-2 cursor-pointer mb-2">
+          <input v-model="form.retry_429_enabled" type="checkbox" class="w-4 h-4 accent-primary cursor-pointer" />
+          <span class="text-sm font-semibold">{{ t('modal.retry_429_enabled') }}</span>
+        </label>
+        <p class="app-muted text-xs mb-3">{{ t('modal.retry_429_hint') }}</p>
+
+        <div v-if="form.retry_429_enabled" class="grid grid-cols-3 gap-3">
+          <div>
+            <label class="block text-xs font-semibold mb-1">{{ t('modal.retry_429_max_attempts') }}</label>
+            <input v-model.number="form.retry_429_max_attempts" type="number" min="1" class="app-control w-full px-3 py-2 rounded-md text-sm outline-none focus:border-primary" />
+          </div>
+          <div>
+            <label class="block text-xs font-semibold mb-1">{{ t('modal.retry_429_initial_delay_ms') }}</label>
+            <input v-model.number="form.retry_429_initial_delay_ms" type="number" min="100" class="app-control w-full px-3 py-2 rounded-md text-sm outline-none focus:border-primary" />
+          </div>
+          <div>
+            <label class="block text-xs font-semibold mb-1">{{ t('modal.retry_429_max_delay_ms') }}</label>
+            <input v-model.number="form.retry_429_max_delay_ms" type="number" min="1000" class="app-control w-full px-3 py-2 rounded-md text-sm outline-none focus:border-primary" />
+          </div>
+        </div>
+      </div>
+
       <div class="mb-5">
         <label class="block text-[13px] font-semibold mb-2">{{ t('modal.model_mappings') }}</label>
         <div class="space-y-2.5">
@@ -136,6 +182,14 @@ const form = reactive({
   multimodal_switch: false,
   multimodal_model: '',
   strip_unknown_content_blocks: false,
+  rate_limit_queue_enabled: false,
+  max_concurrent_requests: 5,
+  max_queue_size: 20,
+  queue_timeout_ms: 60000,
+  retry_429_enabled: false,
+  retry_429_max_attempts: 2,
+  retry_429_initial_delay_ms: 1000,
+  retry_429_max_delay_ms: 10000,
 })
 
 const mappings = ref<{ from: string; to: string }[]>([{ from: '', to: '' }])
@@ -152,6 +206,22 @@ watch(() => form.api_format, (newFormat, oldFormat) => {
   }
 })
 
+watch(() => form.rate_limit_queue_enabled, (enabled) => {
+  if (enabled) {
+    if (form.max_concurrent_requests <= 0) form.max_concurrent_requests = 5
+    if (form.max_queue_size <= 0) form.max_queue_size = 20
+    if (form.queue_timeout_ms <= 0) form.queue_timeout_ms = 60000
+  }
+})
+
+watch(() => form.retry_429_enabled, (enabled) => {
+  if (enabled) {
+    if (form.retry_429_max_attempts <= 0) form.retry_429_max_attempts = 2
+    if (form.retry_429_initial_delay_ms <= 0) form.retry_429_initial_delay_ms = 1000
+    if (form.retry_429_max_delay_ms <= 0) form.retry_429_max_delay_ms = 10000
+  }
+})
+
 onMounted(() => {
   if (props.provider) {
     form.name = props.provider.name
@@ -163,6 +233,14 @@ onMounted(() => {
     form.multimodal_switch = props.provider.multimodal_switch || false
     form.multimodal_model = props.provider.multimodal_model || ''
     form.strip_unknown_content_blocks = props.provider.strip_unknown_content_blocks || false
+    form.rate_limit_queue_enabled = props.provider.rate_limit_queue_enabled || false
+    form.max_concurrent_requests = props.provider.max_concurrent_requests || 5
+    form.max_queue_size = props.provider.max_queue_size || 20
+    form.queue_timeout_ms = props.provider.queue_timeout_ms || 60000
+    form.retry_429_enabled = props.provider.retry_429_enabled || false
+    form.retry_429_max_attempts = props.provider.retry_429_max_attempts || 2
+    form.retry_429_initial_delay_ms = props.provider.retry_429_initial_delay_ms || 1000
+    form.retry_429_max_delay_ms = props.provider.retry_429_max_delay_ms || 10000
     openAIExtraParamsText.value = formatOpenAIExtraParams(props.provider.openai_extra_params || defaultOpenAIExtraParams())
     const entries = Object.entries(props.provider.model_mappings || {})
     mappings.value = entries.length > 0 ? entries.map(([from, to]) => ({ from, to })) : [{ from: '', to: '' }]
@@ -207,6 +285,14 @@ async function save() {
     multimodal_switch: form.multimodal_switch,
     multimodal_model: form.multimodal_switch ? form.multimodal_model.trim() : '',
     strip_unknown_content_blocks: form.strip_unknown_content_blocks,
+    rate_limit_queue_enabled: form.rate_limit_queue_enabled,
+    max_concurrent_requests: form.rate_limit_queue_enabled ? Number(form.max_concurrent_requests) : 0,
+    max_queue_size: form.rate_limit_queue_enabled ? Number(form.max_queue_size) : 0,
+    queue_timeout_ms: form.rate_limit_queue_enabled ? Number(form.queue_timeout_ms) : 0,
+    retry_429_enabled: form.retry_429_enabled,
+    retry_429_max_attempts: form.retry_429_enabled ? Number(form.retry_429_max_attempts) : 0,
+    retry_429_initial_delay_ms: form.retry_429_enabled ? Number(form.retry_429_initial_delay_ms) : 0,
+    retry_429_max_delay_ms: form.retry_429_enabled ? Number(form.retry_429_max_delay_ms) : 0,
   }
 
   try {

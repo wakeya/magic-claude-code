@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"magic-claude-code/internal/config"
+	"magic-claude-code/internal/proxy/ratelimit"
 	apitransform "magic-claude-code/internal/proxy/transform"
 	"magic-claude-code/internal/usage"
 )
@@ -24,6 +26,7 @@ type Handler struct {
 	configStore config.ConfigStore
 	transport   *http.Transport
 	recorder    UsageRecorder
+	rateLimiter *ratelimit.Manager
 }
 
 type UsageRecorder interface {
@@ -35,6 +38,7 @@ func NewHandler(store config.ConfigStore, transport *http.Transport, recorders .
 	handler := &Handler{
 		configStore: store,
 		transport:   transport,
+		rateLimiter: ratelimit.NewManager(),
 	}
 	if len(recorders) > 0 {
 		handler.recorder = recorders[0]
@@ -139,27 +143,66 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	usageReq := h.newUsageRequest(r, activeProvider, backendURL, metadata, mappedModel, len(modifiedBody))
 	shouldRecordUsage := h.recorder != nil && shouldRecordUsagePath(r.URL.Path)
 
-	backendReq, err := http.NewRequest(r.Method, backendURL, bytes.NewReader(modifiedBody))
-	if err != nil {
-		log.Printf("[%s] <<< %d error=request_construct: %v",
-			reqID, http.StatusInternalServerError, err)
-		http.Error(w, "Error creating backend request", http.StatusInternalServerError)
-		return
-	}
-
-	// 复制所有 header（跳过 Host 和 Accept-Encoding，防止上游压缩 SSE 响应）
-	copyUpstreamHeaders(backendReq, r.Header, apiToken, providerAPIFormat(activeProvider))
-
-	// 发送请求到后端
-	// AI API 请求可能需要较长时间（特别是流式响应），设置较长的超时
+	apiFmt := providerAPIFormat(activeProvider)
 	client := &http.Client{
 		Transport: h.transport,
-		Timeout:   10 * time.Minute, // AI API 可能需要较长时间
+		Timeout:   10 * time.Minute,
+	}
+
+	doUpstream := func() (*http.Response, error) {
+		upReq, upErr := http.NewRequestWithContext(r.Context(), r.Method, backendURL, bytes.NewReader(modifiedBody))
+		if upErr != nil {
+			return nil, upErr
+		}
+		copyUpstreamHeaders(upReq, r.Header, apiToken, apiFmt)
+		return client.Do(upReq)
+	}
+
+	if activeProvider != nil && activeProvider.RateLimitQueueEnabled && activeProvider.MaxConcurrentRequests > 0 {
+		result, acquireErr := h.rateLimiter.Acquire(r.Context(), activeProvider.ID,
+			activeProvider.MaxConcurrentRequests, activeProvider.MaxQueueSize, activeProvider.QueueTimeoutMS)
+		if acquireErr != nil {
+			statusCode := http.StatusTooManyRequests
+			errType := "rate_limit_queue_full"
+			if errors.Is(acquireErr, ratelimit.ErrQueueTimeout) {
+				statusCode = http.StatusGatewayTimeout
+				errType = "rate_limit_queue_timeout"
+			}
+			log.Printf("[%s] <<< %d rate_limit=%s provider=%s",
+				reqID, statusCode, errType, activeProvider.ID)
+			if shouldRecordUsage {
+				usageReq.ErrorType = errType
+				h.finishUsageRecord(usageReq, usage.TokenRecord{
+					UsageSource:      usage.UsageSourceNone,
+					UsageParseStatus: usage.ParseStatusSkippedNon2xx,
+				})
+			}
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, errType), statusCode)
+			return
+		}
+		defer result.Release()
+		if result.Queued {
+			log.Printf("[%s] <<< rate_limit_queue provider=%s wait=%v",
+				reqID, activeProvider.ID, result.WaitTime)
+		}
 	}
 
 	requestStarted := usageReq.StartedAt
 	upstreamStarted := time.Now()
-	resp, err := client.Do(backendReq)
+	var resp *http.Response
+	if activeProvider != nil && activeProvider.Retry429Enabled {
+		retryLogf := func(format string, args ...any) {
+			log.Printf("[%s] "+format, append([]any{reqID}, args...)...)
+		}
+		resp, err = ratelimit.DoWithRetry429(r.Context(), doUpstream,
+			activeProvider.Retry429Enabled,
+			activeProvider.Retry429MaxAttempts,
+			activeProvider.Retry429InitialDelayMS,
+			activeProvider.Retry429MaxDelayMS,
+			retryLogf)
+	} else {
+		resp, err = doUpstream()
+	}
 	headerMS := time.Since(upstreamStarted).Milliseconds()
 	usageReq.UpstreamResponseHeaderMS = &headerMS
 	if err != nil {

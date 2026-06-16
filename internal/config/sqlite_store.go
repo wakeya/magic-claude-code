@@ -140,6 +140,14 @@ func (s *SQLiteStore) ensureProviderColumns() error {
 		"openai_extra_params":          `ALTER TABLE providers ADD COLUMN openai_extra_params TEXT NOT NULL DEFAULT '{}'`,
 		"claude_code_compat_hint":      `ALTER TABLE providers ADD COLUMN claude_code_compat_hint INTEGER`,
 		"strip_unknown_content_blocks": `ALTER TABLE providers ADD COLUMN strip_unknown_content_blocks INTEGER NOT NULL DEFAULT 0`,
+		"rate_limit_queue_enabled":     `ALTER TABLE providers ADD COLUMN rate_limit_queue_enabled INTEGER NOT NULL DEFAULT 0`,
+		"max_concurrent_requests":      `ALTER TABLE providers ADD COLUMN max_concurrent_requests INTEGER NOT NULL DEFAULT 0`,
+		"max_queue_size":               `ALTER TABLE providers ADD COLUMN max_queue_size INTEGER NOT NULL DEFAULT 0`,
+		"queue_timeout_ms":             `ALTER TABLE providers ADD COLUMN queue_timeout_ms INTEGER NOT NULL DEFAULT 60000`,
+		"retry_429_enabled":            `ALTER TABLE providers ADD COLUMN retry_429_enabled INTEGER NOT NULL DEFAULT 0`,
+		"retry_429_max_attempts":       `ALTER TABLE providers ADD COLUMN retry_429_max_attempts INTEGER NOT NULL DEFAULT 2`,
+		"retry_429_initial_delay_ms":   `ALTER TABLE providers ADD COLUMN retry_429_initial_delay_ms INTEGER NOT NULL DEFAULT 1000`,
+		"retry_429_max_delay_ms":       `ALTER TABLE providers ADD COLUMN retry_429_max_delay_ms INTEGER NOT NULL DEFAULT 10000`,
 	}
 	rows, err := s.db.Query(`PRAGMA table_info(providers)`)
 	if err != nil {
@@ -268,7 +276,7 @@ func (s *SQLiteStore) loadSettings() (map[string]string, error) {
 }
 
 func (s *SQLiteStore) loadProviders() ([]Provider, error) {
-	rows, err := s.db.Query(`SELECT id, name, api_url, api_token, api_format, openai_extra_params, supports_thinking, multimodal_switch, multimodal_model, claude_code_compat_hint, strip_unknown_content_blocks, enabled, created_at, updated_at FROM providers ORDER BY created_at ASC, id ASC`)
+	rows, err := s.db.Query(`SELECT id, name, api_url, api_token, api_format, openai_extra_params, supports_thinking, multimodal_switch, multimodal_model, claude_code_compat_hint, strip_unknown_content_blocks, rate_limit_queue_enabled, max_concurrent_requests, max_queue_size, queue_timeout_ms, retry_429_enabled, retry_429_max_attempts, retry_429_initial_delay_ms, retry_429_max_delay_ms, enabled, created_at, updated_at FROM providers ORDER BY created_at ASC, id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -280,10 +288,10 @@ func (s *SQLiteStore) loadProviders() ([]Provider, error) {
 		var supportsThinking, multimodalSwitch, enabled, stripUnknownContentBlocks int
 		var claudeCodeCompatHint sql.NullBool
 		var openAIExtraParams, createdAt, updatedAt string
-		if err := rows.Scan(&p.ID, &p.Name, &p.APIURL, &p.APIToken, &p.APIFormat, &openAIExtraParams, &supportsThinking, &multimodalSwitch, &p.MultimodalModel, &claudeCodeCompatHint, &stripUnknownContentBlocks, &enabled, &createdAt, &updatedAt); err != nil {
+		var rateLimitQueueEnabled, retry429Enabled int
+		if err := rows.Scan(&p.ID, &p.Name, &p.APIURL, &p.APIToken, &p.APIFormat, &openAIExtraParams, &supportsThinking, &multimodalSwitch, &p.MultimodalModel, &claudeCodeCompatHint, &stripUnknownContentBlocks, &rateLimitQueueEnabled, &p.MaxConcurrentRequests, &p.MaxQueueSize, &p.QueueTimeoutMS, &retry429Enabled, &p.Retry429MaxAttempts, &p.Retry429InitialDelayMS, &p.Retry429MaxDelayMS, &enabled, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
-		p.normalizeDefaults()
 		params, err := decodeOpenAIExtraParams(openAIExtraParams)
 		if err != nil {
 			return nil, fmt.Errorf("decode provider %s openai_extra_params: %w", p.ID, err)
@@ -292,6 +300,9 @@ func (s *SQLiteStore) loadProviders() ([]Provider, error) {
 		p.SupportsThinking = supportsThinking == 1
 		p.MultimodalSwitch = multimodalSwitch == 1
 		p.StripUnknownContentBlocks = stripUnknownContentBlocks == 1
+		p.RateLimitQueueEnabled = rateLimitQueueEnabled == 1
+		p.Retry429Enabled = retry429Enabled == 1
+		p.normalizeDefaults()
 		if claudeCodeCompatHint.Valid {
 			p.ClaudeCodeCompatHint = &claudeCodeCompatHint.Bool
 		}
@@ -417,8 +428,8 @@ func upsertProvider(tx *sql.Tx, provider Provider) error {
 	}
 
 	_, err = tx.Exec(
-		`INSERT INTO providers(id, name, api_url, api_token, api_format, openai_extra_params, supports_thinking, multimodal_switch, multimodal_model, claude_code_compat_hint, strip_unknown_content_blocks, enabled, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO providers(id, name, api_url, api_token, api_format, openai_extra_params, supports_thinking, multimodal_switch, multimodal_model, claude_code_compat_hint, strip_unknown_content_blocks, rate_limit_queue_enabled, max_concurrent_requests, max_queue_size, queue_timeout_ms, retry_429_enabled, retry_429_max_attempts, retry_429_initial_delay_ms, retry_429_max_delay_ms, enabled, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		 name = excluded.name,
 		 api_url = excluded.api_url,
@@ -430,6 +441,14 @@ func upsertProvider(tx *sql.Tx, provider Provider) error {
 		 multimodal_model = excluded.multimodal_model,
 		 claude_code_compat_hint = excluded.claude_code_compat_hint,
 		 strip_unknown_content_blocks = excluded.strip_unknown_content_blocks,
+		 rate_limit_queue_enabled = excluded.rate_limit_queue_enabled,
+		 max_concurrent_requests = excluded.max_concurrent_requests,
+		 max_queue_size = excluded.max_queue_size,
+		 queue_timeout_ms = excluded.queue_timeout_ms,
+		 retry_429_enabled = excluded.retry_429_enabled,
+		 retry_429_max_attempts = excluded.retry_429_max_attempts,
+		 retry_429_initial_delay_ms = excluded.retry_429_initial_delay_ms,
+		 retry_429_max_delay_ms = excluded.retry_429_max_delay_ms,
 		 enabled = excluded.enabled,
 		 created_at = excluded.created_at,
 		 updated_at = excluded.updated_at`,
@@ -444,6 +463,14 @@ func upsertProvider(tx *sql.Tx, provider Provider) error {
 		provider.MultimodalModel,
 		nullableBool(provider.ClaudeCodeCompatHint),
 		boolToInt(provider.StripUnknownContentBlocks),
+		boolToInt(provider.RateLimitQueueEnabled),
+		provider.MaxConcurrentRequests,
+		provider.MaxQueueSize,
+		provider.QueueTimeoutMS,
+		boolToInt(provider.Retry429Enabled),
+		provider.Retry429MaxAttempts,
+		provider.Retry429InitialDelayMS,
+		provider.Retry429MaxDelayMS,
 		boolToInt(provider.Enabled),
 		createdAt.UTC().Format(time.RFC3339Nano),
 		updatedAt.UTC().Format(time.RFC3339Nano),

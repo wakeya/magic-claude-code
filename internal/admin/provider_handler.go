@@ -12,6 +12,36 @@ import (
 	"magic-claude-code/internal/config"
 )
 
+// providerResponseMap builds the JSON response map for a provider.
+func providerResponseMap(p config.Provider, active bool) map[string]interface{} {
+	return map[string]interface{}{
+		"id":                           p.ID,
+		"name":                         p.Name,
+		"api_url":                      p.APIURL,
+		"api_token_mask":               maskToken(p.APIToken),
+		"api_format":                   p.APIFormat,
+		"openai_extra_params":          p.OpenAIExtraParams,
+		"claude_code_compat_hint":      p.UseClaudeCodeCompatHint(),
+		"model_mappings":               p.ModelMappings,
+		"supports_thinking":            p.SupportsThinking,
+		"multimodal_switch":            p.MultimodalSwitch,
+		"multimodal_model":             p.MultimodalModel,
+		"strip_unknown_content_blocks": p.StripUnknownContentBlocks,
+		"rate_limit_queue_enabled":     p.RateLimitQueueEnabled,
+		"max_concurrent_requests":      p.MaxConcurrentRequests,
+		"max_queue_size":               p.MaxQueueSize,
+		"queue_timeout_ms":             p.QueueTimeoutMS,
+		"retry_429_enabled":            p.Retry429Enabled,
+		"retry_429_max_attempts":       p.Retry429MaxAttempts,
+		"retry_429_initial_delay_ms":   p.Retry429InitialDelayMS,
+		"retry_429_max_delay_ms":       p.Retry429MaxDelayMS,
+		"enabled":                      p.Enabled,
+		"active":                       active,
+		"created_at":                   p.CreatedAt,
+		"updated_at":                   p.UpdatedAt,
+	}
+}
+
 // handleProviders 处理供应商列表
 func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -37,24 +67,7 @@ func (s *Server) listProviders(w http.ResponseWriter, _ *http.Request) {
 	// 返回时隐藏 API Token 的敏感部分
 	providers := make([]map[string]interface{}, len(cfg.Providers))
 	for i, p := range cfg.Providers {
-		providers[i] = map[string]interface{}{
-			"id":                           p.ID,
-			"name":                         p.Name,
-			"api_url":                      p.APIURL,
-			"api_token_mask":               maskToken(p.APIToken),
-			"api_format":                   p.APIFormat,
-			"openai_extra_params":          p.OpenAIExtraParams,
-			"claude_code_compat_hint":      p.UseClaudeCodeCompatHint(),
-			"supports_thinking":            p.SupportsThinking,
-			"multimodal_switch":            p.MultimodalSwitch,
-			"multimodal_model":             p.MultimodalModel,
-			"strip_unknown_content_blocks": p.StripUnknownContentBlocks,
-			"model_mappings":               p.ModelMappings,
-			"enabled":                      p.Enabled,
-			"active":                       p.ID == cfg.ActiveProviderID,
-			"created_at":                   p.CreatedAt,
-			"updated_at":                   p.UpdatedAt,
-		}
+		providers[i] = providerResponseMap(p, p.ID == cfg.ActiveProviderID)
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -77,6 +90,14 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 		MultimodalSwitch          bool              `json:"multimodal_switch"`
 		MultimodalModel           string            `json:"multimodal_model"`
 		StripUnknownContentBlocks bool              `json:"strip_unknown_content_blocks"`
+		RateLimitQueueEnabled     bool              `json:"rate_limit_queue_enabled"`
+		MaxConcurrentRequests     int               `json:"max_concurrent_requests"`
+		MaxQueueSize              int               `json:"max_queue_size"`
+		QueueTimeoutMS            int               `json:"queue_timeout_ms"`
+		Retry429Enabled           bool              `json:"retry_429_enabled"`
+		Retry429MaxAttempts       int               `json:"retry_429_max_attempts"`
+		Retry429InitialDelayMS    int               `json:"retry_429_initial_delay_ms"`
+		Retry429MaxDelayMS        int               `json:"retry_429_max_delay_ms"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -132,6 +153,14 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 		MultimodalSwitch:          req.MultimodalSwitch,
 		MultimodalModel:           req.MultimodalModel,
 		StripUnknownContentBlocks: req.StripUnknownContentBlocks,
+		RateLimitQueueEnabled:     req.RateLimitQueueEnabled,
+		MaxConcurrentRequests:     req.MaxConcurrentRequests,
+		MaxQueueSize:              req.MaxQueueSize,
+		QueueTimeoutMS:            req.QueueTimeoutMS,
+		Retry429Enabled:           req.Retry429Enabled,
+		Retry429MaxAttempts:       req.Retry429MaxAttempts,
+		Retry429InitialDelayMS:    req.Retry429InitialDelayMS,
+		Retry429MaxDelayMS:        req.Retry429MaxDelayMS,
 		Enabled:                   true,
 		CreatedAt:                 now,
 		UpdatedAt:                 now,
@@ -156,24 +185,8 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"provider": map[string]interface{}{
-			"id":                           provider.ID,
-			"name":                         provider.Name,
-			"api_url":                      provider.APIURL,
-			"api_token_mask":               maskToken(provider.APIToken),
-			"api_format":                   provider.APIFormat,
-			"openai_extra_params":          provider.OpenAIExtraParams,
-			"claude_code_compat_hint":      provider.UseClaudeCodeCompatHint(),
-			"model_mappings":               provider.ModelMappings,
-			"supports_thinking":            provider.SupportsThinking,
-			"multimodal_switch":            provider.MultimodalSwitch,
-			"multimodal_model":             provider.MultimodalModel,
-			"strip_unknown_content_blocks": provider.StripUnknownContentBlocks,
-			"enabled":                      provider.Enabled,
-			"created_at":                   provider.CreatedAt,
-			"updated_at":                   provider.UpdatedAt,
-		},
+		"success":  true,
+		"provider": providerResponseMap(provider, len(cfg.Providers) == 1),
 	})
 }
 
@@ -216,24 +229,7 @@ func (s *Server) getProvider(w http.ResponseWriter, _ *http.Request, id string) 
 		return
 	}
 
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"id":                           provider.ID,
-		"name":                         provider.Name,
-		"api_url":                      provider.APIURL,
-		"api_token_mask":               maskToken(provider.APIToken),
-		"api_format":                   provider.APIFormat,
-		"openai_extra_params":          provider.OpenAIExtraParams,
-		"claude_code_compat_hint":      provider.UseClaudeCodeCompatHint(),
-		"model_mappings":               provider.ModelMappings,
-		"supports_thinking":            provider.SupportsThinking,
-		"multimodal_switch":            provider.MultimodalSwitch,
-		"multimodal_model":             provider.MultimodalModel,
-		"strip_unknown_content_blocks": provider.StripUnknownContentBlocks,
-		"enabled":                      provider.Enabled,
-		"active":                       provider.ID == cfg.ActiveProviderID,
-		"created_at":                   provider.CreatedAt,
-		"updated_at":                   provider.UpdatedAt,
-	})
+	json.NewEncoder(w).Encode(providerResponseMap(*provider, provider.ID == cfg.ActiveProviderID))
 }
 
 // updateProvider 更新供应商
@@ -251,6 +247,14 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request, id strin
 		MultimodalModel           *string           `json:"multimodal_model"`
 		StripUnknownContentBlocks *bool             `json:"strip_unknown_content_blocks"`
 		Enabled                   *bool             `json:"enabled"`
+		RateLimitQueueEnabled     *bool             `json:"rate_limit_queue_enabled"`
+		MaxConcurrentRequests     *int              `json:"max_concurrent_requests"`
+		MaxQueueSize              *int              `json:"max_queue_size"`
+		QueueTimeoutMS            *int              `json:"queue_timeout_ms"`
+		Retry429Enabled           *bool             `json:"retry_429_enabled"`
+		Retry429MaxAttempts       *int              `json:"retry_429_max_attempts"`
+		Retry429InitialDelayMS    *int              `json:"retry_429_initial_delay_ms"`
+		Retry429MaxDelayMS        *int              `json:"retry_429_max_delay_ms"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -317,6 +321,30 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request, id strin
 	if req.StripUnknownContentBlocks != nil {
 		provider.StripUnknownContentBlocks = *req.StripUnknownContentBlocks
 	}
+	if req.RateLimitQueueEnabled != nil {
+		provider.RateLimitQueueEnabled = *req.RateLimitQueueEnabled
+	}
+	if req.MaxConcurrentRequests != nil {
+		provider.MaxConcurrentRequests = *req.MaxConcurrentRequests
+	}
+	if req.MaxQueueSize != nil {
+		provider.MaxQueueSize = *req.MaxQueueSize
+	}
+	if req.QueueTimeoutMS != nil {
+		provider.QueueTimeoutMS = *req.QueueTimeoutMS
+	}
+	if req.Retry429Enabled != nil {
+		provider.Retry429Enabled = *req.Retry429Enabled
+	}
+	if req.Retry429MaxAttempts != nil {
+		provider.Retry429MaxAttempts = *req.Retry429MaxAttempts
+	}
+	if req.Retry429InitialDelayMS != nil {
+		provider.Retry429InitialDelayMS = *req.Retry429InitialDelayMS
+	}
+	if req.Retry429MaxDelayMS != nil {
+		provider.Retry429MaxDelayMS = *req.Retry429MaxDelayMS
+	}
 	if provider.MultimodalSwitch && strings.TrimSpace(provider.MultimodalModel) == "" {
 		http.Error(w, `{"error": "multimodal_model is required when multimodal_switch is enabled"}`, http.StatusBadRequest)
 		return
@@ -335,24 +363,8 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request, id strin
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"provider": map[string]interface{}{
-			"id":                           provider.ID,
-			"name":                         provider.Name,
-			"api_url":                      provider.APIURL,
-			"api_token_mask":               maskToken(provider.APIToken),
-			"api_format":                   provider.APIFormat,
-			"openai_extra_params":          provider.OpenAIExtraParams,
-			"claude_code_compat_hint":      provider.UseClaudeCodeCompatHint(),
-			"model_mappings":               provider.ModelMappings,
-			"supports_thinking":            provider.SupportsThinking,
-			"multimodal_switch":            provider.MultimodalSwitch,
-			"multimodal_model":             provider.MultimodalModel,
-			"strip_unknown_content_blocks": provider.StripUnknownContentBlocks,
-			"enabled":                      provider.Enabled,
-			"created_at":                   provider.CreatedAt,
-			"updated_at":                   provider.UpdatedAt,
-		},
+		"success":  true,
+		"provider": providerResponseMap(*provider, provider.ID == cfg.ActiveProviderID),
 	})
 }
 
@@ -761,6 +773,14 @@ func (s *Server) handleProviderDuplicate(w http.ResponseWriter, r *http.Request)
 		MultimodalSwitch:          provider.MultimodalSwitch,
 		MultimodalModel:           provider.MultimodalModel,
 		StripUnknownContentBlocks: provider.StripUnknownContentBlocks,
+		RateLimitQueueEnabled:     provider.RateLimitQueueEnabled,
+		MaxConcurrentRequests:     provider.MaxConcurrentRequests,
+		MaxQueueSize:              provider.MaxQueueSize,
+		QueueTimeoutMS:            provider.QueueTimeoutMS,
+		Retry429Enabled:           provider.Retry429Enabled,
+		Retry429MaxAttempts:       provider.Retry429MaxAttempts,
+		Retry429InitialDelayMS:    provider.Retry429InitialDelayMS,
+		Retry429MaxDelayMS:        provider.Retry429MaxDelayMS,
 		Enabled:                   true,
 		CreatedAt:                 now,
 		UpdatedAt:                 now,
@@ -774,25 +794,8 @@ func (s *Server) handleProviderDuplicate(w http.ResponseWriter, r *http.Request)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"provider": map[string]interface{}{
-			"id":                           newProvider.ID,
-			"name":                         newProvider.Name,
-			"api_url":                      newProvider.APIURL,
-			"api_token_mask":               maskToken(newProvider.APIToken),
-			"api_format":                   newProvider.APIFormat,
-			"openai_extra_params":          newProvider.OpenAIExtraParams,
-			"claude_code_compat_hint":      newProvider.UseClaudeCodeCompatHint(),
-			"model_mappings":               newProvider.ModelMappings,
-			"supports_thinking":            newProvider.SupportsThinking,
-			"multimodal_switch":            newProvider.MultimodalSwitch,
-			"multimodal_model":             newProvider.MultimodalModel,
-			"strip_unknown_content_blocks": newProvider.StripUnknownContentBlocks,
-			"enabled":                      newProvider.Enabled,
-			"active":                       false,
-			"created_at":                   newProvider.CreatedAt,
-			"updated_at":                   newProvider.UpdatedAt,
-		},
+		"success":  true,
+		"provider": providerResponseMap(newProvider, false),
 	})
 }
 

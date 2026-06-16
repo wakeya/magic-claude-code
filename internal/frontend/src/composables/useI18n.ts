@@ -106,6 +106,19 @@ const messages: Record<Locale, Record<string, string>> = {
     'modal.test_ok': '连接成功 (HTTP {code})',
     'modal.test_fail': '连接失败: {error}',
 
+    // Rate Limit & Retry
+    'modal.rate_limit_section': '限流与重试',
+    'modal.rate_limit_queue_enabled': '并发限流队列',
+    'modal.rate_limit_queue_hint': '限制同时发往上游的请求数，超出部分排队等待',
+    'modal.max_concurrent_requests': '最大并发请求数',
+    'modal.max_queue_size': '队列大小',
+    'modal.queue_timeout_ms': '排队超时（毫秒）',
+    'modal.retry_429_enabled': '429 自动重试',
+    'modal.retry_429_hint': '收到 429（速率限制）时自动等待后重试',
+    'modal.retry_429_max_attempts': '最大重试次数',
+    'modal.retry_429_initial_delay_ms': '初始重试延迟（毫秒）',
+    'modal.retry_429_max_delay_ms': '最大重试延迟（毫秒）',
+
     // Certificates
     'certs.title': '证书信息',
     'certs.ca_path': 'CA 证书路径',
@@ -321,6 +334,19 @@ const messages: Record<Locale, Record<string, string>> = {
     'modal.connection_failed': 'Connection failed: {error}',
     'modal.test_ok': 'Connection successful (HTTP {code})',
     'modal.test_fail': 'Connection failed: {error}',
+
+    // Rate Limit & Retry
+    'modal.rate_limit_section': 'Rate Limit & Retry',
+    'modal.rate_limit_queue_enabled': 'Concurrent Rate Limit Queue',
+    'modal.rate_limit_queue_hint': 'Limit concurrent requests to upstream; excess requests are queued',
+    'modal.max_concurrent_requests': 'Max Concurrent Requests',
+    'modal.max_queue_size': 'Queue Size',
+    'modal.queue_timeout_ms': 'Queue Timeout (ms)',
+    'modal.retry_429_enabled': '429 Auto-Retry',
+    'modal.retry_429_hint': 'Automatically wait and retry on HTTP 429 (rate limited)',
+    'modal.retry_429_max_attempts': 'Max Retry Attempts',
+    'modal.retry_429_initial_delay_ms': 'Initial Retry Delay (ms)',
+    'modal.retry_429_max_delay_ms': 'Max Retry Delay (ms)',
 
     'certs.title': 'Certificates',
     'certs.ca_path': 'CA Certificate Path',

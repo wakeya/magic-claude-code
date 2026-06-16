@@ -30,6 +30,14 @@ export interface Provider {
   multimodal_switch: boolean
   multimodal_model: string
   strip_unknown_content_blocks: boolean
+  rate_limit_queue_enabled: boolean
+  max_concurrent_requests: number
+  max_queue_size: number
+  queue_timeout_ms: number
+  retry_429_enabled: boolean
+  retry_429_max_attempts: number
+  retry_429_initial_delay_ms: number
+  retry_429_max_delay_ms: number
   enabled: boolean
   active: boolean
   created_at: string
@@ -287,6 +295,15 @@ export function useApi() {
     supports_thinking?: boolean
     multimodal_switch?: boolean
     multimodal_model?: string
+    strip_unknown_content_blocks?: boolean
+    rate_limit_queue_enabled?: boolean
+    max_concurrent_requests?: number
+    max_queue_size?: number
+    queue_timeout_ms?: number
+    retry_429_enabled?: boolean
+    retry_429_max_attempts?: number
+    retry_429_initial_delay_ms?: number
+    retry_429_max_delay_ms?: number
   }): Promise<{ success: boolean; provider: Provider }> {
     const res = await fetch('/api/providers', {
       method: 'POST',
@@ -313,6 +330,15 @@ export function useApi() {
       supports_thinking?: boolean
       multimodal_switch?: boolean
       multimodal_model?: string
+      strip_unknown_content_blocks?: boolean
+      rate_limit_queue_enabled?: boolean
+      max_concurrent_requests?: number
+      max_queue_size?: number
+      queue_timeout_ms?: number
+      retry_429_enabled?: boolean
+      retry_429_max_attempts?: number
+      retry_429_initial_delay_ms?: number
+      retry_429_max_delay_ms?: number
       enabled?: boolean
     }
   ): Promise<{ success: boolean; provider: Provider }> {

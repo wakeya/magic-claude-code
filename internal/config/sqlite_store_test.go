@@ -196,6 +196,91 @@ func TestSQLiteStorePersistsStripUnknownContentBlocks(t *testing.T) {
 	}
 }
 
+func TestSQLiteStorePersistsRateLimitFields(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewSQLiteStore(filepath.Join(dir, "proxy.db"), filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	provider := testProvider("provider-rl", "RateLimit", "https://api.example.com/v1", "token", true)
+	provider.RateLimitQueueEnabled = true
+	provider.MaxConcurrentRequests = 8
+	provider.MaxQueueSize = 32
+	provider.QueueTimeoutMS = 30000
+	provider.Retry429Enabled = true
+	provider.Retry429MaxAttempts = 3
+	provider.Retry429InitialDelayMS = 500
+	provider.Retry429MaxDelayMS = 8000
+
+	cfg := DefaultConfig()
+	cfg.Providers = []Provider{provider}
+	cfg.ActiveProviderID = provider.ID
+
+	if err := store.Save(cfg); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	got := loaded.GetProviderByID(provider.ID)
+	if got == nil {
+		t.Fatal("provider missing after load")
+	}
+	if !got.RateLimitQueueEnabled {
+		t.Fatal("RateLimitQueueEnabled = false, want true")
+	}
+	if got.MaxConcurrentRequests != 8 {
+		t.Fatalf("MaxConcurrentRequests = %d, want 8", got.MaxConcurrentRequests)
+	}
+	if got.MaxQueueSize != 32 {
+		t.Fatalf("MaxQueueSize = %d, want 32", got.MaxQueueSize)
+	}
+	if got.QueueTimeoutMS != 30000 {
+		t.Fatalf("QueueTimeoutMS = %d, want 30000", got.QueueTimeoutMS)
+	}
+	if !got.Retry429Enabled {
+		t.Fatal("Retry429Enabled = false, want true")
+	}
+	if got.Retry429MaxAttempts != 3 {
+		t.Fatalf("Retry429MaxAttempts = %d, want 3", got.Retry429MaxAttempts)
+	}
+	if got.Retry429InitialDelayMS != 500 {
+		t.Fatalf("Retry429InitialDelayMS = %d, want 500", got.Retry429InitialDelayMS)
+	}
+	if got.Retry429MaxDelayMS != 8000 {
+		t.Fatalf("Retry429MaxDelayMS = %d, want 8000", got.Retry429MaxDelayMS)
+	}
+
+	// Verify disabled provider also round-trips correctly
+	provider2 := testProvider("provider-rl-off", "NoLimit", "https://api2.example.com/v1", "token2", true)
+	provider2.RateLimitQueueEnabled = false
+	provider2.Retry429Enabled = false
+	cfg2 := DefaultConfig()
+	cfg2.Providers = []Provider{provider, provider2}
+	cfg2.ActiveProviderID = provider.ID
+	if err := store.Save(cfg2); err != nil {
+		t.Fatalf("Save() cfg2 error = %v", err)
+	}
+	loaded2, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() cfg2 error = %v", err)
+	}
+	got2 := loaded2.GetProviderByID(provider2.ID)
+	if got2 == nil {
+		t.Fatal("provider2 missing after load")
+	}
+	if got2.RateLimitQueueEnabled {
+		t.Fatal("provider2 RateLimitQueueEnabled = true, want false")
+	}
+	if got2.Retry429Enabled {
+		t.Fatal("provider2 Retry429Enabled = true, want false")
+	}
+}
+
 func TestSQLiteStorePersistsAdminThemeMode(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := NewSQLiteStore(filepath.Join(tmpDir, "config.db"), filepath.Join(tmpDir, "config.json"))
