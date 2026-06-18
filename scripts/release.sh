@@ -18,7 +18,7 @@ GITLAB_REMOTE="${GITLAB_REMOTE:-gitlab}"
 GITEE_REPO="wakeya/magic-claude-code"
 GITCODE_REPO="wakeya/magic-claude-code"
 GITLAB_URL="${GITLAB_URL:-http://git.wakeya.top:56080}"
-GITLAB_PROJECT_ID="wakeya%2Fmagic-claude-code"
+GITLAB_PROJECT_ID="${GITLAB_PROJECT_ID:-21}"
 RELEASE_NOTES="sdd-docs/changes/release-notes/${TAG}.md"
 BUILD_DIR=$(mktemp -d)
 
@@ -186,16 +186,16 @@ fi
 # ===== [7/8] GitCode Release + 附件上传 =====
 info "[7/8] GitCode Release + 附件上传"
 if [ -n "${GITCODE_TOKEN:-}" ]; then
-  # 创建或获取 Release
-  GITCODE_RELEASE_ID=$(curl -sf \
+  # 检查 Release 是否已存在
+  GITCODE_RELEASE_EXISTS=$(curl -sf -o /dev/null \
     -H "PRIVATE-TOKEN: ${GITCODE_TOKEN}" \
     "https://api.gitcode.com/api/v5/repos/${GITCODE_REPO}/releases/tags/${TAG}" \
-    2>/dev/null | jq -r '.id // empty') || true
+    2>/dev/null && echo "yes" || echo "no")
 
-  if [ -n "$GITCODE_RELEASE_ID" ]; then
-    info "GitCode Release 已存在 (id=${GITCODE_RELEASE_ID})"
+  if [ "$GITCODE_RELEASE_EXISTS" = "yes" ]; then
+    info "GitCode Release 已存在"
   else
-    STATUS=$(curl -s -o /tmp/gitcode-release.json -w "%{http_code}" \
+    STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
       -X POST \
       -H "PRIVATE-TOKEN: ${GITCODE_TOKEN}" \
       -H "Content-Type: application/json" \
@@ -204,52 +204,57 @@ if [ -n "${GITCODE_TOKEN:-}" ]; then
       "https://api.gitcode.com/api/v5/repos/${GITCODE_REPO}/releases")
 
     if [ "$STATUS" -ge 200 ] && [ "$STATUS" -lt 300 ]; then
-      GITCODE_RELEASE_ID=$(jq -r '.id' /tmp/gitcode-release.json)
-      info "GitCode Release 创建成功 (id=${GITCODE_RELEASE_ID})"
+      info "GitCode Release 创建成功"
     else
       warn "GitCode Release 创建返回 ${STATUS}"
-      cat /tmp/gitcode-release.json >&2 2>/dev/null || true
     fi
   fi
 
   # 上传附件（两步式：获取 OBS 预签名 URL → PUT 上传）
-  if [ -n "$GITCODE_RELEASE_ID" ]; then
-    info "上传 GitCode 附件..."
-    for f in "$BUILD_DIR"/*; do
-      fname=$(basename "$f")
+  info "上传 GitCode 附件..."
+  for f in "$BUILD_DIR"/*; do
+    fname=$(basename "$f")
 
-      # Step 1: 获取 OBS 预签名上传 URL
-      UPLOAD_URL=$(curl -sf \
-        -H "PRIVATE-TOKEN: ${GITCODE_TOKEN}" \
-        "https://api.gitcode.com/api/v5/repos/${GITCODE_REPO}/releases/${GITCODE_RELEASE_ID}/attach_files?file_name=${fname}" \
-        2>/dev/null | jq -r '.upload_url // empty') || true
+    # Step 1: 获取 OBS 预签名上传 URL 和所需 headers
+    RESP=$(curl -sf \
+      -H "PRIVATE-TOKEN: ${GITCODE_TOKEN}" \
+      "https://api.gitcode.com/api/v5/repos/${GITCODE_REPO}/releases/${TAG}/upload_url?file_name=${fname}" \
+      2>/dev/null) || true
 
-      if [ -z "$UPLOAD_URL" ]; then
-        warn "  ✗ ${fname}: 无法获取上传 URL（可能已存在）"
-        continue
-      fi
+    UPLOAD_URL=$(echo "$RESP" | jq -r '.url // empty')
+    if [ -z "$UPLOAD_URL" ]; then
+      warn "  ✗ ${fname}: 无法获取上传 URL（可能已存在）"
+      continue
+    fi
 
-      # Step 2: PUT 文件到 OBS
-      STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-        -X PUT \
-        -H "Content-Type: application/octet-stream" \
-        --data-binary "@${f}" \
-        "$UPLOAD_URL")
+    HDR_PROJECT=$(echo "$RESP" | jq -r '.headers["x-obs-meta-project-id"]')
+    HDR_ACL=$(echo "$RESP" | jq -r '.headers["x-obs-acl"]')
+    HDR_CALLBACK=$(echo "$RESP" | jq -r '.headers["x-obs-callback"]')
+    HDR_CTYPE=$(echo "$RESP" | jq -r '.headers["Content-Type"]')
 
-      if [ "$STATUS" -ge 200 ] && [ "$STATUS" -lt 300 ]; then
-        info "  ✓ ${fname}"
-      else
-        warn "  ✗ ${fname} (HTTP ${STATUS})"
-      fi
-    done
-  fi
+    # Step 2: PUT 文件到 OBS
+    STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+      -X PUT \
+      -H "x-obs-meta-project-id: ${HDR_PROJECT}" \
+      -H "x-obs-acl: ${HDR_ACL}" \
+      -H "x-obs-callback: ${HDR_CALLBACK}" \
+      -H "Content-Type: ${HDR_CTYPE}" \
+      --data-binary "@${f}" \
+      "$UPLOAD_URL")
+
+    if [ "$STATUS" -ge 200 ] && [ "$STATUS" -lt 300 ]; then
+      info "  ✓ ${fname}"
+    else
+      warn "  ✗ ${fname} (HTTP ${STATUS})"
+    fi
+  done
 else
   warn "GITCODE_TOKEN 未设置，跳过"
 fi
 
 # ===== [8/8] GitLab Release + 链接 =====
 info "[8/8] GitLab Release + 下载链接"
-if git remote get-url "$GITLAB_REMOTE" &>/dev/null; then
+if [ -n "${GITLAB_TOKEN:-}" ]; then
   ASSETS_JSON="[]"
   for f in "$BUILD_DIR"/*; do
     fname=$(basename "$f")
@@ -263,6 +268,7 @@ if git remote get-url "$GITLAB_REMOTE" &>/dev/null; then
     --noproxy '*' \
     -k \
     -X POST \
+    -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "$(jq -n \
       --arg tag "$TAG" \
@@ -281,7 +287,7 @@ if git remote get-url "$GITLAB_REMOTE" &>/dev/null; then
     cat /tmp/gitlab-release.json >&2 2>/dev/null || true
   fi
 else
-  warn "远程 ${GITLAB_REMOTE} 不存在，跳过 GitLab Release"
+  warn "GITLAB_TOKEN 未设置，跳过 GitLab Release"
 fi
 
 info "清理构建目录"
