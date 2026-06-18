@@ -81,11 +81,13 @@ npm --prefix internal/frontend run build
 
 4. `internal/frontend/dist` 是 Go 二进制内嵌前端资源，前端源码变更后可以随构建结果一起提交。
 
-5. `dist/release` 是发布资产目录，普通功能提交不得手动修改或覆盖。GitCode/Gitee 回退源的二进制资产以远端发布仓库为准，本地过期或不完整的 `dist/release` 不得推送覆盖远端。
+5. 二进制不存入 git 仓库。构建时使用临时目录，通过 Release API 上传为各平台的 Release 附件。
 
-6. 发布版本通过 `v*` tag 触发 CI 构建和同步资产。不要手工打包后直接替换远端发布资产，除非这是一次单独的发布修复任务。
+6. GitHub 通过 `v*` tag 触发 CI 构建并上传 Release 附件。GitLab/Gitee/GitCode 使用 `scripts/release.sh vX.Y.Z` 手动构建，将二进制作为 Release 附件上传到 Gitee/GitCode，GitLab Release 附 GitHub 下载链接。
 
-7. 发版前在 `sdd-docs/changes/release-notes/vX.Y.Z.md` 编写发布说明并提交。CI 会优先使用此文件作为 Release 描述；未提供时从 git log 自动生成。
+7. 发版前在 `sdd-docs/changes/release-notes/vX.Y.Z.md` 编写发布说明并提交。CI 和 `scripts/release.sh` 都会优先使用此文件作为 Release 描述。
+
+8. 自动更新器通过 Release 下载 URL（`{platform}/{owner}/{repo}/releases/download/{tag}/{file}`）获取二进制，免认证匿名下载。
 
 ## 常见问题
 

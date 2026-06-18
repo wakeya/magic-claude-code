@@ -115,7 +115,7 @@ func TestGitCodeSource_FetchLatestRelease(t *testing.T) {
 	}
 
 	assetURL := src.AssetURL("v0.3.0", "Magic-Claude-Code-v0.3.0-Linux-x86_64.tar.gz")
-	expected := server.URL + "/api/v5/repos/wakeya/magic-claude-code/raw/dist/release/v0.3.0/Magic-Claude-Code-v0.3.0-Linux-x86_64.tar.gz"
+	expected := "https://gitcode.com/wakeya/magic-claude-code/releases/download/v0.3.0/Magic-Claude-Code-v0.3.0-Linux-x86_64.tar.gz"
 	if assetURL != expected {
 		t.Errorf("AssetURL: got %q, want %q", assetURL, expected)
 	}
@@ -176,14 +176,9 @@ func TestGiteeSource_FetchLatestRelease(t *testing.T) {
 	}
 
 	assetURL := src.AssetURL("v0.3.0", "Magic-Claude-Code-v0.3.0-Linux-x86_64.tar.gz")
-	expected := "https://gitee.com/wakeya/magic-claude-code/raw/main/dist/release/v0.3.0/Magic-Claude-Code-v0.3.0-Linux-x86_64.tar.gz"
+	expected := "https://gitee.com/wakeya/magic-claude-code/releases/download/v0.3.0/Magic-Claude-Code-v0.3.0-Linux-x86_64.tar.gz"
 	if assetURL != expected {
 		t.Errorf("AssetURL: got %q, want %q", assetURL, expected)
-	}
-
-	headers := src.AssetHeaders()
-	if headers["Authorization"] != "Bearer test-token" {
-		t.Errorf("AssetHeaders: expected Bearer test-token, got %v", headers)
 	}
 }
 

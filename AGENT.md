@@ -112,7 +112,7 @@ openssl x509 -in data/server.crt -text -noout
 
 ## 发布流程
 
-发布由 `v*` tag 触发 CI。GitHub/GitLab 会构建并上传 Release/Package 二进制资产；GitCode/Gitee 国内回退源由对应 CI 或同步流程维护 `dist/release/{tag}/` 资产。
+发布由 `v*` tag 触发。GitHub 通过 CI 自动构建并发布；Gitee/GitCode 由 `scripts/release.sh vX.Y.Z` 手动构建并将二进制作为 Release 附件上传；GitLab 创建 Release 并附 GitHub 下载链接。二进制不存入 git 仓库。
 
 ### 1. 提交代码
 
@@ -134,7 +134,7 @@ npm --prefix internal/frontend run build
 说明：
 
 - 修改前端源码时，`internal/frontend/dist` 会随构建产物变化，可以一起提交。
-- 普通功能提交不要手动修改 `dist/release`。如果本地 `dist/release` 和 GitCode/Gitee 远端不一致，以远端发布资产为准，不要用本地内容覆盖远端。
+- 二进制不存入 git，无需手动管理发布资产目录。
 
 提交并推送：
 
@@ -164,7 +164,7 @@ cat > sdd-docs/changes/release-notes/v0.4.0.md <<'EOF'
 EOF
 ```
 
-CI 发布时会优先读取此文件作为 GitHub Release 描述。如果文件不存在，CI 会从 git log 自动生成（仅 commit 标题，不含详情）。
+`scripts/release.sh` 和 CI 都会优先读取此文件作为 Release 描述。如果文件不存在，CI 从 git log 自动生成，`scripts/release.sh` 使用默认文案。
 
 提交发布说明：
 
@@ -174,20 +174,30 @@ git commit -m "docs: add release notes for vX.Y.Z"
 git push origin main
 ```
 
-### 3. 打 tag 发布
+### 3. GitHub 发布：打 tag
 
-确认 `main` 已推送后创建版本 tag：
+确认 `main` 已推送后创建版本 tag，触发 GitHub CI：
 
 ```bash
 git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-tag 名必须符合 `v0.1.0` 这类语义版本格式。CI 会执行前端构建、Go 测试、跨平台二进制构建、SHA256SUMS 生成和发布资产上传。
+tag 名必须符合 `v0.1.0` 这类语义版本格式。GitHub CI 会执行前端构建、Go 测试、跨平台二进制构建、SHA256SUMS 生成和发布资产上传。
 
-### 4. 发布后检查
+### 4. GitLab/Gitee/GitCode 发布：手动构建
 
-检查 GitHub/GitLab Release 或 Package 中是否包含：
+GitLab/Gitee/GitCode 使用 `scripts/release.sh` 在本地完成构建和发布：
+
+```bash
+GITEE_TOKEN=xxx GITCODE_TOKEN=xxx ./scripts/release.sh vX.Y.Z
+```
+
+脚本会依次执行：同步 main → 构建前端 → 测试 → 交叉编译 6 个平台 → 推送代码和 tag → 创建 Gitee/GitCode Release 并上传二进制附件 → 创建 GitLab Release（附 GitHub 下载链接） → 清理本地构建目录。发布说明自动从 `sdd-docs/changes/release-notes/vX.Y.Z.md` 读取。
+
+### 5. 发布后检查
+
+检查各平台 Release 是否包含以下附件：
 
 ```text
 Magic-Claude-Code-vX.Y.Z-Linux-x86_64.tar.gz
@@ -199,10 +209,5 @@ Magic-Claude-Code-vX.Y.Z-Windows-arm64.zip
 SHA256SUMS.txt
 ```
 
-如果启用了 GitCode/Gitee 同步，还要确认远端仓库存在：
-
-```text
-dist/release/vX.Y.Z/
-```
-
-该目录用于国内回退源 raw 下载，不应由普通开发提交手动维护。
+- GitHub/Gitee/GitCode: 检查 Release 附件列表
+- GitLab: 检查 Release 下载链接（指向 GitHub）

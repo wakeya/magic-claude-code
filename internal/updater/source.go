@@ -101,8 +101,7 @@ func (s *GitHubSource) AssetURL(tag, assetName string) string {
 }
 
 // GitCodeSource queries the GitCode Releases API for tag detection.
-// Pre-compiled binaries are stored in the repo under dist/release/{tag}/
-// and downloaded via the GitCode raw file API.
+// Binaries are downloaded via GitCode Release download URLs (anonymous).
 type GitCodeSource struct {
 	owner   string
 	repo    string
@@ -164,19 +163,11 @@ func (s *GitCodeSource) FetchLatestRelease(ctx context.Context, client *http.Cli
 }
 
 func (s *GitCodeSource) AssetURL(tag, assetName string) string {
-	return fmt.Sprintf("%s/repos/%s/%s/raw/dist/release/%s/%s", s.apiBase, s.owner, s.repo, tag, assetName)
-}
-
-func (s *GitCodeSource) AssetHeaders() map[string]string {
-	if s.token == "" {
-		return nil
-	}
-	return map[string]string{"PRIVATE-TOKEN": s.token}
+	return fmt.Sprintf("https://gitcode.com/%s/%s/releases/download/%s/%s", s.owner, s.repo, tag, assetName)
 }
 
 // GiteeSource queries the Gitee Releases API for tag detection.
-// Pre-compiled binaries are stored in the repo under dist/release/{tag}/
-// and downloaded via the Gitee raw file URL.
+// Binaries are downloaded via Gitee Release download URLs (anonymous).
 type GiteeSource struct {
 	owner   string
 	repo    string
@@ -242,12 +233,5 @@ func (s *GiteeSource) FetchLatestRelease(ctx context.Context, client *http.Clien
 }
 
 func (s *GiteeSource) AssetURL(tag, assetName string) string {
-	return fmt.Sprintf("https://gitee.com/%s/%s/raw/main/dist/release/%s/%s", s.owner, s.repo, tag, assetName)
-}
-
-func (s *GiteeSource) AssetHeaders() map[string]string {
-	if s.token == "" {
-		return nil
-	}
-	return map[string]string{"Authorization": "Bearer " + s.token}
+	return fmt.Sprintf("https://gitee.com/%s/%s/releases/download/%s/%s", s.owner, s.repo, tag, assetName)
 }

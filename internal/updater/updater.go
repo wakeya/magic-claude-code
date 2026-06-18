@@ -36,8 +36,7 @@ type UpdateInfo struct {
 	SourceName      string
 	ReleaseURL      string
 	AssetName       string
-	DownloadURL     string
-	DownloadHeaders map[string]string
+	DownloadURL string
 }
 
 // ApplyResult holds the outcome of a successful update.
@@ -125,10 +124,6 @@ func (u *Updater) checkSource(ctx context.Context, src ReleaseSource) (*UpdateIn
 	}
 
 	downloadURL := src.AssetURL(latest, assetName)
-	var downloadHeaders map[string]string
-	if headerSource, ok := src.(interface{ AssetHeaders() map[string]string }); ok {
-		downloadHeaders = headerSource.AssetHeaders()
-	}
 	if len(release.Assets) > 0 {
 		asset := release.findAsset(assetName)
 		if asset == nil {
@@ -146,8 +141,7 @@ func (u *Updater) checkSource(ctx context.Context, src ReleaseSource) (*UpdateIn
 		SourceName:      src.Name(),
 		ReleaseURL:      release.HTMLURL,
 		AssetName:       assetName,
-		DownloadURL:     downloadURL,
-		DownloadHeaders: downloadHeaders,
+		DownloadURL: downloadURL,
 	}, nil
 }
 
@@ -158,7 +152,7 @@ func (u *Updater) DownloadAndApply(ctx context.Context, info *UpdateInfo) (*Appl
 		return nil, fmt.Errorf("no download URL — already up to date?")
 	}
 
-	archiveData, err := u.downloadFile(ctx, info.DownloadURL, info.DownloadHeaders)
+	archiveData, err := u.downloadFile(ctx, info.DownloadURL)
 	if err != nil {
 		return nil, fmt.Errorf("download asset: %w", err)
 	}
@@ -168,7 +162,7 @@ func (u *Updater) DownloadAndApply(ctx context.Context, info *UpdateInfo) (*Appl
 		return nil, fmt.Errorf("invalid download URL: %s", redactURLForError(info.DownloadURL))
 	}
 	sumsURL := info.DownloadURL[:idx+1] + "SHA256SUMS.txt"
-	sumsData, err := u.downloadFileWithLimit(ctx, sumsURL, info.DownloadHeaders, maxChecksumDownloadSize)
+	sumsData, err := u.downloadFileWithLimit(ctx, sumsURL, maxChecksumDownloadSize)
 	if err != nil {
 		return nil, fmt.Errorf("download sha256sums: %w", err)
 	}
@@ -218,17 +212,14 @@ func shouldRestartAfterApply(goos string) bool {
 	return goos != "windows"
 }
 
-func (u *Updater) downloadFile(ctx context.Context, url string, headers map[string]string) ([]byte, error) {
-	return u.downloadFileWithLimit(ctx, url, headers, maxDownloadSize)
+func (u *Updater) downloadFile(ctx context.Context, url string) ([]byte, error) {
+	return u.downloadFileWithLimit(ctx, url, maxDownloadSize)
 }
 
-func (u *Updater) downloadFileWithLimit(ctx context.Context, url string, headers map[string]string, maxSize int) ([]byte, error) {
+func (u *Updater) downloadFileWithLimit(ctx context.Context, url string, maxSize int) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
-	}
-	for k, v := range headers {
-		req.Header.Set(k, v)
 	}
 	resp, err := u.client.Do(req)
 	if err != nil {

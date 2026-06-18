@@ -284,7 +284,7 @@ func TestCheckForUpdateUsesPublishedAssetDownloadURL(t *testing.T) {
 	}
 }
 
-func TestCheckForUpdateCarriesGitCodeAssetHeaders(t *testing.T) {
+func TestCheckForUpdateGitCodeReleaseURL(t *testing.T) {
 	oldVersion := version.Version
 	version.Version = "v0.1.0"
 	defer func() { version.Version = oldVersion }()
@@ -311,29 +311,9 @@ func TestCheckForUpdateCarriesGitCodeAssetHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CheckForUpdate() error = %v", err)
 	}
-	if info.DownloadHeaders["PRIVATE-TOKEN"] != "test-token" {
-		t.Fatalf("DownloadHeaders[PRIVATE-TOKEN] = %q, want test-token", info.DownloadHeaders["PRIVATE-TOKEN"])
-	}
-}
-
-func TestDownloadFileSendsHeaders(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("PRIVATE-TOKEN") != "test-token" {
-			t.Fatalf("download PRIVATE-TOKEN = %q, want test-token", r.Header.Get("PRIVATE-TOKEN"))
-		}
-		w.Write([]byte("ok"))
-	}))
-	defer server.Close()
-
-	u := New()
-	u.client = server.Client()
-
-	got, err := u.downloadFile(t.Context(), server.URL+"/asset", map[string]string{"PRIVATE-TOKEN": "test-token"})
-	if err != nil {
-		t.Fatalf("downloadFile() error = %v", err)
-	}
-	if string(got) != "ok" {
-		t.Fatalf("downloadFile() = %q, want ok", got)
+	expectedURL := "https://gitcode.com/wakeya/magic-claude-code/releases/download/v0.2.0/Magic-Claude-Code-v0.2.0-Linux-x86_64.tar.gz"
+	if info.DownloadURL != expectedURL {
+		t.Fatalf("DownloadURL = %q, want %q", info.DownloadURL, expectedURL)
 	}
 }
 
@@ -346,7 +326,7 @@ func TestDownloadFileRejectsOversizedResponses(t *testing.T) {
 	u := New()
 	u.client = server.Client()
 
-	_, err := u.downloadFile(t.Context(), server.URL+"/large", nil)
+	_, err := u.downloadFile(t.Context(), server.URL+"/large")
 	if err == nil {
 		t.Fatal("expected oversized download error")
 	}
@@ -364,7 +344,7 @@ func TestDownloadFileWithLimitRejectsCustomLimit(t *testing.T) {
 	u := New()
 	u.client = server.Client()
 
-	_, err := u.downloadFileWithLimit(t.Context(), server.URL+"/small", nil, 5)
+	_, err := u.downloadFileWithLimit(t.Context(), server.URL+"/small", 5)
 	if err == nil {
 		t.Fatal("expected custom limit error")
 	}
@@ -382,7 +362,7 @@ func TestDownloadFileRedactsURLInStatusErrors(t *testing.T) {
 	u := New()
 	u.client = server.Client()
 
-	_, err := u.downloadFile(t.Context(), server.URL+"/asset?token=secret", nil)
+	_, err := u.downloadFile(t.Context(), server.URL+"/asset?token=secret")
 	if err == nil {
 		t.Fatal("expected status error")
 	}

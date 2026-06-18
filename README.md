@@ -15,7 +15,7 @@
 
 ## 发布说明
 
-版本发布由 `v*` tag 触发 CI 自动构建。GitHub/GitLab 会生成并上传跨平台二进制资产；GitCode/Gitee 国内回退源的 `dist/release/{tag}/` 资产由发布同步流程维护。开发者提交与发布步骤见 [AGENT.md](AGENT.md)。
+版本发布由 `v*` tag 触发 CI 自动构建。GitHub/GitLab 会生成并上传跨平台二进制资产；Gitee/GitCode 通过 Release API 上传附件。开发者提交与发布步骤见 [AGENT.md](AGENT.md)。
 
 ## 快速开始
 
