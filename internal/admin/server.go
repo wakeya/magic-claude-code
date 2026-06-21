@@ -121,8 +121,11 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// 静态资源（/assets/*）无需认证，直接放行
-		if strings.HasPrefix(r.URL.Path, "/assets/") {
+		// 静态资源（/assets/* 及根路径下的图片/favicon）无需认证，直接放行
+		if strings.HasPrefix(r.URL.Path, "/assets/") ||
+			strings.HasSuffix(r.URL.Path, ".png") ||
+			strings.HasSuffix(r.URL.Path, ".ico") ||
+			strings.HasSuffix(r.URL.Path, ".svg") {
 			next.ServeHTTP(w, r)
 			return
 		}

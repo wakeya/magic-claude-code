@@ -87,10 +87,6 @@ body {
   box-shadow: var(--app-shadow);
 }
 
-.app-logo-mark {
-  background: var(--app-accent);
-}
-
 .app-shell {
   background:
     radial-gradient(circle at 18% 0%, var(--app-accent-soft), transparent 32rem),

@@ -42,7 +42,7 @@ func (m *Manager) GenerateServerCert(caCertDER []byte, caKey *rsa.PrivateKey) ([
 	template := &x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
-			Organization: []string{"Claude Proxy"},
+			Organization: []string{"MCC Proxy"},
 			CommonName:   "api.anthropic.com",
 		},
 		DNSNames:    []string{"api.anthropic.com", "localhost"},
@@ -62,9 +62,9 @@ func (m *Manager) GenerateServerCert(caCertDER []byte, caKey *rsa.PrivateKey) ([
 	return certDER, privateKey, nil
 }
 
-// SaveServerCert 保存服务器证书和私钥
-func (m *Manager) SaveServerCert(certDER []byte, privateKey *rsa.PrivateKey) error {
-	// 保存证书
+// SaveServerCert 保存服务器证书（含 CA 证书链）和私钥
+func (m *Manager) SaveServerCert(certDER []byte, caCertDER []byte, privateKey *rsa.PrivateKey) error {
+	// 保存证书（服务器证书 + CA 证书）
 	certPath := filepath.Join(m.dataDir, "server.crt")
 	certFile, err := os.Create(certPath)
 	if err != nil {
@@ -75,6 +75,13 @@ func (m *Manager) SaveServerCert(certDER []byte, privateKey *rsa.PrivateKey) err
 	if err := pem.Encode(certFile, &pem.Block{
 		Type:  "CERTIFICATE",
 		Bytes: certDER,
+	}); err != nil {
+		return err
+	}
+
+	if err := pem.Encode(certFile, &pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: caCertDER,
 	}); err != nil {
 		return err
 	}
@@ -93,7 +100,9 @@ func (m *Manager) SaveServerCert(certDER []byte, privateKey *rsa.PrivateKey) err
 	})
 }
 
-// LoadServerCert 加载服务器证书和私钥
+// LoadServerCert 加载服务器证书（仅首个 PEM block，即叶子证书 DER）和私钥。
+// server.crt 由 SaveServerCert 写入"叶子 + CA"两段 PEM，本函数只取第一段，
+// 不返回完整证书链。启动 TLS 应直接使用 tls.LoadX509KeyPair 加载文件。
 func (m *Manager) LoadServerCert() ([]byte, *rsa.PrivateKey, error) {
 	// 加载证书
 	certPath := filepath.Join(m.dataDir, "server.crt")
@@ -167,7 +176,7 @@ func (m *Manager) EnsureServerCert(caCertDER []byte, caKey *rsa.PrivateKey) ([]b
 		return nil, nil, err
 	}
 
-	if err := m.SaveServerCert(serverCert, serverKey); err != nil {
+	if err := m.SaveServerCert(serverCert, caCertDER, serverKey); err != nil {
 		return nil, nil, err
 	}
 

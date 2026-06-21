@@ -104,6 +104,15 @@ Local page / proxy entry / reference sources / stack / last updated / progress
 #### 验证
 ```
 
+## 审查归档
+
+部分功能会在 `spec.md` / `spec_ZH.md` 之外附带审查归档文件：
+
+- `review-notes.md`
+- `review-notes_ZH.md`
+
+这类文件用于记录最终审查结论、验证结果和少量残余维护性说明。它们应与对应 feature 目录并排维护，语义上属于该功能的附加归档，而不是独立功能规格。
+
 ## 当前新格式规格
 
 | 功能 | 英文 | 中文 |
@@ -115,6 +124,8 @@ Local page / proxy entry / reference sources / stack / last updated / progress
 | Proactive Content Block Cleanup | `2026-06-15-proactive-content-block-cleanup/spec.md` | `2026-06-15-proactive-content-block-cleanup/spec_ZH.md` |
 | Startup Message i18n | `2026-06-15-improve-startup-message-i18n/spec.md` | `2026-06-15-improve-startup-message-i18n/spec_ZH.md` |
 | Provider Rate-Limit Queue | `2026-06-16-provider-rate-limit-queue/spec.md` | `2026-06-16-provider-rate-limit-queue/spec_ZH.md` |
+| Desktop Endpoint Completeness and TLS Hardening | `2026-06-20-desktop-endpoint-patch/spec.md` | `2026-06-20-desktop-endpoint-patch/spec_ZH.md` |
+| Brand Logo Replacement | `2026-06-20-brand-logo/spec.md` | `2026-06-20-brand-logo/spec_ZH.md` |
 
 ## 状态生命周期
 

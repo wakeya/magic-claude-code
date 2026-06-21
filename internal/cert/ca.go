@@ -29,8 +29,8 @@ func (m *Manager) GenerateCA() ([]byte, *rsa.PrivateKey, error) {
 	template := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
 		Subject: pkix.Name{
-			Organization: []string{"Claude Proxy Local CA"},
-			CommonName:   "Claude Proxy Local CA",
+			Organization: []string{"MCC Proxy Local CA"},
+			CommonName:   "MCC Proxy Local CA",
 		},
 		NotBefore:             time.Now(),
 		NotAfter:              time.Now().AddDate(caValidYears, 0, 0),
