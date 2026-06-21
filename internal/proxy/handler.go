@@ -129,8 +129,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if mappedModel != metadata.OriginalModel {
 		modelStr = fmt.Sprintf("%s -> %s", metadata.OriginalModel, mappedModel)
 	}
-	log.Printf("[%s] >>> %s %s model=%s stream=%v msgs=%d tools=%d size=%d",
-		reqID, r.Method, r.URL.Path, modelStr, isStream, msgs, tools, len(body))
+	log.Printf("[%s] >>> %s %s%s model=%s stream=%v msgs=%d tools=%d size=%d",
+		reqID, r.Method, r.Host, r.URL.Path, modelStr, isStream, msgs, tools, len(body))
 
 	// 创建后端请求
 	backendURL = buildUpstreamURL(backendURL, r.URL.Path, providerAPIFormat(activeProvider))
@@ -249,8 +249,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 响应出口日志
-	log.Printf("[%s] <<< %d model=%s upstream=%dms",
-		reqID, resp.StatusCode, modelStr, headerMS)
+	log.Printf("[%s] <<< %d %s%s model=%s upstream=%dms",
+		reqID, resp.StatusCode, r.Host, r.URL.Path, modelStr, headerMS)
 
 	// 设置状态码
 	w.WriteHeader(resp.StatusCode)

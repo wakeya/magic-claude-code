@@ -3,14 +3,21 @@ package proxy
 import (
 	"bytes"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"io"
+	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"magic-claude-code/internal/cert"
 	"magic-claude-code/internal/config"
 	"magic-claude-code/internal/usage"
 )
@@ -1148,5 +1155,437 @@ func TestMatchErrorPattern_KimiUnsupportedContentType(t *testing.T) {
 	got := matchErrorPattern(body)
 	if got != PatternGenericBadRequest {
 		t.Errorf("expected PatternGenericBadRequest, got %v", got)
+	}
+}
+
+func testTLSCertPair(t *testing.T) (certPath, keyPath string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	certMgr := cert.NewManager(tmpDir)
+	caCert, caKey, err := certMgr.GenerateCA()
+	if err != nil {
+		t.Fatalf("generate CA: %v", err)
+	}
+	serverCert, serverKey, err := certMgr.GenerateServerCert(caCert, caKey)
+	if err != nil {
+		t.Fatalf("generate server cert: %v", err)
+	}
+	if err := certMgr.SaveServerCert(serverCert, caCert, serverKey); err != nil {
+		t.Fatalf("save server cert: %v", err)
+	}
+	if err := certMgr.SaveCA(caCert, caKey); err != nil {
+		t.Fatalf("save CA: %v", err)
+	}
+	return filepath.Join(tmpDir, "server.crt"), filepath.Join(tmpDir, "server.key")
+}
+
+type safeLogBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *safeLogBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *safeLogBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+func (s *safeLogBuffer) Contains(substr string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return strings.Contains(s.buf.String(), substr)
+}
+
+func waitForLog(buf *safeLogBuffer, timeout time.Duration, substr string) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if buf.Contains(substr) {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}
+
+func TestTLSListenerLogsNoSNIOnGarbageInput(t *testing.T) {
+	certPath, keyPath := testTLSCertPair(t)
+	certPair, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		t.Fatalf("load key pair: %v", err)
+	}
+
+	sniStore := &sync.Map{}
+	tlsCfg := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			if hello.Conn != nil && hello.ServerName != "" {
+				sniStore.Store(hello.Conn.RemoteAddr().String(), hello.ServerName)
+			}
+			return &certPair, nil
+		},
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	var logBuf safeLogBuffer
+	tlsLn := newTLSListener(ln, tlsCfg, sniStore, defaultHandshakeTimeout, defaultMaxHandshakes, log.New(&logBuf, "", log.LstdFlags))
+	defer tlsLn.Close()
+
+	rawConn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	rawConn.Write([]byte("NOT TLS GARBAGE"))
+	rawConn.Close()
+
+	if !waitForLog(&logBuf, 2*time.Second, "no SNI") {
+		t.Fatalf("timeout waiting for log; got %q", logBuf.String())
+	}
+
+	logStr := logBuf.String()
+	if !strings.Contains(logStr, "TLS handshake error") {
+		t.Errorf("expected 'TLS handshake error' in log, got %q", logStr)
+	}
+	if !strings.Contains(logStr, "no SNI") {
+		t.Errorf("expected 'no SNI' in log, got %q", logStr)
+	}
+}
+
+func TestTLSListenerLogsSNIOnUntrustedCert(t *testing.T) {
+	certPath, keyPath := testTLSCertPair(t)
+	certPair, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		t.Fatalf("load key pair: %v", err)
+	}
+
+	sniStore := &sync.Map{}
+	tlsCfg := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			if hello.Conn != nil && hello.ServerName != "" {
+				sniStore.Store(hello.Conn.RemoteAddr().String(), hello.ServerName)
+			}
+			return &certPair, nil
+		},
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	var logBuf safeLogBuffer
+	tlsLn := newTLSListener(ln, tlsCfg, sniStore, defaultHandshakeTimeout, defaultMaxHandshakes, log.New(&logBuf, "", log.LstdFlags))
+	defer tlsLn.Close()
+
+	// TLS client sends ClientHello with SNI but doesn't trust the self-signed CA
+	conn, dialErr := tls.Dial("tcp", ln.Addr().String(), &tls.Config{
+		ServerName: "api.anthropic.com",
+	})
+	if conn != nil {
+		conn.Close()
+	}
+	if dialErr == nil {
+		t.Skip("TLS handshake succeeded unexpectedly; cannot test SNI error logging")
+	}
+
+	if !waitForLog(&logBuf, 2*time.Second, "SNI=api.anthropic.com") {
+		t.Fatalf("timeout waiting for log; got %q", logBuf.String())
+	}
+
+	logStr := logBuf.String()
+	if !strings.Contains(logStr, "TLS handshake error") {
+		t.Errorf("expected 'TLS handshake error' in log, got %q", logStr)
+	}
+	if !strings.Contains(logStr, "SNI=api.anthropic.com") {
+		t.Errorf("expected 'SNI=api.anthropic.com' in log, got %q", logStr)
+	}
+}
+
+func TestTLSListenerSlowHandshakeDoesNotBlock(t *testing.T) {
+	certPath, keyPath := testTLSCertPair(t)
+	certPair, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		t.Fatalf("load key pair: %v", err)
+	}
+
+	sniStore := &sync.Map{}
+	tlsCfg := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			if hello.Conn != nil && hello.ServerName != "" {
+				sniStore.Store(hello.Conn.RemoteAddr().String(), hello.ServerName)
+			}
+			return &certPair, nil
+		},
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	tlsLn := newTLSListener(ln, tlsCfg, sniStore, 500*time.Millisecond, defaultMaxHandshakes, log.Default())
+	defer tlsLn.Close()
+
+	// Slow client: TCP connect but never sends ClientHello
+	slowConn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("slow dial: %v", err)
+	}
+	defer slowConn.Close()
+
+	// Valid client: trusts CA, completes handshake
+	caPEM, err := os.ReadFile(filepath.Join(filepath.Dir(certPath), "ca.crt"))
+	if err != nil {
+		t.Fatalf("read CA cert: %v", err)
+	}
+	caPool := x509.NewCertPool()
+	caPool.AppendCertsFromPEM(caPEM)
+
+	clientConn, err := tls.Dial("tcp", ln.Addr().String(), &tls.Config{
+		ServerName: "api.anthropic.com",
+		RootCAs:    caPool,
+	})
+	if err != nil {
+		t.Fatalf("valid TLS dial failed: %v", err)
+	}
+	defer clientConn.Close()
+
+	// Accept must return the valid connection despite the slow client blocking its own handshake goroutine
+	acceptDone := make(chan net.Conn, 1)
+	go func() {
+		conn, err := tlsLn.Accept()
+		if err != nil {
+			close(acceptDone)
+			return
+		}
+		acceptDone <- conn
+	}()
+
+	select {
+	case accepted := <-acceptDone:
+		if accepted == nil {
+			t.Fatal("Accept returned nil conn")
+		}
+		accepted.Close()
+	case <-time.After(2 * time.Second):
+		t.Fatal("Accept was blocked by slow handshake; listener starvation detected")
+	}
+}
+
+func TestTLSListenerHandshakeTimeout(t *testing.T) {
+	certPath, keyPath := testTLSCertPair(t)
+	certPair, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		t.Fatalf("load key pair: %v", err)
+	}
+
+	sniStore := &sync.Map{}
+	tlsCfg := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			if hello.Conn != nil && hello.ServerName != "" {
+				sniStore.Store(hello.Conn.RemoteAddr().String(), hello.ServerName)
+			}
+			return &certPair, nil
+		},
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	var logBuf safeLogBuffer
+	tlsLn := newTLSListener(ln, tlsCfg, sniStore, 200*time.Millisecond, defaultMaxHandshakes, log.New(&logBuf, "", log.LstdFlags))
+	defer tlsLn.Close()
+
+	// TCP connect but never send ClientHello — handshake stalls until deadline fires
+	slowConn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer slowConn.Close()
+
+	if !waitForLog(&logBuf, 2*time.Second, "TLS handshake error") {
+		t.Fatalf("timeout waiting for handshake error log; got %q", logBuf.String())
+	}
+
+	logStr := logBuf.String()
+	if !strings.Contains(logStr, "no SNI") {
+		t.Errorf("expected 'no SNI' in log, got %q", logStr)
+	}
+}
+
+func TestTLSListenerRejectsExcessHandshakes(t *testing.T) {
+	certPath, keyPath := testTLSCertPair(t)
+	certPair, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		t.Fatalf("load key pair: %v", err)
+	}
+
+	sniStore := &sync.Map{}
+	tlsCfg := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			if hello.Conn != nil && hello.ServerName != "" {
+				sniStore.Store(hello.Conn.RemoteAddr().String(), hello.ServerName)
+			}
+			return &certPair, nil
+		},
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	tlsLn := newTLSListener(ln, tlsCfg, sniStore, 500*time.Millisecond, 2, log.Default())
+	defer tlsLn.Close()
+
+	// Create 4 slow connections — only 2 proceed, the rest are rejected
+	conns := make([]net.Conn, 4)
+	for i := range conns {
+		c, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatalf("dial %d: %v", i, err)
+		}
+		conns[i] = c
+	}
+	defer func() {
+		for _, c := range conns {
+			c.Close()
+		}
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+
+	rejected := 0
+	for _, c := range conns {
+		c.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		buf := make([]byte, 1)
+		_, err := c.Read(buf)
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue
+			}
+			rejected++
+		}
+	}
+
+	if rejected < 2 {
+		t.Errorf("expected at least 2 rejected connections, got %d", rejected)
+	}
+}
+
+func TestTLSListenerCloseDrainsQueued(t *testing.T) {
+	certPath, keyPath := testTLSCertPair(t)
+	certPair, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		t.Fatalf("load key pair: %v", err)
+	}
+
+	sniStore := &sync.Map{}
+	tlsCfg := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			if hello.Conn != nil && hello.ServerName != "" {
+				sniStore.Store(hello.Conn.RemoteAddr().String(), hello.ServerName)
+			}
+			return &certPair, nil
+		},
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	tlsLn := newTLSListener(ln, tlsCfg, sniStore, defaultHandshakeTimeout, defaultMaxHandshakes, log.Default())
+
+	caPEM, err := os.ReadFile(filepath.Join(filepath.Dir(certPath), "ca.crt"))
+	if err != nil {
+		t.Fatalf("read CA cert: %v", err)
+	}
+	caPool := x509.NewCertPool()
+	caPool.AppendCertsFromPEM(caPEM)
+
+	clientConn, err := tls.Dial("tcp", ln.Addr().String(), &tls.Config{
+		ServerName: "api.anthropic.com",
+		RootCAs:    caPool,
+	})
+	if err != nil {
+		t.Fatalf("TLS dial: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	tlsLn.Close()
+
+	_, err = tlsLn.Accept()
+	if err == nil {
+		t.Fatal("expected error from Accept after Close, got nil")
+	}
+
+	clientConn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	buf := make([]byte, 1)
+	_, err = clientConn.Read(buf)
+	if err == nil {
+		t.Error("expected queued connection to be closed after listener Close")
+	}
+	clientConn.Close()
+}
+
+func TestTLSListenerCloseSynchronous(t *testing.T) {
+	certPath, keyPath := testTLSCertPair(t)
+	certPair, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		t.Fatalf("load key pair: %v", err)
+	}
+
+	sniStore := &sync.Map{}
+	tlsCfg := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			if hello.Conn != nil && hello.ServerName != "" {
+				sniStore.Store(hello.Conn.RemoteAddr().String(), hello.ServerName)
+			}
+			return &certPair, nil
+		},
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	tlsLn := newTLSListener(ln, tlsCfg, sniStore, 200*time.Millisecond, defaultMaxHandshakes, log.Default())
+
+	slowConn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer slowConn.Close()
+
+	time.Sleep(50 * time.Millisecond)
+
+	done := make(chan struct{})
+	go func() {
+		tlsLn.Close()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close() did not return within 2s — wg.Wait() may be stuck")
+	}
+
+	_, err = tlsLn.Accept()
+	if err == nil {
+		t.Fatal("expected error from Accept after Close")
 	}
 }
