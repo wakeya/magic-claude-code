@@ -25,6 +25,7 @@ func isHardcodedEndpoint(path string) bool {
 		"/api/oauth/claude_cli/roles",
 		"/api/claude_code/organizations/metrics_enabled",
 		"/api/event_logging/batch",
+		"/api/event_logging/v2/batch",
 		"/api/claude_cli/bootstrap",
 		"/v1/mcp_servers",
 		"/api/claude_code_penguin_mode",
@@ -68,6 +69,11 @@ func isHardcodedEndpoint(path string) bool {
 		}
 	}
 
+	// Desktop 更新探测：/api/desktop/**/update
+	if strings.HasPrefix(path, "/api/desktop/") && strings.HasSuffix(path, "/update") {
+		return true
+	}
+
 	return false
 }
 
@@ -84,6 +90,15 @@ func (h *Handler) handleHardcodedEndpoint(w http.ResponseWriter, r *http.Request
 	if path == "/v1/messages/count_tokens" {
 		h.handleCountTokens(w, r)
 		return true
+	}
+
+	// Desktop 更新探测：方法白名单检查在 drain 之前，避免对非 HEAD/GET 请求 drain body
+	if strings.HasPrefix(path, "/api/desktop/") && strings.HasSuffix(path, "/update") {
+		if r.Method != http.MethodHead && r.Method != http.MethodGet {
+			w.Header().Set("Allow", "HEAD, GET")
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return true
+		}
 	}
 
 	// 消耗请求体以确保连接可复用
@@ -138,7 +153,8 @@ func (h *Handler) handleHardcodedEndpoint(w http.ResponseWriter, r *http.Request
 		return true
 
 	// 第一方事件批量上报 - POST /api/event_logging/batch
-	case path == "/api/event_logging/batch":
+	case path == "/api/event_logging/batch",
+		path == "/api/event_logging/v2/batch":
 		h.handleEventLogging(w)
 		return true
 
@@ -167,12 +183,25 @@ func (h *Handler) handleHardcodedEndpoint(w http.ResponseWriter, r *http.Request
 		h.handlePenguinMode(w)
 		return true
 
+	// Desktop 更新探测 - HEAD/GET /api/desktop/**/update
+	case strings.HasPrefix(path, "/api/desktop/") && strings.HasSuffix(path, "/update"):
+		h.handleDesktopUpdate(w, r)
+		return true
+
+	// 策略限制 - GET /api/claude_code/policy_limits
+	case path == "/api/claude_code/policy_limits":
+		h.handlePolicyLimits(w)
+		return true
+
+	// 远程设置 - GET /api/claude_code/settings
+	case path == "/api/claude_code/settings":
+		h.handleRemoteSettings(w)
+		return true
+
 	// 低优先级端点 - 统一返回空 JSON
 	case path == "/api/oauth/profile",
 			path == "/api/claude_cli_profile",
 			path == "/api/oauth/usage",
-			path == "/api/claude_code/policy_limits",
-			path == "/api/claude_code/settings",
 			path == "/api/claude_code/user_settings",
 			strings.HasPrefix(path, "/api/oauth/account/"),
 			path == "/api/claude_code_grove",
@@ -308,8 +337,19 @@ func (h *Handler) handleEmptyResponse(w http.ResponseWriter) {
 // handleCountTokens 处理 token 计数请求，本地估算后直接返回
 // Claude Code 用此端点管理上下文窗口，第三方上游不支持此接口
 func (h *Handler) handleCountTokens(w http.ResponseWriter, r *http.Request) {
-	body, _ := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodySize+1))
 	r.Body.Close()
+	if err != nil {
+		log.Printf("[Hardcoded] Error reading count_tokens body: %v", err)
+		http.Error(w, "Error reading request body", http.StatusBadRequest)
+		return
+	}
+
+	if len(body) > maxRequestBodySize {
+		log.Printf("[Hardcoded] count_tokens body too large: %d bytes", len(body))
+		http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+		return
+	}
 
 	estimated := max(1, len(body)/4)
 	log.Printf("[Hardcoded] Handling %s %s: size=%d estimated_tokens=%d", r.Method, r.URL.Path, len(body), estimated)
@@ -334,9 +374,13 @@ func (h *Handler) handleGrowthBookFeature(w http.ResponseWriter) {
 }
 
 // handleBootstrap 处理启动引导配置
-// 源码期望 client_data + additional_model_options，空响应静默跳过
+// 源码期望 client_data + additional_model_options + cwk_cfg_key
 func (h *Handler) handleBootstrap(w http.ResponseWriter) {
-	writeJSONResponse(w, http.StatusOK, map[string]any{})
+	writeJSONResponse(w, http.StatusOK, map[string]any{
+		"client_data":            map[string]any{},
+		"additional_model_options": []any{},
+		"cwk_cfg_key":            nil,
+	})
 }
 
 // handleMCPRegistry 处理 MCP 注册表请求
@@ -360,6 +404,43 @@ func (h *Handler) handleMCPServers(w http.ResponseWriter) {
 // 源码期望配置对象，空响应使 Fast Mode 不可用
 func (h *Handler) handlePenguinMode(w http.ResponseWriter) {
 	writeJSONResponse(w, http.StatusOK, map[string]any{})
+}
+
+// desktopCurrentRelease 是 Desktop 更新探测返回的当前版本号
+const desktopCurrentRelease = "1.13576.0"
+
+// handleDesktopUpdate 处理 Desktop 更新探测请求
+// HEAD 返回 200 空响应；GET 返回顶层 currentRelease 字段告知"已是最新"
+func (h *Handler) handleDesktopUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodHead && r.Method != http.MethodGet {
+		w.Header().Set("Allow", "HEAD, GET")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	writeJSONResponse(w, http.StatusOK, map[string]any{
+		"currentRelease": desktopCurrentRelease,
+	})
+}
+
+// handlePolicyLimits 处理策略限制请求
+// 源码校验 restrictions 为非空对象、compliance_taints 为数组
+func (h *Handler) handlePolicyLimits(w http.ResponseWriter) {
+	writeJSONResponse(w, http.StatusOK, map[string]any{
+		"restrictions":      map[string]any{},
+		"compliance_taints": []any{},
+	})
+}
+
+// handleRemoteSettings 处理远程设置请求
+// 源码期望 data.settings 为对象
+func (h *Handler) handleRemoteSettings(w http.ResponseWriter) {
+	writeJSONResponse(w, http.StatusOK, map[string]any{
+		"settings": map[string]any{},
+	})
 }
 
 // writeJSONResponse 写入 JSON 响应
