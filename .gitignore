@@ -35,6 +35,7 @@ pnpm-debug.log*
 # --- 临时截图/输出 ---
 *.png
 !docs/**/*.png
+!internal/frontend/public/**/*.png
 
 # --- 操作系统 ---
 .DS_Store
