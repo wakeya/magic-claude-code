@@ -2,8 +2,41 @@
 
 所有重要变更记录在此文件中。
 
-格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
-版本号为发布日期（无语义化版本，因为项目没有发布 tag）。
+格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
+版本号对应 git tag（semver，自 v0.1.0 起），与 `release-notes/vX.Y.Z.md` 一一对应；早期条目以日期标识。
+
+---
+
+## v0.8.0 (2026-06-22)
+
+### Security
+- URL 凭证脱敏：`RedactURL` 剥离 `https://user:pass@host` 的 userinfo；代理入口/出口日志、usage 读取路径统一走脱敏，防止 provider URL 凭证或签名泄露
+- usage 读取二次脱敏：防御历史脏数据，Coverage/Requests 两条输出路径均不泄露
+
+### Added
+- 透明模式自动引导：启动时自动尝试 hosts 修改、CA 信任安装、MCC_ROOT 环境持久化；失败不阻塞启动，按优先级降级
+- 三连接模式与自动降级：透明 > 隧道 > 网关；header 模式按钮可持久化到后端，`/api/config`、`/api/status` 暴露首选/实际模式
+- i18n 系统语言检测：`zh*` 默认中文，其他默认英文；`MCC_LANG` 可手动覆盖
+- 首运行 MCC_ROOT 持久化：从任意工作目录启动均可自动定位证书
+- fish shell profile 去重增强：导出行匹配更语义化，避免重复追加
+- Docker 宿主机 helper 机制：`MCC_HOST_HELPER` 支持挂载 helper 检测/修改宿主机 hosts 与 CA 信任
+- 宿主机一键配置脚本：`setup-host.sh`（Linux/macOS）、`setup-host.ps1`（Windows）；`docker-host-helper.sh` 作为容器内默认状态检测器
+- docker-compose 部署：集成端口映射、数据卷、usage 同步目录、NET_BIND_SERVICE
+- 前端连接模式入口与三模式说明弹窗，含 i18n
+- CI 测试工作流：`.github/workflows/test.yml`，push/PR 跑 `make test`（含 race detector）
+- Release archive 附带 `setup-host.sh`/`setup-host.ps1`
+
+### Changed
+- 请求日志增强：入口日志延后到 backendURL 确定后打印，附带 `provider_name` 与脱敏 `upstream_url`；rate-limit 日志改用 `provider_name` 替代 `provider`（ID）
+- bootstrap 结果模型：hosts/CA/环境持久化独立记录，状态持久化到 data 目录抑制重复失败日志
+- `AGENT.md` 重命名为 `AGENTS.md`
+
+### Docs
+- 新增透明模式自动引导 feature spec：`sdd-docs/features/2026-06-20-transparent-mode-bootstrap-and-fallback/`
+- 新增 fish profile 去重 feature spec：`sdd-docs/features/2026-06-21-fish-profile-dedup-scanner/`
+- README 新增英文版 `README.en.md` 并双语互链
+- `CLAUDE.md` 关键文件表补充 `internal/bootstrap/` 和 `internal/i18n/`
+- `sdd-docs/features/README.md` 索引补登记两个新 feature
 
 ---
 
