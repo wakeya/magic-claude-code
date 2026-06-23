@@ -816,6 +816,10 @@ type providerExportFile struct {
 // handleExportProviders 导出选中的供应商为 JSON（含真实 api_token）。
 // 请求体 {"ids": [...]} 指定要导出的供应商 ID；未知 ID 静默跳过。
 func (s *Server) handleExportProviders(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error": "method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
 	var req struct {
 		IDs []string `json:"ids"`
 	}
@@ -854,6 +858,10 @@ func (s *Server) handleExportProviders(w http.ResponseWriter, r *http.Request) {
 // 请求体 {"version":1, "providers":[...], "strategy":"skip|overwrite|duplicate"}。
 // 整个导入在一次 Load→合并→Save 周期内完成；Save 失败则不更改任何供应商。
 func (s *Server) handleImportProviders(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error": "method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
 	var req struct {
 		Version   int               `json:"version"`
 		Providers []config.Provider `json:"providers"`
@@ -894,11 +902,13 @@ func (s *Server) handleImportProviders(w http.ResponseWriter, r *http.Request) {
 		Errors      []string `json:"errors"`
 	}{Success: true, Errors: []string{}}
 
-	// 文件内去重：同一 ID 只处理首次出现
+	// 文件内去重：skip/overwrite 策略下同一 ID 只处理首次出现；
+	// duplicate 策略下每条都生成新 ID，无需去重。
 	seenInFile := make(map[string]bool)
+	dedup := strategy != "duplicate"
 
 	for _, p := range req.Providers {
-		if seenInFile[p.ID] {
+		if dedup && seenInFile[p.ID] {
 			continue
 		}
 		seenInFile[p.ID] = true
@@ -907,6 +917,16 @@ func (s *Server) handleImportProviders(w http.ResponseWriter, r *http.Request) {
 		cp := p
 		if err := cp.Validate(); err != nil {
 			summary.Errors = append(summary.Errors, fmt.Sprintf("%s: %v", p.Name, err))
+			continue
+		}
+
+		if strategy == "duplicate" {
+			// duplicate 策略：无条件生成新 ID 追加，不检查冲突。
+			cp.ID = generateProviderID()
+			cp.CreatedAt = now
+			cp.UpdatedAt = now
+			cfg.Providers = append(cfg.Providers, cp)
+			summary.Duplicated++
 			continue
 		}
 
@@ -920,12 +940,6 @@ func (s *Server) handleImportProviders(w http.ResponseWriter, r *http.Request) {
 				cp.UpdatedAt = now
 				cfg.Providers[existingIdx[p.ID]] = cp
 				summary.Overwritten++
-			case "duplicate":
-				cp.ID = generateProviderID()
-				cp.CreatedAt = now
-				cp.UpdatedAt = now
-				cfg.Providers = append(cfg.Providers, cp)
-				summary.Duplicated++
 			}
 		} else {
 			if cp.CreatedAt.IsZero() {

@@ -428,6 +428,7 @@ export function useApi() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ids }),
     })
+    if (!res.ok) throw new Error(`export failed: ${res.status}`)
     return res.json()
   }
 
@@ -440,6 +441,7 @@ export function useApi() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ version: 1, providers, strategy }),
     })
+    if (!res.ok) throw new Error(`import failed: ${res.status}`)
     return res.json()
   }
 

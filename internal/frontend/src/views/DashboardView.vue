@@ -1046,18 +1046,22 @@ function toggleSelectAll() {
 async function handleExport() {
   const ids = [...selectedProviderIds.value]
   if (ids.length === 0) return
-  const data = await api.exportProviders(ids)
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  const ts = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15)
-  a.href = url
-  a.download = `providers-export-${ts}.json`
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
-  alert(t('providers.export_warning'))
+  if (!confirm(t('providers.export_warning'))) return
+  try {
+    const data = await api.exportProviders(ids)
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    const ts = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15)
+    a.href = url
+    a.download = `providers-export-${ts}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  } catch {
+    alert(t('providers.import_invalid'))
+  }
 }
 
 function triggerImportFile() {
@@ -1071,7 +1075,11 @@ function handleImportFileChange(e: Event) {
   const reader = new FileReader()
   reader.onload = () => {
     try {
-      const parsed = JSON.parse(reader.result as string) as { providers: Provider[] }
+      const parsed = JSON.parse(reader.result as string) as { version?: number; providers: Provider[] }
+      if (parsed.version !== 1) {
+        alert(t('providers.import_invalid'))
+        return
+      }
       if (!parsed.providers || !Array.isArray(parsed.providers)) {
         alert(t('providers.import_invalid'))
         return
@@ -1096,10 +1104,14 @@ function handleImportFileChange(e: Event) {
 async function confirmImport() {
   if (!importPreview.value) return
   const { providers: toImport } = importPreview.value
-  const result = await api.importProviders(toImport, importStrategy.value)
-  importPreview.value = null
-  await loadProviders()
-  alert(t('providers.import_done', { imported: result.imported, skipped: result.skipped, overwritten: result.overwritten, duplicated: result.duplicated }))
+  try {
+    const result = await api.importProviders(toImport, importStrategy.value)
+    importPreview.value = null
+    await loadProviders()
+    alert(t('providers.import_done', { imported: result.imported, skipped: result.skipped, overwritten: result.overwritten, duplicated: result.duplicated }))
+  } catch {
+    alert(t('providers.import_invalid'))
+  }
 }
 
 async function handleActivate(id: string) {

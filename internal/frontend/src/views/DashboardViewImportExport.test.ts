@@ -51,3 +51,25 @@ test('DashboardView triggers file download on export', () => {
   // Blob + download link pattern
   assert.match(dashSource, /Blob|createObjectURL|download/)
 })
+
+test('import file parse validates version field', () => {
+  // The import handler must reject files missing version or with version != 1
+  // before showing the preview (client-side guard mirrors backend).
+  assert.match(dashSource, /parsed\.version/)
+})
+
+test('export shows confirmation warning before downloading', () => {
+  // A confirm() call must precede the export API call
+  const exportSection = dashSource.match(/handleExport[\s\S]*?\n\}/)?.[0] || ''
+  assert.match(exportSection, /confirm/)
+})
+
+test('useApi exportProviders checks res.ok', () => {
+  const methodSection = useApiSource.match(/exportProviders[\s\S]*?\n  \}/)?.[0] || ''
+  assert.match(methodSection, /res\.ok|!res\.ok|res\.status/)
+})
+
+test('useApi importProviders checks res.ok', () => {
+  const methodSection = useApiSource.match(/importProviders[\s\S]*?\n  \}/)?.[0] || ''
+  assert.match(methodSection, /res\.ok|!res\.ok|res\.status/)
+})

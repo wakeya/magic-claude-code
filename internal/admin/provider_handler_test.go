@@ -653,3 +653,58 @@ func TestImportProvidersSkipsInvalidProvider(t *testing.T) {
 		t.Fatal("bad provider should not be imported")
 	}
 }
+
+func TestImportProvidersDuplicateStrategyKeepsAllSameID(t *testing.T) {
+	// spec: duplicate 策略下，文件内多个相同 ID 的供应商应逐条生成新 ID，
+	// 而非"首次出现生效"丢弃后续。
+	cfg := config.DefaultConfig()
+	store := config.NewMockStore(cfg)
+	server := NewServer(&AdminConfig{Password: "secret"}, store, nil)
+
+	reqBody := importRequest{
+		Version: 1,
+		Providers: []config.Provider{
+			{ID: "same", Name: "First", APIURL: "https://first.example.com/api", APIToken: "sk-1", APIFormat: config.APIFormatAnthropic, Enabled: true},
+			{ID: "same", Name: "Second", APIURL: "https://second.example.com/api", APIToken: "sk-2", APIFormat: config.APIFormatAnthropic, Enabled: true},
+		},
+		Strategy: "duplicate",
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/import", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	server.handleImportProviders(rec, req)
+
+	counts := importResp(t, rec)
+	if counts["duplicated"] != 2 {
+		t.Fatalf("counts = %#v, want duplicated=2", counts)
+	}
+	loaded, _ := store.Load()
+	if len(loaded.Providers) != 2 {
+		t.Fatalf("provider count = %d, want 2", len(loaded.Providers))
+	}
+	// 两条都应有不同的新 ID
+	if loaded.Providers[0].ID == loaded.Providers[1].ID {
+		t.Fatal("duplicate strategy produced same ID for both entries")
+	}
+}
+
+func TestImportProvidersRejectsNonPostMethod(t *testing.T) {
+	// 导入/导出端点应显式拒绝非 POST 方法（与其他 mutating API 一致）
+	cfg := config.DefaultConfig()
+	store := config.NewMockStore(cfg)
+	server := NewServer(&AdminConfig{Password: "secret"}, store, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/providers/import", nil)
+	rec := httptest.NewRecorder()
+	server.handleImportProviders(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("import GET status = %d, want 405", rec.Code)
+	}
+
+	req2 := httptest.NewRequest(http.MethodGet, "/api/providers/export", nil)
+	rec2 := httptest.NewRecorder()
+	server.handleExportProviders(rec2, req2)
+	if rec2.Code != http.StatusMethodNotAllowed {
+		t.Errorf("export GET status = %d, want 405", rec2.Code)
+	}
+}
