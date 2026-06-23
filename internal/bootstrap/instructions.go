@@ -2,7 +2,9 @@ package bootstrap
 
 import (
 	"fmt"
+	"net"
 	"runtime"
+	"strconv"
 	"strings"
 )
 
@@ -176,7 +178,7 @@ func gatewayInstructions(r Result, locale string) []string {
 	if port == 0 {
 		port = 17487
 	}
-	baseURL := fmt.Sprintf("http://%s:%d", addr, port)
+	baseURL := "http://" + net.JoinHostPort(addr, strconv.Itoa(port))
 	if locale == "zh" {
 		lines := []string{
 			"⚠ 透明模式和隧道模式均不可用，已降级到路由模式。",
