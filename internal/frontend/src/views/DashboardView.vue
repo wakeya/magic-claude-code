@@ -1135,7 +1135,7 @@ const recommendedConfigJson = computed(() => {
     },
     hooks: {
       PreToolUse: [
-        { hooks: [{ command: '$HOME/.claude/hooks/rtk-rewrite.sh', type: 'command' }], matcher: 'Bash' },
+        { hooks: [{ command: 'rtk hook claude', type: 'command' }], matcher: 'Bash' },
       ],
     },
     includeCoAuthoredBy: false,
