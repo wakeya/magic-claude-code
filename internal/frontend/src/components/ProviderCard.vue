@@ -1,6 +1,7 @@
 <template>
   <div :class="['app-panel p-6 rounded-lg mb-3 transition-all duration-200 cursor-default', provider.active ? 'border-secondary bg-secondary-light' : 'hover:border-primary', !provider.enabled ? 'opacity-50' : '']">
     <div class="flex items-center gap-3 mb-3.5">
+      <input type="checkbox" :checked="selected" class="w-4 h-4 cursor-pointer flex-shrink-0 accent-primary" @change="$emit('toggle-select', provider.id)" />
       <span :class="['w-2.5 h-2.5 rounded-full flex-shrink-0', provider.enabled ? 'bg-secondary' : 'bg-gray-300']" />
       <span class="text-base font-bold flex-1">{{ provider.name }}</span>
       <span v-if="provider.active" class="bg-secondary text-white px-3 py-1 rounded-full text-[11px] font-bold uppercase tracking-wider">{{ t('providers.active') }}</span>
@@ -32,8 +33,8 @@
 import type { Provider } from '@/composables/useApi'
 import { useI18n } from '@/composables/useI18n'
 
-defineProps<{ provider: Provider }>()
-defineEmits<{ edit: []; delete: [id: string]; activate: [id: string]; toggle: [id: string]; test: [id: string]; duplicate: [id: string] }>()
+defineProps<{ provider: Provider; selected?: boolean }>()
+defineEmits<{ edit: []; delete: [id: string]; activate: [id: string]; toggle: [id: string]; test: [id: string]; duplicate: [id: string]; 'toggle-select': [id: string] }>()
 
 const { t } = useI18n()
 </script>

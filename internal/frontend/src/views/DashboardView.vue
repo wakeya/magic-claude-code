@@ -142,12 +142,14 @@
           v-for="p in providers"
           :key="p.id"
           :provider="p"
+          :selected="selectedProviderIds.has(p.id)"
           @edit="openEditModal(p)"
           @delete="handleDelete(p.id)"
           @activate="handleActivate(p.id)"
           @toggle="handleToggle(p.id)"
           @test="handleTest(p.id)"
           @duplicate="handleDuplicate"
+          @toggle-select="toggleProviderSelect"
         />
       </div>
 
@@ -840,6 +842,7 @@ const containerClass = computed(() => 'max-w-[1600px]')
 const status = ref<StatusInfo | null>(null)
 const providers = ref<Provider[]>([])
 const activeProviderId = ref('')
+const selectedProviderIds = ref<Set<string>>(new Set())
 const certs = ref<CertificateInfo | null>(null)
 const configuredMode = ref<'transparent' | 'tunnel' | 'gateway'>('transparent')
 const effectiveMode = ref<'transparent' | 'tunnel' | 'gateway'>('transparent')
@@ -972,7 +975,18 @@ async function handleSaved() {
 async function handleDelete(id: string) {
   if (!confirm(t('providers.confirm_delete'))) return
   await api.deleteProvider(id)
+  selectedProviderIds.value.delete(id)
   await loadProviders()
+}
+
+function toggleProviderSelect(id: string) {
+  const next = new Set(selectedProviderIds.value)
+  if (next.has(id)) {
+    next.delete(id)
+  } else {
+    next.add(id)
+  }
+  selectedProviderIds.value = next
 }
 
 async function handleActivate(id: string) {
