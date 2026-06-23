@@ -46,6 +46,31 @@ func TestDefaultConfigThemeMode(t *testing.T) {
 	if cfg.AdminThemeMode != ThemeModeLight {
 		t.Fatalf("AdminThemeMode = %q, want %q", cfg.AdminThemeMode, ThemeModeLight)
 	}
+	if cfg.ConnectionMode != ConnectionModeTransparent {
+		t.Fatalf("ConnectionMode = %q, want %q", cfg.ConnectionMode, ConnectionModeTransparent)
+	}
+}
+
+func TestNormalizeConnectionMode(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "empty defaults transparent", in: "", want: ConnectionModeTransparent},
+		{name: "transparent accepted", in: ConnectionModeTransparent, want: ConnectionModeTransparent},
+		{name: "tunnel accepted", in: ConnectionModeTunnel, want: ConnectionModeTunnel},
+		{name: "gateway accepted", in: ConnectionModeGateway, want: ConnectionModeGateway},
+		{name: "invalid defaults transparent", in: "system", want: ConnectionModeTransparent},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NormalizeConnectionMode(tt.in); got != tt.want {
+				t.Fatalf("NormalizeConnectionMode(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
 }
 
 func TestConfigValidation(t *testing.T) {
@@ -72,6 +97,13 @@ func TestConfigValidation(t *testing.T) {
 			name: "invalid URL",
 			config: Config{
 				BackendURL: "not-a-url",
+			},
+			wantErr: true,
+		},
+		{
+			name: "backend_url with userinfo rejected",
+			config: Config{
+				BackendURL: "https://user:pass@example.com/api",
 			},
 			wantErr: true,
 		},

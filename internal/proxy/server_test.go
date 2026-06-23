@@ -75,6 +75,53 @@ func TestProxyHandler(t *testing.T) {
 	}
 }
 
+func TestProxyLogsIncludeProviderContext(t *testing.T) {
+	var buf bytes.Buffer
+	oldOutput := log.Writer()
+	oldFlags := log.Flags()
+	oldPrefix := log.Prefix()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	t.Cleanup(func() {
+		log.SetOutput(oldOutput)
+		log.SetFlags(oldFlags)
+		log.SetPrefix(oldPrefix)
+	})
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer backend.Close()
+
+	provider := testProxyProvider(backend.URL)
+	handler := NewHandler(config.NewMockStore(testProxyConfig(provider)), http.DefaultTransport.(*http.Transport))
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{
+		"model":"claude-sonnet",
+		"stream":false,
+		"messages":[{"role":"user","content":"hello"}]
+	}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	logs := buf.String()
+	if !strings.Contains(logs, `provider_name="Provider A"`) {
+		t.Fatalf("expected provider name in logs, got:\n%s", logs)
+	}
+	if !strings.Contains(logs, `upstream_url="`) {
+		t.Fatalf("expected upstream url in logs, got:\n%s", logs)
+	}
+	if !strings.Contains(logs, backend.URL) {
+		t.Fatalf("expected upstream base url in logs, got:\n%s", logs)
+	}
+}
+
 func TestProxyBackendError(t *testing.T) {
 	// 创建模拟后端返回错误
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1587,5 +1634,108 @@ func TestTLSListenerCloseSynchronous(t *testing.T) {
 	_, err = tlsLn.Accept()
 	if err == nil {
 		t.Fatal("expected error from Accept after Close")
+	}
+}
+
+// TestRedactUpstreamURL 验证日志 redact：query 和 fragment 必须被剥离，
+// 防止 provider URL 的签名/凭证参数泄露。
+func TestRedactUpstreamURL(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"https://host.example/v1/messages?sign=secret&token=x", "https://host.example/v1/messages"},
+		{"https://host.example/v1/messages#frag", "https://host.example/v1/messages"},
+		{"https://user:pass@host.example/v1/messages?sign=x", "https://host.example/v1/messages"},
+		{"https://userinfo@host.example/v1", "https://host.example/v1"},
+		{"https://host.example/v1/messages", "https://host.example/v1/messages"},
+		{"", ""},
+		{"not-a-url", "not-a-url"},
+	}
+	for _, c := range cases {
+		if got := redactUpstreamURL(c.in); got != c.want {
+			t.Errorf("redactUpstreamURL(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestRestartGateway_SameAddrSkips 验证地址未变化且 server 正在运行时跳过重启，
+// 避免 "address already in use"（旧实例仍在监听）。
+func TestRestartGateway_SameAddrSkips(t *testing.T) {
+	s := NewServer(config.NewMockStore(nil))
+	addr := "127.0.0.1:0"
+	original := &http.Server{}
+	s.gatewayMu.Lock()
+	s.gatewayAddr = addr
+	s.gatewayServer = original // 模拟 gateway 正在运行
+	s.gatewayMu.Unlock()
+
+	if err := s.RestartGateway(addr); err != nil {
+		t.Fatalf("RestartGateway with same addr should skip, got error: %v", err)
+	}
+	s.gatewayMu.Lock()
+	defer s.gatewayMu.Unlock()
+	// 跳过：gatewayServer 应保持原引用，未被替换
+	if s.gatewayServer != original {
+		t.Errorf("expected gatewayServer unchanged on skip, got replaced")
+	}
+}
+
+// TestRestartGateway_StoppedServerRetries 验证 server 已停（gatewayServer=nil）时，
+// 即使 gatewayAddr 残留旧值也不跳过——必须重新启动恢复监听。
+func TestRestartGateway_StoppedServerRetries(t *testing.T) {
+	s := NewServer(config.NewMockStore(nil))
+	// 模拟 Stop() 后状态：addr 残留但 server 已清
+	s.gatewayMu.Lock()
+	s.gatewayAddr = "127.0.0.1:0"
+	s.gatewayServer = nil
+	s.gatewayMu.Unlock()
+
+	if err := s.RestartGateway("127.0.0.1:0"); err != nil {
+		t.Fatalf("RestartGateway after stop should retry (not skip), got: %v", err)
+	}
+	s.gatewayMu.Lock()
+	gw := s.gatewayServer
+	s.gatewayMu.Unlock()
+	if gw == nil {
+		t.Fatal("expected gatewayServer recreated after stop, got nil (skip wrongly applied)")
+	}
+	t.Cleanup(func() { gw.Close() })
+}
+
+// TestProxyLogsRedactQuery 验证入口和出口日志的 upstream_url 不含 query。
+func TestProxyLogsRedactQuery(t *testing.T) {
+	var buf bytes.Buffer
+	oldOutput := log.Writer()
+	oldFlags := log.Flags()
+	oldPrefix := log.Prefix()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	t.Cleanup(func() {
+		log.SetOutput(oldOutput)
+		log.SetFlags(oldFlags)
+		log.SetPrefix(oldPrefix)
+	})
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer backend.Close()
+
+	// provider URL 带一个"敏感" query，验证它不出现在日志里
+	provider := testProxyProvider(backend.URL)
+	provider.APIURL = backend.URL + "/v1?sign=SECRET-TOKEN"
+	handler := NewHandler(config.NewMockStore(testProxyConfig(provider)), http.DefaultTransport.(*http.Transport))
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{
+		"model":"claude-sonnet","stream":false,
+		"messages":[{"role":"user","content":"hi"}]
+	}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	logs := buf.String()
+	if strings.Contains(logs, "sign=SECRET-TOKEN") {
+		t.Errorf("sensitive query leaked into logs:\n%s", logs)
 	}
 }

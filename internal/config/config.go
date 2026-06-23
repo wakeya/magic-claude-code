@@ -8,6 +8,10 @@ import (
 const (
 	ThemeModeLight = "light"
 	ThemeModeDark  = "dark"
+
+	ConnectionModeTransparent = "transparent"
+	ConnectionModeTunnel      = "tunnel"
+	ConnectionModeGateway     = "gateway"
 )
 
 // Config 应用配置
@@ -35,6 +39,15 @@ type Config struct {
 
 	// AdminThemeMode 管理端主题模式: light 或 dark
 	AdminThemeMode string `json:"admin_theme_mode"`
+
+	// ConnectionMode 启动首选连接模式: transparent / tunnel / gateway
+	ConnectionMode string `json:"connection_mode"`
+
+	// GatewayListenAddr 路由模式监听地址（默认 127.0.0.1）
+	GatewayListenAddr string `json:"gateway_listen_addr"`
+
+	// GatewayListenPort 路由模式监听端口（默认 17487）
+	GatewayListenPort int `json:"gateway_listen_port"`
 }
 
 // DefaultConfig 返回默认配置
@@ -45,6 +58,10 @@ func DefaultConfig() *Config {
 		AdminPort:      8442,
 		DataDir:        "./data",
 		AdminThemeMode: ThemeModeLight,
+		ConnectionMode: ConnectionModeTransparent,
+
+		GatewayListenAddr: "127.0.0.1",
+		GatewayListenPort: 17487,
 	}
 }
 
@@ -57,6 +74,20 @@ func NormalizeThemeMode(mode string) string {
 		return ThemeModeLight
 	default:
 		return ThemeModeLight
+	}
+}
+
+// NormalizeConnectionMode returns a supported startup mode.
+func NormalizeConnectionMode(mode string) string {
+	switch mode {
+	case ConnectionModeTransparent:
+		return ConnectionModeTransparent
+	case ConnectionModeTunnel:
+		return ConnectionModeTunnel
+	case ConnectionModeGateway:
+		return ConnectionModeGateway
+	default:
+		return ConnectionModeTransparent
 	}
 }
 
@@ -83,6 +114,10 @@ func (c *Config) Validate() error {
 		if u.Host == "" {
 			return fmt.Errorf("backend_url must have a host")
 		}
+
+		if u.User != nil {
+			return fmt.Errorf("backend_url must not contain userinfo (user:pass@); put credentials in provider api_token instead")
+		}
 	}
 
 	// 验证所有供应商配置
@@ -93,6 +128,25 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// RedactURL strips userinfo, query string and fragment from a URL, returning
+// only scheme://host/path. Used by log and admin API layers to prevent
+// credentials, signatures and other sensitive URL components from leaking.
+// On parse failure the original string is returned (rare; preserves debug info).
+func RedactURL(rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.Fragment = ""
+	u.RawFragment = ""
+	return u.String()
 }
 
 // NormalizeDefaults fills backward-compatible default values.
@@ -107,6 +161,13 @@ func (c *Config) NormalizeDefaults() {
 		c.DataDir = "./data"
 	}
 	c.AdminThemeMode = NormalizeThemeMode(c.AdminThemeMode)
+	c.ConnectionMode = NormalizeConnectionMode(c.ConnectionMode)
+	if c.GatewayListenAddr == "" {
+		c.GatewayListenAddr = "127.0.0.1"
+	}
+	if c.GatewayListenPort == 0 {
+		c.GatewayListenPort = 17487
+	}
 	for i := range c.Providers {
 		c.Providers[i].normalizeDefaults()
 	}

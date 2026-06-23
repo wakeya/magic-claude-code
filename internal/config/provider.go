@@ -138,6 +138,10 @@ func (p *Provider) Validate() error {
 		return fmt.Errorf("api_url must have a host")
 	}
 
+	if u.User != nil {
+		return fmt.Errorf("api_url must not contain userinfo (user:pass@); use api_token instead")
+	}
+
 	if !p.APIFormat.IsValid() {
 		return fmt.Errorf("unsupported api_format: %s", p.APIFormat)
 	}

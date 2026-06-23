@@ -20,6 +20,22 @@
         {{ updateInfo?.latest_version }}
       </button>
     </div>
+    <!-- Mode Entry (compact) -->
+    <div class="mode-entry flex items-center gap-2 rounded-lg px-3 py-1.5 shrink-0" style="background: var(--app-accent-soft);">
+      <span class="text-[11px] font-bold uppercase tracking-[0.15em] opacity-70">{{ t('mode.entry') }}</span>
+      <span class="px-2 py-0.5 rounded-full text-[11px] font-bold" :style="{ background: 'var(--app-accent)', color: 'white' }">{{ modeTitle(configuredMode) }}</span>
+      <span v-if="effectiveMode && effectiveMode !== configuredMode" class="text-[11px] app-muted">
+        {{ t('mode.effective_mode') }}: {{ modeTitle(effectiveMode) }}
+      </span>
+      <button
+        type="button"
+        class="text-[11px] font-semibold cursor-pointer hover:underline"
+        style="color: var(--app-accent);"
+        @click="$emit('showConnectionMode')"
+      >
+        {{ t('mode.details') }}
+      </button>
+    </div>
     <div class="flex flex-wrap items-center justify-end gap-2 sm:gap-3">
       <a href="https://github.com/wakeya/magic-claude-code" target="_blank" rel="noopener noreferrer"
          class="app-muted hover:text-fg transition-colors duration-200" title="GitHub">
@@ -121,13 +137,16 @@ import { useApi, type UpdateCheckResult } from '@/composables/useApi'
 import { useI18n } from '@/composables/useI18n'
 import { useTheme } from '@/composables/useTheme'
 
-defineEmits<{ logout: [] }>()
+defineEmits<{ logout: []; showConnectionMode: [] }>()
 
 const api = useApi()
 const { locale, t, setLocale } = useI18n()
 const { themeMode, persistTheme, syncError } = useTheme()
 const langOpen = ref(false)
 const langMenuRef = ref<HTMLElement | null>(null)
+const configuredMode = ref<'transparent' | 'tunnel' | 'gateway'>('transparent')
+const effectiveMode = ref<'transparent' | 'tunnel' | 'gateway'>('transparent')
+const modeRationale = ref('')
 const langOptions = [
   { value: 'zh' as const, label: '中文' },
   { value: 'en' as const, label: 'English' },
@@ -164,10 +183,29 @@ function markUpdateChecked(now = Date.now()) {
 
 async function fetchStatusVersion() {
   try {
-    const status = await api.getStatus()
+    const [status, config] = await Promise.all([api.getStatus(), api.getConfig()])
     if (status.version) statusVersion.value = status.version
+    configuredMode.value = normalizeMode(config.connection_mode || status.configured_mode || 'transparent')
+    effectiveMode.value = normalizeMode(status.effective_mode || status.configured_mode || config.connection_mode || 'transparent')
+    modeRationale.value = status.mode_rationale || ''
   } catch {
     // silently ignore — version display is best-effort
+  }
+}
+
+function normalizeMode(mode: string | undefined | null) {
+  if (mode === 'tunnel' || mode === 'gateway') return mode
+  return 'transparent'
+}
+
+function modeTitle(mode: string) {
+  switch (normalizeMode(mode)) {
+    case 'tunnel':
+      return t('mode.tunnel.title')
+    case 'gateway':
+      return t('mode.gateway.title')
+    default:
+      return t('mode.transparent.title')
   }
 }
 
@@ -208,6 +246,7 @@ async function doApplyUpdate() {
 onMounted(() => {
   fetchStatusVersion()
   checkUpdate()
+  window.addEventListener('mcc:mode-updated', fetchStatusVersion)
 })
 
 function closeLanguageMenuOnOutsideClick(e: MouseEvent) {
@@ -219,6 +258,7 @@ if (typeof window !== 'undefined') {
   window.addEventListener('click', closeLanguageMenuOnOutsideClick)
   onBeforeUnmount(() => {
     window.removeEventListener('click', closeLanguageMenuOnOutsideClick)
+    window.removeEventListener('mcc:mode-updated', fetchStatusVersion)
   })
 }
 </script>

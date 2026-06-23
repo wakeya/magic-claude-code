@@ -1,6 +1,6 @@
 <template>
   <div class="app-shell min-h-screen">
-    <AppHeader @logout="handleLogout" />
+    <AppHeader @logout="handleLogout" @show-connection-mode="activeTab = 'connection'" />
 
     <div :class="['mx-auto px-4 py-6 sm:px-6 sm:py-8', containerClass]">
       <div class="app-panel flex flex-wrap gap-1 mb-8 p-1 rounded-lg w-fit">
@@ -123,6 +123,214 @@
           @test="handleTest(p.id)"
           @duplicate="handleDuplicate"
         />
+      </div>
+
+      <div v-if="activeTab === 'connection'" class="space-y-6">
+        <div class="flex items-center gap-2 text-[15px] font-bold">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+          </svg>
+          {{ t('tab.connection') }}
+        </div>
+
+        <div class="app-panel p-5 rounded-lg">
+          <div class="flex flex-wrap items-center gap-3 text-sm">
+            <span class="app-muted">{{ t('mode.current_mode') }}:</span>
+            <span class="px-2.5 py-0.5 rounded-full text-xs font-bold" :style="{ background: 'var(--app-accent)', color: 'white' }">{{ modeTitle(configuredMode) }}</span>
+            <template v-if="effectiveMode && effectiveMode !== configuredMode">
+              <span class="app-muted">{{ t('mode.effective_mode') }}:</span>
+              <span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-muted">{{ modeTitle(effectiveMode) }}</span>
+            </template>
+          </div>
+          <p v-if="modeRationale" class="mt-2 text-xs app-muted leading-snug">{{ modeRationale }}</p>
+          <div class="mt-3 inline-block px-3 py-1.5 rounded-lg text-xs font-semibold" style="background: var(--app-accent-soft); color: var(--app-accent);">
+            {{ t('mode.priority_label') }}: {{ t('mode.priority') }}
+          </div>
+        </div>
+
+        <div class="app-panel p-5 rounded-lg">
+          <p class="text-sm app-muted mb-4">{{ t('mode.tab_subtitle') }}</p>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <button
+              v-for="opt in modeOptions"
+              :key="opt.value"
+              type="button"
+              :class="[
+                'px-4 py-3 rounded-lg text-left border transition-all duration-200 cursor-pointer',
+                viewMode === opt.value
+                  ? 'text-white'
+                  : 'app-control',
+              ]"
+              :style="viewMode === opt.value ? 'background: var(--app-accent); border-color: var(--app-accent);' : ''"
+              @click="viewMode = opt.value"
+            >
+              <div class="text-[14px] font-bold">{{ opt.label() }}</div>
+              <div class="text-[11px] mt-0.5" :class="viewMode === opt.value ? 'opacity-80' : 'opacity-60'">{{ opt.hint() }}</div>
+            </button>
+          </div>
+          <div class="mt-4 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              class="px-4 py-2 rounded-lg text-sm font-semibold text-white cursor-pointer transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+              style="background: var(--app-accent);"
+              :disabled="modeSaving || configuredMode === viewMode"
+              @click="saveMode(viewMode)"
+            >
+              {{ t('mode.save_as_preferred') }}
+            </button>
+            <p v-if="modeMessage" class="text-xs font-semibold" :style="{ color: modeMessageIsError ? 'var(--app-danger)' : 'var(--app-success)' }">
+              {{ modeMessage }}
+            </p>
+          </div>
+        </div>
+
+        <div class="app-panel p-6 rounded-lg space-y-5">
+          <div class="flex items-center gap-3">
+            <h3 class="text-lg font-bold">{{ modeTitle(viewMode) }}</h3>
+            <span class="text-[11px] app-muted font-mono">{{ t(`mode.${viewMode}.entry`) }}</span>
+          </div>
+          <p class="text-sm leading-relaxed">{{ t(`mode.${viewMode}.long_desc`) }}</p>
+
+          <div v-if="viewMode === 'gateway'" class="rounded-lg p-4" style="background: var(--app-accent-soft);">
+            <h4 class="text-sm font-bold mb-1" style="color: var(--app-accent);">{{ t('mode.gateway.basic_settings') }}</h4>
+            <p class="text-xs app-muted mb-4">{{ t('mode.gateway.basic_settings_desc') }}</p>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label class="block text-xs font-bold text-text-secondary uppercase tracking-widest mb-2">{{ t('mode.gateway.listen_addr') }}</label>
+                <input v-model="gatewayAddrInput" type="text" class="app-control w-full rounded-md px-3 py-2 text-sm font-mono" :placeholder="gatewayAddr" />
+                <p class="mt-1 text-[11px] app-muted">{{ t('mode.gateway.listen_addr_hint') }}</p>
+              </div>
+              <div>
+                <label class="block text-xs font-bold text-text-secondary uppercase tracking-widest mb-2">{{ t('mode.gateway.listen_port') }}</label>
+                <input v-model.number="gatewayPortInput" type="number" min="1024" max="65535" class="app-control w-full rounded-md px-3 py-2 text-sm font-mono" :placeholder="gatewayPort" />
+                <p class="mt-1 text-[11px] app-muted">{{ t('mode.gateway.listen_port_hint') }}</p>
+              </div>
+            </div>
+            <div class="mt-4 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                class="px-4 py-2 rounded-lg text-sm font-semibold text-white cursor-pointer transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                style="background: var(--app-accent);"
+                :disabled="gatewaySaving"
+                @click="saveGatewaySettings"
+              >
+                {{ t('mode.gateway.save_settings') }}
+              </button>
+              <p v-if="gatewayMessage" class="text-xs font-semibold" :style="{ color: gatewayMessageIsError ? 'var(--app-danger)' : 'var(--app-success)' }">
+                {{ gatewayMessage }}
+              </p>
+            </div>
+          </div>
+
+          <div v-if="viewMode === 'gateway'" class="rounded-lg p-4" style="background: color-mix(in srgb, var(--app-danger) 8%, transparent);">
+            <h4 class="text-sm font-bold mb-2" style="color: var(--app-danger);">{{ t('mode.limitations_title') }}</h4>
+            <ul class="space-y-1.5 text-sm app-muted">
+              <li v-for="(item, i) in t('mode.gateway.limitations').split('\n')" :key="'lim' + i" class="flex gap-2">
+                <span class="shrink-0" style="color: var(--app-danger);">⚠</span>
+                <span>{{ item }}</span>
+              </li>
+            </ul>
+          </div>
+
+          <div v-if="viewMode === 'transparent' || viewMode === 'tunnel'" class="rounded-lg p-4" style="background: color-mix(in srgb, var(--app-success) 8%, transparent);">
+            <h4 class="text-sm font-bold mb-2" style="color: var(--app-success);">{{ t('mode.advantages_title') }}</h4>
+            <ul class="space-y-1.5 text-sm app-muted">
+              <li v-for="(item, i) in t(`mode.${viewMode}.advantages`).split('\n')" :key="'adv' + i" class="flex gap-2">
+                <span class="shrink-0" style="color: var(--app-success);">✓</span>
+                <span>{{ item }}</span>
+              </li>
+            </ul>
+          </div>
+
+          <div>
+            <h4 class="text-sm font-bold mb-2">{{ t('mode.how_it_works_title') }}</h4>
+            <ol class="space-y-1.5 text-sm app-muted">
+              <li v-for="(step, i) in t(`mode.${viewMode}.how_it_works`).split('\n')" :key="'hw' + i" class="flex gap-2">
+                <span class="font-bold shrink-0" style="color: var(--app-accent);">{{ i + 1 }}.</span>
+                <span>{{ step }}</span>
+              </li>
+            </ol>
+          </div>
+
+          <div>
+            <h4 class="text-sm font-bold mb-2">{{ t('mode.prerequisites_title') }}</h4>
+            <ul class="space-y-1 text-sm app-muted">
+              <li v-for="(req, i) in t(`mode.${viewMode}.prerequisites`).split('\n')" :key="'pr' + i" class="flex gap-2">
+                <span class="shrink-0">•</span>
+                <span>{{ req }}</span>
+              </li>
+            </ul>
+          </div>
+
+          <div>
+            <h4 class="text-sm font-bold mb-2">{{ t('mode.steps_title') }}</h4>
+            <ol class="space-y-1.5 text-sm app-muted">
+              <li v-for="(step, i) in t(`mode.${viewMode}.steps`).split('\n')" :key="'st' + i" class="flex gap-2">
+                <span class="font-bold shrink-0" style="color: var(--app-accent);">{{ i + 1 }}.</span>
+                <span>{{ step }}</span>
+              </li>
+            </ol>
+          </div>
+
+          <div>
+            <div class="flex items-center justify-between mb-2">
+              <div>
+                <h4 class="text-sm font-bold">{{ t('mode.settings_json_title') }}</h4>
+                <p class="text-[11px] app-muted mt-0.5">{{ t('mode.config_path_windows') }}</p>
+              </div>
+              <button type="button" class="app-control px-3 py-1 rounded text-xs font-semibold cursor-pointer transition-all duration-200" @click="copySettings">
+                {{ copiedSettings ? t('mode.copied') : t('mode.copy_settings') }}
+              </button>
+            </div>
+            <pre class="app-control rounded-lg p-4 text-[12px] font-mono whitespace-pre-wrap overflow-x-auto">{{ viewMode === 'gateway' ? gatewaySettingsJson : t(`mode.${viewMode}.settings_json`) }}</pre>
+          </div>
+
+          <div class="px-3 py-2 rounded-lg text-xs font-semibold" style="background: var(--app-accent-soft); color: var(--app-accent);">
+            {{ t(`mode.${viewMode}.privilege`) }}
+          </div>
+
+          <!-- 客户端推荐配置（可选增强） -->
+          <details class="rounded-lg p-4" style="background: color-mix(in srgb, var(--app-accent) 6%, transparent);">
+            <summary class="text-sm font-bold cursor-pointer" style="color: var(--app-accent);">
+              {{ t('mode.recommended_config_title') }}
+            </summary>
+            <div class="mt-3 space-y-3">
+              <p class="text-xs app-muted">{{ t('mode.recommended_config_desc') }}</p>
+
+              <div class="text-xs app-muted space-y-2">
+                <p class="font-bold">{{ t('mode.deps_title') }}</p>
+                <div>
+                  <div>{{ t('mode.deps_rtk') }}</div>
+                  <pre class="app-control rounded p-2 mt-1 font-mono text-[11px] overflow-x-auto">{{ t('mode.deps_rtk_cmd') }}</pre>
+                </div>
+                <div>
+                  <div>{{ t('mode.deps_bun') }}</div>
+                  <pre class="app-control rounded p-2 mt-1 font-mono text-[11px] overflow-x-auto">{{ t('mode.deps_bun_cmd') }}</pre>
+                </div>
+                <div>
+                  <div>{{ t('mode.deps_marketplaces') }}</div>
+                  <p class="mt-1">{{ t('mode.deps_marketplaces_desc') }}</p>
+                </div>
+                <p class="italic">{{ t('mode.deps_statusline_note') }}</p>
+              </div>
+
+              <div class="flex items-center justify-between flex-wrap gap-2">
+                <div class="text-xs font-bold">
+                  <div>~/.claude/settings.json</div>
+                  <div class="app-muted font-normal">{{ t('mode.config_path_windows') }}</div>
+                </div>
+                <button type="button" class="app-control px-3 py-1 rounded text-xs font-semibold cursor-pointer transition-all duration-200" @click="copyRecommended">
+                  {{ copiedRecommended ? t('mode.copied') : t('mode.copy_recommended') }}
+                </button>
+              </div>
+              <p class="text-[11px] app-muted italic">{{ t('mode.config_path_note') }}</p>
+              <pre class="app-control rounded-lg p-4 text-[12px] font-mono whitespace-pre-wrap overflow-x-auto">{{ recommendedConfigJson }}</pre>
+            </div>
+          </details>
+        </div>
+
+        <p class="text-xs app-muted">{{ t('mode.footer') }}</p>
       </div>
 
       <div v-if="activeTab === 'certs'">
@@ -566,13 +774,14 @@ const api = useApi()
 const { t, locale } = useI18n()
 const { syncTheme, themeMode } = useTheme()
 
-type MainTab = 'status' | 'providers' | 'certs' | 'usage' | 'sessions'
+type MainTab = 'status' | 'providers' | 'connection' | 'certs' | 'usage' | 'sessions'
 type UsageTab = 'overview' | 'requests' | 'providers' | 'models' | 'coverage'
 type UsageDateRangePreset = 'today' | 'last_7_days' | 'last_30_days'
 
 const tabs: Array<{ key: MainTab; labelKey: string }> = [
   { key: 'status', labelKey: 'tab.status' },
   { key: 'providers', labelKey: 'tab.providers' },
+  { key: 'connection', labelKey: 'tab.connection' },
   { key: 'certs', labelKey: 'tab.certs' },
   { key: 'usage', labelKey: 'tab.usage' },
   { key: 'sessions', labelKey: 'tab.sessions' },
@@ -594,12 +803,32 @@ const usageDateRangePresets: Array<{ key: UsageDateRangePreset; labelKey: string
 
 const activeTab = ref<MainTab>('status')
 const activeUsageTab = ref<UsageTab>('overview')
-const containerClass = computed(() => (activeTab.value === 'sessions' ? 'max-w-[1600px]' : 'max-w-[1440px]'))
+const containerClass = computed(() => 'max-w-[1600px]')
 
 const status = ref<StatusInfo | null>(null)
 const providers = ref<Provider[]>([])
 const activeProviderId = ref('')
 const certs = ref<CertificateInfo | null>(null)
+const configuredMode = ref<'transparent' | 'tunnel' | 'gateway'>('transparent')
+const effectiveMode = ref<'transparent' | 'tunnel' | 'gateway'>('transparent')
+const modeRationale = ref('')
+const viewMode = ref<'transparent' | 'tunnel' | 'gateway'>('transparent')
+const modeSaving = ref(false)
+const modeMessage = ref('')
+const modeMessageIsError = ref(false)
+const copiedSettings = ref(false)
+const gatewayAddr = ref('127.0.0.1')
+const gatewayPort = ref(17487)
+const gatewayAddrInput = ref('127.0.0.1')
+const gatewayPortInput = ref(17487)
+const gatewaySaving = ref(false)
+const gatewayMessage = ref('')
+const gatewayMessageIsError = ref(false)
+const modeOptions = [
+  { value: 'transparent' as const, label: () => t('mode.transparent.title'), hint: () => t('mode.transparent.hint') },
+  { value: 'tunnel' as const, label: () => t('mode.tunnel.title'), hint: () => t('mode.tunnel.hint') },
+  { value: 'gateway' as const, label: () => t('mode.gateway.title'), hint: () => t('mode.gateway.hint') },
+]
 
 const usageSummary = ref<UsageSummary | null>(null)
 const usageTrends = ref<UsageTrendPoint[]>([])
@@ -767,6 +996,203 @@ async function loadCerts() {
     certs.value = await api.getCertificates()
   } catch {
     // keep last value
+  }
+}
+
+function normalizeMode(mode: string | undefined | null) {
+  if (mode === 'tunnel' || mode === 'gateway') return mode
+  return 'transparent'
+}
+
+function modeTitle(mode: string) {
+  switch (normalizeMode(mode)) {
+    case 'tunnel':
+      return t('mode.tunnel.title')
+    case 'gateway':
+      return t('mode.gateway.title')
+    default:
+      return t('mode.transparent.title')
+  }
+}
+
+async function saveMode(mode: 'transparent' | 'tunnel' | 'gateway') {
+  if (configuredMode.value === mode) {
+    modeMessage.value = t('mode.already_selected')
+    modeMessageIsError.value = false
+    return
+  }
+  modeSaving.value = true
+  modeMessage.value = ''
+  modeMessageIsError.value = false
+  try {
+    const result = await api.updateConfig({ connection_mode: mode })
+    configuredMode.value = normalizeMode(result.connection_mode)
+    modeMessage.value = t('mode.saved')
+    modeMessageIsError.value = false
+    window.dispatchEvent(new CustomEvent('mcc:mode-updated'))
+  } catch {
+    modeMessage.value = t('mode.save_failed')
+    modeMessageIsError.value = true
+  } finally {
+    modeSaving.value = false
+  }
+}
+
+async function loadConnectionMode() {
+  try {
+    const [status, config] = await Promise.all([api.getStatus(), api.getConfig()])
+    configuredMode.value = normalizeMode(config.connection_mode || status.configured_mode || 'transparent')
+    effectiveMode.value = normalizeMode(status.effective_mode || status.configured_mode || config.connection_mode || 'transparent')
+    modeRationale.value = status.mode_rationale || ''
+    viewMode.value = configuredMode.value
+    if (config.gateway_listen_addr) gatewayAddr.value = config.gateway_listen_addr
+    if (config.gateway_listen_port) gatewayPort.value = config.gateway_listen_port
+    gatewayAddrInput.value = gatewayAddr.value
+    gatewayPortInput.value = gatewayPort.value
+  } catch {
+    // best-effort
+  }
+}
+
+function copySettings() {
+  const json = viewMode.value === 'gateway' ? gatewaySettingsJson.value : t(`mode.${viewMode.value}.settings_json`)
+  navigator.clipboard.writeText(json)
+  copiedSettings.value = true
+  setTimeout(() => { copiedSettings.value = false }, 2000)
+}
+
+const gatewaySettingsJson = computed(() => {
+  const baseUrl = `http://${gatewayAddr.value}:${gatewayPort.value}`
+  return `{\n  "env": {\n    "ANTHROPIC_AUTH_TOKEN": "sk-sp-1858xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxc0ed",\n    "ANTHROPIC_BASE_URL": "${baseUrl}"\n  }\n}`
+})
+
+// 推荐配置：根据当前模式生成 env 代理地址，其余（插件/marketplace/hooks/权限）固定。
+// 路径用 $HOME / 相对占位，避免硬编码用户家目录。
+const recommendedConfigJson = computed(() => {
+  const env: Record<string, string> = {
+    ANTHROPIC_AUTH_TOKEN: 'sk-sp-1858xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxc0ed',
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: 'claude-haiku-4-5',
+    ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-4-8[1m]',
+    ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-4-8[1m]',
+    ANTHROPIC_MODEL: 'claude-opus-4-8[1m]',
+    ANTHROPIC_REASONING_MODEL: 'claude-opus-4-8[1m]',
+    CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '75',
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+    CLAUDE_CODE_EFFORT_LEVEL: 'max',
+    CLAUDE_CODE_SUBAGENT_MODEL: 'claude-haiku-4-5',
+    DISABLE_AUTOUPDATER: '1',
+    ENABLE_TOOL_SEARCH: 'true',
+  }
+  if (viewMode.value === 'gateway') {
+    env.ANTHROPIC_BASE_URL = `http://${gatewayAddr.value}:${gatewayPort.value}`
+  } else {
+    env.ANTHROPIC_BASE_URL = 'https://api.anthropic.com'
+    if (viewMode.value === 'tunnel') {
+      env.HTTPS_PROXY = 'https://127.0.0.1:443'
+      env.NODE_EXTRA_CA_CERTS = '/absolute/path/to/data/ca.crt'
+    }
+  }
+  const config = {
+    enabledPlugins: {
+      'agent-sdk-dev@claude-plugins-official': true,
+      'andrej-karpathy-skills@karpathy-skills': true,
+      'chrome-devtools-mcp@claude-plugins-official': true,
+      'clangd-lsp@claude-plugins-official': true,
+      'claude-code-setup@claude-plugins-official': true,
+      'claude-hud@claude-hud': true,
+      'claude-md-management@claude-plugins-official': true,
+      'code-review@claude-plugins-official': true,
+      'code-simplifier@claude-plugins-official': true,
+      'commit-commands@claude-plugins-official': true,
+      'feature-dev@claude-plugins-official': true,
+      'firecrawl@claude-plugins-official': true,
+      'frontend-design@claude-plugins-official': true,
+      'gopls-lsp@claude-plugins-official': true,
+      'jdtls-lsp@claude-plugins-official': true,
+      'learning-output-style@claude-plugins-official': true,
+      'lua-lsp@claude-plugins-official': true,
+      'mcp-server-dev@claude-plugins-official': true,
+      'minimax-skills@minimax-skills': true,
+      'php-lsp@claude-plugins-official': true,
+      'playwright@claude-plugins-official': false,
+      'plugin-dev@claude-plugins-official': true,
+      'pr-review-toolkit@claude-plugins-official': true,
+      'pyright-lsp@claude-plugins-official': true,
+      'ralph-loop@claude-plugins-official': true,
+      'rust-analyzer-lsp@claude-plugins-official': true,
+      'rust-skills@rust-skills': true,
+      'security-guidance@claude-plugins-official': true,
+      'skill-creator@claude-plugins-official': true,
+      'superpowers@claude-plugins-official': true,
+      'typescript-lsp@claude-plugins-official': true,
+      'ui-ux-pro-max@ui-ux-pro-max-skill': true,
+    },
+    env,
+    extraKnownMarketplaces: {
+      'claude-hud': { source: { repo: 'jarrodwatts/claude-hud', source: 'github' } },
+      'karpathy-skills': { source: { repo: 'forrestchang/andrej-karpathy-skills', source: 'github' } },
+      'ui-ux-pro-max-skill': { source: { repo: 'nextlevelbuilder/ui-ux-pro-max-skill', source: 'github' } },
+    },
+    hooks: {
+      PreToolUse: [
+        { hooks: [{ command: '$HOME/.claude/hooks/rtk-rewrite.sh', type: 'command' }], matcher: 'Bash' },
+      ],
+    },
+    includeCoAuthoredBy: false,
+    model: 'opus[1m]',
+    permissions: { defaultMode: 'bypassPermissions' },
+    skipDangerousModePermissionPrompt: true,
+    statusLine: {
+      command: 'bash -c \'export COLUMNS=120; exec "$HOME/.bun/bin/bun" --env-file /dev/null "$HOME/.claude/plugins/cache/claude-hud/claude-hud/0.1.0/src/index.ts"\'',
+      type: 'command',
+    },
+    teammateMode: 'auto',
+  }
+  return JSON.stringify(config, null, 2)
+})
+
+const copiedRecommended = ref(false)
+function copyRecommended() {
+  navigator.clipboard.writeText(recommendedConfigJson.value)
+  copiedRecommended.value = true
+  setTimeout(() => { copiedRecommended.value = false }, 2000)
+}
+
+async function saveGatewaySettings() {
+  if (!gatewayAddrInput.value.trim()) {
+    gatewayMessage.value = t('mode.gateway.invalid_addr')
+    gatewayMessageIsError.value = true
+    return
+  }
+  if (gatewayPortInput.value < 1024 || gatewayPortInput.value > 65535) {
+    gatewayMessage.value = t('mode.gateway.invalid_port')
+    gatewayMessageIsError.value = true
+    return
+  }
+  gatewaySaving.value = true
+  gatewayMessage.value = ''
+  gatewayMessageIsError.value = false
+  try {
+    const result = await api.updateConfig({
+      gateway_listen_addr: gatewayAddrInput.value.trim(),
+      gateway_listen_port: gatewayPortInput.value,
+    })
+    gatewayAddr.value = result.gateway_listen_addr || gatewayAddrInput.value.trim()
+    gatewayPort.value = result.gateway_listen_port || gatewayPortInput.value
+    gatewayAddrInput.value = gatewayAddr.value
+    gatewayPortInput.value = gatewayPort.value
+    if (result.gateway_restart_failed) {
+      gatewayMessage.value = t('mode.gateway.restart_failed') + ': ' + result.gateway_restart_failed
+      gatewayMessageIsError.value = true
+    } else {
+      gatewayMessage.value = t('mode.gateway.settings_saved')
+      gatewayMessageIsError.value = false
+    }
+  } catch {
+    gatewayMessage.value = t('mode.save_failed')
+    gatewayMessageIsError.value = true
+  } finally {
+    gatewaySaving.value = false
   }
 }
 
@@ -1107,7 +1533,7 @@ watch(themeMode, () => {
 
 onMounted(async () => {
   await syncTheme(api.getPreferences)
-  await Promise.all([loadStatus(), loadProviders(), loadCerts()])
+  await Promise.all([loadStatus(), loadProviders(), loadCerts(), loadConnectionMode()])
   void loadUsageData()
   statusRefreshTimer = window.setInterval(() => {
     void loadStatus()

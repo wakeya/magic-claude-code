@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -328,6 +329,52 @@ func TestCoverageGroupsByProviderURLModelAndEntrypoint(t *testing.T) {
 	}
 	if row.TopUsageParseStatus != ParseStatusMissing {
 		t.Fatalf("TopUsageParseStatus = %q", row.TopUsageParseStatus)
+	}
+}
+
+// TestCoverageRedactsLegacyDirtyURL 验证历史脏数据（带 userinfo/敏感 query 的 provider URL）
+// 通过 Coverage 输出时被 redact，不泄露到前端。
+func TestCoverageRedactsLegacyDirtyURL(t *testing.T) {
+	store := newTestStore(t)
+	started := time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)
+	// 模拟历史脏数据：直接写入带 userinfo + 敏感 query 的 URL（绕过 handler 层 redact）
+	req := testUsageRequest("dirty-1", started)
+	req.ProviderAPIURL = "https://user:secret-pass@legacy.example.com/v1?token=abc&model=claude"
+	req.BackendURL = "https://user:secret-pass@legacy.example.com/v1/messages?sign=xyz"
+	if err := store.Record(req, TokenRecord{
+		RequestID:       "dirty-1",
+		UsageSource:     UsageSourceProvider,
+		UsageParseStatus: ParseStatusOK,
+	}); err != nil {
+		t.Fatalf("Record() error = %v", err)
+	}
+
+	// Coverage 输出不应含凭证
+	rows, err := store.Coverage(Filter{})
+	if err != nil {
+		t.Fatalf("Coverage() error = %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("len(rows) = %d", len(rows))
+	}
+	got := rows[0].ProviderAPIURL
+	for _, secret := range []string{"secret-pass", "user:secret-pass@", "token=abc"} {
+		if strings.Contains(got, secret) {
+			t.Errorf("Coverage leaked %q in provider_api_url: %q", secret, got)
+		}
+	}
+
+	// Requests 输出同样不应含凭证
+	page, err := store.Requests(Filter{})
+	if err != nil {
+		t.Fatalf("Requests() error = %v", err)
+	}
+	for _, r := range page.Rows {
+		for _, secret := range []string{"secret-pass", "token=abc"} {
+			if strings.Contains(r.BackendURL, secret) || strings.Contains(r.ProviderAPIURL, secret) {
+				t.Errorf("Requests leaked %q: backend=%q provider=%q", secret, r.BackendURL, r.ProviderAPIURL)
+			}
+		}
 	}
 }
 

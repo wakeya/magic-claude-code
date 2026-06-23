@@ -123,14 +123,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	reqID := randomHex(8)
 
-	// 请求入口日志
+	// 请求入口日志的静态部分（upstream_url 等最终 URL 确定后再打印，见下方）
 	msgs, tools, isStream := requestBodySummary(body)
 	modelStr := metadata.OriginalModel
 	if mappedModel != metadata.OriginalModel {
 		modelStr = fmt.Sprintf("%s -> %s", metadata.OriginalModel, mappedModel)
 	}
-	log.Printf("[%s] >>> %s %s%s model=%s stream=%v msgs=%d tools=%d size=%d",
-		reqID, r.Method, r.Host, r.URL.Path, modelStr, isStream, msgs, tools, len(body))
 
 	// 创建后端请求
 	backendURL = buildUpstreamURL(backendURL, r.URL.Path, providerAPIFormat(activeProvider))
@@ -140,6 +138,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			backendURL += "?" + upstreamQuery
 		}
 	}
+
+	// 请求入口日志（此时 backendURL 已是最终转发 URL，与出口日志语义一致）
+	log.Printf("[%s] >>> %s %s%s model=%s stream=%v msgs=%d tools=%d size=%d%s",
+		reqID, r.Method, r.Host, r.URL.Path, modelStr, isStream, msgs, tools, len(body),
+		providerLogFields(activeProvider, backendURL))
 	usageReq := h.newUsageRequest(r, activeProvider, backendURL, metadata, mappedModel, len(modifiedBody))
 	shouldRecordUsage := h.recorder != nil && shouldRecordUsagePath(r.URL.Path)
 
@@ -168,8 +171,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				statusCode = http.StatusGatewayTimeout
 				errType = "rate_limit_queue_timeout"
 			}
-			log.Printf("[%s] <<< %d rate_limit=%s provider=%s",
-				reqID, statusCode, errType, activeProvider.ID)
+			log.Printf("[%s] <<< %d rate_limit=%s provider_name=%q",
+				reqID, statusCode, errType, activeProvider.Name)
 			if shouldRecordUsage {
 				usageReq.ErrorType = errType
 				h.finishUsageRecord(usageReq, usage.TokenRecord{
@@ -182,8 +185,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		defer result.Release()
 		if result.Queued {
-			log.Printf("[%s] <<< rate_limit_queue provider=%s wait=%v",
-				reqID, activeProvider.ID, result.WaitTime)
+			log.Printf("[%s] <<< rate_limit_queue provider_name=%q wait=%v",
+				reqID, activeProvider.Name, result.WaitTime)
 		}
 	}
 
@@ -249,8 +252,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 响应出口日志
-	log.Printf("[%s] <<< %d %s%s model=%s upstream=%dms",
-		reqID, resp.StatusCode, r.Host, r.URL.Path, modelStr, headerMS)
+	log.Printf("[%s] <<< %d %s%s model=%s upstream=%dms%s",
+		reqID, resp.StatusCode, r.Host, r.URL.Path, modelStr, headerMS, providerLogFields(activeProvider, backendURL))
 
 	// 设置状态码
 	w.WriteHeader(resp.StatusCode)
@@ -330,6 +333,35 @@ func providerAPIFormat(provider *config.Provider) config.APIFormat {
 		return config.APIFormatAnthropic
 	}
 	return provider.APIFormat
+}
+
+// redactUpstreamURL 去掉 URL 的 userinfo、query 和 fragment，
+// 只保留 scheme://host/path。防止 provider URL 中的凭证、签名等敏感信息泄露到日志。
+// 逻辑共享自 config.RedactURL，确保日志/管理 API/配置校验三处口径一致。
+func redactUpstreamURL(rawURL string) string {
+	return config.RedactURL(rawURL)
+}
+
+func providerLogFields(provider *config.Provider, upstreamURL string) string {
+	if provider == nil {
+		if upstreamURL == "" {
+			upstreamURL = "-"
+		}
+		return fmt.Sprintf(` provider_name=- upstream_url=%q`, redactUpstreamURL(upstreamURL))
+	}
+
+	providerName := provider.Name
+	if providerName == "" {
+		providerName = "-"
+	}
+	apiURL := upstreamURL
+	if apiURL == "" {
+		apiURL = provider.APIURL
+	}
+	if apiURL == "" {
+		apiURL = "-"
+	}
+	return fmt.Sprintf(` provider_name=%q upstream_url=%q`, providerName, redactUpstreamURL(apiURL))
 }
 
 func buildUpstreamURL(baseURL, requestPath string, apiFormat config.APIFormat) string {
@@ -447,7 +479,7 @@ func (h *Handler) newUsageRequest(r *http.Request, provider *config.Provider, ba
 	if provider != nil {
 		record.ProviderID = provider.ID
 		record.ProviderName = provider.Name
-		record.ProviderAPIURL = provider.APIURL
+		record.ProviderAPIURL = usage.RedactURL(provider.APIURL)
 	}
 	return record
 }

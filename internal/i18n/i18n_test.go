@@ -88,11 +88,55 @@ func TestResolveLocale(t *testing.T) {
 			},
 			expected: "en",
 		},
+		{
+			name: "LC_ALL zh overrides LANG=C",
+			env: map[string]string{
+				"LANG":   "C",
+				"LC_ALL": "zh_CN.UTF-8",
+			},
+			expected: "zh",
+		},
+		{
+			name: "LC_ALL en overrides LANG zh",
+			env: map[string]string{
+				"LANG":   "zh_CN.UTF-8",
+				"LC_ALL": "en_US.UTF-8",
+			},
+			expected: "en",
+		},
+		{
+			name: "LC_ALL=C returns en (explicit, not skipped)",
+			env: map[string]string{
+				"LC_ALL": "C",
+			},
+			expected: "en",
+		},
+		{
+			name: "LC_ALL=POSIX returns en (explicit, not skipped)",
+			env: map[string]string{
+				"LC_ALL": "POSIX",
+			},
+			expected: "en",
+		},
+		{
+			name: "LC_MESSAGES=C.UTF-8 returns en",
+			env: map[string]string{
+				"LC_MESSAGES": "C.UTF-8",
+			},
+			expected: "en",
+		},
+		{
+			name: "LANG=C returns en (explicit, not skipped)",
+			env: map[string]string{
+				"LANG": "C",
+			},
+			expected: "en",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			keys := []string{"MCC_LANG", "LANG", "LC_ALL"}
+			keys := []string{"MCC_LANG", "LC_ALL", "LC_MESSAGES", "LANG"}
 			original := make(map[string]string, len(keys))
 			for _, key := range keys {
 				if v, ok := os.LookupEnv(key); ok {
@@ -114,11 +158,89 @@ func TestResolveLocale(t *testing.T) {
 				os.Setenv(k, v)
 			}
 
+			origSys := systemLocaleFn
+			systemLocaleFn = func() string { return "" }
+			defer func() { systemLocaleFn = origSys }()
+
 			got := ResolveLocale()
 			if got != tt.expected {
 				t.Errorf("ResolveLocale() = %q, want %q", got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestResolveLocale_SystemLocaleFallback(t *testing.T) {
+	tests := []struct {
+		name      string
+		sysLocale string
+		expected  string
+	}{
+		{name: "system zh → zh", sysLocale: "zh", expected: "zh"},
+		{name: "system zh-CN → zh", sysLocale: "zh", expected: "zh"},
+		{name: "system en → en", sysLocale: "en", expected: "en"},
+		{name: "system empty → en default", sysLocale: "", expected: "en"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			keys := []string{"MCC_LANG", "LC_ALL", "LC_MESSAGES", "LANG"}
+			original := make(map[string]string, len(keys))
+			for _, key := range keys {
+				if v, ok := os.LookupEnv(key); ok {
+					original[key] = v
+				}
+				os.Unsetenv(key)
+			}
+			defer func() {
+				for _, key := range keys {
+					if v, ok := original[key]; ok {
+						os.Setenv(key, v)
+					} else {
+						os.Unsetenv(key)
+					}
+				}
+			}()
+
+			origSys := systemLocaleFn
+			systemLocaleFn = func() string { return tt.sysLocale }
+			defer func() { systemLocaleFn = origSys }()
+
+			got := ResolveLocale()
+			if got != tt.expected {
+				t.Errorf("ResolveLocale() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestResolveLocale_SystemLocaleOverriddenByEnv(t *testing.T) {
+	keys := []string{"MCC_LANG", "LANG", "LC_ALL"}
+	original := make(map[string]string, len(keys))
+	for _, key := range keys {
+		if v, ok := os.LookupEnv(key); ok {
+			original[key] = v
+		}
+		os.Unsetenv(key)
+	}
+	defer func() {
+		for _, key := range keys {
+			if v, ok := original[key]; ok {
+				os.Setenv(key, v)
+			} else {
+				os.Unsetenv(key)
+			}
+		}
+	}()
+
+	origSys := systemLocaleFn
+	systemLocaleFn = func() string { return "zh" }
+	defer func() { systemLocaleFn = origSys }()
+
+	os.Setenv("LANG", "en_US.UTF-8")
+	got := ResolveLocale()
+	if got != "en" {
+		t.Errorf("env LANG=en should override system zh, got %q", got)
 	}
 }
 

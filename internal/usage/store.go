@@ -543,6 +543,10 @@ func scanRequestRow(rows *sql.Rows) (RequestRow, error) {
 	}
 	row.Stream = stream == 1
 	row.RequestID = row.ID
+	// 防御历史脏数据：即使旧记录存了未脱敏的 URL（带 userinfo 或敏感 query），
+	// 读取时也统一走 redact，确保 Coverage/Requests 两条输出路径都不泄露。
+	row.BackendURL = RedactURL(row.BackendURL)
+	row.ProviderAPIURL = RedactURL(row.ProviderAPIURL)
 	return row, nil
 }
 

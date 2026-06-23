@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"magic-claude-code/internal/config"
@@ -17,6 +18,11 @@ import (
 // StatsProvider 统计数据提供者接口
 type StatsProvider interface {
 	Stats() (total int64, last time.Time, uptime time.Duration)
+}
+
+// GatewayRestarter 路由模式 HTTP 服务器重启接口
+type GatewayRestarter interface {
+	RestartGateway(addr string) error
 }
 
 // Server 配置服务
@@ -30,6 +36,8 @@ type Server struct {
 	usageHandler               *usage.Handler
 	updater                    *updater.Updater
 	updateApplyDisabledMessage string
+	gatewayRestarter           GatewayRestarter
+	modeMu                     sync.RWMutex
 }
 
 // AdminConfig 配置服务配置
@@ -39,6 +47,9 @@ type AdminConfig struct {
 	KeyFile           string
 	ConfigPath        string
 	ClaudeProjectsDir string
+	ConfiguredMode    string
+	EffectiveMode     string
+	ModeRationale     string
 }
 
 // NewServer 创建配置服务
@@ -160,7 +171,49 @@ func (s *Server) SetUpdater(u *updater.Updater) {
 	s.updater = u
 }
 
+// SetGatewayRestarter 注入路由模式重启器，使配置变更后能平滑重启 gateway HTTP 服务
+func (s *Server) SetGatewayRestarter(r GatewayRestarter) {
+	s.gatewayRestarter = r
+}
+
 // DisableUpdateApply keeps update checks available while preventing in-place binary replacement.
 func (s *Server) DisableUpdateApply(message string) {
 	s.updateApplyDisabledMessage = message
+}
+
+func (s *Server) setModeState(configured, effective, rationale string) {
+	s.modeMu.Lock()
+	defer s.modeMu.Unlock()
+	if s.config != nil {
+		s.config.ConfiguredMode = configured
+		s.config.EffectiveMode = effective
+		s.config.ModeRationale = rationale
+	}
+}
+
+func (s *Server) currentEffectiveMode() string {
+	s.modeMu.RLock()
+	defer s.modeMu.RUnlock()
+	if s.config == nil {
+		return ""
+	}
+	return s.config.EffectiveMode
+}
+
+func (s *Server) currentModeRationale() string {
+	s.modeMu.RLock()
+	defer s.modeMu.RUnlock()
+	if s.config == nil {
+		return ""
+	}
+	return s.config.ModeRationale
+}
+
+func (s *Server) modeState() (configured, effective, rationale string) {
+	s.modeMu.RLock()
+	defer s.modeMu.RUnlock()
+	if s.config == nil {
+		return "", "", ""
+	}
+	return s.config.ConfiguredMode, s.config.EffectiveMode, s.config.ModeRationale
 }

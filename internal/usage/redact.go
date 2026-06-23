@@ -17,6 +17,7 @@ func RedactURL(raw string) string {
 	if err != nil {
 		return sanitizeSecrets(raw, 0)
 	}
+	u.User = nil // 剥离 https://user:pass@host 形式的凭证
 	q := u.Query()
 	for key, values := range q {
 		if isSensitiveKey(key) {

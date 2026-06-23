@@ -2,11 +2,14 @@ package admin
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"time"
 
+	"magic-claude-code/internal/config"
 	"magic-claude-code/internal/usage"
 	"magic-claude-code/internal/version"
 )
@@ -102,7 +105,8 @@ func (s *Server) getConfig(w http.ResponseWriter, _ *http.Request) {
 
 	if s.configStore == nil {
 		json.NewEncoder(w).Encode(map[string]string{
-			"backend_url": "https://open.bigmodel.cn/api/anthropic",
+			"backend_url":     "https://open.bigmodel.cn/api/anthropic",
+			"connection_mode": config.ConnectionModeTransparent,
 		})
 		return
 	}
@@ -113,15 +117,21 @@ func (s *Server) getConfig(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 
-	json.NewEncoder(w).Encode(map[string]string{
-		"backend_url": cfg.BackendURL,
+	json.NewEncoder(w).Encode(map[string]any{
+		"backend_url":          config.RedactURL(cfg.BackendURL),
+		"connection_mode":      cfg.ConnectionMode,
+		"gateway_listen_addr":  cfg.GatewayListenAddr,
+		"gateway_listen_port":  cfg.GatewayListenPort,
 	})
 }
 
 // updateConfig 更新配置
 func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		BackendURL string `json:"backend_url"`
+		BackendURL       string `json:"backend_url"`
+		ConnectionMode   string `json:"connection_mode"`
+		GatewayListenAddr string `json:"gateway_listen_addr"`
+		GatewayListenPort int   `json:"gateway_listen_port"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -129,30 +139,70 @@ func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 验证 URL 格式
+	if req.BackendURL == "" && req.ConnectionMode == "" && req.GatewayListenAddr == "" && req.GatewayListenPort == 0 {
+		http.Error(w, `{"error": "invalid request"}`, http.StatusBadRequest)
+		return
+	}
+	if s.configStore == nil {
+		http.Error(w, `{"error": "config store not available"}`, http.StatusInternalServerError)
+		return
+	}
+	cfg, err := s.configStore.Load()
+	if err != nil {
+		http.Error(w, `{"error": "failed to load config"}`, http.StatusInternalServerError)
+		return
+	}
 	if req.BackendURL != "" {
-		if s.configStore == nil {
-			http.Error(w, `{"error": "config store not available"}`, http.StatusInternalServerError)
-			return
-		}
-		cfg, err := s.configStore.Load()
-		if err != nil {
-			http.Error(w, `{"error": "failed to load config"}`, http.StatusInternalServerError)
-			return
-		}
 		cfg.BackendURL = req.BackendURL
-		if err := cfg.Validate(); err != nil {
-			http.Error(w, `{"error": "invalid URL format"}`, http.StatusBadRequest)
+	}
+	if req.ConnectionMode != "" {
+		switch req.ConnectionMode {
+		case config.ConnectionModeTransparent, config.ConnectionModeTunnel, config.ConnectionModeGateway:
+			cfg.ConnectionMode = req.ConnectionMode
+		default:
+			http.Error(w, `{"error": "invalid connection_mode"}`, http.StatusBadRequest)
 			return
 		}
-		if err := s.configStore.Save(cfg); err != nil {
-			http.Error(w, `{"error": "failed to save config"}`, http.StatusInternalServerError)
-			return
+	}
+	if req.GatewayListenAddr != "" {
+		cfg.GatewayListenAddr = req.GatewayListenAddr
+	}
+	if req.GatewayListenPort > 0 {
+		cfg.GatewayListenPort = req.GatewayListenPort
+	}
+	if err := cfg.Validate(); err != nil {
+		http.Error(w, `{"error": "invalid config"}`, http.StatusBadRequest)
+		return
+	}
+	if err := s.configStore.Save(cfg); err != nil {
+		http.Error(w, `{"error": "failed to save config"}`, http.StatusInternalServerError)
+		return
+	}
+	s.modeMu.Lock()
+	if s.config != nil {
+		s.config.ConfiguredMode = cfg.ConnectionMode
+	}
+	s.modeMu.Unlock()
+
+	resp := map[string]any{
+		"success":             true,
+		"backend_url":         config.RedactURL(cfg.BackendURL),
+		"connection_mode":     cfg.ConnectionMode,
+		"gateway_listen_addr": cfg.GatewayListenAddr,
+		"gateway_listen_port": cfg.GatewayListenPort,
+	}
+
+	if s.gatewayRestarter != nil {
+		addr := fmt.Sprintf("%s:%d", cfg.GatewayListenAddr, cfg.GatewayListenPort)
+		if err := s.gatewayRestarter.RestartGateway(addr); err != nil {
+			resp["gateway_restart_failed"] = err.Error()
+		} else {
+			resp["gateway_restarted"] = true
 		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]bool{"success": true})
+	json.NewEncoder(w).Encode(resp)
 }
 
 // handleStatus 处理状态请求
@@ -163,7 +213,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if s.configStore != nil {
 		cfg, err := s.configStore.Load()
 		if err == nil {
-			backendURL = cfg.BackendURL
+			backendURL = config.RedactURL(cfg.BackendURL)
 		}
 	}
 
@@ -184,10 +234,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	configuredMode, effectiveMode, modeRationale := s.modeState()
+
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"running":                 true,
 		"version":                 version.Version,
 		"backend_url":             backendURL,
+		"configured_mode":         configuredMode,
+		"effective_mode":          effectiveMode,
+		"mode_rationale":          modeRationale,
 		"uptime":                  uptime.String(),
 		"requests_total":          requestsTotal,
 		"last_request":            lastRequest,
@@ -203,9 +258,13 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 // handleCertificates 处理证书信息请求
 func (s *Server) handleCertificates(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	dataDir := "./data"
+	if s.config != nil && s.config.ConfigPath != "" {
+		dataDir = filepath.Dir(s.config.ConfigPath)
+	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"ca_cert_path":      "./data/ca.crt",
-		"server_cert_path":  "./data/server.crt",
+		"ca_cert_path":      filepath.Join(dataDir, "ca.crt"),
+		"server_cert_path":  filepath.Join(dataDir, "server.crt"),
 		"ca_expires_at":     time.Now().AddDate(10, 0, 0),
 		"server_expires_at": time.Now().AddDate(10, 0, 0),
 	})

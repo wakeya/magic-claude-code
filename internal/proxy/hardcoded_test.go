@@ -198,6 +198,15 @@ func TestHandleGrowthBookFeature(t *testing.T) {
 	if !strings.Contains(body, "features") {
 		t.Error("Response should contain 'features'")
 	}
+
+	for _, flag := range []string{
+		"tengu_coral_fern", "tengu_glacier_2xr", "tengu_hive_evidence",
+		"tengu_permission_friction", "tengu_log_datadog_events",
+	} {
+		if !strings.Contains(body, flag) {
+			t.Errorf("Response should contain feature flag %q", flag)
+		}
+	}
 }
 
 func TestHandleBootstrap(t *testing.T) {

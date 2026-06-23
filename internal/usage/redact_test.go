@@ -21,6 +21,24 @@ func TestRedactURLRemovesSensitiveQueryValues(t *testing.T) {
 	}
 }
 
+// TestRedactURLStripsUserinfo 验证 https://user:pass@host 形式的凭证被剥离，
+// 防止历史脏数据的 userinfo 通过 usage 统计泄露到前端。
+func TestRedactURLStripsUserinfo(t *testing.T) {
+	cases := []string{
+		"https://user:pass@api.example.com/v1",
+		"https://token123@host.example/path",
+	}
+	for _, in := range cases {
+		got := RedactURL(in)
+		if strings.Contains(got, "user:pass@") {
+			t.Errorf("userinfo credentials leaked: %q -> %q", in, got)
+		}
+		if strings.Contains(got, "token123@") {
+			t.Errorf("userinfo leaked: %q -> %q", in, got)
+		}
+	}
+}
+
 func TestTruncateUserAgentLimitsTo512Bytes(t *testing.T) {
 	got := TruncateUserAgent(strings.Repeat("a", 600))
 

@@ -3,11 +3,55 @@ services:
     build: .
     image: magic-claude-code
     container_name: mcc
+    # ================================================================
+    # Docker 网络边界说明 | Docker Network Boundary
+    # ================================================================
+    # Docker 容器无法直接修改宿主机的 /etc/hosts 或系统 CA 信任库。
+    # 以下是三种连接模式（按优先级排序），请任选其一：
+    #
+    # ── 1. 透明模式 | Transparent Mode（推荐，需在宿主机配置）──
+    #
+    # 先启动容器获取 CA 证书（写入 ./data/ca.crt），然后在
+    # 宿主机上运行一键配置脚本：
+    #
+    #   sudo ./scripts/setup-host.sh          # Linux / macOS
+    #   .\scripts\setup-host.ps1              # Windows (管理员 PowerShell)
+    #
+    # 脚本会自动完成 hosts 映射 + CA 安装。Linux 缺少依赖时自动安装
+    # （海外源失败会自动切换阿里云/清华镜像）。
+    # 也可以只配置其中一项：
+    #   sudo ./scripts/setup-host.sh hosts   # 只改 hosts
+    #   sudo ./scripts/setup-host.sh trust   # 只装 CA
+    #
+    # ── 2. 隧道模式 | Tunnel Mode（不改 hosts，客户端需支持代理）──
+    #
+    #   export HTTPS_PROXY=https://127.0.0.1:443
+    #   export NODE_EXTRA_CA_CERTS=$(pwd)/data/ca.crt
+    #
+    # ── 3. 网关模式 | Gateway Mode（最低权限，不改 hosts 不装 CA）──
+    #
+    #   export ANTHROPIC_BASE_URL=http://127.0.0.1:17487
+    #   （注意：网关模式无法拦截硬编码 api.anthropic.com 的流量）
+    #
+    # ── MCC_HOST_HELPER（已自动配置）──
+    #
+    # 本地安装（非 Docker）时，bootstrap 会自动调用系统命令完成
+    # hosts + CA 配置，无需手动运行脚本。
+    # Docker 场景下容器无法修改宿主机文件——entrypoint 将挂载的
+    # docker-host-helper.sh 复制到 data 并设置 MCC_HOST_HELPER。
+    # helper 通过 data 目录的标记文件（.hosts-configured / .ca-trust-installed）
+    # 真实检测宿主机配置状态：setup-host.sh / setup-host.ps1 成功后才写标记。
+    # 未配置时 helper 返回失败，bootstrap 按真实原因降级（而非无脑显示透明）。
+    # 前提：你仍需在宿主机上运行配置脚本：
+    #   sudo ./scripts/setup-host.sh          # Linux / macOS
+    #   .\scripts\setup-host.ps1              # Windows (管理员 PowerShell)
     ports:
       - "443:443"
       - "8442:8442"
     volumes:
       - ./data:/app/data
+      # 挂载宿主机配置脚本目录，供 entrypoint 复制 docker-host-helper.sh 到 data
+      - ./scripts:/app/scripts:ro
       # Linux/macOS 默认读取 ${HOME}/.claude/projects；Windows 请在 .env 或 PowerShell 中显式设置 CLAUDE_PROJECTS_DIR，例如 C:/Users/用户名/.claude/projects
       - ${CLAUDE_PROJECTS_DIR:-${HOME}/.claude/projects}:/claude-projects:ro
       # 自动同步宿主机时区：通过挂载 /etc/localtime（Linux/macOS/Docker Desktop Windows 自动生效）
@@ -16,6 +60,20 @@ services:
     environment:
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}
       - CLAUDE_PROJECTS_DIR=/claude-projects
+      - MCC_HOST_HELPER=/app/data/.host-helper.sh
+    # entrypoint 将挂载的 docker-host-helper.sh 复制到 data 并设权限后启动 mcc。
+    # validateHostHelperPath 要求：绝对路径、常规文件、perm & 0o022 == 0（555 满足）。
+    # scripts 以 ro 挂载无法直接 chmod，复制到 rw 的 data 目录后改权限。
+    # helper 通过 data 目录标记文件真实检测宿主机 hosts/CA 配置状态。
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >
+        cp /app/scripts/docker-host-helper.sh /app/data/.host-helper.sh &&
+        chmod 555 /app/data/.host-helper.sh &&
+        exec ./mcc "$$@"
+      - --
+    command: ["-data", "/app/data"]
     restart: unless-stopped
     cap_add:
       - NET_BIND_SERVICE

@@ -16,6 +16,7 @@ import (
 	_ "time/tzdata"
 
 	"magic-claude-code/internal/admin"
+	"magic-claude-code/internal/bootstrap"
 	"magic-claude-code/internal/cert"
 	"magic-claude-code/internal/config"
 	"magic-claude-code/internal/frontend"
@@ -47,13 +48,41 @@ func resolveAdminPassword(value string, msg i18n.Messages, generate func(i18n.Me
 	return adminPasswordState{Value: generate(msg), RandomGenerated: true}
 }
 
+// resolveDataDir determines the data directory in priority order:
+// 1. Explicit -data flag
+// 2. MCC_ROOT env var → $MCC_ROOT/data
+// 3. Executable directory → <exec_dir>/data
+// 4. Fallback: ./data
+func resolveDataDir(flagValue string) string {
+	if flagValue != "" {
+		return flagValue
+	}
+	if root := os.Getenv("MCC_ROOT"); root != "" {
+		return filepath.Join(root, "data")
+	}
+	if exe, err := os.Executable(); err == nil {
+		return resolveDataDirFromExecutablePath(exe)
+	}
+	return "./data"
+}
+
+func resolveDataDirFromExecutablePath(exePath string) string {
+	if realExe, err := filepath.EvalSymlinks(exePath); err == nil {
+		exePath = realExe
+	}
+	return filepath.Join(filepath.Dir(exePath), "data")
+}
+
 func main() {
 	msg := i18n.Load(i18n.ResolveLocale())
 
 	// 命令行参数
-	dataDir := flag.String("data", "./data", msg.FlagDataDir)
+	dataDir := flag.String("data", "", msg.FlagDataDir)
 	adminPassword := flag.String("password", os.Getenv("ADMIN_PASSWORD"), msg.FlagPassword)
 	flag.Parse()
+
+	// 解析数据目录：优先显式 -data，其次 MCC_ROOT，最后可执行文件目录
+	resolvedDataDir := resolveDataDir(*dataDir)
 
 	// 设置默认密码
 	passwordState := resolveAdminPassword(*adminPassword, msg, generateRandomPassword)
@@ -62,13 +91,13 @@ func main() {
 	}
 
 	// 确保数据目录存在
-	if err := os.MkdirAll(*dataDir, 0755); err != nil {
+	if err := os.MkdirAll(resolvedDataDir, 0755); err != nil {
 		log.Fatalf("Failed to create data directory: %v", err)
 	}
 
 	// 加载配置
-	configPath := filepath.Join(*dataDir, "config.json")
-	dbPath := filepath.Join(*dataDir, "proxy.db")
+	configPath := filepath.Join(resolvedDataDir, "config.json")
+	dbPath := filepath.Join(resolvedDataDir, "proxy.db")
 	configStore, err := config.NewSQLiteStore(dbPath, configPath)
 	if err != nil {
 		log.Fatalf("Failed to initialize config store: %v", err)
@@ -90,10 +119,10 @@ func main() {
 	}
 
 	// 设置数据目录
-	cfg.DataDir = *dataDir
+	cfg.DataDir = resolvedDataDir
 
 	// 证书管理
-	certManager := cert.NewManager(*dataDir)
+	certManager := cert.NewManager(resolvedDataDir)
 
 	// 确保 CA 证书存在
 	caCert, caKey, err := certManager.EnsureCA()
@@ -108,7 +137,21 @@ func main() {
 		log.Fatalf("Failed to ensure server cert: %v", err)
 	}
 
-	// 输出配置提示
+	// 自动引导：尝试 hosts 修改、CA 信任安装、环境持久化
+	log.Println(msg.BootstrapAttempting)
+	bootExec := bootstrap.New(
+		resolvedDataDir,
+		certManager.GetCACertPath(),
+		i18n.ResolveLocale(),
+		bootstrap.WithPreferredMode(bootstrap.Mode(cfg.ConnectionMode)),
+		bootstrap.WithGatewayListen(cfg.GatewayListenAddr, cfg.GatewayListenPort),
+	)
+	bootResult := bootExec.Run()
+	bootExec.LogResult(bootResult)
+
+	// 输出配置提示（仅在引导未完全成功时显示手动指引）
+	showManualConfig := !bootstrap.IsTransparentReady(bootResult)
+
 	fmt.Println("\n" + msg.BannerTop)
 	fmt.Println(msg.BannerTitle)
 	fmt.Println(msg.BannerTop)
@@ -116,17 +159,23 @@ func main() {
 	fmt.Printf(msg.AdminPort+"\n", cfg.AdminPort)
 	fmt.Printf(msg.BackendURL+msg.BackendURLNote+"\n", cfg.BackendURL)
 	fmt.Println()
-	fmt.Println(msg.ConfigInstructions)
 
-	if runtime.GOOS == "windows" {
-		fmt.Println(msg.HostsCommandWin)
-		fmt.Printf(msg.CACertCommandWin+"\n", certManager.GetCACertPath())
-		fmt.Println(msg.SourceCommandWin)
-		fmt.Println(msg.RestartHintWin)
-	} else {
-		fmt.Println(msg.HostsCommandUnix)
-		fmt.Printf(msg.CACertCommandUnix+"\n", certManager.GetCACertPath())
-		fmt.Println(msg.SourceCommandUnix)
+	if showManualConfig {
+		if bootResult.SelectedMode == bootstrap.ModeTransparent {
+			fmt.Println(msg.ConfigInstructions)
+			if runtime.GOOS == "windows" {
+				fmt.Println(msg.HostsCommandWin)
+				fmt.Printf(msg.CACertCommandWin+"\n", certManager.GetCACertPath())
+				fmt.Println(msg.SourceCommandWin)
+				fmt.Println(msg.RestartHintWin)
+			} else {
+				fmt.Println(msg.HostsCommandUnix)
+				fmt.Printf(msg.CACertCommandUnix+"\n", certManager.GetCACertPath())
+				fmt.Println(msg.SourceCommandUnix)
+			}
+		} else {
+			fmt.Println(msg.BootstrapManualHint)
+		}
 	}
 
 	fmt.Println()
@@ -145,11 +194,16 @@ func main() {
 
 	// 创建配置服务
 	adminServer := admin.NewServer(&admin.AdminConfig{
-		Password:   passwordState.Value,
-		CertFile:   certManager.GetServerCertPath(),
-		KeyFile:    filepath.Join(*dataDir, "server.key"),
-		ConfigPath: configPath,
+		Password:       passwordState.Value,
+		CertFile:       certManager.GetServerCertPath(),
+		KeyFile:        filepath.Join(resolvedDataDir, "server.key"),
+		ConfigPath:     configPath,
+		ConfiguredMode: cfg.ConnectionMode,
+		EffectiveMode:  string(bootResult.SelectedMode),
+		ModeRationale:  bootResult.Rationale,
 	}, configStore, proxyServer, usageHandler)
+
+	adminServer.SetGatewayRestarter(proxyServer)
 
 	// 配置自动更新器
 	updaterInstance := updater.New(
@@ -165,7 +219,7 @@ func main() {
 
 	// 启动服务
 	go func() {
-		if err := proxyServer.Start(":443", certManager.GetServerCertPath(), filepath.Join(*dataDir, "server.key")); err != nil {
+		if err := proxyServer.Start(":443", certManager.GetServerCertPath(), filepath.Join(resolvedDataDir, "server.key")); err != nil {
 			log.Printf("Proxy server error: %v", err)
 		}
 	}()
@@ -173,6 +227,14 @@ func main() {
 	go func() {
 		if err := adminServer.Start(":8442", frontend.DistFS); err != nil {
 			log.Printf("Admin server error: %v", err)
+		}
+	}()
+
+	// 启动路由模式 HTTP 服务器
+	go func() {
+		addr := fmt.Sprintf("%s:%d", cfg.GatewayListenAddr, cfg.GatewayListenPort)
+		if err := proxyServer.StartGateway(addr); err != nil {
+			log.Printf("Gateway server error: %v", err)
 		}
 	}()
 

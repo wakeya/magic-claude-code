@@ -48,6 +48,9 @@ func assertConfigEqual(t *testing.T, want, got *Config) {
 	if got.AdminThemeMode != NormalizeThemeMode(want.AdminThemeMode) {
 		t.Fatalf("AdminThemeMode mismatch: want %q, got %q", NormalizeThemeMode(want.AdminThemeMode), got.AdminThemeMode)
 	}
+	if got.ConnectionMode != NormalizeConnectionMode(want.ConnectionMode) {
+		t.Fatalf("ConnectionMode mismatch: want %q, got %q", NormalizeConnectionMode(want.ConnectionMode), got.ConnectionMode)
+	}
 	if len(got.Providers) != len(want.Providers) {
 		t.Fatalf("Providers length mismatch: want %d, got %d", len(want.Providers), len(got.Providers))
 	}
@@ -77,6 +80,7 @@ func TestSQLiteStoreSaveAndLoad(t *testing.T) {
 		AdminPort:         8442,
 		AdminPasswordHash: "hash",
 		DataDir:           dir,
+		ConnectionMode:    ConnectionModeGateway,
 		ActiveProviderID:  "provider-b",
 		Providers: []Provider{
 			testProvider("provider-a", "GLM", "https://glm.example.com/anthropic", "token-a", true),
@@ -93,6 +97,28 @@ func TestSQLiteStoreSaveAndLoad(t *testing.T) {
 		t.Fatalf("Load() error = %v", err)
 	}
 	assertConfigEqual(t, cfg, loaded)
+}
+
+func TestSQLiteStorePersistsConnectionMode(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewSQLiteStore(filepath.Join(dir, "proxy.db"), filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	cfg := DefaultConfig()
+	cfg.ConnectionMode = ConnectionModeTunnel
+	if err := store.Save(cfg); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if loaded.ConnectionMode != ConnectionModeTunnel {
+		t.Fatalf("ConnectionMode = %q, want %q", loaded.ConnectionMode, ConnectionModeTunnel)
+	}
 }
 
 func TestSQLiteStorePersistsProviderAPIFormatAndOpenAIExtraParams(t *testing.T) {

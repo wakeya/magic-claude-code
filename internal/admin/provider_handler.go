@@ -17,7 +17,7 @@ func providerResponseMap(p config.Provider, active bool) map[string]interface{} 
 	return map[string]interface{}{
 		"id":                           p.ID,
 		"name":                         p.Name,
-		"api_url":                      p.APIURL,
+		"api_url":                      config.RedactURL(p.APIURL),
 		"api_token_mask":               maskToken(p.APIToken),
 		"api_format":                   p.APIFormat,
 		"openai_extra_params":          p.OpenAIExtraParams,

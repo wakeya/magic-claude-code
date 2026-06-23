@@ -6,6 +6,9 @@ export interface StatusInfo {
   running: boolean
   version?: string
   backend_url: string
+  configured_mode?: string
+  effective_mode?: string
+  mode_rationale?: string
   uptime: string
   requests_total: number
   last_request: string | null
@@ -169,6 +172,16 @@ export interface PreferencesResponse {
   success?: boolean
 }
 
+export interface ConfigResponse {
+  backend_url: string
+  connection_mode: string
+  gateway_listen_addr?: string
+  gateway_listen_port?: number
+  gateway_restarted?: boolean
+  gateway_restart_failed?: string
+  success?: boolean
+}
+
 export interface SessionProject {
   path: string
   name: string
@@ -268,6 +281,30 @@ export function useApi() {
       body: JSON.stringify({ theme_mode: themeMode }),
     })
     if (!res.ok) throw new Error('Failed to update preferences')
+    return res.json()
+  }
+
+  async function getConfig(): Promise<ConfigResponse> {
+    const res = await fetch('/api/config')
+    if (!res.ok) throw new Error('Failed to fetch config')
+    return res.json()
+  }
+
+  async function updateConfig(data: {
+    backend_url?: string
+    connection_mode?: 'transparent' | 'tunnel' | 'gateway'
+    gateway_listen_addr?: string
+    gateway_listen_port?: number
+  }): Promise<ConfigResponse> {
+    const res = await fetch('/api/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'request failed' }))
+      throw new Error(err.error || `HTTP ${res.status}`)
+    }
     return res.json()
   }
 
@@ -498,6 +535,8 @@ export function useApi() {
     logout,
     getPreferences,
     updatePreferences,
+    getConfig,
+    updateConfig,
     getStatus,
     getProviders,
     createProvider,

@@ -74,7 +74,7 @@ test('usage request token field labels support Chinese and English', () => {
 
 test('usage request log uses the standard page content width', () => {
   assert.doesNotMatch(dashboardSource, /max-w-\[1920px\]/)
-  assert.match(dashboardSource, /max-w-\[1440px\]/)
+  assert.match(dashboardSource, /max-w-\[1600px\]/)
 })
 
 test('usage request log has bottom-right pagination with page size options', () => {

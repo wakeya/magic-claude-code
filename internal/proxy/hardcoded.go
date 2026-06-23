@@ -366,11 +366,41 @@ func (h *Handler) handleEventLogging(w http.ResponseWriter) {
 }
 
 // handleGrowthBookFeature 处理 GrowthBook 特性开关请求
-// 源码期望 GrowthBook SDK 标准响应格式，空 features 触发 fallback 到默认值
+// 返回优化后的特性配置，启用有益功能、禁用遥测和有害 A/B 测试 flag。
+// 非空 features 使 processRemoteEvalPayload 走正常处理路径并缓存到 ~/.claude.json
 func (h *Handler) handleGrowthBookFeature(w http.ResponseWriter) {
 	writeJSONResponse(w, http.StatusOK, map[string]any{
-		"features": map[string]any{},
+		"features": optimizedGrowthBookFeatures(),
 	})
+}
+
+// optimizedGrowthBookFeatures 返回基于 Claude Code 源码分析的优化特性配置。
+//
+// 分三类：
+//   - 启用：defaultValue=false 但对用户有益的功能（源码分析得出）
+//   - 禁用：服务端 A/B 测试可能推送 true 的有害 flag（GitHub issues #62205/#25141）
+//   - 不包含：基础设施/远程/内部专用 flag，让它们走 defaultValue
+func optimizedGrowthBookFeatures() map[string]any {
+	return map[string]any{
+		// 启用有益功能（defaultValue=false，源码分析）
+		"tengu_coral_fern":   true, // 记忆上下文搜索
+		"tengu_moth_copse":   true, // 附件优化
+		"tengu_glacier_2xr":  true, // 工具搜索推荐
+		"tengu_copper_panda": true, // 技能改进建议
+		"tengu_hive_evidence": true, // 验证代理
+		"tengu_basalt_3kr":   true, // MCP 指令增量
+		"tengu_amber_prism":  true, // 消息优化
+
+		// 禁用遥测（GitHub issue #25141 证实服务端推送 true）
+		"tengu_log_datadog_events":  false,
+		"tengu_log_segment_events":  false,
+		"enhanced_telemetry_beta":   false,
+
+		// 禁用有害 A/B 测试（GitHub issue #62205 证实服务端推送 true 锁权限）
+		"tengu_permission_friction":  false,
+		"tengu_harbor":               false,
+		"tengu_harbor_permissions":   false,
+	}
 }
 
 // handleBootstrap 处理启动引导配置

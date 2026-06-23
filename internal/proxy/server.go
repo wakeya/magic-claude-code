@@ -25,6 +25,11 @@ type Server struct {
 	requestsTotal atomic.Int64
 	lastRequest   atomic.Value // time.Time
 	startTime     time.Time
+
+	// Gateway HTTP server (route mode, non-TLS)
+	gatewayMu     sync.Mutex
+	gatewayServer *http.Server
+	gatewayAddr   string // 当前监听地址，用于 RestartGateway 跳过无变化的重启
 }
 
 // NewServer 创建代理服务器
@@ -243,9 +248,98 @@ func (s *Server) withStats(next http.Handler) http.Handler {
 
 // Stop 停止代理服务器
 func (s *Server) Stop(ctx context.Context) error {
+	var err error
 	if s.server != nil {
-		return s.server.Shutdown(ctx)
+		err = s.server.Shutdown(ctx)
 	}
+	s.gatewayMu.Lock()
+	gw := s.gatewayServer
+	s.gatewayServer = nil
+	s.gatewayAddr = ""
+	s.gatewayMu.Unlock()
+	if gw != nil {
+		gw.Shutdown(ctx)
+	}
+	return err
+}
+
+// StartGateway 启动路由模式 HTTP 服务器（阻塞调用，应在 goroutine 中运行）
+func (s *Server) StartGateway(addr string) error {
+	handler := NewHandler(s.configStore, s.transport, s.recorder)
+
+	s.gatewayMu.Lock()
+	s.gatewayServer = &http.Server{
+		Addr:         addr,
+		Handler:      s.withStats(handler),
+		ReadTimeout:  5 * time.Minute,
+		WriteTimeout: 10 * time.Minute,
+		IdleTimeout:  120 * time.Second,
+	}
+	s.gatewayAddr = addr
+	s.gatewayMu.Unlock()
+
+	log.Printf("Gateway server starting on %s", addr)
+	err := s.gatewayServer.ListenAndServe()
+	// ListenAndServe 返回 nil 只可能是 http.ErrServerClosed（Shutdown 触发）；
+	// 其他错误说明端口绑定失败，server 未真正运行，清理状态避免 RestartGateway 误判跳过。
+	if err != nil && err != http.ErrServerClosed {
+		s.gatewayMu.Lock()
+		s.gatewayServer = nil
+		s.gatewayAddr = ""
+		s.gatewayMu.Unlock()
+	}
+	return err
+}
+
+// RestartGateway 平滑重启路由模式 HTTP 服务器。
+// 地址未变化时直接返回（避免与正在运行的旧实例撞端口）；
+// 地址变化时同步绑定新端口（检测冲突），异步关闭旧服务器。
+func (s *Server) RestartGateway(addr string) error {
+	s.gatewayMu.Lock()
+	current := s.gatewayAddr
+	running := s.gatewayServer != nil
+	s.gatewayMu.Unlock()
+
+	// 地址未变化且 server 确实在运行：跳过，避免 "address already in use"。
+	// gatewayServer == nil 表示从未启动或已 Stop——即使 addr 相同也不能跳过，
+	// 否则配置变更会被静默吞掉（状态失真）。
+	if addr == current && current != "" && running {
+		log.Printf("Gateway server unchanged on %s, skip restart", addr)
+		return nil
+	}
+
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", addr, err)
+	}
+
+	handler := NewHandler(s.configStore, s.transport, s.recorder)
+
+	s.gatewayMu.Lock()
+	old := s.gatewayServer
+	s.gatewayServer = &http.Server{
+		Handler:      s.withStats(handler),
+		ReadTimeout:  5 * time.Minute,
+		WriteTimeout: 10 * time.Minute,
+		IdleTimeout:  120 * time.Second,
+	}
+	s.gatewayAddr = addr
+	s.gatewayMu.Unlock()
+
+	if old != nil {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			old.Shutdown(ctx)
+		}()
+	}
+
+	log.Printf("Gateway server restarting on %s", addr)
+	go func() {
+		if err := s.gatewayServer.Serve(ln); err != nil {
+			log.Printf("Gateway server error: %v", err)
+		}
+	}()
 	return nil
 }
 

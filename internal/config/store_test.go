@@ -59,6 +59,25 @@ func TestJSONStorePersistsAdminThemeMode(t *testing.T) {
 	}
 }
 
+func TestJSONStorePersistsConnectionMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := NewStore(filepath.Join(tmpDir, "config.json"))
+
+	cfg := DefaultConfig()
+	cfg.ConnectionMode = ConnectionModeTunnel
+	if err := store.Save(cfg); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if loaded.ConnectionMode != ConnectionModeTunnel {
+		t.Fatalf("ConnectionMode = %q, want %q", loaded.ConnectionMode, ConnectionModeTunnel)
+	}
+}
+
 func TestJSONStoreDefaultsLegacyProviderAPIFormat(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "config.json")
