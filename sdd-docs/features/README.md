@@ -126,6 +126,8 @@ Local page / proxy entry / reference sources / stack / last updated / progress
 | Provider Rate-Limit Queue | `2026-06-16-provider-rate-limit-queue/spec.md` | `2026-06-16-provider-rate-limit-queue/spec_ZH.md` |
 | Desktop Endpoint Completeness and TLS Hardening | `2026-06-20-desktop-endpoint-patch/spec.md` | `2026-06-20-desktop-endpoint-patch/spec_ZH.md` |
 | Brand Logo Replacement | `2026-06-20-brand-logo/spec.md` | `2026-06-20-brand-logo/spec_ZH.md` |
+| Transparent Mode Bootstrap and Fallback | `2026-06-20-transparent-mode-bootstrap-and-fallback/spec.md` | `2026-06-20-transparent-mode-bootstrap-and-fallback/spec_ZH.md` |
+| Fish Profile Dedup Scanner | `2026-06-21-fish-profile-dedup-scanner/spec.md` | `2026-06-21-fish-profile-dedup-scanner/spec_ZH.md` |
 
 ## 状态生命周期
 
