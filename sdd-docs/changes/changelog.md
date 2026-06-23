@@ -7,6 +7,13 @@
 
 ---
 
+## v0.8.1 (2026-06-23)
+
+### Fixed
+- Windows 引导乱码修复：`certutil`/`setx` 子进程输出按 GBK/CP936 解码为 UTF-8（`decodeCmdOutput`），错误信息不再乱码；已是 UTF-8 的输出不误转，解码失败回退原始字节
+
+---
+
 ## v0.8.0 (2026-06-22)
 
 ### Security

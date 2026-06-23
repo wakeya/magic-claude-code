@@ -263,7 +263,7 @@ func (a *osTrustAdapter) installDarwin(certPath string) error {
 func (a *osTrustAdapter) installWindows(certPath string) error {
 	out, err := execWithTimeout("certutil", "-addstore", "-f", "ROOT", certPath)
 	if err != nil {
-		return fmt.Errorf("certutil -addstore: %w: %s", err, string(out))
+		return fmt.Errorf("certutil -addstore: %w: %s", err, decodeCmdOutput(out))
 	}
 	return nil
 }
@@ -313,7 +313,7 @@ func (a *osEnvAdapter) PersistRoot(rootDir string) error {
 	case "windows":
 		out, err := execWithTimeout("setx", "MCC_ROOT", rootDir)
 		if err != nil {
-			return fmt.Errorf("setx MCC_ROOT: %w: %s", err, string(out))
+			return fmt.Errorf("setx MCC_ROOT: %w: %s", err, decodeCmdOutput(out))
 		}
 		return nil
 	default:
