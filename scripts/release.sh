@@ -99,6 +99,11 @@ build_target() {
     -o "${pkg_dir}/${BINARY_NAME}${exe_suffix}" ./cmd/server
 
   cp README.md "$pkg_dir/README.md"
+  # 附带宿主机配置脚本：bootstrap 自动配置失败时（如系统缺 ca-certificates），
+  # 用户可手动运行脚本完成 hosts + CA 配置。脚本含国内镜像 fallback。
+  cp scripts/setup-host.sh "$pkg_dir/setup-host.sh"
+  cp scripts/setup-host.ps1 "$pkg_dir/setup-host.ps1"
+  chmod +x "$pkg_dir/setup-host.sh"
 
   if [ "$format" = "zip" ]; then
     (cd "$BUILD_DIR" && zip -qr "${pkg}.zip" "$pkg")
