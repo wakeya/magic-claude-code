@@ -6,6 +6,12 @@ export interface StatusInfo {
   running: boolean
   version?: string
   backend_url: string
+  proxy_listen_addr?: string
+  proxy_port?: number
+  admin_listen_addr?: string
+  admin_port?: number
+  gateway_listen_addr?: string
+  gateway_listen_port?: number
   configured_mode?: string
   effective_mode?: string
   mode_rationale?: string

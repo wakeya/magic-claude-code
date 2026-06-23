@@ -51,6 +51,14 @@ const messages: Record<Locale, Record<string, string>> = {
     'status.usage_coverage': 'Usage 覆盖率',
     'status.last_provider_request': '最近一次 Provider 请求',
 
+    // Listen status (read-only display in status overview)
+    'listen.status.title': '监听状态',
+    'listen.status.proxy_label': '代理服务',
+    'listen.status.admin_label': '配置服务',
+    'listen.status.gateway_label': '路由服务',
+    'listen.status.modify_hint': '监听地址通过启动参数或配置文件修改，改后重启生效',
+    'listen.status.all_interfaces': '（所有接口）',
+
     // Providers
     'providers.title': '供应商管理',
     'providers.add': '添加供应商',
@@ -371,6 +379,14 @@ const messages: Record<Locale, Record<string, string>> = {
     'status.today_token_consumption': 'Today Token Consumption',
     'status.usage_coverage': 'Usage Coverage',
     'status.last_provider_request': 'Last Provider Request',
+
+    // Listen status (read-only display in status overview)
+    'listen.status.title': 'Listen Status',
+    'listen.status.proxy_label': 'Proxy',
+    'listen.status.admin_label': 'Admin',
+    'listen.status.gateway_label': 'Gateway',
+    'listen.status.modify_hint': 'Listen addresses are changed via startup flags or the config file; restart after changing',
+    'listen.status.all_interfaces': '(all interfaces)',
 
     'providers.title': 'Providers',
     'providers.add': 'Add Provider',
