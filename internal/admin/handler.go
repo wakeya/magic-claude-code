@@ -209,13 +209,13 @@ func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	backendURL := "https://open.bigmodel.cn/api/anthropic"
+	cfg := config.DefaultConfig()
 	if s.configStore != nil {
-		cfg, err := s.configStore.Load()
-		if err == nil {
-			backendURL = config.RedactURL(cfg.BackendURL)
+		if loaded, err := s.configStore.Load(); err == nil {
+			cfg = loaded
 		}
 	}
+	backendURL := config.RedactURL(cfg.BackendURL)
 
 	// 获取代理服务器统计数据
 	var requestsTotal int64
@@ -240,6 +240,12 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"running":                 true,
 		"version":                 version.Version,
 		"backend_url":             backendURL,
+		"proxy_listen_addr":       cfg.ProxyListenAddr,
+		"proxy_port":              cfg.ProxyPort,
+		"admin_listen_addr":       cfg.AdminListenAddr,
+		"admin_port":              cfg.AdminPort,
+		"gateway_listen_addr":     cfg.GatewayListenAddr,
+		"gateway_listen_port":     cfg.GatewayListenPort,
 		"configured_mode":         configuredMode,
 		"effective_mode":          effectiveMode,
 		"mode_rationale":          modeRationale,

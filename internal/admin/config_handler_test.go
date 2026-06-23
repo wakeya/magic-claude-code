@@ -134,3 +134,43 @@ func TestGetCertificatesUsesConfiguredDataDir(t *testing.T) {
 		t.Fatalf("unexpected cert paths: %#v", got)
 	}
 }
+
+func TestGetStatusIncludesListenAddresses(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.ProxyListenAddr = "127.0.0.1"
+	cfg.ProxyPort = 8443
+	cfg.AdminListenAddr = "192.168.1.10"
+	cfg.AdminPort = 9000
+	cfg.GatewayListenAddr = "10.0.0.1"
+	cfg.GatewayListenPort = 18000
+
+	server := NewServer(&AdminConfig{Password: "secret"}, config.NewMockStore(cfg), nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	rec := httptest.NewRecorder()
+	server.handleStatus(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var got struct {
+		ProxyListenAddr   string `json:"proxy_listen_addr"`
+		ProxyPort         int    `json:"proxy_port"`
+		AdminListenAddr   string `json:"admin_listen_addr"`
+		AdminPort         int    `json:"admin_port"`
+		GatewayListenAddr string `json:"gateway_listen_addr"`
+		GatewayListenPort int    `json:"gateway_listen_port"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if got.ProxyListenAddr != "127.0.0.1" || got.ProxyPort != 8443 {
+		t.Errorf("proxy: addr=%q port=%d, want 127.0.0.1:8443", got.ProxyListenAddr, got.ProxyPort)
+	}
+	if got.AdminListenAddr != "192.168.1.10" || got.AdminPort != 9000 {
+		t.Errorf("admin: addr=%q port=%d, want 192.168.1.10:9000", got.AdminListenAddr, got.AdminPort)
+	}
+	if got.GatewayListenAddr != "10.0.0.1" || got.GatewayListenPort != 18000 {
+		t.Errorf("gateway: addr=%q port=%d, want 10.0.0.1:18000", got.GatewayListenAddr, got.GatewayListenPort)
+	}
+}
