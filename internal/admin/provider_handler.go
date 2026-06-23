@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -847,6 +848,105 @@ func (s *Server) handleExportProviders(w http.ResponseWriter, r *http.Request) {
 		ExportedAt: time.Now(),
 		Providers:  exported,
 	})
+}
+
+// handleImportProviders 导入供应商，按 strategy 处理 ID 冲突。
+// 请求体 {"version":1, "providers":[...], "strategy":"skip|overwrite|duplicate"}。
+// 整个导入在一次 Load→合并→Save 周期内完成；Save 失败则不更改任何供应商。
+func (s *Server) handleImportProviders(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Version   int               `json:"version"`
+		Providers []config.Provider `json:"providers"`
+		Strategy  string            `json:"strategy"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error": "invalid request"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Version != 1 {
+		http.Error(w, `{"error": "unsupported export version"}`, http.StatusBadRequest)
+		return
+	}
+	strategy := req.Strategy
+	if strategy != "skip" && strategy != "overwrite" && strategy != "duplicate" {
+		strategy = "skip" // 未知策略默认 skip
+	}
+
+	cfg, err := s.configStore.Load()
+	if err != nil {
+		http.Error(w, `{"error": "failed to load config"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// 建立现有 ID 索引
+	existingIdx := make(map[string]int, len(cfg.Providers))
+	for i, p := range cfg.Providers {
+		existingIdx[p.ID] = i
+	}
+
+	now := time.Now()
+	summary := struct {
+		Success     bool     `json:"success"`
+		Imported    int      `json:"imported"`
+		Skipped     int      `json:"skipped"`
+		Overwritten int      `json:"overwritten"`
+		Duplicated  int      `json:"duplicated"`
+		Errors      []string `json:"errors"`
+	}{Success: true, Errors: []string{}}
+
+	// 文件内去重：同一 ID 只处理首次出现
+	seenInFile := make(map[string]bool)
+
+	for _, p := range req.Providers {
+		if seenInFile[p.ID] {
+			continue
+		}
+		seenInFile[p.ID] = true
+
+		// 校验；无效则跳过并记录
+		cp := p
+		if err := cp.Validate(); err != nil {
+			summary.Errors = append(summary.Errors, fmt.Sprintf("%s: %v", p.Name, err))
+			continue
+		}
+
+		if _, conflict := existingIdx[p.ID]; conflict {
+			switch strategy {
+			case "skip":
+				summary.Skipped++
+			case "overwrite":
+				orig := cfg.Providers[existingIdx[p.ID]]
+				cp.CreatedAt = orig.CreatedAt // 保留原创建时间
+				cp.UpdatedAt = now
+				cfg.Providers[existingIdx[p.ID]] = cp
+				summary.Overwritten++
+			case "duplicate":
+				cp.ID = generateProviderID()
+				cp.CreatedAt = now
+				cp.UpdatedAt = now
+				cfg.Providers = append(cfg.Providers, cp)
+				summary.Duplicated++
+			}
+		} else {
+			if cp.CreatedAt.IsZero() {
+				cp.CreatedAt = now
+			}
+			if cp.UpdatedAt.IsZero() {
+				cp.UpdatedAt = now
+			}
+			cfg.Providers = append(cfg.Providers, cp)
+			existingIdx[cp.ID] = len(cfg.Providers) - 1
+			summary.Imported++
+		}
+	}
+
+	if err := s.configStore.Save(cfg); err != nil {
+		http.Error(w, `{"error": "failed to save config"}`, http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(summary)
 }
 
 // randomHex 生成指定长度的十六进制字符串

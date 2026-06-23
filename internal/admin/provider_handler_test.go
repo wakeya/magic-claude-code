@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"magic-claude-code/internal/config"
 )
@@ -446,5 +447,209 @@ func TestExportProvidersEmptyIDsReturnsEmptyArray(t *testing.T) {
 	}
 	if len(exported.Providers) != 0 {
 		t.Fatalf("providers count = %d, want 0", len(exported.Providers))
+	}
+}
+
+// --- Import API tests ---
+
+// importRequest is the import endpoint request body.
+type importRequest struct {
+	Version   int               `json:"version"`
+	Providers []config.Provider `json:"providers"`
+	Strategy  string            `json:"strategy"`
+}
+
+func importResp(t *testing.T, rec *httptest.ResponseRecorder) map[string]int {
+	t.Helper()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("import status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var raw struct {
+		Success    bool     `json:"success"`
+		Imported   int      `json:"imported"`
+		Skipped    int      `json:"skipped"`
+		Overwritten int     `json:"overwritten"`
+		Duplicated int      `json:"duplicated"`
+		Errors     []string `json:"errors"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode import response: %v", err)
+	}
+	return map[string]int{
+		"imported":    raw.Imported,
+		"skipped":     raw.Skipped,
+		"overwritten": raw.Overwritten,
+		"duplicated":  raw.Duplicated,
+		"errors":      len(raw.Errors),
+	}
+}
+
+func TestImportProvidersSkipStrategy(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{
+		{ID: "existing", Name: "Old", APIURL: "https://old.example.com/api", APIToken: "sk-old", APIFormat: config.APIFormatAnthropic, Enabled: true},
+	}
+	store := config.NewMockStore(cfg)
+	server := NewServer(&AdminConfig{Password: "secret"}, store, nil)
+
+	// "existing" conflicts; "new" does not
+	reqBody := importRequest{
+		Version: 1,
+		Providers: []config.Provider{
+			{ID: "existing", Name: "New Name", APIURL: "https://new.example.com/api", APIToken: "sk-new", APIFormat: config.APIFormatAnthropic, Enabled: true},
+			{ID: "fresh", Name: "Fresh", APIURL: "https://fresh.example.com/api", APIToken: "sk-fresh", APIFormat: config.APIFormatAnthropic, Enabled: true},
+		},
+		Strategy: "skip",
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/import", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	server.handleImportProviders(rec, req)
+
+	counts := importResp(t, rec)
+	if counts["imported"] != 1 || counts["skipped"] != 1 {
+		t.Fatalf("counts = %#v, want imported=1 skipped=1", counts)
+	}
+
+	// Existing provider unchanged
+	loaded, _ := store.Load()
+	got := loaded.GetProviderByID("existing")
+	if got.Name != "Old" || got.APIToken != "sk-old" {
+		t.Fatalf("existing provider was modified: %#v", got)
+	}
+	// Fresh provider added
+	if loaded.GetProviderByID("fresh") == nil {
+		t.Fatal("fresh provider not imported")
+	}
+}
+
+func TestImportProvidersOverwriteStrategy(t *testing.T) {
+	now := time.Now()
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{
+		{ID: "existing", Name: "Old", APIURL: "https://old.example.com/api", APIToken: "sk-old", APIFormat: config.APIFormatAnthropic, Enabled: true, CreatedAt: now.Add(-time.Hour)},
+	}
+	store := config.NewMockStore(cfg)
+	server := NewServer(&AdminConfig{Password: "secret"}, store, nil)
+
+	reqBody := importRequest{
+		Version: 1,
+		Providers: []config.Provider{
+			{ID: "existing", Name: "New Name", APIURL: "https://new.example.com/api", APIToken: "sk-new", APIFormat: config.APIFormatAnthropic, Enabled: true},
+		},
+		Strategy: "overwrite",
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/import", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	server.handleImportProviders(rec, req)
+
+	counts := importResp(t, rec)
+	if counts["overwritten"] != 1 {
+		t.Fatalf("counts = %#v, want overwritten=1", counts)
+	}
+
+	loaded, _ := store.Load()
+	got := loaded.GetProviderByID("existing")
+	if got.Name != "New Name" || got.APIToken != "sk-new" {
+		t.Fatalf("existing provider not overwritten: %#v", got)
+	}
+	// created_at preserved, updated_at refreshed
+	if !got.CreatedAt.Equal(now.Add(-time.Hour)) {
+		t.Fatalf("created_at changed: %v", got.CreatedAt)
+	}
+	if !got.UpdatedAt.After(now.Add(-time.Hour)) {
+		t.Fatalf("updated_at not refreshed: %v", got.UpdatedAt)
+	}
+}
+
+func TestImportProvidersDuplicateStrategy(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{
+		{ID: "existing", Name: "Old", APIURL: "https://old.example.com/api", APIToken: "sk-old", APIFormat: config.APIFormatAnthropic, Enabled: true},
+	}
+	store := config.NewMockStore(cfg)
+	server := NewServer(&AdminConfig{Password: "secret"}, store, nil)
+
+	reqBody := importRequest{
+		Version: 1,
+		Providers: []config.Provider{
+			{ID: "existing", Name: "Dup", APIURL: "https://dup.example.com/api", APIToken: "sk-dup", APIFormat: config.APIFormatAnthropic, Enabled: true},
+		},
+		Strategy: "duplicate",
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/import", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	server.handleImportProviders(rec, req)
+
+	counts := importResp(t, rec)
+	if counts["duplicated"] != 1 {
+		t.Fatalf("counts = %#v, want duplicated=1", counts)
+	}
+
+	loaded, _ := store.Load()
+	// Original unchanged
+	if got := loaded.GetProviderByID("existing"); got.Name != "Old" {
+		t.Fatalf("original modified: %#v", got)
+	}
+	// New entry appended with different ID
+	if len(loaded.Providers) != 2 {
+		t.Fatalf("provider count = %d, want 2", len(loaded.Providers))
+	}
+	appended := loaded.Providers[1]
+	if appended.ID == "existing" || appended.Name != "Dup" {
+		t.Fatalf("appended provider wrong: %#v", appended)
+	}
+}
+
+func TestImportProvidersRejectsWrongVersion(t *testing.T) {
+	cfg := config.DefaultConfig()
+	store := config.NewMockStore(cfg)
+	server := NewServer(&AdminConfig{Password: "secret"}, store, nil)
+
+	reqBody := importRequest{
+		Version:   2,
+		Providers: []config.Provider{},
+		Strategy:  "skip",
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/import", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	server.handleImportProviders(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestImportProvidersSkipsInvalidProvider(t *testing.T) {
+	cfg := config.DefaultConfig()
+	store := config.NewMockStore(cfg)
+	server := NewServer(&AdminConfig{Password: "secret"}, store, nil)
+
+	reqBody := importRequest{
+		Version: 1,
+		Providers: []config.Provider{
+			{ID: "bad", Name: "", APIURL: "not-a-url", APIFormat: config.APIFormatAnthropic, Enabled: true}, // invalid
+			{ID: "good", Name: "Good", APIURL: "https://good.example.com/api", APIToken: "sk-good", APIFormat: config.APIFormatAnthropic, Enabled: true},
+		},
+		Strategy: "skip",
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/import", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	server.handleImportProviders(rec, req)
+
+	counts := importResp(t, rec)
+	if counts["imported"] != 1 || counts["errors"] != 1 {
+		t.Fatalf("counts = %#v, want imported=1 errors=1", counts)
+	}
+	loaded, _ := store.Load()
+	if loaded.GetProviderByID("good") == nil {
+		t.Fatal("good provider not imported")
+	}
+	if loaded.GetProviderByID("bad") != nil {
+		t.Fatal("bad provider should not be imported")
 	}
 }

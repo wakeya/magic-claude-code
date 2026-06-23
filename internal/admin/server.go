@@ -94,7 +94,7 @@ func (s *Server) Start(addr string, frontendFS embed.FS) error {
 	mux.HandleFunc("/api/providers", s.authMiddlewareFunc(s.handleProviders))
 	mux.HandleFunc("/api/providers/test", s.authMiddlewareFunc(s.handleTestProvider))
 	mux.HandleFunc("/api/providers/export", s.authMiddlewareFunc(s.handleExportProviders))
-	// mux.HandleFunc("/api/providers/import", s.authMiddlewareFunc(s.handleImportProviders)) // Task 2
+	mux.HandleFunc("/api/providers/import", s.authMiddlewareFunc(s.handleImportProviders))
 	mux.HandleFunc("/api/providers/", s.authMiddlewareFunc(s.handleProviderRoutes))
 	// net/http ServeMux uses longest-pattern matching; keep exact session routes before the subtree handler for readability.
 	mux.HandleFunc("/api/sessions", s.authMiddlewareFunc(s.handleSessions))
