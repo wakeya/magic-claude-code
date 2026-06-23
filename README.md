@@ -20,7 +20,7 @@ Claude Code 官方订阅昂贵，而中国产开源大模型性价比极高。MC
 
 ![MCC Proxy 功能演示](images/visual_zh.gif)
 
-## 功能特性
+## ✨ 功能特性
 
 - 透明代理所有 Claude Code API 请求
 - **多供应商管理**：支持配置多个 API 供应商，灵活切换
@@ -32,7 +32,7 @@ Claude Code 官方订阅昂贵，而中国产开源大模型性价比极高。MC
 - 热更新配置无需重启
 - **自动引导**：启动时自动尝试 hosts 修改、CA 信任安装、环境持久化
 
-## 连接模式
+## 🔗 连接模式
 
 系统支持三种连接模式，按优先级自动降级：
 
@@ -69,7 +69,7 @@ Claude Code 官方订阅昂贵，而中国产开源大模型性价比极高。MC
 - **隧道模式不可用**（无法设置代理环境变量）→ 降级到网关模式
 - 网关模式仅覆盖尊重 `ANTHROPIC_BASE_URL` 的客户端，无法拦截硬编码请求
 
-### 模式优缺点对比
+### ⚖️ 模式优缺点对比
 
 **透明模式 / 隧道模式**（推荐）——优点：
 
@@ -92,11 +92,11 @@ Claude Code 官方订阅昂贵，而中国产开源大模型性价比极高。MC
 
 > 顶部 Header 中的模式入口可查看三种模式的详细说明。
 
-## 发布说明
+## 📦 发布说明
 
 版本发布由 `v*` tag 触发 CI 自动构建。GitHub/GitLab 会生成并上传跨平台二进制资产；Gitee/GitCode 通过 Release API 上传附件。开发者提交与发布步骤见 [AGENTS.md](AGENTS.md)。
 
-## 快速开始
+## 🚀 快速开始
 
 ### 1. 使用 Docker 部署
 
@@ -545,7 +545,7 @@ echo "127.0.0.1 api.anthropic.com" | sudo tee -a /etc/hosts
 
 Docker 默认密码: `admin123`。二进制运行请使用启动时通过 `-password` 或 `ADMIN_PASSWORD` 设置的密码；未设置时会随机生成并在启动输出中打印一次。
 
-## 配置说明
+## ⚙️ 配置说明
 
 ### 端口权限
 
@@ -728,7 +728,7 @@ docker compose up -d --build
 
 代理会自动将 `claude-sonnet-4` 转换为供应商配置的模型（如 `glm-5`）。
 
-## 首次运行检查清单
+## ✅ 首次运行检查清单
 
 | 步骤 | 自动完成 | 说明 |
 |------|----------|------|
@@ -744,7 +744,7 @@ docker compose up -d --build
 - 如果引导成功：`Transparent mode configured`
 - 如果引导失败：降级指引和手动命令
 
-## 排错
+## 🔧 排错
 
 ### 权限不足
 
@@ -833,14 +833,14 @@ sudo update-ca-certificates
 Import-Certificate -FilePath "C:\mcc\data\ca.crt" -CertStoreLocation Cert:\LocalMachine\Root
 ```
 
-## 端口说明
+## 🔌 端口说明
 
 | 端口 | 用途 |
 |------|------|
 | 443 | 代理服务入口 |
 | 8442 | 配置页面 |
 
-## 项目结构
+## 📂 项目结构
 
 ```text
 magic-claude-code/
@@ -858,7 +858,7 @@ magic-claude-code/
 └── docker-compose.yml
 ```
 
-## 开发
+## 🛠️ 开发
 
 ```bash
 # 运行测试
@@ -871,6 +871,6 @@ make run
 make build
 ```
 
-## 许可证
+## 📄 许可证
 
 MIT License

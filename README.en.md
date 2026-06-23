@@ -20,7 +20,7 @@ Switching is transparent to Claude Code via automatic model mapping. Hardcoded r
 
 ![MCC Proxy Demo](images/visual_en.gif)
 
-## Features
+## ✨ Features
 
 - Transparently proxies all Claude Code API requests
 - **Multi-provider management**: configure multiple API providers and switch freely
@@ -32,7 +32,7 @@ Switching is transparent to Claude Code via automatic model mapping. Hardcoded r
 - Hot-reload configuration without restart
 - **Auto bootstrap**: automatically attempts hosts modification, CA trust installation, and environment persistence on startup
 
-## Connection Modes
+## 🔗 Connection Modes
 
 The system supports three connection modes with automatic priority-based fallback:
 
@@ -69,7 +69,7 @@ On startup, the proxy automatically attempts the following in priority order:
 - **Tunnel Mode unavailable** (cannot set proxy environment variables) → falls back to Gateway Mode
 - Gateway Mode only covers clients that honor `ANTHROPIC_BASE_URL`; it cannot intercept hardcoded requests
 
-### Mode Tradeoffs
+### ⚖️ Mode Tradeoffs
 
 **Transparent Mode / Tunnel Mode** (recommended) — advantages:
 
@@ -92,11 +92,11 @@ On startup, the proxy automatically attempts the following in priority order:
 
 > The mode entry in the top header shows detailed explanations of all three modes.
 
-## Release
+## 📦 Release
 
 Releases are built automatically by CI triggered by `v*` tags. GitHub/GitLab generate and upload cross-platform binary assets; Gitee/GitCode upload attachments via the Release API. For the developer commit and release workflow see [AGENTS.md](AGENTS.md).
 
-## Quick Start
+## 🚀 Quick Start
 
 ### 1. Deploy with Docker
 
@@ -544,7 +544,7 @@ Open a browser and visit: `https://localhost:8442`
 
 Docker default password: `admin123`. For binary mode, use the password set via `-password` or `ADMIN_PASSWORD` at startup; if unset, a random password is generated and printed once to startup output.
 
-## Configuration
+## ⚙️ Configuration
 
 ### Port Privileges
 
@@ -727,7 +727,7 @@ Save and restart Claude Code.
 
 The proxy automatically maps `claude-sonnet-4` to the provider-configured model (such as `glm-5`).
 
-## First-Run Checklist
+## ✅ First-Run Checklist
 
 | Step | Automatic | Notes |
 |------|-----------|-------|
@@ -743,7 +743,7 @@ The proxy automatically maps `claude-sonnet-4` to the provider-configured model 
 - On bootstrap success: `Transparent mode configured`
 - On bootstrap failure: fallback guidance and manual commands
 
-## Troubleshooting
+## 🔧 Troubleshooting
 
 ### Insufficient Privileges
 
@@ -832,14 +832,14 @@ sudo update-ca-certificates
 Import-Certificate -FilePath "C:\mcc\data\ca.crt" -CertStoreLocation Cert:\LocalMachine\Root
 ```
 
-## Ports
+## 🔌 Ports
 
 | Port | Purpose |
 |------|---------|
 | 443 | Proxy entry |
 | 8442 | Configuration page |
 
-## Project Structure
+## 📂 Project Structure
 
 ```text
 magic-claude-code/
@@ -857,7 +857,7 @@ magic-claude-code/
 └── docker-compose.yml
 ```
 
-## Development
+## 🛠️ Development
 
 ```bash
 # Run tests
@@ -870,6 +870,6 @@ make run
 make build
 ```
 
-## License
+## 📄 License
 
 MIT License
