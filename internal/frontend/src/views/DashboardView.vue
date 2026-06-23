@@ -122,7 +122,10 @@
 
       <div v-if="activeTab === 'providers'">
         <div class="flex items-center justify-between mb-5">
-          <div class="flex items-center gap-2 text-[15px] font-bold">
+          <div class="flex items-center gap-3 text-[15px] font-bold">
+            <label v-if="providers.length > 0" class="flex items-center gap-1.5 cursor-pointer text-xs font-normal text-text-secondary" :title="t('providers.select_all')">
+              <input type="checkbox" :checked="allProvidersSelected" :indeterminate.prop="someProvidersSelected" class="w-4 h-4 accent-primary" @change="toggleSelectAll" />
+            </label>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
               <rect x="2" y="2" width="20" height="8" rx="2" /><rect x="2" y="14" width="20" height="8" rx="2" /><circle cx="6" cy="6" r="1" /><circle cx="6" cy="18" r="1" />
             </svg>
@@ -932,6 +935,12 @@ const usageFilters = reactive({
 })
 
 const activeProvider = computed(() => providers.value.find((p) => p.id === activeProviderId.value))
+const allProvidersSelected = computed(() => providers.value.length > 0 && providers.value.every((p) => selectedProviderIds.value.has(p.id)))
+const someProvidersSelected = computed(() => {
+  const sel = selectedProviderIds.value
+  const hit = providers.value.some((p) => sel.has(p.id))
+  return hit && !allProvidersSelected.value
+})
 const providerOptions = computed(() => providers.value.map((provider) => ({ value: provider.id, label: provider.name })))
 const modelOptions = computed(() => uniqueValues(usageModels.value.map((row) => row.mapped_model || row.name)))
 const activeUsageDateRangePreset = computed(() => {
@@ -1024,6 +1033,14 @@ function toggleProviderSelect(id: string) {
     next.add(id)
   }
   selectedProviderIds.value = next
+}
+
+function toggleSelectAll() {
+  if (allProvidersSelected.value) {
+    selectedProviderIds.value = new Set()
+  } else {
+    selectedProviderIds.value = new Set(providers.value.map((p) => p.id))
+  }
 }
 
 async function handleExport() {

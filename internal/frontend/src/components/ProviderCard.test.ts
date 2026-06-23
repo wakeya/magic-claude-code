@@ -31,3 +31,13 @@ test('DashboardView binds selection to ProviderCard', () => {
   // The ProviderCard usage wires :selected and @toggle-select
   assert.match(dashSource, /:selected|toggle-select/)
 })
+
+test('DashboardView has a select-all checkbox in the providers toolbar', () => {
+  // A select-all control must exist, wired to a toggle-all handler
+  assert.match(dashSource, /selectAll|toggle-all|toggleAll/i)
+})
+
+test('select-all checkbox reflects indeterminate/partial state', () => {
+  // When some but not all are selected, the control shows partial state
+  assert.match(dashSource, /indeterminate|partial/i)
+})
