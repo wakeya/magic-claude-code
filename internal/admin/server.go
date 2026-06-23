@@ -32,6 +32,8 @@ type Server struct {
 	server                     *http.Server
 	startTime                  time.Time
 	configStore                config.ConfigStore
+	listenMu                   sync.RWMutex
+	effectiveListen            *config.Config
 	statsProvider              StatsProvider
 	usageHandler               *usage.Handler
 	updater                    *updater.Updater
@@ -176,6 +178,23 @@ func (s *Server) SetGatewayRestarter(r GatewayRestarter) {
 	s.gatewayRestarter = r
 }
 
+// SetEffectiveListenState records the proxy/admin listen addresses/ports that
+// are actually used at startup after CLI/env/config resolution.
+func (s *Server) SetEffectiveListenState(cfg *config.Config) {
+	s.listenMu.Lock()
+	defer s.listenMu.Unlock()
+	if cfg == nil {
+		s.effectiveListen = nil
+		return
+	}
+	s.effectiveListen = &config.Config{
+		ProxyListenAddr: cfg.ProxyListenAddr,
+		ProxyPort:       cfg.ProxyPort,
+		AdminListenAddr: cfg.AdminListenAddr,
+		AdminPort:       cfg.AdminPort,
+	}
+}
+
 // DisableUpdateApply keeps update checks available while preventing in-place binary replacement.
 func (s *Server) DisableUpdateApply(message string) {
 	s.updateApplyDisabledMessage = message
@@ -216,4 +235,14 @@ func (s *Server) modeState() (configured, effective, rationale string) {
 		return "", "", ""
 	}
 	return s.config.ConfiguredMode, s.config.EffectiveMode, s.config.ModeRationale
+}
+
+func (s *Server) listenState() *config.Config {
+	s.listenMu.RLock()
+	defer s.listenMu.RUnlock()
+	if s.effectiveListen == nil {
+		return nil
+	}
+	cfg := *s.effectiveListen
+	return &cfg
 }

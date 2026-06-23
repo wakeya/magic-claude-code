@@ -10,12 +10,13 @@ import (
 // Messages holds all user-facing strings that need translation.
 type Messages struct {
 	// CLI flags
-	FlagDataDir      string
-	FlagPassword     string
-	FlagProxyListen  string
-	FlagProxyPort    string
-	FlagAdminListen  string
-	FlagAdminPort    string
+	FlagDataDir     string
+	FlagPassword    string
+	FlagProxyListen string
+	FlagProxyPort   string
+	FlagAdminListen string
+	FlagAdminPort   string
+	FlagVersion     string
 
 	// Banner
 	BannerTop    string
@@ -65,26 +66,27 @@ type Messages struct {
 	WarnNoPassword     string
 
 	// Bootstrap
-	BootstrapAttempting    string
-	BootstrapTransparentOK string
-	BootstrapManualHint    string
-	BootstrapReasonDockerTunnel string
+	BootstrapAttempting          string
+	BootstrapTransparentOK       string
+	BootstrapManualHint          string
+	BootstrapReasonDockerTunnel  string
 	BootstrapReasonHostsFailure  string
-	BootstrapReasonTrustFailure   string
-	BootstrapReasonGateway        string
-	BootstrapReasonTunnelGeneric  string
-	ModeTransparent        string
-	ModeTunnel             string
-	ModeGateway            string
+	BootstrapReasonTrustFailure  string
+	BootstrapReasonGateway       string
+	BootstrapReasonTunnelGeneric string
+	ModeTransparent              string
+	ModeTunnel                   string
+	ModeGateway                  string
 }
 
 var enMessages = Messages{
-	FlagDataDir:      "Data directory",
-	FlagPassword:     "Admin password",
-	FlagProxyListen:  "Proxy listen address (default 0.0.0.0)",
-	FlagProxyPort:    "Proxy listen port (default 443)",
-	FlagAdminListen:  "Admin listen address (default 0.0.0.0)",
-	FlagAdminPort:    "Admin listen port (default 8442)",
+	FlagDataDir:     "Data directory",
+	FlagPassword:    "Admin password",
+	FlagProxyListen: "Proxy listen address (default 0.0.0.0)",
+	FlagProxyPort:   "Proxy listen port (default 443)",
+	FlagAdminListen: "Admin listen address (default 0.0.0.0)",
+	FlagAdminPort:   "Admin listen port (default 8442)",
+	FlagVersion:     "Print version and exit",
 
 	BannerTop:    "========================================",
 	BannerTitle:  "Claude Code Transparent Proxy Started",
@@ -125,26 +127,27 @@ var enMessages = Messages{
 	WarnRandomFallback: "Warning: random number generation failed, using fallback",
 	WarnNoPassword:     "Warning: no password set, using randomly generated password",
 
-	BootstrapAttempting:    "Attempting automatic transparent mode setup...",
-	BootstrapTransparentOK: "Transparent mode ready: hosts configured, CA trusted.",
-	BootstrapManualHint:    "If automatic setup did not complete, see the mode help and fallback instructions above.",
-	BootstrapReasonDockerTunnel: "Docker container cannot modify host; Tunnel Mode is the best available fallback",
+	BootstrapAttempting:          "Attempting automatic transparent mode setup...",
+	BootstrapTransparentOK:       "Transparent mode ready: hosts configured, CA trusted.",
+	BootstrapManualHint:          "If automatic setup did not complete, see the mode help and fallback instructions above.",
+	BootstrapReasonDockerTunnel:  "Docker container cannot modify host; Tunnel Mode is the best available fallback",
 	BootstrapReasonHostsFailure:  "hosts modification failed (%s); falling back to Tunnel Mode",
 	BootstrapReasonTrustFailure:  "CA trust installation failed (%s); Tunnel Mode still usable with runtime CA trust",
 	BootstrapReasonGateway:       "neither hosts nor CA trust available; Route Mode is the only remaining option",
 	BootstrapReasonTunnelGeneric: "Transparent Mode is incomplete; Tunnel Mode is the next available fallback",
-	ModeTransparent:        "Transparent Mode",
-	ModeTunnel:             "Tunnel Mode",
-	ModeGateway:            "Route Mode",
+	ModeTransparent:              "Transparent Mode",
+	ModeTunnel:                   "Tunnel Mode",
+	ModeGateway:                  "Route Mode",
 }
 
 var zhMessages = Messages{
-	FlagDataDir:      "数据目录",
-	FlagPassword:     "管理密码",
-	FlagProxyListen:  "代理监听地址（默认 0.0.0.0）",
-	FlagProxyPort:    "代理监听端口（默认 443）",
-	FlagAdminListen:  "配置监听地址（默认 0.0.0.0）",
-	FlagAdminPort:    "配置监听端口（默认 8442）",
+	FlagDataDir:     "数据目录",
+	FlagPassword:    "管理密码",
+	FlagProxyListen: "代理监听地址（默认 0.0.0.0）",
+	FlagProxyPort:   "代理监听端口（默认 443）",
+	FlagAdminListen: "配置监听地址（默认 0.0.0.0）",
+	FlagAdminPort:   "配置监听端口（默认 8442）",
+	FlagVersion:     "打印版本并退出",
 
 	BannerTop:    "========================================",
 	BannerTitle:  "Claude Code 透明代理已启动",
@@ -185,17 +188,17 @@ var zhMessages = Messages{
 	WarnRandomFallback: "警告: 随机数生成失败，使用后备方案",
 	WarnNoPassword:     "警告: 未设置密码，使用随机生成的密码",
 
-	BootstrapAttempting:    "正在尝试自动透明模式配置...",
-	BootstrapTransparentOK: "透明模式已就绪: hosts 已配置，CA 已信任。",
-	BootstrapManualHint:    "如果自动配置未完成，请参考上方的模式说明和降级指引。",
-	BootstrapReasonDockerTunnel: "Docker 容器无法修改宿主机；隧道模式是当前最佳后备",
+	BootstrapAttempting:          "正在尝试自动透明模式配置...",
+	BootstrapTransparentOK:       "透明模式已就绪: hosts 已配置，CA 已信任。",
+	BootstrapManualHint:          "如果自动配置未完成，请参考上方的模式说明和降级指引。",
+	BootstrapReasonDockerTunnel:  "Docker 容器无法修改宿主机；隧道模式是当前最佳后备",
 	BootstrapReasonHostsFailure:  "hosts 修改失败（%s）；已降级到隧道模式",
 	BootstrapReasonTrustFailure:  "CA 信任安装失败（%s）；隧道模式仍可在运行时信任 CA",
 	BootstrapReasonGateway:       "hosts 和 CA 信任都不可用；路由模式是唯一剩余选项",
 	BootstrapReasonTunnelGeneric: "透明模式未完成；隧道模式是下一可用后备",
-	ModeTransparent:        "透明模式",
-	ModeTunnel:             "隧道模式",
-	ModeGateway:            "路由模式",
+	ModeTransparent:              "透明模式",
+	ModeTunnel:                   "隧道模式",
+	ModeGateway:                  "路由模式",
 }
 
 // ResolveLocale determines the effective locale.

@@ -37,6 +37,7 @@ func TestEnMessagesFlagFieldsNonEmpty(t *testing.T) {
 		{"FlagProxyPort", msg.FlagProxyPort},
 		{"FlagAdminListen", msg.FlagAdminListen},
 		{"FlagAdminPort", msg.FlagAdminPort},
+		{"FlagVersion", msg.FlagVersion},
 	} {
 		if strings.TrimSpace(field.val) == "" {
 			t.Errorf("en: %s is empty", field.name)
@@ -55,6 +56,7 @@ func TestZhMessagesFlagFieldsNonEmpty(t *testing.T) {
 		{"FlagProxyPort", msg.FlagProxyPort},
 		{"FlagAdminListen", msg.FlagAdminListen},
 		{"FlagAdminPort", msg.FlagAdminPort},
+		{"FlagVersion", msg.FlagVersion},
 	} {
 		if strings.TrimSpace(field.val) == "" {
 			t.Errorf("zh: %s is empty", field.name)

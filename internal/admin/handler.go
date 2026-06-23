@@ -220,8 +220,6 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		cfg.ProxyPort = listenCfg.ProxyPort
 		cfg.AdminListenAddr = listenCfg.AdminListenAddr
 		cfg.AdminPort = listenCfg.AdminPort
-		cfg.GatewayListenAddr = listenCfg.GatewayListenAddr
-		cfg.GatewayListenPort = listenCfg.GatewayListenPort
 	}
 	backendURL := config.RedactURL(cfg.BackendURL)
 
