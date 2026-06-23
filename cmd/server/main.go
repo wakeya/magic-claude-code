@@ -78,7 +78,12 @@ func resolveDataDirFromExecutablePath(exePath string) string {
 func main() {
 	msg := i18n.Load(i18n.ResolveLocale())
 
+	setupFlagUsage()
+
 	// 命令行参数
+	showVersion := false
+	flag.BoolVar(&showVersion, "v", false, "Print version and exit")
+	flag.BoolVar(&showVersion, "version", false, "Print version and exit")
 	dataDir := flag.String("data", "", msg.FlagDataDir)
 	adminPassword := flag.String("password", os.Getenv("ADMIN_PASSWORD"), msg.FlagPassword)
 	proxyListenFlag := flag.String("proxy-listen", "", msg.FlagProxyListen)
@@ -86,6 +91,12 @@ func main() {
 	adminListenFlag := flag.String("admin-listen", "", msg.FlagAdminListen)
 	adminPortFlag := flag.Int("admin-port", 0, msg.FlagAdminPort)
 	flag.Parse()
+
+	// --version / -v：打印版本并退出，不启动任何服务
+	if showVersion {
+		fmt.Println(versionOutput())
+		os.Exit(0)
+	}
 
 	// 解析数据目录：优先显式 -data，其次 MCC_ROOT，最后可执行文件目录
 	resolvedDataDir := resolveDataDir(*dataDir)
