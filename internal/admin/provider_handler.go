@@ -804,6 +804,51 @@ func generateProviderID() string {
 	return "provider-" + randomHex(8) + "-" + randomHex(4)
 }
 
+// providerExportFile 是供应商导出文件的 JSON 结构。
+// version 字段用于后续格式演进；当前固定为 1。
+type providerExportFile struct {
+	Version    int               `json:"version"`
+	ExportedAt time.Time         `json:"exported_at"`
+	Providers  []config.Provider `json:"providers"`
+}
+
+// handleExportProviders 导出选中的供应商为 JSON（含真实 api_token）。
+// 请求体 {"ids": [...]} 指定要导出的供应商 ID；未知 ID 静默跳过。
+func (s *Server) handleExportProviders(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error": "invalid request"}`, http.StatusBadRequest)
+		return
+	}
+
+	cfg, err := s.configStore.Load()
+	if err != nil {
+		http.Error(w, `{"error": "failed to load config"}`, http.StatusInternalServerError)
+		return
+	}
+
+	idSet := make(map[string]bool, len(req.IDs))
+	for _, id := range req.IDs {
+		idSet[id] = true
+	}
+
+	exported := make([]config.Provider, 0, len(req.IDs))
+	for _, p := range cfg.Providers {
+		if idSet[p.ID] {
+			exported = append(exported, p)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(providerExportFile{
+		Version:    1,
+		ExportedAt: time.Now(),
+		Providers:  exported,
+	})
+}
+
 // randomHex 生成指定长度的十六进制字符串
 func randomHex(length int) string {
 	b := make([]byte, (length+1)/2)

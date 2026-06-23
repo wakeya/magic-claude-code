@@ -345,3 +345,106 @@ func TestDuplicateProviderPreservesMultimodalConfig(t *testing.T) {
 		t.Fatalf("duplicated ClaudeCodeCompatHint = %#v, want explicit false", duplicated.Provider.ClaudeCodeCompatHint)
 	}
 }
+
+func TestExportProvidersReturnsSelectedWithRealTokens(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{
+		{ID: "p1", Name: "GLM", APIURL: "https://glm.example.com/api", APIToken: "sk-glm-secret", APIFormat: config.APIFormatAnthropic, Enabled: true},
+		{ID: "p2", Name: "Kimi", APIURL: "https://kimi.example.com/api", APIToken: "sk-kimi-secret", APIFormat: config.APIFormatAnthropic, Enabled: true},
+		{ID: "p3", Name: "GLM4", APIURL: "https://glm4.example.com/api", APIToken: "sk-glm4-secret", APIFormat: config.APIFormatAnthropic, Enabled: true},
+	}
+	store := config.NewMockStore(cfg)
+	server := NewServer(&AdminConfig{Password: "secret"}, store, nil)
+
+	body := bytes.NewBufferString(`{"ids":["p1","p3"]}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/export", body)
+	rec := httptest.NewRecorder()
+	server.handleExportProviders(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var exported struct {
+		Version    int               `json:"version"`
+		ExportedAt string            `json:"exported_at"`
+		Providers  []config.Provider `json:"providers"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &exported); err != nil {
+		t.Fatalf("decode export response: %v", err)
+	}
+	if exported.Version != 1 {
+		t.Errorf("version = %d, want 1", exported.Version)
+	}
+	if exported.ExportedAt == "" {
+		t.Error("exported_at is empty")
+	}
+	if len(exported.Providers) != 2 {
+		t.Fatalf("providers count = %d, want 2", len(exported.Providers))
+	}
+	// Real tokens, not masked
+	gotIDs := map[string]string{}
+	for _, p := range exported.Providers {
+		gotIDs[p.ID] = p.APIToken
+	}
+	if gotIDs["p1"] != "sk-glm-secret" {
+		t.Errorf("p1 token = %q, want sk-glm-secret", gotIDs["p1"])
+	}
+	if gotIDs["p3"] != "sk-glm4-secret" {
+		t.Errorf("p3 token = %q, want sk-glm4-secret", gotIDs["p3"])
+	}
+}
+
+func TestExportProvidersSkipsUnknownIDs(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{
+		{ID: "p1", Name: "GLM", APIURL: "https://glm.example.com/api", APIToken: "sk-glm-secret", APIFormat: config.APIFormatAnthropic, Enabled: true},
+	}
+	store := config.NewMockStore(cfg)
+	server := NewServer(&AdminConfig{Password: "secret"}, store, nil)
+
+	// p1 exists, ghost does not
+	body := bytes.NewBufferString(`{"ids":["p1","ghost"]}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/export", body)
+	rec := httptest.NewRecorder()
+	server.handleExportProviders(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var exported struct {
+		Providers []config.Provider `json:"providers"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &exported); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(exported.Providers) != 1 || exported.Providers[0].ID != "p1" {
+		t.Fatalf("providers = %#v, want only p1", exported.Providers)
+	}
+}
+
+func TestExportProvidersEmptyIDsReturnsEmptyArray(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{
+		{ID: "p1", Name: "GLM", APIURL: "https://glm.example.com/api", APIToken: "sk-glm-secret", APIFormat: config.APIFormatAnthropic, Enabled: true},
+	}
+	store := config.NewMockStore(cfg)
+	server := NewServer(&AdminConfig{Password: "secret"}, store, nil)
+
+	body := bytes.NewBufferString(`{"ids":[]}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/export", body)
+	rec := httptest.NewRecorder()
+	server.handleExportProviders(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var exported struct {
+		Providers []config.Provider `json:"providers"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &exported); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(exported.Providers) != 0 {
+		t.Fatalf("providers count = %d, want 0", len(exported.Providers))
+	}
+}
