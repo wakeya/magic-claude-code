@@ -10,8 +10,12 @@ import (
 // Messages holds all user-facing strings that need translation.
 type Messages struct {
 	// CLI flags
-	FlagDataDir  string
-	FlagPassword string
+	FlagDataDir      string
+	FlagPassword     string
+	FlagProxyListen  string
+	FlagProxyPort    string
+	FlagAdminListen  string
+	FlagAdminPort    string
 
 	// Banner
 	BannerTop    string
@@ -75,8 +79,12 @@ type Messages struct {
 }
 
 var enMessages = Messages{
-	FlagDataDir:  "Data directory",
-	FlagPassword: "Admin password",
+	FlagDataDir:      "Data directory",
+	FlagPassword:     "Admin password",
+	FlagProxyListen:  "Proxy listen address (default 0.0.0.0)",
+	FlagProxyPort:    "Proxy listen port (default 443)",
+	FlagAdminListen:  "Admin listen address (default 0.0.0.0)",
+	FlagAdminPort:    "Admin listen port (default 8442)",
 
 	BannerTop:    "========================================",
 	BannerTitle:  "Claude Code Transparent Proxy Started",
@@ -131,8 +139,12 @@ var enMessages = Messages{
 }
 
 var zhMessages = Messages{
-	FlagDataDir:  "数据目录",
-	FlagPassword: "管理密码",
+	FlagDataDir:      "数据目录",
+	FlagPassword:     "管理密码",
+	FlagProxyListen:  "代理监听地址（默认 0.0.0.0）",
+	FlagProxyPort:    "代理监听端口（默认 443）",
+	FlagAdminListen:  "配置监听地址（默认 0.0.0.0）",
+	FlagAdminPort:    "配置监听端口（默认 8442）",
 
 	BannerTop:    "========================================",
 	BannerTitle:  "Claude Code 透明代理已启动",

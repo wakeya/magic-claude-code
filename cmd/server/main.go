@@ -79,6 +79,10 @@ func main() {
 	// 命令行参数
 	dataDir := flag.String("data", "", msg.FlagDataDir)
 	adminPassword := flag.String("password", os.Getenv("ADMIN_PASSWORD"), msg.FlagPassword)
+	proxyListenFlag := flag.String("proxy-listen", "", msg.FlagProxyListen)
+	proxyPortFlag := flag.Int("proxy-port", 0, msg.FlagProxyPort)
+	adminListenFlag := flag.String("admin-listen", "", msg.FlagAdminListen)
+	adminPortFlag := flag.Int("admin-port", 0, msg.FlagAdminPort)
 	flag.Parse()
 
 	// 解析数据目录：优先显式 -data，其次 MCC_ROOT，最后可执行文件目录
@@ -117,6 +121,23 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
+
+	// 覆盖监听地址端口：CLI flag > 环境变量 > 配置文件（含默认值）
+	applyListenConfig(cfg,
+		listenOverride{
+			ProxyAddr: *proxyListenFlag,
+			ProxyPort: *proxyPortFlag,
+			AdminAddr: *adminListenFlag,
+			AdminPort: *adminPortFlag,
+		},
+		listenOverride{
+			ProxyAddr: os.Getenv("MCC_PROXY_LISTEN_ADDR"),
+			ProxyPort: envIntOrZero("MCC_PROXY_PORT"),
+			AdminAddr: os.Getenv("MCC_ADMIN_LISTEN_ADDR"),
+			AdminPort: envIntOrZero("MCC_ADMIN_PORT"),
+		},
+	)
+	cfg.NormalizeDefaults()
 
 	// 设置数据目录
 	cfg.DataDir = resolvedDataDir
