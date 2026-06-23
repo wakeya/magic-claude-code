@@ -7,10 +7,12 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"syscall"
 	"time"
 	_ "time/tzdata"
@@ -239,21 +241,23 @@ func main() {
 	}
 
 	// 启动服务
+	proxyAddr := net.JoinHostPort(cfg.ProxyListenAddr, strconv.Itoa(cfg.ProxyPort))
 	go func() {
-		if err := proxyServer.Start(":443", certManager.GetServerCertPath(), filepath.Join(resolvedDataDir, "server.key")); err != nil {
+		if err := proxyServer.Start(proxyAddr, certManager.GetServerCertPath(), filepath.Join(resolvedDataDir, "server.key")); err != nil {
 			log.Printf("Proxy server error: %v", err)
 		}
 	}()
 
+	adminAddr := net.JoinHostPort(cfg.AdminListenAddr, strconv.Itoa(cfg.AdminPort))
 	go func() {
-		if err := adminServer.Start(":8442", frontend.DistFS); err != nil {
+		if err := adminServer.Start(adminAddr, frontend.DistFS); err != nil {
 			log.Printf("Admin server error: %v", err)
 		}
 	}()
 
 	// 启动路由模式 HTTP 服务器
 	go func() {
-		addr := fmt.Sprintf("%s:%d", cfg.GatewayListenAddr, cfg.GatewayListenPort)
+		addr := net.JoinHostPort(cfg.GatewayListenAddr, strconv.Itoa(cfg.GatewayListenPort))
 		if err := proxyServer.StartGateway(addr); err != nil {
 			log.Printf("Gateway server error: %v", err)
 		}
