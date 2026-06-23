@@ -77,19 +77,19 @@
           <div class="space-y-2 text-sm">
             <div class="flex items-center gap-2">
               <span class="text-text-secondary min-w-[80px]">{{ t('listen.status.proxy_label') }}</span>
-              <span class="font-mono">{{ status?.proxy_listen_addr || '0.0.0.0' }}:{{ status?.proxy_port || 443 }}
+              <span class="font-mono">{{ formatListenAddress(status?.proxy_listen_addr || '0.0.0.0', status?.proxy_port || 443) }}
                 <span v-if="(status?.proxy_listen_addr || '0.0.0.0') === '0.0.0.0'" class="text-xs text-text-secondary ml-1">{{ t('listen.status.all_interfaces') }}</span>
               </span>
             </div>
             <div class="flex items-center gap-2">
               <span class="text-text-secondary min-w-[80px]">{{ t('listen.status.admin_label') }}</span>
-              <span class="font-mono">{{ status?.admin_listen_addr || '0.0.0.0' }}:{{ status?.admin_port || 8442 }}
+              <span class="font-mono">{{ formatListenAddress(status?.admin_listen_addr || '0.0.0.0', status?.admin_port || 8442) }}
                 <span v-if="(status?.admin_listen_addr || '0.0.0.0') === '0.0.0.0'" class="text-xs text-text-secondary ml-1">{{ t('listen.status.all_interfaces') }}</span>
               </span>
             </div>
             <div class="flex items-center gap-2">
               <span class="text-text-secondary min-w-[80px]">{{ t('listen.status.gateway_label') }}</span>
-              <span class="font-mono">{{ status?.gateway_listen_addr || '127.0.0.1' }}:{{ status?.gateway_listen_port || 17487 }}</span>
+              <span class="font-mono">{{ formatListenAddress(status?.gateway_listen_addr || '127.0.0.1', status?.gateway_listen_port || 17487) }}</span>
             </div>
           </div>
           <p class="mt-3 text-[11px] text-text-secondary">{{ t('listen.status.modify_hint') }}</p>
@@ -794,6 +794,11 @@ import UsageCoverageHelp from '@/components/UsageCoverageHelp.vue'
 import UsageStatsScopeHelp from '@/components/UsageStatsScopeHelp.vue'
 import SessionBrowser from '@/components/SessionBrowser.vue'
 import { formatPercent } from '@/utils/formatters'
+
+/** Format listen address as a canonical addr:port string (brackets for IPv6). */
+function formatListenAddress(addr: string, port: number): string {
+  return addr.includes(':') ? `[${addr}]:${port}` : `${addr}:${port}`
+}
 
 const router = useRouter()
 const api = useApi()

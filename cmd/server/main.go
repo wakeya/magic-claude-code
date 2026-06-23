@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -271,7 +272,7 @@ func main() {
 	// 启动路由模式 HTTP 服务器
 	go func() {
 		addr := net.JoinHostPort(cfg.GatewayListenAddr, strconv.Itoa(cfg.GatewayListenPort))
-		if err := proxyServer.StartGateway(addr); err != nil {
+		if err := proxyServer.StartGateway(addr); err != nil && err != http.ErrServerClosed {
 			startupErr <- fmt.Errorf("gateway server: %w", err)
 		}
 	}()
