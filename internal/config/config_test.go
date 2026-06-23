@@ -18,7 +18,84 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.AdminPort != 8442 {
 		t.Errorf("expected admin port 8442, got %d", cfg.AdminPort)
 	}
+
+	if cfg.ProxyListenAddr != "0.0.0.0" {
+		t.Errorf("expected proxy listen addr 0.0.0.0, got %q", cfg.ProxyListenAddr)
+	}
+
+	if cfg.AdminListenAddr != "0.0.0.0" {
+		t.Errorf("expected admin listen addr 0.0.0.0, got %q", cfg.AdminListenAddr)
+	}
 }
+
+func TestNormalizeDefaultsListenAddr(t *testing.T) {
+	t.Run("empty listen addr falls back to 0.0.0.0", func(t *testing.T) {
+		cfg := &Config{ProxyListenAddr: "", AdminListenAddr: ""}
+		cfg.NormalizeDefaults()
+		if cfg.ProxyListenAddr != "0.0.0.0" {
+			t.Errorf("expected proxy listen addr 0.0.0.0, got %q", cfg.ProxyListenAddr)
+		}
+		if cfg.AdminListenAddr != "0.0.0.0" {
+			t.Errorf("expected admin listen addr 0.0.0.0, got %q", cfg.AdminListenAddr)
+		}
+	})
+
+	t.Run("whitespace-only listen addr is trimmed and falls back", func(t *testing.T) {
+		cfg := &Config{ProxyListenAddr: "  ", AdminListenAddr: "\t\n"}
+		cfg.NormalizeDefaults()
+		if cfg.ProxyListenAddr != "0.0.0.0" {
+			t.Errorf("expected trimmed proxy listen addr 0.0.0.0, got %q", cfg.ProxyListenAddr)
+		}
+		if cfg.AdminListenAddr != "0.0.0.0" {
+			t.Errorf("expected trimmed admin listen addr 0.0.0.0, got %q", cfg.AdminListenAddr)
+		}
+	})
+
+	t.Run("custom listen addr is preserved and trimmed", func(t *testing.T) {
+		cfg := &Config{ProxyListenAddr: "  127.0.0.1  ", AdminListenAddr: " 192.168.1.10 "}
+		cfg.NormalizeDefaults()
+		if cfg.ProxyListenAddr != "127.0.0.1" {
+			t.Errorf("expected proxy listen addr 127.0.0.1, got %q", cfg.ProxyListenAddr)
+		}
+		if cfg.AdminListenAddr != "192.168.1.10" {
+			t.Errorf("expected admin listen addr 192.168.1.10, got %q", cfg.AdminListenAddr)
+		}
+	})
+}
+
+func TestNormalizeDefaultsListenPortRange(t *testing.T) {
+	t.Run("proxy port out of range falls back to 443", func(t *testing.T) {
+		for _, port := range []int{0, -1, 99999, 65536} {
+			cfg := &Config{ProxyPort: port}
+			cfg.NormalizeDefaults()
+			if cfg.ProxyPort != 443 {
+				t.Errorf("port %d: expected fallback 443, got %d", port, cfg.ProxyPort)
+			}
+		}
+	})
+
+	t.Run("admin port out of range falls back to 8442", func(t *testing.T) {
+		for _, port := range []int{0, -1, 99999, 65536} {
+			cfg := &Config{AdminPort: port}
+			cfg.NormalizeDefaults()
+			if cfg.AdminPort != 8442 {
+				t.Errorf("port %d: expected fallback 8442, got %d", port, cfg.AdminPort)
+			}
+		}
+	})
+
+	t.Run("valid custom ports are preserved", func(t *testing.T) {
+		cfg := &Config{ProxyPort: 8443, AdminPort: 9000}
+		cfg.NormalizeDefaults()
+		if cfg.ProxyPort != 8443 {
+			t.Errorf("expected proxy port 8443 preserved, got %d", cfg.ProxyPort)
+		}
+		if cfg.AdminPort != 9000 {
+			t.Errorf("expected admin port 9000 preserved, got %d", cfg.AdminPort)
+		}
+	})
+}
+
 
 func TestNormalizeThemeMode(t *testing.T) {
 	tests := []struct {

@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net/url"
+	"strings"
 )
 
 const (
@@ -24,6 +25,12 @@ type Config struct {
 
 	// 配置服务端口
 	AdminPort int `json:"admin_port"`
+
+	// ProxyListenAddr 代理服务监听地址（默认 0.0.0.0 = 所有接口；127.0.0.1 仅本机）
+	ProxyListenAddr string `json:"proxy_listen_addr"`
+
+	// AdminListenAddr 配置服务监听地址（默认 0.0.0.0 = 所有接口；127.0.0.1 仅本机）
+	AdminListenAddr string `json:"admin_listen_addr"`
 
 	// 管理密码 (bcrypt哈希)
 	AdminPasswordHash string `json:"admin_password_hash"`
@@ -53,12 +60,14 @@ type Config struct {
 // DefaultConfig 返回默认配置
 func DefaultConfig() *Config {
 	return &Config{
-		BackendURL:     "https://open.bigmodel.cn/api/anthropic",
-		ProxyPort:      443,
-		AdminPort:      8442,
-		DataDir:        "./data",
-		AdminThemeMode: ThemeModeLight,
-		ConnectionMode: ConnectionModeTransparent,
+		BackendURL:       "https://open.bigmodel.cn/api/anthropic",
+		ProxyPort:        443,
+		AdminPort:        8442,
+		ProxyListenAddr:  "0.0.0.0",
+		AdminListenAddr:  "0.0.0.0",
+		DataDir:          "./data",
+		AdminThemeMode:   ThemeModeLight,
+		ConnectionMode:   ConnectionModeTransparent,
 
 		GatewayListenAddr: "127.0.0.1",
 		GatewayListenPort: 17487,
@@ -151,12 +160,10 @@ func RedactURL(rawURL string) string {
 
 // NormalizeDefaults fills backward-compatible default values.
 func (c *Config) NormalizeDefaults() {
-	if c.ProxyPort == 0 {
-		c.ProxyPort = 443
-	}
-	if c.AdminPort == 0 {
-		c.AdminPort = 8442
-	}
+	c.ProxyListenAddr = normalizeListenAddr(c.ProxyListenAddr, "0.0.0.0")
+	c.AdminListenAddr = normalizeListenAddr(c.AdminListenAddr, "0.0.0.0")
+	c.ProxyPort = normalizeListenPort(c.ProxyPort, 443)
+	c.AdminPort = normalizeListenPort(c.AdminPort, 8442)
 	if c.DataDir == "" {
 		c.DataDir = "./data"
 	}
@@ -171,6 +178,29 @@ func (c *Config) NormalizeDefaults() {
 	for i := range c.Providers {
 		c.Providers[i].normalizeDefaults()
 	}
+}
+
+// normalizeListenAddr trims surrounding whitespace and falls back to the
+// provided default when the result is empty. Listen addresses are
+// infrastructure-layer values decided at deploy time; an empty value must
+// resolve to a concrete address rather than the empty string.
+func normalizeListenAddr(addr, fallback string) string {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return fallback
+	}
+	return addr
+}
+
+// normalizeListenPort validates that the port is in the valid range 1–65535
+// and falls back to the provided default when it is zero or out of range.
+// A zero/out-of-range port must never reach net.Listen, which would emit an
+// opaque error; falling back keeps startup robust.
+func normalizeListenPort(port, fallback int) int {
+	if port < 1 || port > 65535 {
+		return fallback
+	}
+	return port
 }
 
 // GetActiveProvider 获取当前激活的供应商
