@@ -827,6 +827,30 @@ func TestGenerateInstructions_Gateway_Zh_ContainsANTHROPIC_BASE_URL(t *testing.T
 	}
 }
 
+func TestGenerateInstructions_Gateway_IPv6_URLFormat(t *testing.T) {
+	// IPv6 地址必须用 [::1]:17487 格式（RFC 2732），而非 ::1:17487。
+	r := Result{
+		SelectedMode:      ModeGateway,
+		GatewayListenAddr: "::1",
+		GatewayListenPort: 17487,
+		CACertPath:        "/ca.crt",
+		Caps:              Capabilities{},
+	}
+	for _, locale := range []string{"zh", "en"} {
+		lines := generateInstructions(r, locale)
+		want := "http://[::1]:17487"
+		found := false
+		for _, l := range lines {
+			if contains(l, want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("[%s] expected %q in gateway instructions, got: %v", locale, want, lines)
+		}
+	}
+}
+
 // Ensure temp files are cleaned up
 func TestMain(m *testing.M) {
 	os.Exit(m.Run())
