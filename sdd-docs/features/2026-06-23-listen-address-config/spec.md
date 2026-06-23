@@ -73,7 +73,7 @@ Three-layer override, highest first:
    - `-admin-listen`
    - `-admin-port`
    and supports env vars `MCC_PROXY_LISTEN_ADDR`, `MCC_PROXY_PORT`, `MCC_ADMIN_LISTEN_ADDR`, `MCC_ADMIN_PORT`. A non-empty flag overrides env var and config file.
-5. `main.go` assembles the proxy and admin addresses via `net.JoinHostPort(cfg.ProxyListenAddr, strconv.Itoa(cfg.ProxyPort))` at startup, removing the hardcoded `:443` / `:8442`; gateway keeps its existing logic.
+5. `main.go` assembles the proxy and admin addresses via `net.JoinHostPort(cfg.ProxyListenAddr, strconv.Itoa(cfg.ProxyPort))` at startup, removing the hardcoded `:443` / `:8442`; gateway likewise uses `net.JoinHostPort`.
 6. `internal/admin/handler.go` `handleStatus` adds `proxy_listen_addr` / `proxy_port` / `admin_listen_addr` / `admin_port` alongside the existing `gateway_listen_addr` / `gateway_listen_port`, reflecting the **actually-effective** values.
 7. The frontend configuration page adds a read-only "Listen Status" block (next to the gateway config area or the status overview), showing proxy / admin / gateway `address:port`; the block **has no save/edit button**, and the copy clearly states "Listen addresses are changed via startup flags or the config file; restart mcc after changing."
 8. The three ports printed in the startup banner must match the actually-listening address (today the banner prints `cfg.ProxyPort` but the proxy listens on hardcoded 443; this change unifies them).
