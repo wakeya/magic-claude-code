@@ -72,6 +72,24 @@ func TestNormalizeDefaultsListenAddr(t *testing.T) {
 			t.Errorf("expected admin listen addr 2001:db8::1, got %q", cfg.AdminListenAddr)
 		}
 	})
+
+	t.Run("gateway listen addr bracket stripping and default", func(t *testing.T) {
+		cfg := &Config{GatewayListenAddr: "[::1]"}
+		cfg.NormalizeDefaults()
+		if cfg.GatewayListenAddr != "::1" {
+			t.Errorf("expected gateway listen addr ::1, got %q", cfg.GatewayListenAddr)
+		}
+		cfg2 := &Config{GatewayListenAddr: "  [2001:db8::1]  "}
+		cfg2.NormalizeDefaults()
+		if cfg2.GatewayListenAddr != "2001:db8::1" {
+			t.Errorf("expected gateway listen addr 2001:db8::1, got %q", cfg2.GatewayListenAddr)
+		}
+		cfg3 := &Config{GatewayListenAddr: ""}
+		cfg3.NormalizeDefaults()
+		if cfg3.GatewayListenAddr != "127.0.0.1" {
+			t.Errorf("expected gateway default 127.0.0.1, got %q", cfg3.GatewayListenAddr)
+		}
+	})
 }
 
 func TestNormalizeDefaultsListenPortRange(t *testing.T) {

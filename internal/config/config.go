@@ -169,9 +169,7 @@ func (c *Config) NormalizeDefaults() {
 	}
 	c.AdminThemeMode = NormalizeThemeMode(c.AdminThemeMode)
 	c.ConnectionMode = NormalizeConnectionMode(c.ConnectionMode)
-	if c.GatewayListenAddr == "" {
-		c.GatewayListenAddr = "127.0.0.1"
-	}
+	c.GatewayListenAddr = normalizeListenAddr(c.GatewayListenAddr, "127.0.0.1")
 	if c.GatewayListenPort == 0 {
 		c.GatewayListenPort = 17487
 	}

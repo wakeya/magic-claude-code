@@ -220,6 +220,38 @@ func TestGetStatusUsesEffectiveListenState(t *testing.T) {
 	}
 }
 
+func TestGetStatusKeepsGatewayFromStoreWhenStartupListenStateDiffers(t *testing.T) {
+	stored := config.DefaultConfig()
+	stored.GatewayListenAddr = "10.0.0.12"
+	stored.GatewayListenPort = 19000
+
+	effective := config.DefaultConfig()
+	effective.GatewayListenAddr = "127.0.0.1"
+	effective.GatewayListenPort = 18080
+
+	server := NewServer(&AdminConfig{Password: "secret"}, config.NewMockStore(stored), nil)
+	server.SetEffectiveListenState(effective)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	rec := httptest.NewRecorder()
+	server.handleStatus(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var got struct {
+		GatewayListenAddr string `json:"gateway_listen_addr"`
+		GatewayListenPort int    `json:"gateway_listen_port"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if got.GatewayListenAddr != "10.0.0.12" || got.GatewayListenPort != 19000 {
+		t.Fatalf("gateway listen state = %#v, want 10.0.0.12:19000", got)
+	}
+}
+
 // mockGatewayRestarter 记录 RestartGateway 调用的 addr 参数，用于验证
 // handler 使用 net.JoinHostPort（IPv6 安全）而非 fmt.Sprintf。
 type mockGatewayRestarter struct {
@@ -237,6 +269,34 @@ func TestUpdateConfigGatewayRestartAddrIPv6(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.GatewayListenAddr = "::1"
 	cfg.GatewayListenPort = 17487
+	store := config.NewMockStore(cfg)
+
+	restarter := &mockGatewayRestarter{}
+	server := NewServer(&AdminConfig{Password: "secret"}, store, nil)
+	server.SetGatewayRestarter(restarter)
+
+	body := bytes.NewBufferString(`{"connection_mode":"gateway"}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/config", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.handleConfig(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if restarter.gotAddr != "[::1]:17487" {
+		t.Errorf("RestartGateway addr = %q, want [::1]:17487", restarter.gotAddr)
+	}
+}
+
+func TestUpdateConfigGatewayRestartAddrBracketedIPv6(t *testing.T) {
+	// 用户在前端输入 [::1] 时，NormalizeDefaults 应剥离方括号，
+	// 确保 net.JoinHostPort 收到裸地址 ::1 而非带括号的 [::1]。
+	cfg := config.DefaultConfig()
+	cfg.GatewayListenAddr = "[::1]"
+	cfg.GatewayListenPort = 17487
+	cfg.NormalizeDefaults()
 	store := config.NewMockStore(cfg)
 
 	restarter := &mockGatewayRestarter{}

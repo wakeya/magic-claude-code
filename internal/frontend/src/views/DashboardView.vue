@@ -797,7 +797,8 @@ import { formatPercent } from '@/utils/formatters'
 
 /** Format listen address as a canonical addr:port string (brackets for IPv6). */
 function formatListenAddress(addr: string, port: number): string {
-  return addr.includes(':') ? `[${addr}]:${port}` : `${addr}:${port}`
+  const host = addr.startsWith('[') && addr.endsWith(']') ? addr.slice(1, -1) : addr
+  return host.includes(':') ? `[${host}]:${port}` : `${host}:${port}`
 }
 
 const router = useRouter()
