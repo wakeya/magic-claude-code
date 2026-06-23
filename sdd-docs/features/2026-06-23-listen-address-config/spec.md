@@ -5,7 +5,7 @@ Proxy entry: `cmd/server/main.go`, `internal/config/config.go`, `internal/config
 Reference sources: `sdd-docs/features/2026-06-13-auto-update/spec.md` (spec template and config/status exposure pattern), `sdd-docs/features/2026-06-20-transparent-mode-bootstrap-and-fallback/spec.md` (Gateway listen-config precedent)
 Stack: Go 1.26 standard library (`net`, `net/http`, `flag`, `os`) + Vue 3 + embedded frontend
 Last updated: 2026-06-23
-Progress: 0 / 7 planned
+Progress: 7 / 7 completed
 
 ## Overall Analysis (Source Analysis)
 
@@ -49,13 +49,13 @@ Three-layer override, highest first:
 
 | Order | Status | Task | Output | Verification |
 | --- | --- | --- | --- | --- |
-| 1 | Planned | Config fields and defaults | `internal/config/config.go`, `config_test.go` | Default-value and normalize unit tests |
-| 2 | Planned | Persistence layer for new fields | `internal/config/sqlite_store.go`, `sqlite_store_test.go` | Old/new DB migration tests |
-| 3 | Planned | CLI flag + env var override | `cmd/server/main.go` | Flag parse and env override unit tests (`main_test.go`) |
-| 4 | Planned | Wire startup, remove `:443`/`:8442` hardcode | `cmd/server/main.go` | Startup listens on configured address; banner prints the real address |
-| 5 | Planned | `/api/status` exposes proxy and admin listen fields | `internal/admin/handler.go`, related tests | Status response field assertion tests |
-| 6 | Planned | Frontend read-only listen status + i18n | `internal/frontend/src/views/DashboardView.vue`, `useI18n.ts`, `useApi.ts` | Frontend build + component assertion tests |
-| 7 | Planned | CLI help i18n + version flag | `cmd/server/main.go`, `internal/i18n/i18n.go` | `mcc -h` / `mcc -v` zh/en output verification |
+| 1 | Done | Config fields and defaults | `internal/config/config.go`, `config_test.go` | Default-value and normalize unit tests |
+| 2 | Done | Persistence layer for new fields | `internal/config/sqlite_store.go`, `sqlite_store_test.go` | Old/new DB migration tests |
+| 3 | Done | CLI flag + env var override | `cmd/server/main.go` | Flag parse and env override unit tests (`main_test.go`) |
+| 4 | Done | Wire startup, remove `:443`/`:8442` hardcode | `cmd/server/main.go` | Startup listens on configured address; banner prints the real address |
+| 5 | Done | `/api/status` exposes proxy and admin listen fields | `internal/admin/handler.go`, related tests | Status response field assertion tests |
+| 6 | Done | Frontend read-only listen status + i18n | `internal/frontend/src/views/DashboardView.vue`, `useI18n.ts`, `useApi.ts` | Frontend build + component assertion tests |
+| 7 | Done | CLI help i18n + version flag | `cmd/server/main.go`, `internal/i18n/i18n.go` | `mcc -h` / `mcc -v` zh/en output verification |
 
 ## Requirements
 
