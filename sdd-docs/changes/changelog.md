@@ -7,6 +7,29 @@
 
 ---
 
+## v0.9.0 (2026-06-23)
+
+### Added
+- 监听地址可配置：proxy/admin 监听地址和端口支持 CLI flag（`-proxy-listen`/`-proxy-port`/`-admin-listen`/`-admin-port`）、环境变量（`MCC_*`）和配置文件三层覆盖，默认行为不变；前端只读展示实际监听地址
+- CLI 本地化帮助：`mcc -h` 按系统语言显示 flag 说明；`mcc -v` 打印版本并退出
+- `/api/status` 新增 6 个监听字段（proxy/admin/gateway addr+port），反映 CLI/env/config 解析后的实际生效值
+- 前端"监听状态"只读区块，附操作风险提示（非 443 需端口转发、127.0.0.1 仅本机可达）
+- IPv6 地址归一化：`normalizeListenAddr` 统一剥离 RFC 2732 方括号
+
+### Fixed
+- 启动失败立即退出：服务监听失败通过 `startupErr` 通道触发 `log.Fatalf`，不再以"部分服务可用"状态继续运行
+- Gateway 热重启不误杀进程：gateway goroutine 过滤 `http.ErrServerClosed`
+- IPv6 地址拼接全面修复：`fmt.Sprintf` 全部替换为 `net.JoinHostPort`（启动、handler restart、bootstrap 指令、前端展示）
+- 前端 IPv6 防御性格式化：`formatListenAddress` 先剥离已有括号再按需添加
+
+### Changed
+- 推荐 hook 改用原生 `rtk hook claude`（跨平台，去除 jq 依赖）；config_path_note 移除"Windows hook 可能不生效"的过时结论
+
+### Docs
+- 新增监听地址配置功能 spec（中英双语）
+
+---
+
 ## v0.8.1 (2026-06-23)
 
 ### Fixed
