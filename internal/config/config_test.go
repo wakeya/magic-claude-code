@@ -61,6 +61,17 @@ func TestNormalizeDefaultsListenAddr(t *testing.T) {
 			t.Errorf("expected admin listen addr 192.168.1.10, got %q", cfg.AdminListenAddr)
 		}
 	})
+
+	t.Run("IPv6 bracket input is stripped", func(t *testing.T) {
+		cfg := &Config{ProxyListenAddr: "[::1]", AdminListenAddr: " [2001:db8::1] "}
+		cfg.NormalizeDefaults()
+		if cfg.ProxyListenAddr != "::1" {
+			t.Errorf("expected proxy listen addr ::1, got %q", cfg.ProxyListenAddr)
+		}
+		if cfg.AdminListenAddr != "2001:db8::1" {
+			t.Errorf("expected admin listen addr 2001:db8::1, got %q", cfg.AdminListenAddr)
+		}
+	})
 }
 
 func TestNormalizeDefaultsListenPortRange(t *testing.T) {

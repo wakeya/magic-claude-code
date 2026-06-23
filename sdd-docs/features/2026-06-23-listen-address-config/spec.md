@@ -133,7 +133,7 @@ A non-empty flag overrides env var and config file; if the flag is empty, the en
 5. Admin listen changed to `127.0.0.1` — after restart only localhost can reach the config page; the copy warns about this consequence.
 6. Upgrading an old SQLite DB — missing new columns fall back to defaults.
 7. Flag explicitly passed as empty string (`-proxy-listen ""`) — treated as "no override," not a valid address.
-8. IPv6 listen address (e.g. `[::1]`) — `fmt.Sprintf("%s:%d", ...)` is not robust for IPv6; address assembly is unified to `net.JoinHostPort` (gateway aligned to the same helper in this change).
+8. IPv6 listen address (e.g. `::1`) — `fmt.Sprintf("%s:%d", ...)` is not robust for IPv6; address assembly is unified to `net.JoinHostPort` (gateway aligned to the same helper in this change). `normalizeListenAddr` strips RFC 2732 brackets (`[::1]` → `::1`) so that `net.JoinHostPort` receives a bare IPv6 address.
 
 ### Non-Goals
 

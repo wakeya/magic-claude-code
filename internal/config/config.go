@@ -186,6 +186,10 @@ func (c *Config) NormalizeDefaults() {
 // resolve to a concrete address rather than the empty string.
 func normalizeListenAddr(addr, fallback string) string {
 	addr = strings.TrimSpace(addr)
+	// Strip RFC 2732 IPv6 brackets: [::1] → ::1 (net.JoinHostPort adds its own).
+	if strings.HasPrefix(addr, "[") && strings.HasSuffix(addr, "]") {
+		addr = addr[1 : len(addr)-1]
+	}
 	if addr == "" {
 		return fallback
 	}

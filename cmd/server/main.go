@@ -82,8 +82,8 @@ func main() {
 
 	// 命令行参数
 	showVersion := false
-	flag.BoolVar(&showVersion, "v", false, "Print version and exit")
-	flag.BoolVar(&showVersion, "version", false, "Print version and exit")
+	flag.BoolVar(&showVersion, "v", false, msg.FlagVersion)
+	flag.BoolVar(&showVersion, "version", false, msg.FlagVersion)
 	dataDir := flag.String("data", "", msg.FlagDataDir)
 	adminPassword := flag.String("password", os.Getenv("ADMIN_PASSWORD"), msg.FlagPassword)
 	proxyListenFlag := flag.String("proxy-listen", "", msg.FlagProxyListen)
@@ -236,6 +236,7 @@ func main() {
 		EffectiveMode:  string(bootResult.SelectedMode),
 		ModeRationale:  bootResult.Rationale,
 	}, configStore, proxyServer, usageHandler)
+	adminServer.SetEffectiveListenState(cfg)
 
 	adminServer.SetGatewayRestarter(proxyServer)
 
@@ -252,17 +253,18 @@ func main() {
 	}
 
 	// 启动服务
+	startupErr := make(chan error, 1)
 	proxyAddr := net.JoinHostPort(cfg.ProxyListenAddr, strconv.Itoa(cfg.ProxyPort))
 	go func() {
 		if err := proxyServer.Start(proxyAddr, certManager.GetServerCertPath(), filepath.Join(resolvedDataDir, "server.key")); err != nil {
-			log.Printf("Proxy server error: %v", err)
+			startupErr <- fmt.Errorf("proxy server: %w", err)
 		}
 	}()
 
 	adminAddr := net.JoinHostPort(cfg.AdminListenAddr, strconv.Itoa(cfg.AdminPort))
 	go func() {
 		if err := adminServer.Start(adminAddr, frontend.DistFS); err != nil {
-			log.Printf("Admin server error: %v", err)
+			startupErr <- fmt.Errorf("admin server: %w", err)
 		}
 	}()
 
@@ -270,7 +272,7 @@ func main() {
 	go func() {
 		addr := net.JoinHostPort(cfg.GatewayListenAddr, strconv.Itoa(cfg.GatewayListenPort))
 		if err := proxyServer.StartGateway(addr); err != nil {
-			log.Printf("Gateway server error: %v", err)
+			startupErr <- fmt.Errorf("gateway server: %w", err)
 		}
 	}()
 
@@ -284,6 +286,8 @@ func main() {
 	}
 
 	select {
+	case err := <-startupErr:
+		log.Fatalf("Startup failed: %v", err)
 	case <-quit:
 		log.Println(msg.ShuttingDown)
 	case <-restartCh:
