@@ -128,12 +128,23 @@
             </svg>
             {{ t('providers.title') }}
           </div>
-          <button class="flex items-center gap-2 px-5 py-2.5 bg-primary text-white border-none rounded-lg text-sm font-semibold cursor-pointer transition-all duration-200 hover:bg-primary-hover hover:scale-[1.02]" @click="openAddModal">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-              <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-            </svg>
-            {{ t('providers.add') }}
-          </button>
+          <div class="flex items-center gap-2">
+            <button class="flex items-center gap-1.5 px-3 py-2 border-none rounded-lg text-sm font-semibold cursor-pointer transition-all duration-200 hover:scale-[1.02] app-muted hover:text-fg" :disabled="selectedProviderIds.size === 0" :class="{ 'opacity-40 cursor-not-allowed hover:scale-100': selectedProviderIds.size === 0 }" @click="handleExport">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
+              {{ t('providers.export') }}
+            </button>
+            <button class="flex items-center gap-1.5 px-3 py-2 border-none rounded-lg text-sm font-semibold cursor-pointer transition-all duration-200 hover:scale-[1.02] app-muted hover:text-fg" @click="triggerImportFile">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></svg>
+              {{ t('providers.import') }}
+            </button>
+            <input ref="importFileInput" type="file" accept=".json" class="hidden" @change="handleImportFileChange" />
+            <button class="flex items-center gap-2 px-5 py-2.5 bg-primary text-white border-none rounded-lg text-sm font-semibold cursor-pointer transition-all duration-200 hover:bg-primary-hover hover:scale-[1.02]" @click="openAddModal">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+              </svg>
+              {{ t('providers.add') }}
+            </button>
+          </div>
         </div>
 
         <div v-if="providers.length === 0" class="text-center py-12 text-text-secondary">{{ t('providers.empty') }}</div>
@@ -768,6 +779,29 @@
     </div>
 
     <ProviderModal v-if="showModal" :provider="editingProvider" @close="closeModal" @saved="handleSaved" />
+
+    <!-- 导入预览弹窗 -->
+    <div v-if="importPreview" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" @click.self="importPreview = null">
+      <div class="app-panel rounded-lg p-6 max-w-md w-full mx-4">
+        <h3 class="text-lg font-bold mb-4">{{ t('providers.preview.title') }}</h3>
+        <div class="space-y-2 text-sm mb-4">
+          <p>✅ {{ t('providers.preview.new') }}: {{ importPreview.newCount }}</p>
+          <p v-if="importPreview.conflictCount > 0">⚠️ {{ t('providers.preview.conflict') }}: {{ importPreview.conflictCount }}</p>
+        </div>
+        <div v-if="importPreview.conflictCount > 0" class="mb-4">
+          <label class="block text-xs font-semibold mb-2 text-text-secondary">{{ t('providers.preview.strategy') }}</label>
+          <div class="space-y-1.5">
+            <label class="flex items-center gap-2 text-sm cursor-pointer"><input type="radio" value="skip" v-model="importStrategy" class="accent-primary" /> {{ t('providers.preview.strategy_skip') }}</label>
+            <label class="flex items-center gap-2 text-sm cursor-pointer"><input type="radio" value="overwrite" v-model="importStrategy" class="accent-primary" /> {{ t('providers.preview.strategy_overwrite') }}</label>
+            <label class="flex items-center gap-2 text-sm cursor-pointer"><input type="radio" value="duplicate" v-model="importStrategy" class="accent-primary" /> {{ t('providers.preview.strategy_duplicate') }}</label>
+          </div>
+        </div>
+        <div class="flex justify-end gap-2">
+          <button class="px-4 py-2 app-muted border-none rounded-md text-sm font-semibold cursor-pointer hover:text-fg" @click="importPreview = null">{{ t('providers.preview.cancel') }}</button>
+          <button class="px-4 py-2 bg-primary text-white border-none rounded-md text-sm font-semibold cursor-pointer hover:bg-primary-hover" @click="confirmImport">{{ t('providers.preview.confirm') }}</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -843,6 +877,9 @@ const status = ref<StatusInfo | null>(null)
 const providers = ref<Provider[]>([])
 const activeProviderId = ref('')
 const selectedProviderIds = ref<Set<string>>(new Set())
+const importFileInput = ref<HTMLInputElement | null>(null)
+const importPreview = ref<{ providers: Provider[]; newCount: number; conflictCount: number } | null>(null)
+const importStrategy = ref<'skip' | 'overwrite' | 'duplicate'>('skip')
 const certs = ref<CertificateInfo | null>(null)
 const configuredMode = ref<'transparent' | 'tunnel' | 'gateway'>('transparent')
 const effectiveMode = ref<'transparent' | 'tunnel' | 'gateway'>('transparent')
@@ -987,6 +1024,65 @@ function toggleProviderSelect(id: string) {
     next.add(id)
   }
   selectedProviderIds.value = next
+}
+
+async function handleExport() {
+  const ids = [...selectedProviderIds.value]
+  if (ids.length === 0) return
+  const data = await api.exportProviders(ids)
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  const ts = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15)
+  a.href = url
+  a.download = `providers-export-${ts}.json`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+  alert(t('providers.export_warning'))
+}
+
+function triggerImportFile() {
+  importFileInput.value?.click()
+}
+
+function handleImportFileChange(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  const reader = new FileReader()
+  reader.onload = () => {
+    try {
+      const parsed = JSON.parse(reader.result as string) as { providers: Provider[] }
+      if (!parsed.providers || !Array.isArray(parsed.providers)) {
+        alert(t('providers.import_invalid'))
+        return
+      }
+      const existingIds = new Set(providers.value.map((p) => p.id))
+      let newCount = 0
+      let conflictCount = 0
+      for (const p of parsed.providers) {
+        if (existingIds.has(p.id)) conflictCount++
+        else newCount++
+      }
+      importStrategy.value = 'skip'
+      importPreview.value = { providers: parsed.providers, newCount, conflictCount }
+    } catch {
+      alert(t('providers.import_invalid'))
+    }
+  }
+  reader.readAsText(file)
+  input.value = '' // 允许重复选择同一文件
+}
+
+async function confirmImport() {
+  if (!importPreview.value) return
+  const { providers: toImport } = importPreview.value
+  const result = await api.importProviders(toImport, importStrategy.value)
+  importPreview.value = null
+  await loadProviders()
+  alert(t('providers.import_done', { imported: result.imported, skipped: result.skipped, overwritten: result.overwritten, duplicated: result.duplicated }))
 }
 
 async function handleActivate(id: string) {

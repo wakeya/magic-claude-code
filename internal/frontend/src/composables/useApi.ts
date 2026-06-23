@@ -422,6 +422,27 @@ export function useApi() {
     return res.json()
   }
 
+  async function exportProviders(ids: string[]): Promise<{ version: number; exported_at: string; providers: Provider[] }> {
+    const res = await fetch('/api/providers/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    })
+    return res.json()
+  }
+
+  async function importProviders(
+    providers: Provider[],
+    strategy: 'skip' | 'overwrite' | 'duplicate'
+  ): Promise<{ success: boolean; imported: number; skipped: number; overwritten: number; duplicated: number; errors: string[] }> {
+    const res = await fetch('/api/providers/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ version: 1, providers, strategy }),
+    })
+    return res.json()
+  }
+
   async function testProvider(id: string): Promise<TestResult> {
     const res = await fetch(`/api/providers/${id}/test`, { method: 'POST' })
     return res.json()
@@ -552,6 +573,8 @@ export function useApi() {
     toggleProvider,
     duplicateProvider,
     revealProviderToken,
+    exportProviders,
+    importProviders,
     testProvider,
     testProviderConnection,
     getCertificates,
