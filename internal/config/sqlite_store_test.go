@@ -121,6 +121,35 @@ func TestSQLiteStorePersistsConnectionMode(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreDoesNotPersistListenAddrs(t *testing.T) {
+	// 监听地址对齐 Gateway 先例：不进 SQLite。Save 自定义值后 Load 应回到默认值，
+	// 证明 SQLite store 不持久化 proxy_listen_addr / admin_listen_addr。
+	// 这与 GatewayListenAddr 的行为完全一致。
+	dir := t.TempDir()
+	store, err := NewSQLiteStore(filepath.Join(dir, "proxy.db"), filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	cfg := DefaultConfig()
+	cfg.ProxyListenAddr = "127.0.0.1"
+	cfg.AdminListenAddr = "192.168.1.10"
+	if err := store.Save(cfg); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if loaded.ProxyListenAddr != "0.0.0.0" {
+		t.Errorf("ProxyListenAddr = %q, want default 0.0.0.0 (SQLite must not persist listen addrs)", loaded.ProxyListenAddr)
+	}
+	if loaded.AdminListenAddr != "0.0.0.0" {
+		t.Errorf("AdminListenAddr = %q, want default 0.0.0.0 (SQLite must not persist listen addrs)", loaded.AdminListenAddr)
+	}
+}
+
 func TestSQLiteStorePersistsProviderAPIFormatAndOpenAIExtraParams(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewSQLiteStore(filepath.Join(dir, "proxy.db"), filepath.Join(dir, "config.json"))

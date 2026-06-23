@@ -111,6 +111,29 @@ func TestJSONStoreDefaultsLegacyProviderAPIFormat(t *testing.T) {
 	}
 }
 
+func TestJSONStoreRoundTripsListenAddrs(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := NewStore(filepath.Join(tmpDir, "config.json"))
+
+	cfg := DefaultConfig()
+	cfg.ProxyListenAddr = "127.0.0.1"
+	cfg.AdminListenAddr = "192.168.1.10"
+	if err := store.Save(cfg); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if loaded.ProxyListenAddr != "127.0.0.1" {
+		t.Errorf("ProxyListenAddr = %q, want 127.0.0.1", loaded.ProxyListenAddr)
+	}
+	if loaded.AdminListenAddr != "192.168.1.10" {
+		t.Errorf("AdminListenAddr = %q, want 192.168.1.10", loaded.AdminListenAddr)
+	}
+}
+
 func TestStore_LoadNonExistent(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "config-test")
 	if err != nil {

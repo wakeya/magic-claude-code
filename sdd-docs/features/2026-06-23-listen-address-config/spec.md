@@ -66,7 +66,7 @@ Three-layer override, highest first:
    - `AdminListenAddr string` (json `admin_listen_addr`, default `"0.0.0.0"`)
    - `ProxyPort`, `AdminPort` (already exist; this change makes them actually take effect at startup).
 2. `NormalizeConfig` fills defaults for the new fields; empty string and port 0 fall back to defaults; proxy/admin port range is validated to 1–65535.
-3. SQLite store persists `proxy_listen_addr` / `admin_listen_addr`; reading an old database (column absent) falls back to defaults without error.
+3. Persistence aligns with the `GatewayListenAddr`/`GatewayListenPort` precedent: the new fields **do not enter the SQLite store** (`saveSettings`/`loadSettings` skip them) and are decided by "defaults + CLI flag + env var." The JSON store (`store.go`) auto-serializes the new fields via `json.MarshalIndent` with zero changes. `ProxyPort`/`AdminPort` keep their existing SQLite read/write unchanged.
 4. `cmd/server/main.go` adds CLI flags:
    - `-proxy-listen` (default empty; empty means use the config-file value)
    - `-proxy-port`
@@ -115,7 +115,7 @@ A non-empty flag overrides env var and config file; if the flag is empty, the en
 2. Default behavior must match the status quo: proxy `0.0.0.0:443`, admin `0.0.0.0:8442`. Existing users see no behavior change after upgrade.
 3. Ports must be 1–65535; invalid values fall back to defaults inside `NormalizeConfig` with a logged warning, and must not block startup.
 4. An empty CLI flag / 0 means "do not override"; it must not be misread as "bind empty address."
-5. SQLite must seamlessly fall back to defaults when reading an old database lacking `proxy_listen_addr` / `admin_listen_addr`, with no migration error.
+5. The new fields do not enter the SQLite store (aligning with the Gateway precedent), so there is no "old-DB missing-column" issue; the SQLite store stays as-is — no new columns, no schema change.
 6. The listen fields returned by `/api/status` must reflect the actually-effective values (after flag/env/file override and normalization), not the raw config-file values.
 7. The read-only frontend block must not reuse the gateway's "input + save button" component shape; it must be pure display to avoid implying editability.
 8. No new external dependencies; CLI flag parsing stays on the standard library `flag`, env stays on `os.Getenv` (consistent with existing `MCC_ROOT` / `ADMIN_PASSWORD`).
@@ -176,34 +176,35 @@ A non-empty flag overrides env var and config file; if the flag is empty, the en
 - [ ] Valid custom values are preserved.
 - [ ] Surrounding whitespace is trimmed.
 
-### Task 2: Persistence Layer
+### Task 2: Persistence Layer (Aligned with Gateway Precedent)
 
 #### Requirements
 
-**Objective** — Make the new fields readable and writable in the SQLite store, compatible with old databases.
+**Objective** — Confirm the new fields' behavior under the existing persistence mechanism, consistent with the same-class Gateway listen fields.
 
-**Outcomes** — `sqlite_store.go` writes/reads `proxy_listen_addr` / `admin_listen_addr`; old DBs (column absent) fall back to defaults without error.
+**Outcomes** — Investigation shows `GatewayListenAddr`/`GatewayListenPort` are same-class "listen address" fields and **are not stored in SQLite** (`saveSettings`/`loadSettings` never touch them); SQLite is the primary store and `legacyJSONPath` is only for a one-time legacy migration. Therefore the new `ProxyListenAddr`/`AdminListenAddr` **align with the Gateway precedent and do not enter SQLite** — neither `saveSettings` nor `loadSettings` is modified. The JSON store (`store.go`) auto-serializes any field with a json tag via `json.MarshalIndent`, so the new fields need zero changes. Net effect: listen addresses are decided by "defaults + CLI flag + env var," identical to Gateway behavior.
 
-**Evidence** — Unit tests: new-DB round-trip is consistent; old-DB (simulated missing column) reads without error and falls back.
+**Evidence** — Unit tests: JSON store round-trips the new fields consistently; the existing SQLite store test suite stays green (confirming the new fields do not break it); an explicit assertion that the SQLite store does not persist the new fields (save then reload — they fall back to defaults, matching Gateway).
 
-**Constraints** — Follow the existing SQLite schema-migration style (the project already has "auto-add-column" precedent); do not break existing field reads/writes.
+**Constraints** — Do not modify `sqlite_store.go`'s `saveSettings`/`loadSettings`; add no SQLite columns; keep persistence behavior identical to `GatewayListenAddr`.
 
-**Edge Cases** — Column absent; column present but empty string; column present but port 0 or non-numeric.
+**Edge Cases** — Old SQLite DB (no listen-address columns at all) — naturally compatible because these columns never exist; JSON store users — new fields round-trip automatically.
 
 **Verification** — `go test ./internal/config/`.
 
 #### Plan
 
-1. Add `proxy_listen_addr` / `admin_listen_addr` key-value pairs in the write path.
-2. Add corresponding parsing in the read path; empty/missing → leave unset, let `NormalizeConfig` fill defaults.
-3. Port fields reuse the existing `ProxyPort`/`AdminPort` read/write (already present).
-4. Test a simulated old DB (without new columns) for fallback.
+1. Confirm `sqlite_store.go`'s `saveSettings`/`loadSettings` do not handle `ProxyListenAddr`/`AdminListenAddr` (match Gateway; no change).
+2. Add a JSON store (`store.go`) round-trip test for the new fields: Save custom listen addresses → Load returns them intact.
+3. Add an explicit test: SQLite store Save → Load, new fields fall back to defaults (proving non-persistence, matching Gateway behavior).
+4. Full config package regression passes.
 
 #### Verification
 
-- [ ] New DB round-trip preserves values.
-- [ ] Old DB missing-column read does not error.
-- [ ] Empty-string value normalizes to default.
+- [ ] JSON store round-trips `proxy_listen_addr` / `admin_listen_addr` consistently.
+- [ ] SQLite store does not persist the new fields (reload falls back to defaults).
+- [ ] Existing SQLite store tests stay green (no breakage).
+- [ ] Behavior matches `GatewayListenAddr` persistence.
 
 ### Task 3: CLI Flag and Env-Var Override
 
