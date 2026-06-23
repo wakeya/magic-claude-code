@@ -16,6 +16,10 @@ Official Claude Code subscriptions are expensive, while Chinese open-source larg
 
 Switching is transparent to Claude Code via automatic model mapping. Hardcoded requests (telemetry, feature flags, etc.) are also intercepted at the network layer, preventing optimization features from being disabled when a third-party API is in use.
 
+## 🎬 Demo
+
+![MCC Proxy Demo](images/visual_en.gif)
+
 ## Features
 
 - Transparently proxies all Claude Code API requests

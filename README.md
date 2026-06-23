@@ -16,6 +16,10 @@ Claude Code 官方订阅昂贵，而中国产开源大模型性价比极高。MC
 
 通过模型映射自动转换，Claude Code 无感切换，遥测/特性开关等硬编码请求也在网络层被拦截，避免因使用第三方 API 而被禁用优化功能。
 
+## 🎬 功能演示
+
+![MCC Proxy 功能演示](images/visual_zh.gif)
+
 ## 功能特性
 
 - 透明代理所有 Claude Code API 请求
