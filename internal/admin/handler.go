@@ -2,11 +2,11 @@ package admin
 
 import (
 	"encoding/json"
-	"fmt"
 	"net"
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"magic-claude-code/internal/config"
@@ -118,20 +118,20 @@ func (s *Server) getConfig(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(map[string]any{
-		"backend_url":          config.RedactURL(cfg.BackendURL),
-		"connection_mode":      cfg.ConnectionMode,
-		"gateway_listen_addr":  cfg.GatewayListenAddr,
-		"gateway_listen_port":  cfg.GatewayListenPort,
+		"backend_url":         config.RedactURL(cfg.BackendURL),
+		"connection_mode":     cfg.ConnectionMode,
+		"gateway_listen_addr": cfg.GatewayListenAddr,
+		"gateway_listen_port": cfg.GatewayListenPort,
 	})
 }
 
 // updateConfig 更新配置
 func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		BackendURL       string `json:"backend_url"`
-		ConnectionMode   string `json:"connection_mode"`
+		BackendURL        string `json:"backend_url"`
+		ConnectionMode    string `json:"connection_mode"`
 		GatewayListenAddr string `json:"gateway_listen_addr"`
-		GatewayListenPort int   `json:"gateway_listen_port"`
+		GatewayListenPort int    `json:"gateway_listen_port"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -193,7 +193,7 @@ func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.gatewayRestarter != nil {
-		addr := fmt.Sprintf("%s:%d", cfg.GatewayListenAddr, cfg.GatewayListenPort)
+		addr := net.JoinHostPort(cfg.GatewayListenAddr, strconv.Itoa(cfg.GatewayListenPort))
 		if err := s.gatewayRestarter.RestartGateway(addr); err != nil {
 			resp["gateway_restart_failed"] = err.Error()
 		} else {
@@ -214,6 +214,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		if loaded, err := s.configStore.Load(); err == nil {
 			cfg = loaded
 		}
+	}
+	if listenCfg := s.listenState(); listenCfg != nil {
+		cfg.ProxyListenAddr = listenCfg.ProxyListenAddr
+		cfg.ProxyPort = listenCfg.ProxyPort
+		cfg.AdminListenAddr = listenCfg.AdminListenAddr
+		cfg.AdminPort = listenCfg.AdminPort
+		cfg.GatewayListenAddr = listenCfg.GatewayListenAddr
+		cfg.GatewayListenPort = listenCfg.GatewayListenPort
 	}
 	backendURL := config.RedactURL(cfg.BackendURL)
 

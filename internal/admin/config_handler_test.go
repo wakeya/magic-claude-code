@@ -174,3 +174,119 @@ func TestGetStatusIncludesListenAddresses(t *testing.T) {
 		t.Errorf("gateway: addr=%q port=%d, want 10.0.0.1:18000", got.GatewayListenAddr, got.GatewayListenPort)
 	}
 }
+
+func TestGetStatusUsesEffectiveListenState(t *testing.T) {
+	stored := config.DefaultConfig()
+	stored.ProxyListenAddr = "10.0.0.10"
+	stored.ProxyPort = 9443
+	stored.AdminListenAddr = "10.0.0.11"
+	stored.AdminPort = 9442
+	stored.GatewayListenAddr = "10.0.0.12"
+	stored.GatewayListenPort = 19000
+
+	effective := config.DefaultConfig()
+	effective.ProxyListenAddr = "127.0.0.1"
+	effective.ProxyPort = 443
+	effective.AdminListenAddr = "127.0.0.1"
+	effective.AdminPort = 8442
+	effective.GatewayListenAddr = "10.0.0.12"
+	effective.GatewayListenPort = 19000
+
+	server := NewServer(&AdminConfig{Password: "secret"}, config.NewMockStore(stored), nil)
+	server.SetEffectiveListenState(effective)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	rec := httptest.NewRecorder()
+	server.handleStatus(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var got struct {
+		ProxyListenAddr string `json:"proxy_listen_addr"`
+		ProxyPort       int    `json:"proxy_port"`
+		AdminListenAddr string `json:"admin_listen_addr"`
+		AdminPort       int    `json:"admin_port"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if got.ProxyListenAddr != "127.0.0.1" || got.ProxyPort != 443 {
+		t.Fatalf("proxy listen state = %#v, want 127.0.0.1:443", got)
+	}
+	if got.AdminListenAddr != "127.0.0.1" || got.AdminPort != 8442 {
+		t.Fatalf("admin listen state = %#v, want 127.0.0.1:8442", got)
+	}
+}
+
+// mockGatewayRestarter 记录 RestartGateway 调用的 addr 参数，用于验证
+// handler 使用 net.JoinHostPort（IPv6 安全）而非 fmt.Sprintf。
+type mockGatewayRestarter struct {
+	gotAddr string
+}
+
+func (m *mockGatewayRestarter) RestartGateway(addr string) error {
+	m.gotAddr = addr
+	return nil
+}
+
+func TestUpdateConfigGatewayRestartAddrIPv6(t *testing.T) {
+	// IPv6 地址必须用 net.JoinHostPort 组装（输出 [::1]:17487），
+	// fmt.Sprintf("%s:%d",...) 会产出非法的 ::1:17487。
+	cfg := config.DefaultConfig()
+	cfg.GatewayListenAddr = "::1"
+	cfg.GatewayListenPort = 17487
+	store := config.NewMockStore(cfg)
+
+	restarter := &mockGatewayRestarter{}
+	server := NewServer(&AdminConfig{Password: "secret"}, store, nil)
+	server.SetGatewayRestarter(restarter)
+
+	body := bytes.NewBufferString(`{"connection_mode":"gateway"}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/config", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.handleConfig(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if restarter.gotAddr != "[::1]:17487" {
+		t.Errorf("RestartGateway addr = %q, want [::1]:17487", restarter.gotAddr)
+	}
+}
+
+func TestGetStatusDefaultListenValues(t *testing.T) {
+	// spec Verification: "Default-value case returns 0.0.0.0 / 443 / 8442"
+	// 纯 DefaultConfig + 不做任何覆盖 → 断言返回默认值。
+	server := NewServer(&AdminConfig{Password: "secret"}, config.NewMockStore(config.DefaultConfig()), nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	rec := httptest.NewRecorder()
+	server.handleStatus(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		ProxyListenAddr   string `json:"proxy_listen_addr"`
+		ProxyPort         int    `json:"proxy_port"`
+		AdminListenAddr   string `json:"admin_listen_addr"`
+		AdminPort         int    `json:"admin_port"`
+		GatewayListenAddr string `json:"gateway_listen_addr"`
+		GatewayListenPort int    `json:"gateway_listen_port"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if got.ProxyListenAddr != "0.0.0.0" || got.ProxyPort != 443 {
+		t.Errorf("proxy defaults: addr=%q port=%d, want 0.0.0.0:443", got.ProxyListenAddr, got.ProxyPort)
+	}
+	if got.AdminListenAddr != "0.0.0.0" || got.AdminPort != 8442 {
+		t.Errorf("admin defaults: addr=%q port=%d, want 0.0.0.0:8442", got.AdminListenAddr, got.AdminPort)
+	}
+	if got.GatewayListenAddr != "127.0.0.1" || got.GatewayListenPort != 17487 {
+		t.Errorf("gateway defaults: addr=%q port=%d, want 127.0.0.1:17487", got.GatewayListenAddr, got.GatewayListenPort)
+	}
+}

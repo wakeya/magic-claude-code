@@ -94,6 +94,17 @@ func TestNormalizeDefaultsListenPortRange(t *testing.T) {
 			t.Errorf("expected admin port 9000 preserved, got %d", cfg.AdminPort)
 		}
 	})
+
+	t.Run("boundary ports 1 and 65535 are accepted", func(t *testing.T) {
+		cfg := &Config{ProxyPort: 1, AdminPort: 65535}
+		cfg.NormalizeDefaults()
+		if cfg.ProxyPort != 1 {
+			t.Errorf("expected proxy port 1 preserved, got %d", cfg.ProxyPort)
+		}
+		if cfg.AdminPort != 65535 {
+			t.Errorf("expected admin port 65535 preserved, got %d", cfg.AdminPort)
+		}
+	})
 }
 
 
