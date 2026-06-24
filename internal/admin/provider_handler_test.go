@@ -655,8 +655,9 @@ func TestImportProvidersSkipsInvalidProvider(t *testing.T) {
 }
 
 func TestImportProvidersDuplicateStrategyKeepsAllSameID(t *testing.T) {
-	// spec: duplicate 策略下，文件内多个相同 ID 的供应商应逐条生成新 ID，
-	// 而非"首次出现生效"丢弃后续。
+	// spec: duplicate 策略下，文件内多个相同 ID 的供应商不应被静默丢弃。
+	// 第一条 "same" 是新 ID → imported（保留原 ID）；第二条 "same" 与第一条
+	// 冲突 → duplicate 生成新 ID。两条都保留，不丢弃。
 	cfg := config.DefaultConfig()
 	store := config.NewMockStore(cfg)
 	server := NewServer(&AdminConfig{Password: "secret"}, store, nil)
@@ -675,16 +676,56 @@ func TestImportProvidersDuplicateStrategyKeepsAllSameID(t *testing.T) {
 	server.handleImportProviders(rec, req)
 
 	counts := importResp(t, rec)
-	if counts["duplicated"] != 2 {
-		t.Fatalf("counts = %#v, want duplicated=2", counts)
+	// 第一条 imported（保留原 ID "same"），第二条 duplicated（冲突 → 新 ID）
+	if counts["imported"] != 1 || counts["duplicated"] != 1 {
+		t.Fatalf("counts = %#v, want imported=1 duplicated=1", counts)
 	}
 	loaded, _ := store.Load()
 	if len(loaded.Providers) != 2 {
-		t.Fatalf("provider count = %d, want 2", len(loaded.Providers))
+		t.Fatalf("provider count = %d, want 2 (no entry discarded)", len(loaded.Providers))
 	}
-	// 两条都应有不同的新 ID
-	if loaded.Providers[0].ID == loaded.Providers[1].ID {
-		t.Fatal("duplicate strategy produced same ID for both entries")
+	// 一条保留原 ID "same"，另一条是新 ID
+	ids := map[string]bool{loaded.Providers[0].ID: true, loaded.Providers[1].ID: true}
+	if !ids["same"] {
+		t.Fatal("first entry did not keep original ID 'same'")
+	}
+}
+
+func TestImportProvidersDuplicateKeepsNonConflictingOriginalID(t *testing.T) {
+	// spec: duplicate 是"冲突处理策略"。非冲突项应保留原 ID 正常导入
+	//（imported），只有冲突项才生成新 ID（duplicated）。
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{
+		{ID: "existing", Name: "Old", APIURL: "https://old.example.com/api", APIToken: "sk-old", APIFormat: config.APIFormatAnthropic, Enabled: true},
+	}
+	store := config.NewMockStore(cfg)
+	server := NewServer(&AdminConfig{Password: "secret"}, store, nil)
+
+	reqBody := importRequest{
+		Version: 1,
+		Providers: []config.Provider{
+			{ID: "fresh", Name: "Fresh", APIURL: "https://fresh.example.com/api", APIToken: "sk-fresh", APIFormat: config.APIFormatAnthropic, Enabled: true},
+			{ID: "existing", Name: "Dup", APIURL: "https://dup.example.com/api", APIToken: "sk-dup", APIFormat: config.APIFormatAnthropic, Enabled: true},
+		},
+		Strategy: "duplicate",
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/import", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	server.handleImportProviders(rec, req)
+
+	counts := importResp(t, rec)
+	if counts["imported"] != 1 || counts["duplicated"] != 1 {
+		t.Fatalf("counts = %#v, want imported=1 duplicated=1", counts)
+	}
+	loaded, _ := store.Load()
+	// fresh 保留原 ID
+	if got := loaded.GetProviderByID("fresh"); got == nil || got.APIToken != "sk-fresh" {
+		t.Fatalf("fresh not imported with original ID: %#v", got)
+	}
+	// existing 原始不变
+	if got := loaded.GetProviderByID("existing"); got.Name != "Old" {
+		t.Fatalf("existing was modified: %#v", got)
 	}
 }
 

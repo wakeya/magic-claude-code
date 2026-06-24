@@ -920,16 +920,6 @@ func (s *Server) handleImportProviders(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		if strategy == "duplicate" {
-			// duplicate 策略：无条件生成新 ID 追加，不检查冲突。
-			cp.ID = generateProviderID()
-			cp.CreatedAt = now
-			cp.UpdatedAt = now
-			cfg.Providers = append(cfg.Providers, cp)
-			summary.Duplicated++
-			continue
-		}
-
 		if _, conflict := existingIdx[p.ID]; conflict {
 			switch strategy {
 			case "skip":
@@ -940,6 +930,13 @@ func (s *Server) handleImportProviders(w http.ResponseWriter, r *http.Request) {
 				cp.UpdatedAt = now
 				cfg.Providers[existingIdx[p.ID]] = cp
 				summary.Overwritten++
+			case "duplicate":
+				// 冲突项生成新 ID 追加，原供应商不变。
+				cp.ID = generateProviderID()
+				cp.CreatedAt = now
+				cp.UpdatedAt = now
+				cfg.Providers = append(cfg.Providers, cp)
+				summary.Duplicated++
 			}
 		} else {
 			if cp.CreatedAt.IsZero() {

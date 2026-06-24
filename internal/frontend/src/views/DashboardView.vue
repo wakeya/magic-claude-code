@@ -1060,7 +1060,7 @@ async function handleExport() {
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
   } catch {
-    alert(t('providers.import_invalid'))
+    alert(t('providers.export_failed'))
   }
 }
 
