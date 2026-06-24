@@ -7,6 +7,23 @@
 
 ---
 
+## v0.9.1 (2026-06-24)
+
+### Added
+- 供应商导入导出：供应商页新增 JSON 导入导出，支持多主机批量迁移供应商配置。每卡片左上角复选框，工具栏全选/导出/导入按钮；导出含真实 token 的 JSON（下载前确认风险），导入带预览（新增/冲突计数）和冲突策略（skip/overwrite/duplicate，默认 skip）
+- 后端 API：`POST /api/providers/export` 按 ID 导出含真实 token；`POST /api/providers/import` 单次 Load→Save，version 校验，无效供应商跳过计入 errors，显式拒绝非 POST（405）
+- 全选控件：标题左侧三态复选框（全选/部分选中 indeterminate/未选）
+
+### Fixed
+- 导入版本校验：前端解析校验 `version === 1`，预览前拒绝非 1 或缺失版本
+- duplicate 策略语义：仅冲突项生成新 ID，非冲突项保留原 ID 正常导入
+- 导出失败提示：新增 `providers.export_failed` 文案，不再误用导入格式错误文案
+
+### Docs
+- 新增供应商导入导出功能 spec（中英双语）：`sdd-docs/features/2026-06-23-provider-import-export/`
+
+---
+
 ## v0.9.0 (2026-06-23)
 
 ### Added
