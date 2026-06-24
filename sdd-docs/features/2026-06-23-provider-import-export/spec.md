@@ -188,9 +188,9 @@ The `version` field is `1`. Future format changes bump this number; the importer
 
 #### Verification
 
-- [ ] `POST /api/providers/export` with valid IDs returns those providers with real tokens.
-- [ ] Unknown IDs are silently skipped.
-- [ ] Response shape matches the export file format (`version`, `exported_at`, `providers`).
+- [x] `POST /api/providers/export` with valid IDs returns those providers with real tokens.
+- [x] Unknown IDs are silently skipped.
+- [x] Response shape matches the export file format (`version`, `exported_at`, `providers`).
 
 ### Task 2: Import API Endpoint
 
@@ -220,11 +220,11 @@ The `version` field is `1`. Future format changes bump this number; the importer
 
 #### Verification
 
-- [ ] `skip` strategy leaves conflicting providers unchanged.
-- [ ] `overwrite` strategy replaces fields, preserves `created_at`.
-- [ ] `duplicate` strategy appends with a new ID.
-- [ ] Invalid providers are skipped and reported in `errors`.
-- [ ] `version != 1` returns a clear error.
+- [x] `skip` strategy leaves conflicting providers unchanged.
+- [x] `overwrite` strategy replaces fields, preserves `created_at`.
+- [x] `duplicate` strategy appends with a new ID.
+- [x] Invalid providers are skipped and reported in `errors`.
+- [x] `version != 1` returns a clear error.
 
 ### Task 3: Frontend Provider Selection
 
@@ -250,9 +250,9 @@ The `version` field is `1`. Future format changes bump this number; the importer
 
 #### Verification
 
-- [ ] Checkbox appears top-left of each card.
-- [ ] Toggling the checkbox updates the selection set.
-- [ ] Card action buttons (edit, delete, etc.) still work independently.
+- [x] Checkbox appears top-left of each card.
+- [x] Toggling the checkbox updates the selection set.
+- [x] Card action buttons (edit, delete, etc.) still work independently.
 
 ### Task 4: Frontend Export/Import Flows
 
@@ -279,10 +279,10 @@ The `version` field is `1`. Future format changes bump this number; the importer
 
 #### Verification
 
-- [ ] Export button disabled when no providers selected.
-- [ ] Export downloads a `.json` file with selected providers.
-- [ ] Import preview correctly classifies new vs conflicting providers.
-- [ ] Confirm applies the chosen strategy and refreshes the list.
+- [x] Export button disabled when no providers selected.
+- [x] Export downloads a `.json` file with selected providers.
+- [x] Import preview correctly classifies new vs conflicting providers.
+- [x] Confirm applies the chosen strategy and refreshes the list.
 
 ### Task 5: i18n and Edge-Case Polish
 
@@ -307,6 +307,6 @@ The `version` field is `1`. Future format changes bump this number; the importer
 
 #### Verification
 
-- [ ] Every new UI string has zh and en translations.
-- [ ] Security warning is visible in the export flow.
-- [ ] Error paths show localized messages.
+- [x] Every new UI string has zh and en translations.
+- [x] Security warning is visible in the export flow.
+- [x] Error paths show localized messages.
