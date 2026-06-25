@@ -7,6 +7,16 @@
 
 ---
 
+## v0.9.3 (2026-06-24)
+
+### Added
+- 全局回到顶部悬浮按钮：从 `SessionBrowser` 提升到 `DashboardView` 层级，所有 tab 页共享；页面滚动超过 100px 时在右下角显示，点击平滑回到顶部；`z-30` 层级低于所有 modal（outline `z-40`、cleanup `z-50`），不干扰弹窗交互；短内容 tab（如证书信息）自动隐藏
+
+### Docs
+- 全局回到顶部功能 spec（中英双语，3/3 任务已实现并验证）：`sdd-docs/features/2026-06-24-global-back-to-top/`
+
+---
+
 ## v0.9.2 (2026-06-24)
 
 ### Fixed
