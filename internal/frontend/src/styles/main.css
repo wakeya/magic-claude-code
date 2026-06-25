@@ -25,6 +25,11 @@ body {
   color: var(--app-text);
 }
 
+html {
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
 :root,
 :root[data-theme="light"] {
   --app-bg: #f7fbff;

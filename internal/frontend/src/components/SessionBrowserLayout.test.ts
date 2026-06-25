@@ -51,3 +51,19 @@ test('cleanup hint shows Windows preview and interactive commands', () => {
   assert.match(i18nSource, /'sessions\.preview_command_windows': 'Windows Preview Command'/)
   assert.match(i18nSource, /'sessions\.interactive_command_windows': 'Windows Interactive Cleanup'/)
 })
+
+test('session browser accepts preloaded list data from dashboard props', () => {
+  assert.match(source, /defineProps<\{[\s\S]*projects: SessionProject\[\][\s\S]*sessions: SessionItem\[\][\s\S]*loading: boolean[\s\S]*\}>/)
+  assert.match(source, /defineEmits<\{[\s\S]*refreshed[\s\S]*projects: SessionProject\[\][\s\S]*sessions: SessionItem\[\]/)
+  assert.doesNotMatch(source, /onMounted\(\(\)\s*=>\s*\{\s*void reload\(\)\s*\}\)/)
+})
+
+test('session list loading state reserves space with a skeleton', () => {
+  assert.match(source, /animate-pulse/)
+  assert.match(source, /min-h-\[[^\]]+\]/)
+  assert.doesNotMatch(source, /v-if="loading" class="session-empty-compact"/)
+})
+
+test('session list shows load errors before empty states', () => {
+  assert.match(source, /v-if="loading"[\s\S]*v-else-if="error"[\s\S]*\{\{\s*error\s*\}\}[\s\S]*v-else-if="sessions\.length === 0"/)
+})

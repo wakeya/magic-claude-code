@@ -30,7 +30,17 @@
           <MessageSquare class="h-3.5 w-3.5" />
           {{ t('sessions.sessions') }}
         </div>
-        <div v-if="loading" class="session-empty-compact">{{ t('sessions.loading') }}</div>
+        <div v-if="loading" class="min-h-[28rem] space-y-3 rounded-xl p-1 animate-pulse" :aria-label="t('sessions.loading')">
+          <div v-for="index in 7" :key="index" class="session-card pointer-events-none">
+            <div class="h-4 w-4/5 rounded bg-[var(--app-border)]"></div>
+            <div class="mt-2 h-3 w-2/3 rounded bg-[var(--app-border)]"></div>
+            <div class="mt-4 flex items-center justify-between gap-2">
+              <div class="h-3 w-16 rounded bg-[var(--app-border)]"></div>
+              <div class="h-3 w-20 rounded bg-[var(--app-border)]"></div>
+            </div>
+          </div>
+        </div>
+        <div v-else-if="error" class="session-empty-compact text-[var(--app-danger)]">{{ error }}</div>
         <div v-else-if="sessions.length === 0" class="session-empty-compact">
           {{ selectedProject ? t('sessions.empty_project') : t('sessions.empty') }}
         </div>
@@ -142,7 +152,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineComponent, h, onMounted, ref } from 'vue'
+import { computed, defineComponent, h, ref, watch } from 'vue'
 import { ArrowUp, Check, Copy, Download, FileText, Folder, List, MessageSquare, RefreshCw, Terminal, X } from 'lucide-vue-next'
 import {
   useApi,
@@ -161,14 +171,25 @@ const api = useApi()
 const { t, locale } = useI18n()
 const { themeMode } = useTheme()
 
-const projects = ref<SessionProject[]>([])
-const sessions = ref<SessionItem[]>([])
+const props = defineProps<{
+  projects: SessionProject[]
+  sessions: SessionItem[]
+  loading: boolean
+  errorMessage?: string
+}>()
+
+const emit = defineEmits<{
+  refreshed: [payload: { projects: SessionProject[]; sessions: SessionItem[] }]
+}>()
+
+const projects = ref<SessionProject[]>([...props.projects])
+const sessions = ref<SessionItem[]>([...props.sessions])
 const selectedProject = ref('')
 const selectedSession = ref<SessionItem | null>(null)
 const detail = ref<SessionDetailResponse | null>(null)
 const cleanupHint = ref<SessionCleanupHint | null>(null)
-const loading = ref(false)
-const error = ref('')
+const loading = ref(props.loading)
+const error = ref(props.errorMessage || '')
 const showOutline = ref(false)
 const detailRef = ref<InstanceType<typeof SessionDetail> | null>(null)
 
@@ -224,8 +245,20 @@ const CommandBlock = defineComponent({
   },
 })
 
-onMounted(() => {
-  void reload()
+watch(() => props.projects, (value) => {
+  projects.value = [...value]
+})
+
+watch(() => props.sessions, (value) => {
+  sessions.value = [...value]
+})
+
+watch(() => props.loading, (value) => {
+  loading.value = value
+})
+
+watch(() => props.errorMessage, (value) => {
+  error.value = value || ''
 })
 
 async function reload() {
@@ -234,6 +267,7 @@ async function reload() {
   try {
     projects.value = await api.getSessionProjects()
     await loadSessions()
+    emit('refreshed', { projects: projects.value, sessions: sessions.value })
   } catch {
     error.value = t('sessions.load_failed')
   } finally {
@@ -245,7 +279,16 @@ async function selectProject(path: string) {
   selectedProject.value = path
   selectedSession.value = null
   detail.value = null
-  await loadSessions()
+  error.value = ''
+  loading.value = true
+  try {
+    await loadSessions()
+    emit('refreshed', { projects: projects.value, sessions: sessions.value })
+  } catch {
+    error.value = t('sessions.load_failed')
+  } finally {
+    loading.value = false
+  }
 }
 
 async function loadSessions() {

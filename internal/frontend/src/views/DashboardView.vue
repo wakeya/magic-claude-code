@@ -755,7 +755,13 @@
       </div>
 
       <div v-if="activeTab === 'sessions'">
-        <SessionBrowser />
+        <SessionBrowser
+          :projects="sessionProjects"
+          :sessions="sessionList"
+          :loading="sessionsLoading"
+          :error-message="sessionsError"
+          @refreshed="handleSessionsRefreshed"
+        />
       </div>
     </div>
 
@@ -823,6 +829,8 @@ import {
   type UsageRequestRow,
   type UsageAggregateRow,
   type UsageCoverageRow,
+  type SessionItem,
+  type SessionProject,
 } from '@/composables/useApi'
 import { useI18n } from '@/composables/useI18n'
 import { useTheme } from '@/composables/useTheme'
@@ -915,6 +923,10 @@ const usageProviders = ref<UsageAggregateRow[]>([])
 const usageModels = ref<UsageAggregateRow[]>([])
 const usageCoverage = ref<UsageCoverageRow[]>([])
 const usageLoading = ref(false)
+const sessionProjects = ref<SessionProject[]>([])
+const sessionList = ref<SessionItem[]>([])
+const sessionsLoading = ref(false)
+const sessionsError = ref('')
 const usageChartEl = ref<HTMLDivElement | null>(null)
 let echartsModule: { init: (dom: HTMLDivElement) => EChartsType } | null = null
 let usageChart: EChartsType | null = null
@@ -1223,6 +1235,29 @@ async function loadConnectionMode() {
   } catch {
     // best-effort
   }
+}
+
+async function loadSessionsList() {
+  sessionsLoading.value = true
+  sessionsError.value = ''
+  try {
+    const [projects, page] = await Promise.all([
+      api.getSessionProjects(),
+      api.getSessionList({ project: '', page: 1, page_size: 100 }),
+    ])
+    sessionProjects.value = projects
+    sessionList.value = page.sessions
+  } catch {
+    sessionsError.value = t('sessions.load_failed')
+  } finally {
+    sessionsLoading.value = false
+  }
+}
+
+function handleSessionsRefreshed(payload: { projects: SessionProject[]; sessions: SessionItem[] }) {
+  sessionProjects.value = payload.projects
+  sessionList.value = payload.sessions
+  sessionsError.value = ''
 }
 
 function copySettings() {
@@ -1704,7 +1739,7 @@ watch(themeMode, () => {
 
 onMounted(async () => {
   await syncTheme(api.getPreferences)
-  await Promise.all([loadStatus(), loadProviders(), loadCerts(), loadConnectionMode()])
+  await Promise.all([loadStatus(), loadProviders(), loadCerts(), loadConnectionMode(), loadSessionsList()])
   void loadUsageData()
   statusRefreshTimer = window.setInterval(() => {
     void loadStatus()
