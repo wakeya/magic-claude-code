@@ -7,6 +7,16 @@
 
 ---
 
+## v0.9.2 (2026-06-24)
+
+### Fixed
+- 管理面板标签页切换布局抖动：`html { scrollbar-gutter: stable; overflow-y: auto }` 消除滚动条 reflow（约 15px 横向位移）；会话列表数据预加载到 `DashboardView.onMounted`，消除 `SessionBrowser` 每次激活的异步空→满二次布局；sessions 列表骨架屏兜底首次加载；加载失败优先显示错误信息
+
+### Docs
+- 管理面板标签页切换布局抖动修复 spec（中英双语，4/4 任务已实现并验证）：`sdd-docs/features/2026-06-24-dashboard-tab-layout-shift/`
+
+---
+
 ## v0.9.1 (2026-06-24)
 
 ### Added
