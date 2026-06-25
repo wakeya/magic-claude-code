@@ -67,3 +67,11 @@ test('session list loading state reserves space with a skeleton', () => {
 test('session list shows load errors before empty states', () => {
   assert.match(source, /v-if="loading"[\s\S]*v-else-if="error"[\s\S]*\{\{\s*error\s*\}\}[\s\S]*v-else-if="sessions\.length === 0"/)
 })
+
+test('session browser no longer has its own fixed back-to-top button', () => {
+  // The global back-to-top is now in DashboardView; SessionBrowser keeps only
+  // the outline-modal back-to-top (inside a modal backdrop context).
+  assert.doesNotMatch(source, /fixed bottom-5 right-5 z-50/)
+  // Outline modal's own back-to-top is preserved
+  assert.match(source, /scrollToTop\(\); showOutline = false/)
+})

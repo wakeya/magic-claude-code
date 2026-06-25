@@ -765,6 +765,15 @@
       </div>
     </div>
 
+    <button
+      v-show="scrolled"
+      class="session-icon-button fixed bottom-5 right-5 z-30 shadow-md"
+      :title="t('sessions.back_to_top')"
+      @click="scrollToTop"
+    >
+      <ArrowUp class="h-4 w-4" />
+    </button>
+
     <div v-if="showUsageClearModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4">
       <div class="app-panel w-full max-w-lg rounded-lg p-6 shadow-xl">
         <h3 class="text-lg font-bold">{{ t('usage.clear_data_title') }}</h3>
@@ -834,6 +843,7 @@ import {
 } from '@/composables/useApi'
 import { useI18n } from '@/composables/useI18n'
 import { useTheme } from '@/composables/useTheme'
+import { ArrowUp } from 'lucide-vue-next'
 import AppHeader from '@/components/AppHeader.vue'
 import ProviderCard from '@/components/ProviderCard.vue'
 import ProviderModal from '@/components/ProviderModal.vue'
@@ -927,6 +937,9 @@ const sessionProjects = ref<SessionProject[]>([])
 const sessionList = ref<SessionItem[]>([])
 const sessionsLoading = ref(false)
 const sessionsError = ref('')
+const scrolled = ref(false)
+function onScroll() { scrolled.value = window.scrollY > 100 }
+function scrollToTop() { window.scrollTo({ top: 0, behavior: 'smooth' }) }
 const usageChartEl = ref<HTMLDivElement | null>(null)
 let echartsModule: { init: (dom: HTMLDivElement) => EChartsType } | null = null
 let usageChart: EChartsType | null = null
@@ -1745,12 +1758,14 @@ onMounted(async () => {
     void loadStatus()
   }, 30000)
   window.addEventListener('resize', handleUsageChartResize)
+  window.addEventListener('scroll', onScroll, { passive: true })
 })
 
 onBeforeUnmount(() => {
   if (statusRefreshTimer) window.clearInterval(statusRefreshTimer)
   if (filterTimer) window.clearTimeout(filterTimer)
   window.removeEventListener('resize', handleUsageChartResize)
+  window.removeEventListener('scroll', onScroll)
   disposeUsageChart()
 })
 </script>

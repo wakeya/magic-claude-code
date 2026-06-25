@@ -114,10 +114,6 @@
       </div>
     </section>
 
-    <button class="session-icon-button fixed bottom-5 right-5 z-50 shadow-md" :title="t('sessions.back_to_top')" @click="scrollToTop">
-      <ArrowUp class="h-4 w-4" />
-    </button>
-
     <div v-if="showOutline && detail" class="session-modal-backdrop fixed inset-0 z-40 p-4 2xl:hidden" @click.self="showOutline = false">
       <div class="session-modal-panel ml-auto max-h-full w-full max-w-sm overflow-y-auto p-4">
         <div class="mb-3 flex items-center justify-between">
