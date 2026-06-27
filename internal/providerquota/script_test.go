@@ -358,6 +358,71 @@ func TestScriptExecutorOriginCheck(t *testing.T) {
 	}
 }
 
+// TestScriptExtractorBusinessError verifies that when an extractor returns an
+// object with __error_code, ExecuteScript classifies it as a structured
+// business error rather than a generic script_error.
+func TestScriptExtractorBusinessError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"success": false, "message": "permission denied"})
+	}))
+	defer srv.Close()
+
+	script := `({
+		request: { url: "{{baseUrl}}/api", method: "GET" },
+		extractor: function(response) {
+			if (response.success === false) {
+				return {
+					__error_code: "upstream_business_error",
+					__error_message: response.message || "API error"
+				};
+			}
+			return { remaining: 1 };
+		}
+	})`
+
+	exec := NewScriptExecutor(5 * time.Second)
+	result, err := exec.ExecuteScript(context.Background(), script, map[string]string{"baseUrl": srv.URL}, srv.URL)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Success {
+		t.Error("expected failure for business error")
+	}
+	if result.ErrorCode != "upstream_business_error" {
+		t.Errorf("error_code = %q, want upstream_business_error", result.ErrorCode)
+	}
+	if result.ErrorMessage != "permission denied" {
+		t.Errorf("error_message = %q, want 'permission denied'", result.ErrorMessage)
+	}
+}
+
+// TestNewAPIScriptBusinessError verifies the default NewAPI script maps a
+// success===false response to upstream_business_error (not script_error).
+func TestNewAPIScriptBusinessError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"success": false, "message": "no permission"})
+	}))
+	defer srv.Close()
+
+	script := defaultNewAPIScript()
+	exec := NewScriptExecutor(5 * time.Second)
+	result, err := exec.ExecuteScript(
+		context.Background(),
+		script,
+		map[string]string{"baseUrl": srv.URL, "accessToken": "tok", "userId": "1"},
+		srv.URL,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Success {
+		t.Error("expected failure for NewAPI success=false")
+	}
+	if result.ErrorCode != "upstream_business_error" {
+		t.Errorf("error_code = %q, want upstream_business_error", result.ErrorCode)
+	}
+}
+
 func TestSubstitutePlaceholders(t *testing.T) {
 	tests := []struct {
 		input  string

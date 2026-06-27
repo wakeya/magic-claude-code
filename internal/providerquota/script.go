@@ -120,6 +120,17 @@ func (e *ScriptExecutor) ExecuteScript(ctx context.Context, script string, place
 
 	result, err := normalizeExtracted(extracted, start)
 	if err != nil {
+		// A business error from the extractor is a structured upstream failure,
+		// not an invalid_response — surface it with its own error code.
+		if be, ok := err.(*businessError); ok {
+			return &ProviderQuotaResult{
+				Success:      false,
+				ErrorCode:    be.code,
+				ErrorMessage: sanitizeError(be.message, placeholderValues),
+				QueriedAt:    time.Now(),
+				DurationMS:   time.Since(start).Milliseconds(),
+			}, nil
+		}
 		return &ProviderQuotaResult{
 			Success:      false,
 			ErrorCode:    "invalid_response",

@@ -166,6 +166,62 @@ func TestNormalizeTierRejectsNaN(t *testing.T) {
 	}
 }
 
+// TestNormalizeTierRejectsOutOfRange verifies that utilization below 0 or
+// above 100 is rejected rather than silently clamped.
+func TestNormalizeTierRejectsOutOfRange(t *testing.T) {
+	tests := []struct {
+		name string
+		util float64
+	}{
+		{"above 100", 150},
+		{"well above 100", 9999},
+		{"below 0", -5},
+		{"well below 0", -100},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NormalizeTier(QuotaTier{
+				Name:        WindowFiveHour,
+				Utilization: tt.util,
+			})
+			if err == nil {
+				t.Errorf("expected error for utilization %v", tt.util)
+			}
+		})
+	}
+}
+
+// TestNormalizeTierAcceptsBoundary verifies valid boundary values are not rejected.
+func TestNormalizeTierAcceptsBoundary(t *testing.T) {
+	for _, util := range []float64{0, 50, 100} {
+		tier, err := NormalizeTier(QuotaTier{Name: WindowFiveHour, Utilization: util})
+		if err != nil {
+			t.Errorf("unexpected error for utilization %v: %v", util, err)
+		}
+		if tier.Utilization != util {
+			t.Errorf("utilization = %v, want %v", tier.Utilization, util)
+		}
+	}
+}
+
+// TestNormalizeResultPercentageOutOfRange verifies that a result containing
+// an out-of-range tier produces an error (which callers map to invalid_response).
+func TestNormalizeResultPercentageOutOfRange(t *testing.T) {
+	r := &ProviderQuotaResult{
+		ProviderID:   "test",
+		TemplateType: TemplateTokenPlan,
+		Success:      true,
+		Tiers: []QuotaTier{
+			{Name: WindowFiveHour, Utilization: 150},
+		},
+		QueriedAt: time.Now(),
+	}
+	err := NormalizeResult(r)
+	if err == nil {
+		t.Fatal("expected error for utilization=150")
+	}
+}
+
 func TestNormalizeBalanceRejectsInf(t *testing.T) {
 	v := math.Inf(1)
 	_, err := NormalizeBalance(BalanceItem{

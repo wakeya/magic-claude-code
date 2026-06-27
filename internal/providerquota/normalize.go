@@ -9,6 +9,14 @@ import (
 // normalizeExtracted converts the extractor's return value into a
 // ProviderQuotaResult. It handles both single objects and arrays.
 func normalizeExtracted(extracted any, start time.Time) (*ProviderQuotaResult, error) {
+	// Check for an explicit business-error signal from the extractor.
+	// Conventional fields: { __error_code, __error_message }.
+	// ExecuteScript treats this as a structured upstream failure, distinct
+	// from invalid_response, so adapters can surface e.g. NewAPI success=false.
+	if code := extractBusinessError(extracted); code != "" {
+		return nil, &businessError{code: code, message: extractBusinessMessage(extracted)}
+	}
+
 	result := &ProviderQuotaResult{
 		Success:   true,
 		QueriedAt: time.Now(),
@@ -41,6 +49,55 @@ func normalizeExtracted(extracted any, start time.Time) (*ProviderQuotaResult, e
 		return nil, err
 	}
 	return result, nil
+}
+
+// businessError is a sentinel error carrying a structured upstream-business
+// failure. ExecuteScript detects it and produces a ProviderQuotaResult with the
+// given error code instead of the generic invalid_response.
+type businessError struct {
+	code    string
+	message string
+}
+
+func (e *businessError) Error() string { return e.message }
+
+// extractBusinessError returns the __error_code string if the extractor value
+// (or any element of an array) carries a business-error signal, else "".
+func extractBusinessError(extracted any) string {
+	switch v := extracted.(type) {
+	case map[string]any:
+		if code, ok := v["__error_code"].(string); ok && code != "" {
+			return code
+		}
+	case []any:
+		for _, item := range v {
+			if m, ok := item.(map[string]any); ok {
+				if code, ok := m["__error_code"].(string); ok && code != "" {
+					return code
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// extractBusinessMessage returns the __error_message string if present.
+func extractBusinessMessage(extracted any) string {
+	switch v := extracted.(type) {
+	case map[string]any:
+		if msg, ok := v["__error_message"].(string); ok {
+			return msg
+		}
+	case []any:
+		for _, item := range v {
+			if m, ok := item.(map[string]any); ok {
+				if msg, ok := m["__error_message"].(string); ok {
+					return msg
+				}
+			}
+		}
+	}
+	return "upstream business error"
 }
 
 // applyExtractedItem applies a single extracted item to the result.

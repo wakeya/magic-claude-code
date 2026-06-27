@@ -219,13 +219,17 @@ func ClampPercentage(v float64) float64 {
 }
 
 // NormalizeTier validates and normalizes a QuotaTier, returning an error if
-// the tier contains NaN/Inf values.
+// the tier contains NaN/Inf values or an out-of-range utilization percentage.
+// Out-of-range values are rejected (not silently clamped) so callers can
+// classify them as invalid_response instead of presenting fabricated data.
 func NormalizeTier(t QuotaTier) (QuotaTier, error) {
 	if math.IsNaN(t.Utilization) || math.IsInf(t.Utilization, 0) {
 		return t, fmt.Errorf("tier %q: utilization is NaN/Inf", t.Name)
 	}
+	if t.Utilization < 0 || t.Utilization > 100 {
+		return t, fmt.Errorf("tier %q: utilization %v out of range [0,100]", t.Name, t.Utilization)
+	}
 	t.Name = NormalizeWindow(t.Name)
-	t.Utilization = ClampPercentage(t.Utilization)
 	return t, nil
 }
 

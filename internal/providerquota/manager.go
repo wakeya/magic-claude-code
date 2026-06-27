@@ -38,6 +38,11 @@ type Manager struct {
 	scanTicker *time.Ticker
 	stopCh     chan struct{}
 	done       chan struct{}
+
+	// jitterFn returns the per-provider startup jitter applied before a
+	// scheduled query fires. Defaults to jitterForProvider (deterministic
+	// 0–30s hash); overridable for tests.
+	jitterFn func(providerID string) time.Duration
 }
 
 type inflightEntry struct {
@@ -59,6 +64,7 @@ func NewManager(store *SnapshotStore, configGet ProviderConfigGetter, maxConcurr
 		semaphore:  make(chan struct{}, maxConcurrency),
 		stopCh:     make(chan struct{}),
 		done:       make(chan struct{}),
+		jitterFn:   jitterForProvider,
 	}
 }
 
@@ -71,11 +77,22 @@ type QueryOptions struct {
 }
 
 // Query performs a quota query for the given provider.
-// It deduplicates concurrent requests for the same provider.
+// It deduplicates concurrent requests for the same provider and query type.
+// Draft (test) queries and production queries use distinct dedup keys so a
+// test query never shares or overwrites a production result.
 func (m *Manager) Query(ctx context.Context, providerID string, opts QueryOptions) (*ProviderQuotaResult, error) {
+	// Build a dedup key that separates draft/test queries from production ones.
+	// Two concurrent production queries for the same provider share a result;
+	// a draft query is independent (different key) so it cannot accidentally
+	// receive a production snapshot or block one.
+	dedupKey := "prod:" + providerID
+	if opts.Draft != nil {
+		dedupKey = "draft:" + providerID + ":" + opts.Draft.BaseURL
+	}
+
 	// Check if there's already an in-flight request.
 	m.inFlightMu.Lock()
-	entry, exists := m.inFlight[providerID]
+	entry, exists := m.inFlight[dedupKey]
 	if exists {
 		m.inFlightMu.Unlock()
 		// Wait for the existing request.
@@ -89,7 +106,7 @@ func (m *Manager) Query(ctx context.Context, providerID string, opts QueryOption
 
 	// Create new in-flight entry.
 	entry = &inflightEntry{done: make(chan struct{})}
-	m.inFlight[providerID] = entry
+	m.inFlight[dedupKey] = entry
 	m.inFlightMu.Unlock()
 
 	// Execute the query.
@@ -102,7 +119,7 @@ func (m *Manager) Query(ctx context.Context, providerID string, opts QueryOption
 
 	// Clean up.
 	m.inFlightMu.Lock()
-	delete(m.inFlight, providerID)
+	delete(m.inFlight, dedupKey)
 	m.inFlightMu.Unlock()
 
 	return result, err
@@ -311,8 +328,19 @@ func (m *Manager) scanAndQuery(ctx context.Context) {
 			continue
 		}
 
-		// Fire async query.
+		// Fire async query with per-provider jitter to avoid a thundering
+		// herd of simultaneous upstream requests at startup / scan time.
 		go func(providerID string) {
+			if m.jitterFn != nil {
+				jitter := m.jitterFn(providerID)
+				if jitter > 0 {
+					select {
+					case <-time.After(jitter):
+					case <-ctx.Done():
+						return
+					}
+				}
+			}
 			_, _ = m.Query(ctx, providerID, QueryOptions{})
 		}(p.ID)
 	}
@@ -376,7 +404,10 @@ func defaultNewAPIScript() string {
 		},
 		extractor: function (response) {
 			if (response.success === false) {
-				throw new Error("API error: " + (response.message || "unknown"));
+				return {
+					__error_code: "upstream_business_error",
+					__error_message: response.message || "NewAPI business error"
+				};
 			}
 			var data = response.data || {};
 			var planName = data.group || "Default";

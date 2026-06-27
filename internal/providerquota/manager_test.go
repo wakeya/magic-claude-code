@@ -87,6 +87,97 @@ func TestManagerDeduplicatesConcurrentQueries(t *testing.T) {
 	}
 }
 
+// TestManagerDedupDistinguishesDraftAndProduction verifies that a concurrent
+// draft (test) query and a production query for the same provider are NOT
+// deduplicated against each other — they must execute independently. This
+// prevents a test query from receiving a production snapshot (or vice versa).
+func TestManagerDedupDistinguishesDraftAndProduction(t *testing.T) {
+	var queryCount atomic.Int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queryCount.Add(1)
+		// Delay so the two calls overlap in time.
+		time.Sleep(50 * time.Millisecond)
+		json.NewEncoder(w).Encode(map[string]any{"balance": 100})
+	}))
+	defer srv.Close()
+
+	db := setupTestDB(t)
+	store := NewSnapshotStore(db)
+	insertTestProvider(t, db, "p1")
+	configGet := &mockConfigGet{
+		providers: map[string]ProviderConfig{
+			"p1": {
+				ID:       "p1",
+				Enabled:  true,
+				APIURL:   srv.URL,
+				APIToken: "prod-token",
+				QuotaQuery: &ProviderQuotaConfig{
+					Enabled:      true,
+					TemplateType: TemplateGeneral,
+					Script: `({
+						request: { url: "{{baseUrl}}/balance", method: "GET" },
+						extractor: function(r) { return { remaining: r.balance, unit: "USD" }; }
+					})`,
+					TimeoutSeconds: 10,
+				},
+			},
+		},
+	}
+
+	mgr := NewManager(store, configGet, 4)
+
+	// Launch a draft (test) query and a production query concurrently.
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	var draftResult, prodResult *ProviderQuotaResult
+	go func() {
+		defer wg.Done()
+		r, _ := mgr.Query(context.Background(), "p1", QueryOptions{
+			Draft: &ProviderQuotaConfig{
+				Enabled:      true,
+				TemplateType: TemplateGeneral,
+				BaseURL:      srv.URL,
+				APIKey:       "draft-token",
+				Script: `({
+					request: { url: "{{baseUrl}}/balance", method: "GET" },
+					extractor: function(r) { return { remaining: r.balance, unit: "USD" }; }
+				})`,
+				TimeoutSeconds: 10,
+			},
+		})
+		draftResult = r
+	}()
+	go func() {
+		defer wg.Done()
+		r, _ := mgr.Query(context.Background(), "p1", QueryOptions{})
+		prodResult = r
+	}()
+	wg.Wait()
+
+	// Both queries must have executed independently (2 upstream requests),
+	// not shared a single deduplicated result.
+	if got := queryCount.Load(); got != 2 {
+		t.Errorf("upstream requests = %d, want 2 (draft and prod must be independent)", got)
+	}
+	if draftResult == nil || !draftResult.Success {
+		t.Errorf("draft result not successful: %+v", draftResult)
+	}
+	if prodResult == nil || !prodResult.Success {
+		t.Errorf("prod result not successful: %+v", prodResult)
+	}
+
+	// The production query must have persisted a snapshot; the draft must not.
+	snap, err := store.Get("p1")
+	if err != nil {
+		t.Fatalf("store Get: %v", err)
+	}
+	if snap == nil {
+		t.Error("production query should have persisted a snapshot")
+	}
+}
+
 func TestManagerRespectsConcurrencyLimit(t *testing.T) {
 	var maxConcurrent atomic.Int32
 	var currentConcurrent atomic.Int32
@@ -257,5 +348,104 @@ func TestJitterForProvider(t *testing.T) {
 	}
 	if j1 < 0 || j1 > 30*time.Second {
 		t.Errorf("jitter out of range: %v", j1)
+	}
+}
+
+// TestSchedulerAppliesJitter verifies that scanAndQuery spreads scheduled
+// queries using per-provider jitter rather than firing all at once.
+func TestSchedulerAppliesJitter(t *testing.T) {
+	var mu sync.Mutex
+	var requestTimes []time.Time
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requestTimes = append(requestTimes, time.Now())
+		mu.Unlock()
+		json.NewEncoder(w).Encode(map[string]any{"balance": 1})
+	}))
+	defer srv.Close()
+
+	db := setupTestDB(t)
+	store := NewSnapshotStore(db)
+
+	script := `({
+		request: { url: "{{baseUrl}}/balance", method: "GET" },
+		extractor: function(r) { return { remaining: r.balance, unit: "USD" }; }
+	})`
+	qq := func() *ProviderQuotaConfig {
+		return &ProviderQuotaConfig{
+			Enabled:                  true,
+			TemplateType:             TemplateGeneral,
+			Script:                   script,
+			TimeoutSeconds:           10,
+			AutoQueryIntervalMinutes: 5,
+		}
+	}
+	configGet := &mockConfigGet{
+		providers: map[string]ProviderConfig{
+			"a": {ID: "a", Enabled: true, APIURL: srv.URL, APIToken: "tok", QuotaQuery: qq()},
+			"b": {ID: "b", Enabled: true, APIURL: srv.URL, APIToken: "tok", QuotaQuery: qq()},
+			"c": {ID: "c", Enabled: true, APIURL: srv.URL, APIToken: "tok", QuotaQuery: qq()},
+		},
+	}
+
+	mgr := NewManager(store, configGet, 4)
+	// Override jitter: a=0, b=80ms, c=160ms — distinct, increasing.
+	mgr.jitterFn = func(id string) time.Duration {
+		switch id {
+		case "a":
+			return 0
+		case "b":
+			return 80 * time.Millisecond
+		case "c":
+			return 160 * time.Millisecond
+		}
+		return 0
+	}
+
+	start := time.Now()
+	mgr.scanAndQuery(context.Background())
+
+	// Wait for all three upstream requests.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		n := len(requestTimes)
+		mu.Unlock()
+		if n >= 3 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requestTimes) != 3 {
+		t.Fatalf("expected 3 requests, got %d", len(requestTimes))
+	}
+
+	// Compute offsets from scan start.
+	offsets := make([]time.Duration, len(requestTimes))
+	for i, ts := range requestTimes {
+		offsets[i] = ts.Sub(start)
+	}
+	minOff, maxOff := offsets[0], offsets[0]
+	for _, o := range offsets {
+		if o < minOff {
+			minOff = o
+		}
+		if o > maxOff {
+			maxOff = o
+		}
+	}
+
+	// With jitter 0/80/160ms, the spread (max-min) must be substantial —
+	// far more than the near-simultaneous (<20ms) spread without jitter.
+	spread := maxOff - minOff
+	if spread < 100*time.Millisecond {
+		t.Errorf("jitter not applied: request spread = %v (want >= 100ms)", spread)
+	}
+	// The latest request must be near the largest jitter (160ms).
+	if maxOff < 130*time.Millisecond {
+		t.Errorf("latest request too early: %v (want >= 130ms)", maxOff)
 	}
 }

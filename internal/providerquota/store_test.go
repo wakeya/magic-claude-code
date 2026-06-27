@@ -55,6 +55,18 @@ func setupTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
+// insertTestProvider adds a provider row so FK constraints on
+// provider_quota_snapshots are satisfied during Manager tests.
+func insertTestProvider(t *testing.T, db *sql.DB, id string) {
+	t.Helper()
+	now := time.Now().Format(time.RFC3339Nano)
+	_, err := db.Exec(`INSERT OR IGNORE INTO providers(id, name, api_url, api_token, enabled, created_at, updated_at) VALUES (?, ?, 'https://test.example.com', 'tok', 1, ?, ?)`,
+		id, id, now, now)
+	if err != nil {
+		t.Fatalf("insert provider %s: %v", id, err)
+	}
+}
+
 func TestSnapshotStoreSaveAndGet(t *testing.T) {
 	db := setupTestDB(t)
 	store := NewSnapshotStore(db)
