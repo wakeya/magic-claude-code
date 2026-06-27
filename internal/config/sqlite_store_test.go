@@ -792,8 +792,8 @@ func TestSQLiteStoreQuotaQuerySecretsNotInPublicResponse(t *testing.T) {
 	if pub.SecretAccessKeyConfigured != true {
 		t.Error("SecretAccessKeyConfigured should be true")
 	}
-	if pub.AccessKeyID != "AKLT1234" {
-		t.Errorf("AccessKeyID = %q, want AKLT1234", pub.AccessKeyID)
+	if pub.AccessKeyID != "****" {
+		t.Errorf("AccessKeyID = %q, want **** (masked)", pub.AccessKeyID)
 	}
 }
 

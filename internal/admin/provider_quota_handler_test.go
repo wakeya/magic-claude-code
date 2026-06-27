@@ -146,8 +146,8 @@ func TestProviderUsageSecretRedaction(t *testing.T) {
 	if cfgDTO["secret_access_key_configured"] != true {
 		t.Error("expected secret_access_key_configured=true")
 	}
-	if cfgDTO["access_key_id"] != "AKLT1234" {
-		t.Errorf("access_key_id = %v, want AKLT1234", cfgDTO["access_key_id"])
+	if cfgDTO["access_key_id"] != "****" {
+		t.Errorf("access_key_id = %v, want **** (masked)", cfgDTO["access_key_id"])
 	}
 }
 
@@ -224,14 +224,14 @@ func TestApplyQuotaUpdateSecretPatch(t *testing.T) {
 		AccessToken: "existing-token",
 	}
 	req := providerQuotaUpdateRequest{} // No AccessToken set.
-	result := applyQuotaUpdate(existing, req, "fallback")
+	result := applyQuotaUpdate(existing, req)
 	if result.AccessToken != "existing-token" {
 		t.Errorf("access_token = %q, want existing-token", result.AccessToken)
 	}
 
 	// Test: clear flag clears the field.
 	req2 := providerQuotaUpdateRequest{ClearAccessToken: true}
-	result2 := applyQuotaUpdate(existing, req2, "fallback")
+	result2 := applyQuotaUpdate(existing, req2)
 	if result2.AccessToken != "" {
 		t.Errorf("access_token after clear = %q, want empty", result2.AccessToken)
 	}

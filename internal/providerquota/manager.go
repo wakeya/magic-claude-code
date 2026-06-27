@@ -171,12 +171,12 @@ func (m *Manager) executeQuery(ctx context.Context, providerID string, opts Quer
 		}
 		exec := NewScriptExecutor(timeout)
 		placeholders := map[string]string{
-			"baseUrl":      effectiveBaseURL,
-			"apiKey":       effectiveToken,
-			"accessToken":  effectiveToken,
-			"userId":       quotaCfg.UserID,
+			"baseUrl":     effectiveBaseURL,
+			"apiKey":      effectiveToken,
+			"accessToken": effectiveToken,
+			"userId":      quotaCfg.UserID,
 		}
-		r, err := exec.ExecuteScript(ctx, script, placeholders)
+		r, err := exec.ExecuteScript(ctx, script, placeholders, effectiveBaseURL)
 		if err != nil {
 			return nil, err
 		}
@@ -191,7 +191,7 @@ func (m *Manager) executeQuery(ctx context.Context, providerID string, opts Quer
 			"accessToken": effectiveToken,
 			"userId":      quotaCfg.UserID,
 		}
-		r, err := exec.ExecuteScript(ctx, defaultNewAPIScript(), placeholders)
+		r, err := exec.ExecuteScript(ctx, defaultNewAPIScript(), placeholders, effectiveBaseURL)
 		if err != nil {
 			return nil, err
 		}
@@ -376,7 +376,7 @@ func defaultNewAPIScript() string {
 		},
 		extractor: function (response) {
 			if (response.success === false) {
-				return { planName: "Error", extra: response.message || "API error" };
+				throw new Error("API error: " + (response.message || "unknown"));
 			}
 			var data = response.data || {};
 			var planName = data.group || "Default";

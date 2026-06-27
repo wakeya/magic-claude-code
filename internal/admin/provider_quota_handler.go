@@ -131,7 +131,7 @@ func (s *Server) updateProviderUsage(w http.ResponseWriter, r *http.Request, id 
 	}
 
 	// Build or update the quota config.
-	newCfg := applyQuotaUpdate(provider.QuotaQuery, req, provider.APIToken)
+	newCfg := applyQuotaUpdate(provider.QuotaQuery, req)
 	if err := newCfg.Validate(); err != nil {
 		jsonErr, _ := json.Marshal(map[string]string{"error": err.Error()})
 		http.Error(w, string(jsonErr), http.StatusBadRequest)
@@ -190,7 +190,7 @@ func (s *Server) handleProviderUsageTest(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Build draft config.
-	draft := applyQuotaUpdate(provider.QuotaQuery, req, provider.APIToken)
+	draft := applyQuotaUpdate(provider.QuotaQuery, req)
 	if err := draft.Validate(); err != nil {
 		jsonErr, _ := json.Marshal(map[string]string{"error": err.Error()})
 		http.Error(w, string(jsonErr), http.StatusBadRequest)
@@ -290,7 +290,7 @@ type providerQuotaUpdateRequest struct {
 }
 
 // applyQuotaUpdate applies partial updates to a quota config.
-func applyQuotaUpdate(existing *providerquota.ProviderQuotaConfig, req providerQuotaUpdateRequest, fallbackAPIToken string) *providerquota.ProviderQuotaConfig {
+func applyQuotaUpdate(existing *providerquota.ProviderQuotaConfig, req providerQuotaUpdateRequest) *providerquota.ProviderQuotaConfig {
 	c := &providerquota.ProviderQuotaConfig{}
 	if existing != nil {
 		cp := *existing
@@ -326,24 +326,18 @@ func applyQuotaUpdate(existing *providerquota.ProviderQuotaConfig, req providerQ
 	}
 
 	// Secret patch semantics.
-	applySecretPatch(&c.APIKey, req.APIKey, req.ClearAPIKey, func() string {
-		if existing != nil && existing.APIKey != "" {
-			return ""
-		}
-		return fallbackAPIToken
-	})
-	applySecretPatch(&c.AccessToken, req.AccessToken, req.ClearAccessToken, func() string { return "" })
-	applySecretPatch(&c.SecretAccessKey, req.SecretAccessKey, req.ClearSecretAccessKey, func() string { return "" })
+	applySecretPatch(&c.APIKey, req.APIKey, req.ClearAPIKey)
+	applySecretPatch(&c.AccessToken, req.AccessToken, req.ClearAccessToken)
+	applySecretPatch(&c.SecretAccessKey, req.SecretAccessKey, req.ClearSecretAccessKey)
 
 	return c
 }
 
 // applySecretPatch applies secret field update semantics:
 // - Missing/empty value + clear=false: keep existing (do nothing)
-// - Missing/empty value + clear=true: clear the field
+// - clear=true: clear the field
 // - Non-empty value: replace
-// - Fallback: only used if both existing and request are empty.
-func applySecretPatch(field *string, value *string, clear bool, fallback func() string) {
+func applySecretPatch(field *string, value *string, clear bool) {
 	if clear {
 		*field = ""
 		return
@@ -352,10 +346,7 @@ func applySecretPatch(field *string, value *string, clear bool, fallback func() 
 		*field = *value
 		return
 	}
-	// Value is missing or empty: keep existing.
-	if *field == "" {
-		*field = fallback()
-	}
+	// Missing or empty value: keep existing (no-op).
 }
 
 // isMaterialQuotaChange returns true if the config change should invalidate snapshots.

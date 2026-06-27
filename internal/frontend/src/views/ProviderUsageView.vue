@@ -265,7 +265,7 @@ async function loadConfig() {
     form.enabled = data.config.enabled
     form.template_type = data.config.template_type || 'general'
     form.timeout_seconds = data.config.timeout_seconds || 10
-    form.auto_query_interval_minutes = data.config.auto_query_interval_minutes || 5
+    form.auto_query_interval_minutes = data.config.auto_query_interval_minutes ?? 5
     form.script = data.config.script || ''
     form.base_url = data.config.base_url || ''
     form.user_id = data.config.user_id || ''

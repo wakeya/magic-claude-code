@@ -305,8 +305,8 @@ func TestToPublicConfig(t *testing.T) {
 	if pub.SecretAccessKeyConfigured != true {
 		t.Error("secret_access_key_configured should be true")
 	}
-	if pub.AccessKeyID != "AKLT1234" {
-		t.Errorf("access_key_id = %q, want AKLT1234", pub.AccessKeyID)
+	if pub.AccessKeyID != "****" {
+		t.Errorf("access_key_id = %q, want **** (masked)", pub.AccessKeyID)
 	}
 
 	// Verify secrets are not in the public config.

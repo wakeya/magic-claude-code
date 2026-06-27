@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/url"
 	"time"
 )
 
@@ -98,6 +99,48 @@ func (c *ProviderQuotaConfig) Validate() error {
 	// Script size limit: 64 KiB.
 	if len(c.Script) > 64*1024 {
 		return fmt.Errorf("script exceeds 64 KiB limit (%d bytes)", len(c.Script))
+	}
+
+	// Base URL validation: must be absolute HTTP/HTTPS without userinfo.
+	if c.BaseURL != "" {
+		u, err := url.Parse(c.BaseURL)
+		if err != nil {
+			return fmt.Errorf("invalid base_url: %w", err)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return fmt.Errorf("base_url must use http or https scheme")
+		}
+		if u.Host == "" {
+			return fmt.Errorf("base_url must have a host")
+		}
+		if u.User != nil {
+			return fmt.Errorf("base_url must not contain userinfo")
+		}
+	}
+
+	// Template-specific validation.
+	if c.Enabled {
+		switch c.TemplateType {
+		case TemplateNewAPI:
+			if c.BaseURL == "" {
+				return fmt.Errorf("newapi requires base_url")
+			}
+			if c.AccessToken == "" {
+				return fmt.Errorf("newapi requires access_token")
+			}
+			if c.UserID == "" {
+				return fmt.Errorf("newapi requires user_id")
+			}
+		case TemplateTokenPlan:
+			if c.CodingPlanProvider == "zenmux" && c.BaseURL == "" {
+				return fmt.Errorf("zenmux requires base_url (quota endpoint)")
+			}
+			if c.CodingPlanProvider == "volcengine" {
+				if c.AccessKeyID == "" || c.SecretAccessKey == "" {
+					return fmt.Errorf("volcengine requires access_key_id and secret_access_key")
+				}
+			}
+		}
 	}
 
 	return nil
@@ -239,6 +282,17 @@ type QuotaSnapshot struct {
 	UpdatedAt       time.Time           `json:"updated_at"`
 }
 
+// errorResult creates a ProviderQuotaResult with an error.
+func errorResult(code, msg string, start time.Time) *ProviderQuotaResult {
+	return &ProviderQuotaResult{
+		Success:      false,
+		ErrorCode:    code,
+		ErrorMessage: msg,
+		QueriedAt:    time.Now(),
+		DurationMS:   time.Since(start).Milliseconds(),
+	}
+}
+
 // SanitizedSnapshot is the DTO returned by the admin API.
 // It strips sensitive fields and provides convenience booleans.
 type SanitizedSnapshot struct {
@@ -286,9 +340,20 @@ func ToPublicConfig(c *ProviderQuotaConfig) PublicQuotaConfig {
 		AccessTokenConfigured:    c.AccessToken != "",
 		UserID:                   c.UserID,
 		CodingPlanProvider:       c.CodingPlanProvider,
-		AccessKeyID:              c.AccessKeyID,
+		AccessKeyID:              maskAccessKeyID(c.AccessKeyID),
 		SecretAccessKeyConfigured: c.SecretAccessKey != "",
 	}
+}
+
+// maskAccessKeyID shows first 4 and last 4 characters, masking the middle.
+func maskAccessKeyID(id string) string {
+	if len(id) <= 8 {
+		if id == "" {
+			return ""
+		}
+		return "****"
+	}
+	return id[:4] + "****" + id[len(id)-4:]
 }
 
 // EncodeQuotaConfig serializes a config to JSON for SQLite storage.

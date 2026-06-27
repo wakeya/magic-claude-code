@@ -673,6 +673,10 @@ export function useApi() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'request failed' }))
+      throw new Error(err.error || `HTTP ${res.status}`)
+    }
     return res.json()
   }
 
@@ -681,6 +685,10 @@ export function useApi() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
     })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'request failed' }))
+      throw new Error(err.error || `HTTP ${res.status}`)
+    }
     return res.json()
   }
 

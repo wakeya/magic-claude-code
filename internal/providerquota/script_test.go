@@ -49,6 +49,7 @@ func TestScriptExecutorBasic(t *testing.T) {
 			"baseUrl": srv.URL,
 			"apiKey":  "test-key",
 		},
+		srv.URL,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -81,7 +82,7 @@ func TestScriptExecutorTimeout(t *testing.T) {
 	})`
 
 	exec := NewScriptExecutor(5 * time.Second)
-	result, err := exec.ExecuteScript(context.Background(), script, map[string]string{"baseUrl": srv.URL})
+	result, err := exec.ExecuteScript(context.Background(), script, map[string]string{"baseUrl": srv.URL}, srv.URL)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -107,7 +108,7 @@ func TestScriptExecutorCrossOriginRedirect(t *testing.T) {
 	})`
 
 	exec := NewScriptExecutor(5 * time.Second)
-	result, err := exec.ExecuteScript(context.Background(), script, map[string]string{"baseUrl": srv.URL})
+	result, err := exec.ExecuteScript(context.Background(), script, map[string]string{"baseUrl": srv.URL}, srv.URL)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -123,7 +124,7 @@ func TestScriptExecutorForbidMethod(t *testing.T) {
 	})`
 
 	exec := NewScriptExecutor(5 * time.Second)
-	result, err := exec.ExecuteScript(context.Background(), script, nil)
+	result, err := exec.ExecuteScript(context.Background(), script, nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -146,7 +147,7 @@ func TestScriptExecutorForbidHeader(t *testing.T) {
 	})`
 
 	exec := NewScriptExecutor(5 * time.Second)
-	result, err := exec.ExecuteScript(context.Background(), script, nil)
+	result, err := exec.ExecuteScript(context.Background(), script, nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -162,7 +163,7 @@ func TestScriptExecutorForbidUserinfo(t *testing.T) {
 	})`
 
 	exec := NewScriptExecutor(5 * time.Second)
-	result, err := exec.ExecuteScript(context.Background(), script, nil)
+	result, err := exec.ExecuteScript(context.Background(), script, nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -184,7 +185,7 @@ func TestScriptExecutor401Error(t *testing.T) {
 	})`
 
 	exec := NewScriptExecutor(5 * time.Second)
-	result, err := exec.ExecuteScript(context.Background(), script, map[string]string{"baseUrl": srv.URL})
+	result, err := exec.ExecuteScript(context.Background(), script, map[string]string{"baseUrl": srv.URL}, srv.URL)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -227,7 +228,7 @@ func TestScriptExecutorSecretNotInSource(t *testing.T) {
 	result, err := exec.ExecuteScript(context.Background(), script, map[string]string{
 		"baseUrl": srv.URL,
 		"apiKey":  "my-secret-key",
-	})
+	}, srv.URL)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -273,7 +274,7 @@ func TestScriptExecutorTierExtraction(t *testing.T) {
 	})`
 
 	exec := NewScriptExecutor(5 * time.Second)
-	result, err := exec.ExecuteScript(context.Background(), script, map[string]string{"baseUrl": srv.URL})
+	result, err := exec.ExecuteScript(context.Background(), script, map[string]string{"baseUrl": srv.URL}, srv.URL)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -293,7 +294,7 @@ func TestScriptExecutorTierExtraction(t *testing.T) {
 
 func TestScriptExecutorInvalidScript(t *testing.T) {
 	exec := NewScriptExecutor(5 * time.Second)
-	result, err := exec.ExecuteScript(context.Background(), "this is not valid javascript!!!", nil)
+	result, err := exec.ExecuteScript(context.Background(), "this is not valid javascript!!!", nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -307,7 +308,7 @@ func TestScriptExecutorInvalidScript(t *testing.T) {
 
 func TestScriptExecutorMissingExtractor(t *testing.T) {
 	exec := NewScriptExecutor(5 * time.Second)
-	result, err := exec.ExecuteScript(context.Background(), `({request: {url: "http://example.com", method: "GET"}})`, nil)
+	result, err := exec.ExecuteScript(context.Background(), `({request: {url: "http://example.com", method: "GET"}})`, nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -323,12 +324,37 @@ func TestScriptExecutorURLSchemeCheck(t *testing.T) {
 	})`
 
 	exec := NewScriptExecutor(5 * time.Second)
-	result, err := exec.ExecuteScript(context.Background(), script, nil)
+	result, err := exec.ExecuteScript(context.Background(), script, nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result.Success {
 		t.Error("expected failure for ftp scheme")
+	}
+}
+
+func TestScriptExecutorOriginCheck(t *testing.T) {
+	// Script targeting a different host than the effective base URL.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"balance": 1})
+	}))
+	defer srv.Close()
+
+	script := `({
+		request: { url: "http://evil.example.com/balance", method: "GET" },
+		extractor: function(r) { return { remaining: r.balance }; }
+	})`
+
+	exec := NewScriptExecutor(5 * time.Second)
+	result, err := exec.ExecuteScript(context.Background(), script, nil, "https://safe.example.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Success {
+		t.Error("expected failure for cross-origin request")
+	}
+	if result.ErrorCode != "invalid_config" {
+		t.Errorf("error_code = %q, want invalid_config", result.ErrorCode)
 	}
 }
 

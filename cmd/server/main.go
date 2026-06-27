@@ -24,6 +24,7 @@ import (
 	"magic-claude-code/internal/config"
 	"magic-claude-code/internal/frontend"
 	"magic-claude-code/internal/i18n"
+	"magic-claude-code/internal/providerquota"
 	"magic-claude-code/internal/proxy"
 	"magic-claude-code/internal/updater"
 	"magic-claude-code/internal/usage"
@@ -241,6 +242,14 @@ func main() {
 
 	adminServer.SetGatewayRestarter(proxyServer)
 
+	// 创建额度查询管理器
+	quotaSnapshotStore := providerquota.NewSnapshotStore(configStore.DB())
+	quotaConfigGet := &quotaConfigGetter{configStore: configStore}
+	quotaManager := providerquota.NewManager(quotaSnapshotStore, quotaConfigGet, 4)
+	adminServer.SetQuotaManager(quotaManager)
+	quotaManagerCtx, stopQuotaManager := context.WithCancel(context.Background())
+	quotaManager.Start(quotaManagerCtx)
+
 	// 配置自动更新器
 	updaterInstance := updater.New(
 		updater.NewGitHubSource("wakeya", "magic-claude-code"),
@@ -296,6 +305,7 @@ func main() {
 	}
 
 	stopUsageSync()
+	stopQuotaManager()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -316,4 +326,47 @@ func main() {
 	}
 
 	log.Println(msg.ServerStopped)
+}
+
+// quotaConfigGetter adapts config.ConfigStore to providerquota.ProviderConfigGetter.
+type quotaConfigGetter struct {
+	configStore config.ConfigStore
+}
+
+func (g *quotaConfigGetter) GetProviderByID(id string) *providerquota.ProviderConfig {
+	cfg, err := g.configStore.Load()
+	if err != nil {
+		return nil
+	}
+	p := cfg.GetProviderByID(id)
+	if p == nil {
+		return nil
+	}
+	return &providerquota.ProviderConfig{
+		ID:         p.ID,
+		Enabled:    p.Enabled,
+		APIURL:     p.APIURL,
+		APIToken:   p.APIToken,
+		QuotaQuery: p.QuotaQuery,
+	}
+}
+
+func (g *quotaConfigGetter) ListEnabledProviders() []providerquota.ProviderConfig {
+	cfg, err := g.configStore.Load()
+	if err != nil {
+		return nil
+	}
+	var result []providerquota.ProviderConfig
+	for _, p := range cfg.Providers {
+		if p.Enabled {
+			result = append(result, providerquota.ProviderConfig{
+				ID:         p.ID,
+				Enabled:    p.Enabled,
+				APIURL:     p.APIURL,
+				APIToken:   p.APIToken,
+				QuotaQuery: p.QuotaQuery,
+			})
+		}
+	}
+	return result
 }

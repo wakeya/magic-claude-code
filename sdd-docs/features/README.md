@@ -128,6 +128,7 @@ Local page / proxy entry / reference sources / stack / last updated / progress
 | Brand Logo Replacement | `2026-06-20-brand-logo/spec.md` | `2026-06-20-brand-logo/spec_ZH.md` |
 | Transparent Mode Bootstrap and Fallback | `2026-06-20-transparent-mode-bootstrap-and-fallback/spec.md` | `2026-06-20-transparent-mode-bootstrap-and-fallback/spec_ZH.md` |
 | Fish Profile Dedup Scanner | `2026-06-21-fish-profile-dedup-scanner/spec.md` | `2026-06-21-fish-profile-dedup-scanner/spec_ZH.md` |
+| Provider Quota Query | `2026-06-27-provider-quota-query/spec.md` | `2026-06-27-provider-quota-query/spec_ZH.md` |
 
 ## 状态生命周期
 

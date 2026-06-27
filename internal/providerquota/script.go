@@ -17,7 +17,7 @@ import (
 const (
 	scriptParseTimeout   = 200 * time.Millisecond
 	scriptExtractTimeout = 500 * time.Millisecond
-	maxRequestBodySize   = 256 * 1024    // 256 KiB
+	maxRequestBodySize   = 256 * 1024     // 256 KiB
 	maxResponseBodySize  = 2 * 1024 * 1024 // 2 MiB
 	maxRedirects         = 3
 	maxErrorBodyBytes    = 512
@@ -42,7 +42,6 @@ func NewScriptExecutor(timeout time.Duration) *ScriptExecutor {
 	return &ScriptExecutor{
 		HTTPClient: &http.Client{
 			Timeout: timeout,
-			// Disable automatic redirects; we validate each manually.
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
@@ -51,12 +50,9 @@ func NewScriptExecutor(timeout time.Duration) *ScriptExecutor {
 }
 
 // ExecuteScript runs a script to produce an HTTP request, performs the request,
-// and runs the extractor on the response. Placeholders in the request URL and
-// headers are replaced with the provided values before the HTTP call.
-//
-// placeholderValues maps placeholder names (without braces) to their values,
-// e.g. {"apiKey": "sk-xxx", "baseUrl": "https://example.com"}.
-func (e *ScriptExecutor) ExecuteScript(ctx context.Context, script string, placeholderValues map[string]string) (*ProviderQuotaResult, error) {
+// and runs the extractor on the response. effectiveBaseURL is used for origin
+// validation — the request URL must share scheme+host with it.
+func (e *ScriptExecutor) ExecuteScript(ctx context.Context, script string, placeholderValues map[string]string, effectiveBaseURL string) (*ProviderQuotaResult, error) {
 	start := time.Now()
 
 	// Phase 1: Parse request config from script.
@@ -65,7 +61,7 @@ func (e *ScriptExecutor) ExecuteScript(ctx context.Context, script string, place
 		return &ProviderQuotaResult{
 			Success:      false,
 			ErrorCode:    "script_error",
-			ErrorMessage: sanitizeError(err.Error()),
+			ErrorMessage: sanitizeError(err.Error(), placeholderValues),
 			DurationMS:   time.Since(start).Milliseconds(),
 		}, nil
 	}
@@ -76,24 +72,24 @@ func (e *ScriptExecutor) ExecuteScript(ctx context.Context, script string, place
 		reqConfig.Headers[k] = substitutePlaceholders(v, placeholderValues)
 	}
 
-	// Validate the request.
-	if err := validateScriptRequest(reqConfig); err != nil {
+	// Validate the request (including origin check).
+	if err := validateScriptRequest(reqConfig, effectiveBaseURL); err != nil {
 		return &ProviderQuotaResult{
 			Success:      false,
 			ErrorCode:    "invalid_config",
-			ErrorMessage: sanitizeError(err.Error()),
+			ErrorMessage: sanitizeError(err.Error(), placeholderValues),
 			DurationMS:   time.Since(start).Milliseconds(),
 		}, nil
 	}
 
 	// Phase 2: Perform HTTP request.
-	body, statusCode, err := e.doHTTPRequest(ctx, reqConfig)
+	body, statusCode, err := e.doHTTPRequest(ctx, reqConfig, effectiveBaseURL)
 	if err != nil {
 		ec := classifyHTTPError(err)
 		return &ProviderQuotaResult{
 			Success:      false,
 			ErrorCode:    ec,
-			ErrorMessage: sanitizeError(err.Error()),
+			ErrorMessage: sanitizeError(err.Error(), placeholderValues),
 			DurationMS:   time.Since(start).Milliseconds(),
 		}, nil
 	}
@@ -117,18 +113,17 @@ func (e *ScriptExecutor) ExecuteScript(ctx context.Context, script string, place
 		return &ProviderQuotaResult{
 			Success:      false,
 			ErrorCode:    "script_error",
-			ErrorMessage: sanitizeError(err.Error()),
+			ErrorMessage: sanitizeError(err.Error(), placeholderValues),
 			DurationMS:   time.Since(start).Milliseconds(),
 		}, nil
 	}
 
-	// Normalize extracted values into result.
 	result, err := normalizeExtracted(extracted, start)
 	if err != nil {
 		return &ProviderQuotaResult{
 			Success:      false,
 			ErrorCode:    "invalid_response",
-			ErrorMessage: sanitizeError(err.Error()),
+			ErrorMessage: sanitizeError(err.Error(), placeholderValues),
 			DurationMS:   time.Since(start).Milliseconds(),
 		}, nil
 	}
@@ -136,12 +131,10 @@ func (e *ScriptExecutor) ExecuteScript(ctx context.Context, script string, place
 	return result, nil
 }
 
-// parseRequest runs Phase 1: evaluates the script and extracts the request config.
 func (e *ScriptExecutor) parseRequest(script string) (*ScriptRequest, error) {
 	vm := goja.New()
 	defer vm.Interrupt("")
 
-	// Set a timeout via interrupt goroutine.
 	done := make(chan struct{})
 	timer := time.AfterFunc(scriptParseTimeout, func() {
 		vm.Interrupt("script execution timeout")
@@ -183,7 +176,6 @@ func (e *ScriptExecutor) parseRequest(script string) (*ScriptRequest, error) {
 	return &req, nil
 }
 
-// runExtractor runs Phase 2: calls the extractor function with the response body.
 func (e *ScriptExecutor) runExtractor(script string, responseBody string) (any, error) {
 	vm := goja.New()
 	defer vm.Interrupt("")
@@ -221,10 +213,8 @@ func (e *ScriptExecutor) runExtractor(script string, responseBody string) (any, 
 		return nil, fmt.Errorf("'extractor' must be a function")
 	}
 
-	// Parse response as JSON for the extractor.
 	var respObj any
 	if err := json.Unmarshal([]byte(responseBody), &respObj); err != nil {
-		// If not valid JSON, pass the raw string.
 		respObj = responseBody
 	}
 
@@ -236,8 +226,8 @@ func (e *ScriptExecutor) runExtractor(script string, responseBody string) (any, 
 	return result.Export(), nil
 }
 
-// doHTTPRequest performs the HTTP request with redirects, body limit, and same-origin checks.
-func (e *ScriptExecutor) doHTTPRequest(ctx context.Context, req *ScriptRequest) ([]byte, int, error) {
+// doHTTPRequest performs the HTTP request with redirect origin validation.
+func (e *ScriptExecutor) doHTTPRequest(ctx context.Context, req *ScriptRequest, effectiveBaseURL string) ([]byte, int, error) {
 	var bodyReader io.Reader
 	if req.Body != nil {
 		bodyBytes, err := json.Marshal(req.Body)
@@ -259,7 +249,14 @@ func (e *ScriptExecutor) doHTTPRequest(ctx context.Context, req *ScriptRequest) 
 		httpReq.Header.Set(k, v)
 	}
 
-	// Manual redirect handling with same-origin validation.
+	// Resolve the allowed origin from effective base URL.
+	var allowedHost string
+	if effectiveBaseURL != "" {
+		if baseU, err := url.Parse(effectiveBaseURL); err == nil {
+			allowedHost = baseU.Host
+		}
+	}
+
 	currentURL := req.URL
 	for redirect := 0; redirect <= maxRedirects; redirect++ {
 		resp, err := e.HTTPClient.Do(httpReq)
@@ -274,7 +271,6 @@ func (e *ScriptExecutor) doHTTPRequest(ctx context.Context, req *ScriptRequest) 
 				return nil, 0, fmt.Errorf("redirect without Location header")
 			}
 
-			// Resolve relative redirect.
 			redirectURL, err := url.Parse(location)
 			if err != nil {
 				return nil, 0, fmt.Errorf("invalid redirect URL: %w", err)
@@ -282,9 +278,12 @@ func (e *ScriptExecutor) doHTTPRequest(ctx context.Context, req *ScriptRequest) 
 			baseURL, _ := url.Parse(currentURL)
 			redirectURL = baseURL.ResolveReference(redirectURL)
 
-			// Same-origin check.
+			// Same-origin check against both current URL and effective base.
 			if redirectURL.Host != baseURL.Host {
 				return nil, 0, fmt.Errorf("cross-origin redirect rejected: %s -> %s", baseURL.Host, redirectURL.Host)
+			}
+			if allowedHost != "" && redirectURL.Host != allowedHost {
+				return nil, 0, fmt.Errorf("redirect target not in allowed origin: %s", redirectURL.Host)
 			}
 
 			currentURL = redirectURL.String()
@@ -298,7 +297,6 @@ func (e *ScriptExecutor) doHTTPRequest(ctx context.Context, req *ScriptRequest) 
 			continue
 		}
 
-		// Non-redirect response.
 		defer resp.Body.Close()
 		body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize+1))
 		if err != nil {
@@ -314,7 +312,10 @@ func (e *ScriptExecutor) doHTTPRequest(ctx context.Context, req *ScriptRequest) 
 }
 
 // validateScriptRequest checks that the request is safe.
-func validateScriptRequest(req *ScriptRequest) error {
+// effectiveBaseURL constrains the allowed origin: the request URL must
+// share scheme and host with it (unless effectiveBaseURL is empty, in
+// which case only basic validation is applied).
+func validateScriptRequest(req *ScriptRequest, effectiveBaseURL string) error {
 	if req.URL == "" {
 		return fmt.Errorf("request URL is empty")
 	}
@@ -332,7 +333,16 @@ func validateScriptRequest(req *ScriptRequest) error {
 		return fmt.Errorf("request URL must not contain userinfo")
 	}
 
-	// Method validation.
+	// Origin check: request URL must match effective base URL host.
+	if effectiveBaseURL != "" {
+		baseU, err := url.Parse(effectiveBaseURL)
+		if err == nil && baseU.Host != "" {
+			if u.Host != baseU.Host {
+				return fmt.Errorf("request URL host %q does not match effective base URL host %q", u.Host, baseU.Host)
+			}
+		}
+	}
+
 	method := strings.ToUpper(req.Method)
 	if method == "" {
 		req.Method = "GET"
@@ -342,12 +352,11 @@ func validateScriptRequest(req *ScriptRequest) error {
 		return fmt.Errorf("only GET and POST methods are allowed, got %q", req.Method)
 	}
 
-	// Forbidden headers.
 	forbidden := map[string]bool{
-		"host":              true,
-		"content-length":    true,
-		"transfer-encoding": true,
-		"connection":        true,
+		"host":                true,
+		"content-length":      true,
+		"transfer-encoding":   true,
+		"connection":          true,
 		"proxy-authorization": true,
 	}
 	for k := range req.Headers {
@@ -359,7 +368,6 @@ func validateScriptRequest(req *ScriptRequest) error {
 	return nil
 }
 
-// substitutePlaceholders replaces {{key}} patterns in a string.
 func substitutePlaceholders(s string, values map[string]string) string {
 	for key, val := range values {
 		s = strings.ReplaceAll(s, "{{"+key+"}}", val)
@@ -367,7 +375,6 @@ func substitutePlaceholders(s string, values map[string]string) string {
 	return s
 }
 
-// classifyHTTPError maps Go HTTP errors to stable error codes.
 func classifyHTTPError(err error) string {
 	if err == context.DeadlineExceeded || err == context.Canceled {
 		return "request_timeout"
@@ -378,13 +385,19 @@ func classifyHTTPError(err error) string {
 	return "network_error"
 }
 
-// sanitizeError removes potentially sensitive information from error messages.
-func sanitizeError(msg string) string {
-	// Truncate very long messages.
+// sanitizeError removes secret values and truncates error messages.
+// placeholderValues contains the secret values that were substituted;
+// any occurrence of these values in the error message is redacted.
+func sanitizeError(msg string, placeholderValues map[string]string) string {
+	// Redact all secret values that were substituted into the request.
+	for _, val := range placeholderValues {
+		if val == "" {
+			continue
+		}
+		msg = strings.ReplaceAll(msg, val, "[REDACTED]")
+	}
 	if len(msg) > 512 {
 		msg = msg[:512]
 	}
-	// Remove URLs that might contain tokens.
-	// This is a simple heuristic; the actual HTTP client logs are separate.
 	return msg
 }

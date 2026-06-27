@@ -15,7 +15,6 @@ import (
 type BalanceAdapter struct {
 	HTTPClient *http.Client
 	// EndpointOverride, if non-nil, replaces the default endpoint lookup.
-	// Used for testing.
 	EndpointOverride func(provider string) string
 }
 
@@ -26,16 +25,7 @@ func NewBalanceAdapter(timeout time.Duration) *BalanceAdapter {
 	}
 }
 
-// endpoint returns the URL for the given provider.
-func (a *BalanceAdapter) endpoint(provider string) string {
-	if a.EndpointOverride != nil {
-		return a.EndpointOverride(provider)
-	}
-	return balanceEndpoint(provider)
-}
-
-// DetectBalanceProvider returns the balance provider key for the given API URL host,
-// or empty string if no match.
+// DetectBalanceProvider returns the balance provider key for the given API URL host.
 func DetectBalanceProvider(apiURL string) string {
 	u, err := url.Parse(apiURL)
 	if err != nil {
@@ -60,7 +50,6 @@ func DetectBalanceProvider(apiURL string) string {
 	}
 }
 
-// balanceEndpoint returns the fixed endpoint for a balance provider.
 func balanceEndpoint(provider string) string {
 	switch provider {
 	case "deepseek":
@@ -80,6 +69,13 @@ func balanceEndpoint(provider string) string {
 	}
 }
 
+func (a *BalanceAdapter) endpoint(provider string) string {
+	if a.EndpointOverride != nil {
+		return a.EndpointOverride(provider)
+	}
+	return balanceEndpoint(provider)
+}
+
 // Query queries the balance API for the detected provider.
 func (a *BalanceAdapter) Query(ctx context.Context, provider string, apiToken string) *ProviderQuotaResult {
 	start := time.Now()
@@ -91,7 +87,7 @@ func (a *BalanceAdapter) Query(ctx context.Context, provider string, apiToken st
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
-		return errorResult("internal_error", sanitizeError(err.Error()), start)
+		return errorResult("internal_error", sanitizeError(err.Error(), nil), start)
 	}
 	req.Header.Set("Authorization", "Bearer "+apiToken)
 	req.Header.Set("Accept", "application/json")
@@ -99,13 +95,13 @@ func (a *BalanceAdapter) Query(ctx context.Context, provider string, apiToken st
 	resp, err := a.HTTPClient.Do(req)
 	if err != nil {
 		ec := classifyHTTPError(err)
-		return errorResult(ec, sanitizeError(err.Error()), start)
+		return errorResult(ec, sanitizeError(err.Error(), nil), start)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize+1))
 	if err != nil {
-		return errorResult("network_error", sanitizeError(err.Error()), start)
+		return errorResult("network_error", sanitizeError(err.Error(), nil), start)
 	}
 	if len(body) > maxResponseBodySize {
 		return errorResult("response_too_large", "response exceeds limit", start)
@@ -118,7 +114,6 @@ func (a *BalanceAdapter) Query(ctx context.Context, provider string, apiToken st
 		return errorResult("upstream_http_error", fmt.Sprintf("HTTP %d", resp.StatusCode), start)
 	}
 
-	// Parse based on provider.
 	var result *ProviderQuotaResult
 	switch provider {
 	case "deepseek":
@@ -138,31 +133,34 @@ func (a *BalanceAdapter) Query(ctx context.Context, provider string, apiToken st
 	}
 
 	if err != nil {
-		return errorResult("invalid_response", sanitizeError(err.Error()), start)
+		return errorResult("invalid_response", sanitizeError(err.Error(), nil), start)
 	}
 
 	if err := NormalizeResult(result); err != nil {
-		return errorResult("invalid_response", sanitizeError(err.Error()), start)
+		return errorResult("invalid_response", sanitizeError(err.Error(), nil), start)
 	}
 	return result
 }
 
 // --- DeepSeek ---
-
-type deepSeekResponse struct {
-	BalanceInfos []struct {
-		Currency      string  `json:"currency"`
-		TotalBalance  float64 `json:"total_balance"`
-		GrantedBalance float64 `json:"granted_balance"`
-		ToppedUpBalance float64 `json:"topped_up_balance"`
-	} `json:"balance_infos"`
-	IsAvailable bool `json:"is_available"`
-}
+// Response: { "is_available": bool, "balance_infos": [{ "currency", "total_balance" }] }
 
 func parseDeepSeekBalance(body []byte, start time.Time) (*ProviderQuotaResult, error) {
-	var resp deepSeekResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("parse DeepSeek response: %w", err)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("parse DeepSeek: %w", err)
+	}
+
+	isAvailable := true // default true per reference
+	if v, ok := raw["is_available"]; ok {
+		json.Unmarshal(v, &isAvailable)
+	}
+
+	var infos []map[string]any
+	if v, ok := raw["balance_infos"]; ok {
+		if err := json.Unmarshal(v, &infos); err != nil {
+			return nil, fmt.Errorf("parse balance_infos: %w", err)
+		}
 	}
 
 	result := &ProviderQuotaResult{
@@ -171,84 +169,77 @@ func parseDeepSeekBalance(body []byte, start time.Time) (*ProviderQuotaResult, e
 		DurationMS: time.Since(start).Milliseconds(),
 	}
 
-	isValid := resp.IsAvailable
-	for _, info := range resp.BalanceInfos {
-		total := info.TotalBalance
-		bal := BalanceItem{
-			Total:   &total,
-			Unit:    info.Currency,
-			IsValid: &isValid,
+	for _, info := range infos {
+		currency, _ := info["currency"].(string)
+		if currency == "" {
+			currency = "CNY"
 		}
-		if info.GrantedBalance > 0 || info.ToppedUpBalance > 0 {
-			used := info.GrantedBalance + info.ToppedUpBalance - info.TotalBalance
-			if used >= 0 {
-				bal.Used = &used
-			}
-			remaining := info.TotalBalance
-			bal.Remaining = &remaining
-		} else {
-			remaining := info.TotalBalance
-			bal.Remaining = &remaining
+		total := toFloat64FromAny(info["total_balance"])
+		bal := BalanceItem{
+			PlanName:  currency,
+			Remaining: &total,
+			Unit:      currency,
+		}
+		if !isAvailable {
+			msg := "Insufficient balance"
+			bal.IsValid = &isAvailable
+			bal.InvalidMessage = msg
 		}
 		result.Balances = append(result.Balances, bal)
 	}
 
 	if len(result.Balances) == 0 {
-		// DeepSeek sometimes returns empty balance_infos; treat as zero balance.
 		zero := 0.0
-		result.Balances = append(result.Balances, BalanceItem{
-			Remaining: &zero,
-			Unit:      "CNY",
-			IsValid:   &isValid,
-		})
+		bal := BalanceItem{Remaining: &zero, Unit: "CNY"}
+		if !isAvailable {
+			bal.IsValid = &isAvailable
+			bal.InvalidMessage = "Insufficient balance"
+		}
+		result.Balances = append(result.Balances, bal)
 	}
 
 	return result, nil
 }
 
 // --- StepFun ---
-
-type stepFunResponse struct {
-	Balance float64 `json:"balance"`
-}
+// Response: { "balance": float|string }
 
 func parseStepFunBalance(body []byte, start time.Time) (*ProviderQuotaResult, error) {
-	var resp stepFunResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("parse StepFun response: %w", err)
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("parse StepFun: %w", err)
 	}
 
-	remaining := resp.Balance
+	balance := toFloat64FromAny(raw["balance"])
 	return &ProviderQuotaResult{
 		Success:   true,
 		QueriedAt: time.Now(),
 		DurationMS: time.Since(start).Milliseconds(),
 		Balances: []BalanceItem{
-			{Remaining: &remaining, Unit: "CNY"},
+			{Remaining: &balance, Unit: "CNY"},
 		},
 	}, nil
 }
 
 // --- SiliconFlow ---
-
-type siliconFlowResponse struct {
-	Code int    `json:"code"`
-	Msg  string `json:"msg"`
-	Data struct {
-		TotalBalance float64 `json:"totalBalance"`
-	} `json:"data"`
-}
+// Response: { "data": { "totalBalance": float|string } }
 
 func parseSiliconFlowBalance(body []byte, unit string, start time.Time) (*ProviderQuotaResult, error) {
-	var resp siliconFlowResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("parse SiliconFlow response: %w", err)
+	var resp struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data *struct {
+			TotalBalance json.Number `json:"totalBalance"`
+		} `json:"data"`
 	}
-	if resp.Code != 0 && resp.Code != 200 {
-		return nil, fmt.Errorf("SiliconFlow error: code=%d msg=%s", resp.Code, resp.Msg)
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("parse SiliconFlow: %w", err)
+	}
+	if resp.Data == nil {
+		return nil, fmt.Errorf("SiliconFlow: missing data field")
 	}
 
-	total := resp.Data.TotalBalance
+	total, _ := resp.Data.TotalBalance.Float64()
 	return &ProviderQuotaResult{
 		Success:   true,
 		QueriedAt: time.Now(),
@@ -260,66 +251,93 @@ func parseSiliconFlowBalance(body []byte, unit string, start time.Time) (*Provid
 }
 
 // --- OpenRouter ---
-
-type openRouterResponse struct {
-	Data struct {
-		TotalCredits float64 `json:"total_credits"`
-		TotalUsage   float64 `json:"total_usage"`
-	} `json:"data"`
-}
+// Response: { "data": { "total_credits": float, "total_usage": float } }
 
 func parseOpenRouterBalance(body []byte, start time.Time) (*ProviderQuotaResult, error) {
-	var resp openRouterResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("parse OpenRouter response: %w", err)
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("parse OpenRouter: %w", err)
 	}
 
-	total := resp.Data.TotalCredits
-	used := resp.Data.TotalUsage
+	// Defensive: try data wrapper, fallback to root.
+	dataRaw := raw
+	if d, ok := raw["data"].(map[string]any); ok {
+		dataRaw = d
+	}
+
+	total := toFloat64FromAny(dataRaw["total_credits"])
+	used := toFloat64FromAny(dataRaw["total_usage"])
 	remaining := total - used
+
+	bal := BalanceItem{
+		Total:     &total,
+		Used:      &used,
+		Remaining: &remaining,
+		Unit:      "USD",
+	}
+	if remaining <= 0 {
+		msg := "No credits remaining"
+		f := false
+		bal.IsValid = &f
+		bal.InvalidMessage = msg
+	}
+
 	return &ProviderQuotaResult{
 		Success:   true,
 		QueriedAt: time.Now(),
 		DurationMS: time.Since(start).Milliseconds(),
-		Balances: []BalanceItem{
-			{Total: &total, Used: &used, Remaining: &remaining, Unit: "USD"},
-		},
+		Balances:  []BalanceItem{bal},
 	}, nil
 }
 
 // --- Novita AI ---
-
-type novitaResponse struct {
-	Data struct {
-		AvailableBalance float64 `json:"availableBalance"`
-	} `json:"data"`
-}
+// Response: { "availableBalance": float|string } (top-level, NOT in data)
+// Value is in 0.0001 USD units; divide by 10000.
 
 func parseNovitaBalance(body []byte, start time.Time) (*ProviderQuotaResult, error) {
-	var resp novitaResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("parse Novita response: %w", err)
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("parse Novita: %w", err)
 	}
 
-	// Novita returns balance in 1/10000 units; convert to USD.
-	remaining := resp.Data.AvailableBalance / 10000
+	// availableBalance is TOP-LEVEL, not under "data".
+	rawBalance := toFloat64FromAny(raw["availableBalance"])
+	remaining := rawBalance / 10000.0
+
+	bal := BalanceItem{
+		Remaining: &remaining,
+		Unit:      "USD",
+	}
+	if remaining <= 0 {
+		msg := "No balance remaining"
+		f := false
+		bal.IsValid = &f
+		bal.InvalidMessage = msg
+	}
+
 	return &ProviderQuotaResult{
 		Success:   true,
 		QueriedAt: time.Now(),
 		DurationMS: time.Since(start).Milliseconds(),
-		Balances: []BalanceItem{
-			{Remaining: &remaining, Unit: "USD"},
-		},
+		Balances:  []BalanceItem{bal},
 	}, nil
 }
 
-// errorResult creates a ProviderQuotaResult with an error.
-func errorResult(code, msg string, start time.Time) *ProviderQuotaResult {
-	return &ProviderQuotaResult{
-		Success:      false,
-		ErrorCode:    code,
-		ErrorMessage: msg,
-		QueriedAt:    time.Now(),
-		DurationMS:   time.Since(start).Milliseconds(),
+// toFloat64FromAny converts various numeric types to float64.
+func toFloat64FromAny(v any) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case float32:
+		return float64(n)
+	case json.Number:
+		f, _ := n.Float64()
+		return f
+	case int:
+		return float64(n)
+	case int64:
+		return float64(n)
+	default:
+		return 0
 	}
 }
