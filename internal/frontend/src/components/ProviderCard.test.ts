@@ -41,3 +41,28 @@ test('select-all checkbox reflects indeterminate/partial state', () => {
   // When some but not all are selected, the control shows partial state
   assert.match(dashSource, /indeterminate|partial/i)
 })
+
+test('ProviderCard emits usage event', () => {
+  assert.match(cardSource, /usage/)
+})
+
+test('ProviderCard emits refresh-quota event', () => {
+  assert.match(cardSource, /refresh-quota/)
+})
+
+test('ProviderCard accepts quotaSnapshot prop', () => {
+  assert.match(cardSource, /quotaSnapshot/)
+})
+
+test('ProviderCard shows usage button with icon', () => {
+  // Usage button should exist with Gauge icon
+  assert.match(cardSource, /@click="\$emit\('usage'\)/)
+})
+
+test('DashboardView passes quota snapshots to ProviderCard', () => {
+  assert.match(dashSource, /:quota-snapshot|quotaSnapshot/)
+})
+
+test('DashboardView handles usage navigation', () => {
+  assert.match(dashSource, /goToUsage|provider-usage/)
+})

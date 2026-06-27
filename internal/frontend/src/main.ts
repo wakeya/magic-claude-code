@@ -9,6 +9,7 @@ const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/login', name: 'login', component: LoginView },
+    { path: '/providers/:providerId/usage', name: 'provider-usage', component: () => import('./views/ProviderUsageView.vue') },
     { path: '/', name: 'dashboard', component: DashboardView },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],

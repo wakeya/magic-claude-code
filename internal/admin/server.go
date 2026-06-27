@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"magic-claude-code/internal/config"
+	"magic-claude-code/internal/providerquota"
 	"magic-claude-code/internal/updater"
 	"magic-claude-code/internal/usage"
 )
@@ -36,6 +37,7 @@ type Server struct {
 	effectiveListen            *config.Config
 	statsProvider              StatsProvider
 	usageHandler               *usage.Handler
+	quotaManager               *providerquota.Manager
 	updater                    *updater.Updater
 	updateApplyDisabledMessage string
 	gatewayRestarter           GatewayRestarter
@@ -95,6 +97,7 @@ func (s *Server) Start(addr string, frontendFS embed.FS) error {
 	mux.HandleFunc("/api/providers/test", s.authMiddlewareFunc(s.handleTestProvider))
 	mux.HandleFunc("/api/providers/export", s.authMiddlewareFunc(s.handleExportProviders))
 	mux.HandleFunc("/api/providers/import", s.authMiddlewareFunc(s.handleImportProviders))
+	mux.HandleFunc("/api/providers/usage", s.authMiddlewareFunc(s.handleProviderBatchUsage))
 	mux.HandleFunc("/api/providers/", s.authMiddlewareFunc(s.handleProviderRoutes))
 	// net/http ServeMux uses longest-pattern matching; keep exact session routes before the subtree handler for readability.
 	mux.HandleFunc("/api/sessions", s.authMiddlewareFunc(s.handleSessions))
@@ -178,6 +181,11 @@ func (s *Server) SetUpdater(u *updater.Updater) {
 // SetGatewayRestarter 注入路由模式重启器，使配置变更后能平滑重启 gateway HTTP 服务
 func (s *Server) SetGatewayRestarter(r GatewayRestarter) {
 	s.gatewayRestarter = r
+}
+
+// SetQuotaManager 注入额度查询管理器
+func (s *Server) SetQuotaManager(m *providerquota.Manager) {
+	s.quotaManager = m
 }
 
 // SetEffectiveListenState records the proxy/admin listen addresses/ports that

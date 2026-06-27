@@ -157,13 +157,17 @@
           :key="p.id"
           :provider="p"
           :selected="selectedProviderIds.has(p.id)"
+          :quota-snapshot="quotaSnapshots[p.id]"
+          :refreshing="refreshingProviderId === p.id"
           @edit="openEditModal(p)"
           @delete="handleDelete(p.id)"
           @activate="handleActivate(p.id)"
           @toggle="handleToggle(p.id)"
           @test="handleTest(p.id)"
           @duplicate="handleDuplicate"
+          @usage="goToUsage(p.id)"
           @toggle-select="toggleProviderSelect"
+          @refresh-quota="refreshProviderQuota(p.id)"
         />
       </div>
 
@@ -840,6 +844,7 @@ import {
   type UsageCoverageRow,
   type SessionItem,
   type SessionProject,
+  type QuotaSnapshot,
 } from '@/composables/useApi'
 import { useI18n } from '@/composables/useI18n'
 import { useTheme } from '@/composables/useTheme'
@@ -898,6 +903,8 @@ const status = ref<StatusInfo | null>(null)
 const providers = ref<Provider[]>([])
 const activeProviderId = ref('')
 const selectedProviderIds = ref<Set<string>>(new Set())
+const quotaSnapshots = ref<Record<string, QuotaSnapshot>>({})
+const refreshingProviderId = ref<string | null>(null)
 const importFileInput = ref<HTMLInputElement | null>(null)
 const importPreview = ref<{ providers: Provider[]; newCount: number; conflictCount: number } | null>(null)
 const importStrategy = ref<'skip' | 'overwrite' | 'duplicate'>('skip')
@@ -1185,6 +1192,35 @@ async function loadProviders() {
   } catch {
     // keep last value
   }
+}
+
+async function loadQuotaSnapshots() {
+  try {
+    const data = await api.getAllProviderUsageSnapshots()
+    quotaSnapshots.value = data.snapshots || {}
+  } catch {
+    // keep last value
+  }
+}
+
+async function refreshProviderQuota(providerId: string) {
+  refreshingProviderId.value = providerId
+  try {
+    await api.queryProviderUsage(providerId)
+    // Reload the single snapshot.
+    const data = await api.getProviderUsage(providerId)
+    if (data.snapshot) {
+      quotaSnapshots.value = { ...quotaSnapshots.value, [providerId]: data.snapshot }
+    }
+  } catch {
+    // keep last value
+  } finally {
+    refreshingProviderId.value = null
+  }
+}
+
+function goToUsage(providerId: string) {
+  router.push(`/providers/${providerId}/usage`)
 }
 
 async function loadCerts() {
@@ -1751,11 +1787,19 @@ watch(themeMode, () => {
 })
 
 onMounted(async () => {
+  // Initialize tab from query parameter.
+  const urlTab = new URLSearchParams(window.location.search).get('tab')
+  if (urlTab && ['status', 'providers', 'connection', 'certs', 'usage', 'sessions'].includes(urlTab)) {
+    activeTab.value = urlTab as MainTab
+  }
+
   await syncTheme(api.getPreferences)
   await Promise.all([loadStatus(), loadProviders(), loadCerts(), loadConnectionMode(), loadSessionsList()])
   void loadUsageData()
+  void loadQuotaSnapshots()
   statusRefreshTimer = window.setInterval(() => {
     void loadStatus()
+    void loadQuotaSnapshots()
   }, 30000)
   window.addEventListener('resize', handleUsageChartResize)
   window.addEventListener('scroll', onScroll, { passive: true })

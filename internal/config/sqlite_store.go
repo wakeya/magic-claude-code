@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"magic-claude-code/internal/providerquota"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -115,6 +117,14 @@ func (s *SQLiteStore) migrateSchema() error {
 			version INTEGER PRIMARY KEY,
 			applied_at TEXT NOT NULL
 		);`,
+		`CREATE TABLE IF NOT EXISTS provider_quota_snapshots (
+			provider_id TEXT PRIMARY KEY,
+			result_json TEXT NOT NULL,
+			last_success_json TEXT,
+			queried_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE
+		);`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {
@@ -148,6 +158,7 @@ func (s *SQLiteStore) ensureProviderColumns() error {
 		"retry_429_max_attempts":       `ALTER TABLE providers ADD COLUMN retry_429_max_attempts INTEGER NOT NULL DEFAULT 2`,
 		"retry_429_initial_delay_ms":   `ALTER TABLE providers ADD COLUMN retry_429_initial_delay_ms INTEGER NOT NULL DEFAULT 1000`,
 		"retry_429_max_delay_ms":       `ALTER TABLE providers ADD COLUMN retry_429_max_delay_ms INTEGER NOT NULL DEFAULT 10000`,
+		"quota_query_config":           `ALTER TABLE providers ADD COLUMN quota_query_config TEXT NOT NULL DEFAULT '{}'`,
 	}
 	rows, err := s.db.Query(`PRAGMA table_info(providers)`)
 	if err != nil {
@@ -277,7 +288,7 @@ func (s *SQLiteStore) loadSettings() (map[string]string, error) {
 }
 
 func (s *SQLiteStore) loadProviders() ([]Provider, error) {
-	rows, err := s.db.Query(`SELECT id, name, api_url, api_token, api_format, openai_extra_params, supports_thinking, multimodal_switch, multimodal_model, claude_code_compat_hint, strip_unknown_content_blocks, rate_limit_queue_enabled, max_concurrent_requests, max_queue_size, queue_timeout_ms, retry_429_enabled, retry_429_max_attempts, retry_429_initial_delay_ms, retry_429_max_delay_ms, enabled, created_at, updated_at FROM providers ORDER BY created_at ASC, id ASC`)
+	rows, err := s.db.Query(`SELECT id, name, api_url, api_token, api_format, openai_extra_params, supports_thinking, multimodal_switch, multimodal_model, claude_code_compat_hint, strip_unknown_content_blocks, rate_limit_queue_enabled, max_concurrent_requests, max_queue_size, queue_timeout_ms, retry_429_enabled, retry_429_max_attempts, retry_429_initial_delay_ms, retry_429_max_delay_ms, quota_query_config, enabled, created_at, updated_at FROM providers ORDER BY created_at ASC, id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -290,7 +301,8 @@ func (s *SQLiteStore) loadProviders() ([]Provider, error) {
 		var claudeCodeCompatHint sql.NullBool
 		var openAIExtraParams, createdAt, updatedAt string
 		var rateLimitQueueEnabled, retry429Enabled int
-		if err := rows.Scan(&p.ID, &p.Name, &p.APIURL, &p.APIToken, &p.APIFormat, &openAIExtraParams, &supportsThinking, &multimodalSwitch, &p.MultimodalModel, &claudeCodeCompatHint, &stripUnknownContentBlocks, &rateLimitQueueEnabled, &p.MaxConcurrentRequests, &p.MaxQueueSize, &p.QueueTimeoutMS, &retry429Enabled, &p.Retry429MaxAttempts, &p.Retry429InitialDelayMS, &p.Retry429MaxDelayMS, &enabled, &createdAt, &updatedAt); err != nil {
+		var quotaQueryConfig string
+		if err := rows.Scan(&p.ID, &p.Name, &p.APIURL, &p.APIToken, &p.APIFormat, &openAIExtraParams, &supportsThinking, &multimodalSwitch, &p.MultimodalModel, &claudeCodeCompatHint, &stripUnknownContentBlocks, &rateLimitQueueEnabled, &p.MaxConcurrentRequests, &p.MaxQueueSize, &p.QueueTimeoutMS, &retry429Enabled, &p.Retry429MaxAttempts, &p.Retry429InitialDelayMS, &p.Retry429MaxDelayMS, &quotaQueryConfig, &enabled, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
 		params, err := decodeOpenAIExtraParams(openAIExtraParams)
@@ -307,6 +319,12 @@ func (s *SQLiteStore) loadProviders() ([]Provider, error) {
 		if claudeCodeCompatHint.Valid {
 			p.ClaudeCodeCompatHint = &claudeCodeCompatHint.Bool
 		}
+		// Decode quota query config.
+		qq, err := providerquota.DecodeQuotaConfig(quotaQueryConfig)
+		if err != nil {
+			return nil, fmt.Errorf("decode provider %s quota_query_config: %w", p.ID, err)
+		}
+		p.QuotaQuery = qq
 		p.Enabled = enabled == 1
 		p.CreatedAt = parseSQLiteTime(createdAt)
 		p.UpdatedAt = parseSQLiteTime(updatedAt)
@@ -429,9 +447,14 @@ func upsertProvider(tx *sql.Tx, provider Provider) error {
 		return err
 	}
 
+	quotaQueryConfig, err := providerquota.EncodeQuotaConfig(provider.QuotaQuery)
+	if err != nil {
+		return err
+	}
+
 	_, err = tx.Exec(
-		`INSERT INTO providers(id, name, api_url, api_token, api_format, openai_extra_params, supports_thinking, multimodal_switch, multimodal_model, claude_code_compat_hint, strip_unknown_content_blocks, rate_limit_queue_enabled, max_concurrent_requests, max_queue_size, queue_timeout_ms, retry_429_enabled, retry_429_max_attempts, retry_429_initial_delay_ms, retry_429_max_delay_ms, enabled, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO providers(id, name, api_url, api_token, api_format, openai_extra_params, supports_thinking, multimodal_switch, multimodal_model, claude_code_compat_hint, strip_unknown_content_blocks, rate_limit_queue_enabled, max_concurrent_requests, max_queue_size, queue_timeout_ms, retry_429_enabled, retry_429_max_attempts, retry_429_initial_delay_ms, retry_429_max_delay_ms, quota_query_config, enabled, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		 name = excluded.name,
 		 api_url = excluded.api_url,
@@ -451,6 +474,7 @@ func upsertProvider(tx *sql.Tx, provider Provider) error {
 		 retry_429_max_attempts = excluded.retry_429_max_attempts,
 		 retry_429_initial_delay_ms = excluded.retry_429_initial_delay_ms,
 		 retry_429_max_delay_ms = excluded.retry_429_max_delay_ms,
+		 quota_query_config = excluded.quota_query_config,
 		 enabled = excluded.enabled,
 		 created_at = excluded.created_at,
 		 updated_at = excluded.updated_at`,
@@ -473,6 +497,7 @@ func upsertProvider(tx *sql.Tx, provider Provider) error {
 		provider.Retry429MaxAttempts,
 		provider.Retry429InitialDelayMS,
 		provider.Retry429MaxDelayMS,
+		quotaQueryConfig,
 		boolToInt(provider.Enabled),
 		createdAt.UTC().Format(time.RFC3339Nano),
 		updatedAt.UTC().Format(time.RFC3339Nano),

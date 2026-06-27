@@ -49,6 +49,7 @@ export interface Provider {
   retry_429_max_delay_ms: number
   enabled: boolean
   active: boolean
+  quota_query?: PublicQuotaConfig
   created_at: string
   updated_at: string
 }
@@ -247,6 +248,91 @@ export interface UpdateApplyResult {
   message?: string
   restarting?: boolean
   error?: string
+}
+
+// Provider Quota types
+
+export interface PublicQuotaConfig {
+  enabled: boolean
+  template_type: string
+  timeout_seconds: number
+  auto_query_interval_minutes: number
+  script?: string
+  base_url?: string
+  api_key_configured: boolean
+  access_token_configured: boolean
+  user_id?: string
+  coding_plan_provider?: string
+  access_key_id?: string
+  secret_access_key_configured: boolean
+}
+
+export interface QuotaTier {
+  name: string
+  label?: string
+  utilization: number
+  resets_at?: string
+  used?: number
+  total?: number
+  remaining?: number
+  unit?: string
+}
+
+export interface BalanceItem {
+  plan_name?: string
+  remaining?: number
+  used?: number
+  total?: number
+  unit?: string
+  is_valid?: boolean
+  invalid_message?: string
+  extra?: string
+}
+
+export interface ProviderQuotaResult {
+  provider_id: string
+  template_type: string
+  success: boolean
+  credential_status?: string
+  tiers?: QuotaTier[]
+  balances?: BalanceItem[]
+  error_code?: string
+  error_message?: string
+  queried_at: string
+  duration_ms: number
+}
+
+export interface QuotaSnapshot {
+  provider_id: string
+  result?: ProviderQuotaResult
+  last_success?: ProviderQuotaResult
+  queried_at: string
+  updated_at: string
+  has_last_success: boolean
+  is_stale: boolean
+}
+
+export interface ProviderUsageResponse {
+  config: PublicQuotaConfig
+  snapshot?: QuotaSnapshot
+}
+
+export interface ProviderUsageUpdateRequest {
+  enabled?: boolean
+  template_type?: string
+  timeout_seconds?: number
+  auto_query_interval_minutes?: number
+  script?: string
+  base_url?: string
+  api_key?: string
+  access_token?: string
+  user_id?: string
+  coding_plan_provider?: string
+  access_key_id?: string
+  secret_access_key?: string
+  clear_api_key?: boolean
+  clear_access_token?: boolean
+  clear_secret_access_key?: boolean
 }
 
 export function useApi() {
@@ -559,6 +645,51 @@ export function useApi() {
     return res.json()
   }
 
+  async function getProviderUsage(id: string): Promise<ProviderUsageResponse> {
+    const res = await fetch(`/api/providers/${id}/usage`)
+    if (!res.ok) {
+      if (res.status === 404) throw new Error('Provider not found')
+      throw new Error('Failed to fetch usage config')
+    }
+    return res.json()
+  }
+
+  async function updateProviderUsage(id: string, data: ProviderUsageUpdateRequest): Promise<{ success: boolean; config: PublicQuotaConfig }> {
+    const res = await fetch(`/api/providers/${id}/usage`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'request failed' }))
+      throw new Error(err.error || `HTTP ${res.status}`)
+    }
+    return res.json()
+  }
+
+  async function testProviderUsage(id: string, data: ProviderUsageUpdateRequest): Promise<{ success: boolean; result: ProviderQuotaResult }> {
+    const res = await fetch(`/api/providers/${id}/usage/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    return res.json()
+  }
+
+  async function queryProviderUsage(id: string): Promise<{ success: boolean; result: ProviderQuotaResult }> {
+    const res = await fetch(`/api/providers/${id}/usage/query`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    })
+    return res.json()
+  }
+
+  async function getAllProviderUsageSnapshots(): Promise<{ snapshots: Record<string, QuotaSnapshot> }> {
+    const res = await fetch('/api/providers/usage')
+    if (!res.ok) throw new Error('Failed to fetch snapshots')
+    return res.json()
+  }
+
   return {
     login,
     logout,
@@ -594,5 +725,10 @@ export function useApi() {
     getSessionCleanupHint,
     checkForUpdate,
     applyUpdate,
+    getProviderUsage,
+    updateProviderUsage,
+    testProviderUsage,
+    queryProviderUsage,
+    getAllProviderUsageSnapshots,
   }
 }

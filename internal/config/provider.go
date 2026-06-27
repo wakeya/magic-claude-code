@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/url"
 	"time"
+
+	"magic-claude-code/internal/providerquota"
 )
 
 // APIFormat describes the upstream provider API protocol.
@@ -89,6 +91,9 @@ type Provider struct {
 
 	// Enabled 是否启用
 	Enabled bool `json:"enabled"`
+
+	// QuotaQuery 额度查询配置（可选）
+	QuotaQuery *providerquota.ProviderQuotaConfig `json:"quota_query,omitempty"`
 
 	// CreatedAt 创建时间
 	CreatedAt time.Time `json:"created_at"`
@@ -177,6 +182,13 @@ func (p *Provider) Validate() error {
 	if p.Retry429Enabled {
 		if p.Retry429MaxAttempts <= 0 {
 			return fmt.Errorf("retry_429_max_attempts must be > 0 when retry_429_enabled")
+		}
+	}
+
+	// Validate quota query config if present.
+	if p.QuotaQuery != nil {
+		if err := p.QuotaQuery.Validate(); err != nil {
+			return fmt.Errorf("quota_query: %w", err)
 		}
 	}
 

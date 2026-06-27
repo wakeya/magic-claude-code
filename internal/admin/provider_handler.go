@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"magic-claude-code/internal/config"
+	"magic-claude-code/internal/providerquota"
 )
 
 // providerResponseMap builds the JSON response map for a provider.
@@ -37,6 +38,7 @@ func providerResponseMap(p config.Provider, active bool) map[string]interface{} 
 		"retry_429_initial_delay_ms":   p.Retry429InitialDelayMS,
 		"retry_429_max_delay_ms":       p.Retry429MaxDelayMS,
 		"enabled":                      p.Enabled,
+		"quota_query":                  providerquota.ToPublicConfig(p.QuotaQuery),
 		"active":                       active,
 		"created_at":                   p.CreatedAt,
 		"updated_at":                   p.UpdatedAt,
@@ -583,9 +585,15 @@ func maskToken(token string) string {
 }
 
 // handleProviderRoutes 处理带 ID 的供应商路由
-// 匹配: /api/providers/{id}, /api/providers/{id}/activate, /api/providers/{id}/toggle, /api/providers/{id}/test
+// 匹配: /api/providers/{id}, /api/providers/{id}/activate, /api/providers/{id}/toggle, /api/providers/{id}/test, /api/providers/{id}/usage
 func (s *Server) handleProviderRoutes(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
+
+	// Check usage routes first (must be before generic handler).
+	if strings.Contains(path, "/usage") {
+		s.handleProviderQuotaRoutes(w, r)
+		return
+	}
 
 	// 检查是否是激活路由
 	if strings.HasSuffix(path, "/activate") {
@@ -782,6 +790,7 @@ func (s *Server) handleProviderDuplicate(w http.ResponseWriter, r *http.Request)
 		Retry429MaxAttempts:       provider.Retry429MaxAttempts,
 		Retry429InitialDelayMS:    provider.Retry429InitialDelayMS,
 		Retry429MaxDelayMS:        provider.Retry429MaxDelayMS,
+		QuotaQuery:                copyQuotaQueryConfig(provider.QuotaQuery),
 		Enabled:                   true,
 		CreatedAt:                 now,
 		UpdatedAt:                 now,
@@ -967,4 +976,15 @@ func randomHex(length int) string {
 		return strings.Repeat("0", length)
 	}
 	return hex.EncodeToString(b)[:length]
+}
+
+// copyQuotaQueryConfig returns a deep copy of the quota config,
+// including secret fields. Used for provider duplication where
+// secrets should be copied but the snapshot is not.
+func copyQuotaQueryConfig(c *providerquota.ProviderQuotaConfig) *providerquota.ProviderQuotaConfig {
+	if c == nil {
+		return nil
+	}
+	cp := *c
+	return &cp
 }

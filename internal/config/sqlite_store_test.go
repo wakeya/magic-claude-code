@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"magic-claude-code/internal/providerquota"
 )
 
 func testProvider(id, name, apiURL, token string, enabled bool) Provider {
@@ -691,4 +693,125 @@ func TestSQLiteStoreSaveRollsBackOnMappingFailure(t *testing.T) {
 		t.Fatalf("Load() error = %v", err)
 	}
 	assertConfigEqual(t, original, loaded)
+}
+
+func TestSQLiteStorePersistsQuotaQueryConfig(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewSQLiteStore(filepath.Join(dir, "proxy.db"), filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	provider := testProvider("provider-quota", "Quota", "https://quota.example.com/anthropic", "token", true)
+	provider.QuotaQuery = &providerquota.ProviderQuotaConfig{
+		Enabled:                  true,
+		TemplateType:             providerquota.TemplateNewAPI,
+		TimeoutSeconds:           15,
+		AutoQueryIntervalMinutes: 10,
+		BaseURL:                  "https://panel.example.com",
+		AccessToken:              "secret-at",
+		UserID:                   "user-1",
+	}
+	cfg := DefaultConfig()
+	cfg.Providers = []Provider{provider}
+	cfg.ActiveProviderID = provider.ID
+
+	if err := store.Save(cfg); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	got := loaded.GetProviderByID(provider.ID)
+	if got == nil {
+		t.Fatal("provider missing after load")
+	}
+	if got.QuotaQuery == nil {
+		t.Fatal("QuotaQuery is nil after load")
+	}
+	if got.QuotaQuery.TemplateType != providerquota.TemplateNewAPI {
+		t.Errorf("TemplateType = %q, want %q", got.QuotaQuery.TemplateType, providerquota.TemplateNewAPI)
+	}
+	if got.QuotaQuery.AccessToken != "secret-at" {
+		t.Errorf("AccessToken = %q, want secret-at", got.QuotaQuery.AccessToken)
+	}
+	if got.QuotaQuery.UserID != "user-1" {
+		t.Errorf("UserID = %q, want user-1", got.QuotaQuery.UserID)
+	}
+	if got.QuotaQuery.TimeoutSeconds != 15 {
+		t.Errorf("TimeoutSeconds = %d, want 15", got.QuotaQuery.TimeoutSeconds)
+	}
+	if got.QuotaQuery.AutoQueryIntervalMinutes != 10 {
+		t.Errorf("AutoQueryIntervalMinutes = %d, want 10", got.QuotaQuery.AutoQueryIntervalMinutes)
+	}
+
+	// Verify nil QuotaQuery round-trips as nil.
+	provider2 := testProvider("provider-no-quota", "NoQuota", "https://noquota.example.com/anthropic", "token2", true)
+	cfg2 := DefaultConfig()
+	cfg2.Providers = []Provider{provider, provider2}
+	cfg2.ActiveProviderID = provider.ID
+	if err := store.Save(cfg2); err != nil {
+		t.Fatalf("Save() cfg2 error = %v", err)
+	}
+	loaded2, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() cfg2 error = %v", err)
+	}
+	got2 := loaded2.GetProviderByID(provider2.ID)
+	if got2 == nil {
+		t.Fatal("provider2 missing after load")
+	}
+	if got2.QuotaQuery != nil {
+		t.Errorf("provider2 QuotaQuery = %v, want nil", got2.QuotaQuery)
+	}
+}
+
+func TestSQLiteStoreQuotaQuerySecretsNotInPublicResponse(t *testing.T) {
+	// Verify that the public config builder strips all secrets.
+	cfg := &providerquota.ProviderQuotaConfig{
+		Enabled:          true,
+		TemplateType:     providerquota.TemplateNewAPI,
+		APIKey:           "secret-key",
+		AccessToken:      "secret-at",
+		SecretAccessKey:  "secret-sk",
+		AccessKeyID:      "AKLT1234",
+		BaseURL:          "https://example.com",
+		TimeoutSeconds:   10,
+		AutoQueryIntervalMinutes: 5,
+	}
+	pub := providerquota.ToPublicConfig(cfg)
+	if pub.APIKeyConfigured != true {
+		t.Error("APIKeyConfigured should be true")
+	}
+	if pub.AccessTokenConfigured != true {
+		t.Error("AccessTokenConfigured should be true")
+	}
+	if pub.SecretAccessKeyConfigured != true {
+		t.Error("SecretAccessKeyConfigured should be true")
+	}
+	if pub.AccessKeyID != "AKLT1234" {
+		t.Errorf("AccessKeyID = %q, want AKLT1234", pub.AccessKeyID)
+	}
+}
+
+func TestSQLiteStoreSnapshotTableCreated(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewSQLiteStore(filepath.Join(dir, "proxy.db"), filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Verify that the provider_quota_snapshots table exists.
+	var tableName string
+	err = store.DB().QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='provider_quota_snapshots'`).Scan(&tableName)
+	if err != nil {
+		t.Fatalf("provider_quota_snapshots table not found: %v", err)
+	}
+	if tableName != "provider_quota_snapshots" {
+		t.Errorf("table name = %q, want provider_quota_snapshots", tableName)
+	}
 }
