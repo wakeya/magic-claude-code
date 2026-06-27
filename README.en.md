@@ -2,17 +2,25 @@
 
 [简体中文](README.md) | English
 
-Use the full Claude Code client experience with MCC Proxy — route Claude Code through cost-effective third-party models and cut costs by 80%+.
+Get the complete, full-power Claude Code client with MCC Proxy — call cost-effective third-party models and cut costs by 80%+.
 
 ## 💡 Why MCC Proxy
 
-Official Claude Code subscriptions are expensive, while Chinese open-source large models offer excellent value. MCC Proxy lets you **keep the full Claude Code experience while calling cost-effective third-party models**, reducing costs by 80%+:
+### Avoid client-side feature degradation.
 
-| Official Model | Replace With | Use Case |
-|----------------|-------------|----------|
-| claude-opus | **GLM-5.2** / **MiniMax-M3** | Complex coding, deep reasoning |
-| claude-sonnet | **kimi-k2.7-code** / **deepseek-v4-pro** | Daily coding, code generation |
-| claude-haiku | **mimo-v2.5-pro** / **agnes-2.0-flash** | Fast response, sub-agent tasks |
+When ANTHROPIC_BASE_URL is not [https://api.anthropic.com](https://api.anthropic.com), the Claude Code client experiences significant feature degradation, including: memory system, sub-agent optimization, tools &amp; interactions, and unstable MCP/WebFetch network calls.
+
+### Lower Token Costs
+
+Official Claude Code subscriptions are expensive, while Chinese open-source large models offer excellent value. MCC Proxy lets you **enjoy the complete Claude Code client experience with cost-effective third-party models**, reducing costs by 80%+:
+
+
+| Official Model | Replace With                             | Use Case                       |
+| -------------- | ---------------------------------------- | ------------------------------ |
+| claude-opus    | **GLM-5.2** / **MiniMax-M3**             | Complex coding, deep reasoning |
+| claude-sonnet  | **kimi-k2.7-code** / **deepseek-v4-pro** | Daily coding, code generation  |
+| claude-haiku   | **mimo-v2.5-pro** / **agnes-2.0-flash**  | Fast response, sub-agent tasks |
+
 
 Switching is transparent to Claude Code via automatic model mapping. Hardcoded requests (telemetry, feature flags, etc.) are also intercepted at the network layer, preventing optimization features from being disabled when a third-party API is in use.
 
@@ -36,11 +44,13 @@ Switching is transparent to Claude Code via automatic model mapping. Hardcoded r
 
 The system supports three connection modes with automatic priority-based fallback:
 
-| Priority | Mode | Entry | Intercepts hardcoded `api.anthropic.com`? | Privilege Required |
-|----------|------|-------|-----|------|
-| 1 | **Transparent Mode** | hosts + 443 TLS | ✅ Yes | Host modification and CA trust |
-| 2 | **Tunnel Mode** | HTTPS_PROXY + CONNECT MITM | ⚠ Mostly yes | No hosts change; runtime must trust CA |
-| 3 | **Gateway Mode** | ANTHROPIC_BASE_URL | ❌ No | No hosts/CA/443 needed |
+
+| Priority | Mode                 | Entry                      | Intercepts hardcoded `api.anthropic.com`? | Privilege Required                     |
+| -------- | -------------------- | -------------------------- | ----------------------------------------- | -------------------------------------- |
+| 1        | **Transparent Mode** | hosts + 443 TLS            | ✅ Yes                                     | Host modification and CA trust         |
+| 2        | **Tunnel Mode**      | HTTPS_PROXY + CONNECT MITM | ⚠ Mostly yes                              | No hosts change; runtime must trust CA |
+| 3        | **Gateway Mode**     | ANTHROPIC_BASE_URL         | ❌ No                                      | No hosts/CA/443 needed                 |
+
 
 ### Auto Bootstrap
 
@@ -52,6 +62,7 @@ On startup, the proxy automatically attempts the following in priority order:
 4. Attempt to persist the executable directory as the MCC root
 
 **Use administrator privileges on first run** to maximize the chance of automatic bootstrap success. If privileges are insufficient, the system will:
+
 - Log the exact failure reason
 - Print a description of the missing capability
 - Output the startup command for the fallback mode
@@ -196,6 +207,7 @@ Binary mode suits environments where Docker is not desired. The service listens 
 > ```
 >
 > Selective configuration is supported: `setup-host.sh hosts` (hosts only), `setup-host.sh trust` (CA only).
+>
 > Normally `sudo ./mcc` performs the same configuration automatically on startup; the scripts are only needed when auto-configuration fails or for standalone operations.
 
 #### macOS / Linux
@@ -412,11 +424,13 @@ EOF
 
 #### Why is .xprofile needed?
 
-| File | When loaded | Scope | Use case |
-|------|-------------|-------|----------|
-| `~/.bashrc` | When opening a terminal | Terminal sessions only | CLI tools, scripts |
-| `~/.profile` | On login shell | Login sessions | SSH, TTY login |
-| `~/.xprofile` | On desktop login | Entire desktop environment | GUI apps (VS Code, browsers, etc.) |
+
+| File          | When loaded             | Scope                      | Use case                           |
+| ------------- | ----------------------- | -------------------------- | ---------------------------------- |
+| `~/.bashrc`   | When opening a terminal | Terminal sessions only     | CLI tools, scripts                 |
+| `~/.profile`  | On login shell          | Login sessions             | SSH, TTY login                     |
+| `~/.xprofile` | On desktop login        | Entire desktop environment | GUI apps (VS Code, browsers, etc.) |
+
 
 GUI applications launched from the desktop environment do not inherit `~/.bashrc` environment variables, so `~/.xprofile` is needed to set environment variables at desktop login, ensuring all desktop applications use the certificate correctly.
 
@@ -523,11 +537,13 @@ Then follow the **apt Firefox** steps above to import the certificate.
 
 #### snap vs apt browser comparison
 
-| Installation | Characteristics | Reads system CA | certutil import |
-|--------------|-----------------|-----------------|-----------------|
-| apt browser | Standard install, runs in host environment | Yes | Takes effect directly |
-| snap browser | Sandbox isolated, restricts host resource access | No | May not take effect |
-| Chrome (any method) | Always uses ~/.pki/nssdb | No | Takes effect directly |
+
+| Installation        | Characteristics                                  | Reads system CA | certutil import       |
+| ------------------- | ------------------------------------------------ | --------------- | --------------------- |
+| apt browser         | Standard install, runs in host environment       | Yes             | Takes effect directly |
+| snap browser        | Sandbox isolated, restricts host resource access | No              | May not take effect   |
+| Chrome (any method) | Always uses ~/.pki/nssdb                         | No              | Takes effect directly |
+
 
 snap Firefox may not be readable by the Firefox process even if certutil writes successfully, due to sandbox restrictions. Therefore, for snap Firefox, **import via the Firefox UI** or **switch to apt** is recommended.
 
@@ -548,7 +564,7 @@ Docker default password: `admin123`. For binary mode, use the password set via `
 
 ### Port Privileges
 
-The proxy service must bind port 443 (the default HTTPS port), which is a privileged port (< 1024) and requires special permissions.
+The proxy service must bind port 443 (the default HTTPS port), which is a privileged port (&lt; 1024) and requires special permissions.
 
 **Docker deployment:**
 
@@ -587,13 +603,15 @@ sudo iptables -t nat -A OUTPUT -p tcp --dport 443 -j REDIRECT --to-port 8443
 
 ### Environment Variables
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| ADMIN_PASSWORD | Admin password | admin123 |
-| CLAUDE_PROJECTS_DIR | In-container Claude Code session log directory, used for usage statistics auto-reconciliation | /claude-projects |
-| MCC_LANG | Manually set log language (`zh` or `en`) | Auto-detected from system |
-| MCC_ROOT | MCC installation root directory, used for certificate discovery | Executable directory |
-| MCC_HOST_HELPER | Host-side helper executable script path (Docker scenario; absolute path; the container invokes the helper's `hosts add` / `trust install` subcommands directly) | unset |
+
+| Variable            | Description                                                                                                                                                     | Default                   |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
+| ADMIN_PASSWORD      | Admin password                                                                                                                                                  | admin123                  |
+| CLAUDE_PROJECTS_DIR | In-container Claude Code session log directory, used for usage statistics auto-reconciliation                                                                   | /claude-projects          |
+| MCC_LANG            | Manually set log language (`zh` or `en`)                                                                                                                        | Auto-detected from system |
+| MCC_ROOT            | MCC installation root directory, used for certificate discovery                                                                                                 | Executable directory      |
+| MCC_HOST_HELPER     | Host-side helper executable script path (Docker scenario; absolute path; the container invokes the helper's `hosts add` / `trust install` subcommands directly) | unset                     |
+
 
 ### Usage Statistics Auto-Reconciliation Directory
 
@@ -661,22 +679,26 @@ Notes:
 
 Add providers on the frontend configuration page:
 
-| Field | Description | Example |
-|-------|-------------|---------|
-| Name | Provider display name | Alibaba DashScope |
-| API URL | Provider API endpoint | `https://dashscope.aliyuncs.com/api/v1/anthropic` |
-| API Token | Authentication key | sk-xxx |
-| Model Mapping | Client model → provider model | claude-sonnet-4 → qwen-max |
+
+| Field         | Description                   | Example                                           |
+| ------------- | ----------------------------- | ------------------------------------------------- |
+| Name          | Provider display name         | Alibaba DashScope                                 |
+| API URL       | Provider API endpoint         | `https://dashscope.aliyuncs.com/api/v1/anthropic` |
+| API Token     | Authentication key            | sk-xxx                                            |
+| Model Mapping | Client model → provider model | claude-sonnet-4 → qwen-max                        |
+
 
 ### Connection Modes
 
 The "Connection Mode" area in the top header shows the current preferred mode, the effective mode, and buttons to switch among the three modes. Switching persists to the backend config and takes effect on the next startup.
 
-| Mode | Use Case | `~/.claude/settings.json` |
-|------|----------|---------------------------|
-| Transparent Mode | Highest priority; intercepts hardcoded endpoints | Can stay default, or explicitly set `ANTHROPIC_BASE_URL=https://api.anthropic.com` |
-| Tunnel Mode | No hosts change; forwards via proxy env vars | `HTTPS_PROXY=https://127.0.0.1:443` + `NODE_EXTRA_CA_CERTS=/path/to/data/ca.crt` |
-| Gateway Mode | Lowest-privilege fallback; only covers explicitly configured clients | `ANTHROPIC_BASE_URL=http://127.0.0.1:17487` |
+
+| Mode             | Use Case                                                             | `~/.claude/settings.json`                                                          |
+| ---------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Transparent Mode | Highest priority; intercepts hardcoded endpoints                     | Can stay default, or explicitly set `ANTHROPIC_BASE_URL=https://api.anthropic.com` |
+| Tunnel Mode      | No hosts change; forwards via proxy env vars                         | `HTTPS_PROXY=https://127.0.0.1:443` + `NODE_EXTRA_CA_CERTS=/path/to/data/ca.crt`   |
+| Gateway Mode     | Lowest-privilege fallback; only covers explicitly configured clients | `ANTHROPIC_BASE_URL=http://127.0.0.1:17487`                                        |
+
 
 #### Transparent Mode
 
@@ -729,15 +751,18 @@ The proxy automatically maps `claude-sonnet-4` to the provider-configured model 
 
 ## ✅ First-Run Checklist
 
-| Step | Automatic | Notes |
-|------|-----------|-------|
-| Generate CA certificate | ✅ | Auto-generated to `data/ca.crt` on startup |
-| Modify hosts | Attempted | Requires admin privileges; falls back on failure |
-| Install CA trust | Attempted | Requires admin privileges; falls back on failure |
-| Persist MCC root | Attempted | Writes to shell profile or Windows environment variable |
-| Start proxy | ✅ | Starts even if bootstrap fails |
+
+| Step                    | Automatic | Notes                                                   |
+| ----------------------- | --------- | ------------------------------------------------------- |
+| Generate CA certificate | ✅         | Auto-generated to `data/ca.crt` on startup              |
+| Modify hosts            | Attempted | Requires admin privileges; falls back on failure        |
+| Install CA trust        | Attempted | Requires admin privileges; falls back on failure        |
+| Persist MCC root        | Attempted | Writes to shell profile or Windows environment variable |
+| Start proxy             | ✅         | Starts even if bootstrap fails                          |
+
 
 **What you should see in the logs:**
+
 - `CA certificate: /path/to/data/ca.crt`
 - `[Bootstrap]`-prefixed bootstrap result messages
 - On bootstrap success: `Transparent mode configured`
@@ -756,10 +781,12 @@ If logs show hosts modification or CA installation failure:
 ### Docker Limitations
 
 A Docker container **cannot** directly modify the host machine's hosts file or CA trust store. Logs distinguish between:
+
 - `helper missing`: no host-side helper in the container (`MCC_HOST_HELPER` not set)
 - `host permission denied`: helper exists but cannot obtain host privileges
 
 For Docker scenarios, it is recommended to:
+
 - Configure hosts and CA trust manually on the host
 - Or use Tunnel Mode (set `HTTPS_PROXY`)
 
@@ -834,10 +861,12 @@ Import-Certificate -FilePath "C:\mcc\data\ca.crt" -CertStoreLocation Cert:\Local
 
 ## 🔌 Ports
 
-| Port | Purpose |
-|------|---------|
-| 443 | Proxy entry |
+
+| Port | Purpose            |
+| ---- | ------------------ |
+| 443  | Proxy entry        |
 | 8442 | Configuration page |
+
 
 ## 📂 Project Structure
 

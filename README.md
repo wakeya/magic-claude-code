@@ -2,17 +2,25 @@
 
 [English](README.en.md) | 简体中文
 
-满血使用 Claude Code 客户端，MCC Proxy 让你用 Claude Code 的完整体验，调用高性价比第三方模型，成本可降低 80%+。
+满血使用 Claude Code 客户端，MCC Proxy 让你拥有 Claude Code 客户端的完整功能，调用高性价比第三方模型，成本可降低 80%+。
 
 ## 💡 为什么用 MCC Proxy
 
-Claude Code 官方订阅昂贵，而中国产开源大模型性价比极高。MCC Proxy 让你**用 Claude Code 的完整体验，调用高性价比第三方模型**，成本可降低 80%+：
+### 避免客户端功能降级
 
-| 官方模型 | 可替换为 | 场景 |
-|---------|---------|------|
-| claude-opus | **GLM-5.2** / **MiniMax-M3** | 复杂编码、深度推理 |
-| claude-sonnet | **kimi-k2.7-code** / **deepseek-v4-pro** | 日常编码、代码生成 |
-| claude-haiku | **mimo-v2.5-pro** / **agnes-2.0-flash** | 快速响应、子代理任务 |
+当 ANTHROPIC_BASE_URL 不是 [https://api.anthropic.com](https://api.anthropic.com) 时，Claude Code 客户端会有很多功能降级，具体包含：记忆系统、子代理优化、工具与交互、MCP/WebFetch 调用网络不稳等。
+
+### 降低 token 成本
+
+Claude Code 官方订阅昂贵，而中国产开源大模型性价比极高。MCC Proxy 让你**拥有 Claude Code 客户端的完整功能体验，调用高性价比第三方模型**，成本可降低 80%+：
+
+
+| 官方模型          | 可替换为                                     | 场景         |
+| ------------- | ---------------------------------------- | ---------- |
+| claude-opus   | **GLM-5.2** / **MiniMax-M3**             | 复杂编码、深度推理  |
+| claude-sonnet | **kimi-k2.7-code** / **deepseek-v4-pro** | 日常编码、代码生成  |
+| claude-haiku  | **mimo-v2.5-pro** / **agnes-2.0-flash**  | 快速响应、子代理任务 |
+
 
 通过模型映射自动转换，Claude Code 无感切换，遥测/特性开关等硬编码请求也在网络层被拦截，避免因使用第三方 API 而被禁用优化功能。
 
@@ -36,11 +44,13 @@ Claude Code 官方订阅昂贵，而中国产开源大模型性价比极高。MC
 
 系统支持三种连接模式，按优先级自动降级：
 
-| 优先级 | 模式 | 入口 | 能否拦截硬编码 `api.anthropic.com` | 权限要求 |
-|--------|------|------|-----|------|
-| 1 | **透明模式** | hosts + 443 TLS | ✅ 可以 | 需要主机修改权限和 CA 信任 |
-| 2 | **隧道模式** | HTTPS_PROXY + CONNECT MITM | ⚠ 大体可以 | 不修改 hosts；运行时需信任 CA |
-| 3 | **网关模式** | ANTHROPIC_BASE_URL | ❌ 不可以 | 不需要 hosts/CA/443 |
+
+| 优先级 | 模式       | 入口                         | 能否拦截硬编码 `api.anthropic.com` | 权限要求                |
+| --- | -------- | -------------------------- | --------------------------- | ------------------- |
+| 1   | **透明模式** | hosts + 443 TLS            | ✅ 可以                        | 需要主机修改权限和 CA 信任     |
+| 2   | **隧道模式** | HTTPS_PROXY + CONNECT MITM | ⚠ 大体可以                      | 不修改 hosts；运行时需信任 CA |
+| 3   | **网关模式** | ANTHROPIC_BASE_URL         | ❌ 不可以                       | 不需要 hosts/CA/443    |
+
 
 ### 自动引导
 
@@ -52,6 +62,7 @@ Claude Code 官方订阅昂贵，而中国产开源大模型性价比极高。MC
 4. 尝试持久化可执行文件目录为 MCC 根目录
 
 **首次运行建议使用管理员权限**，以提高自动引导成功率。如果权限不足，系统会：
+
 - 记录明确的失败原因
 - 打印缺失能力说明
 - 输出对应的后备模式启动命令
@@ -196,6 +207,7 @@ docker compose logs -f
 > ```
 >
 > 支持选择性配置：`setup-host.sh hosts`（只改 hosts）、`setup-host.sh trust`（只装 CA）。
+>
 > 正常情况下 `sudo ./mcc` 启动时会自动引导完成相同配置，脚本仅在自动配置失败或需要单独操作时使用。
 
 #### macOS / Linux
@@ -409,15 +421,18 @@ EOF
 - 需要 Node.js 16 或更高版本
 - 仍需配置 `NODE_OPTIONS` 环境变量
 - **桌面应用需要额外配置**：从桌面环境启动的应用
+
   （如 VS Code）不会加载 `~/.bashrc`，需要配置 `~/.xprofile`
 
 #### 为什么需要 .xprofile？
 
-| 文件 | 加载时机 | 作用范围 | 适用场景 |
-|------|----------|----------|----------|
-| `~/.bashrc` | 打开终端时 | 仅终端会话 | 命令行工具、脚本 |
-| `~/.profile` | 登录 Shell 时 | 登录会话 | SSH、TTY 登录 |
-| `~/.xprofile` | 桌面登录时 | 整个桌面环境 | GUI 应用（VS Code、浏览器等） |
+
+| 文件            | 加载时机       | 作用范围   | 适用场景                 |
+| ------------- | ---------- | ------ | -------------------- |
+| `~/.bashrc`   | 打开终端时      | 仅终端会话  | 命令行工具、脚本             |
+| `~/.profile`  | 登录 Shell 时 | 登录会话   | SSH、TTY 登录           |
+| `~/.xprofile` | 桌面登录时      | 整个桌面环境 | GUI 应用（VS Code、浏览器等） |
+
 
 从桌面环境启动的 GUI 应用不会继承 `~/.bashrc` 的环境变量，因此需要通过 `~/.xprofile` 在桌面登录时设置环境变量，确保所有桌面应用都能正确使用证书。
 
@@ -524,11 +539,13 @@ sudo apt install firefox -y
 
 #### snap vs apt 浏览器对比
 
-| 安装方式 | 特点 | 系统 CA 读取 | certutil 导入 |
-|---------|------|------------|--------------|
-| apt 版浏览器 | 标准安装，运行在主机环境 | 支持 | 直接生效 |
-| snap 版浏览器 | 沙盒隔离，限制访问主机资源 | 不支持 | 可能不生效 |
-| Chrome（任意方式）| 均使用 ~/.pki/nssdb | 不支持 | 直接生效 |
+
+| 安装方式         | 特点               | 系统 CA 读取 | certutil 导入 |
+| ------------ | ---------------- | -------- | ----------- |
+| apt 版浏览器     | 标准安装，运行在主机环境     | 支持       | 直接生效        |
+| snap 版浏览器    | 沙盒隔离，限制访问主机资源    | 不支持      | 可能不生效       |
+| Chrome（任意方式） | 均使用 ~/.pki/nssdb | 不支持      | 直接生效        |
+
 
 snap 版 Firefox 因为沙盒限制，即便 certutil 写入成功，Firefox 进程也可能读不到。因此 snap 版推荐 **通过 Firefox 界面导入** 或 **改用 apt 版**。
 
@@ -549,7 +566,7 @@ Docker 默认密码: `admin123`。二进制运行请使用启动时通过 `-pass
 
 ### 端口权限
 
-代理服务需要绑定 443 端口（HTTPS 默认端口），这是一个特权端口（< 1024），需要特殊权限。
+代理服务需要绑定 443 端口（HTTPS 默认端口），这是一个特权端口（&lt; 1024），需要特殊权限。
 
 **Docker 部署：**
 
@@ -588,13 +605,15 @@ sudo iptables -t nat -A OUTPUT -p tcp --dport 443 -j REDIRECT --to-port 8443
 
 ### 环境变量
 
-| 环境变量 | 说明 | 默认值 |
-|---------|------|--------|
-| ADMIN_PASSWORD | 管理密码 | admin123 |
-| CLAUDE_PROJECTS_DIR | 容器内 Claude Code session 日志目录，用于使用统计自动补账 | /claude-projects |
-| MCC_LANG | 手动指定日志语言（`zh` 或 `en`） | 系统自动检测 |
-| MCC_ROOT | MCC 安装根目录，用于证书发现 | 可执行文件目录 |
-| MCC_HOST_HELPER | 宿主机 helper 可执行脚本路径（Docker 场景，绝对路径；容器会直接执行该脚本的 `hosts add` / `trust install` 子命令） | 未设置 |
+
+| 环境变量                | 说明                                                                               | 默认值              |
+| ------------------- | -------------------------------------------------------------------------------- | ---------------- |
+| ADMIN_PASSWORD      | 管理密码                                                                             | admin123         |
+| CLAUDE_PROJECTS_DIR | 容器内 Claude Code session 日志目录，用于使用统计自动补账                                          | /claude-projects |
+| MCC_LANG            | 手动指定日志语言（`zh` 或 `en`）                                                            | 系统自动检测           |
+| MCC_ROOT            | MCC 安装根目录，用于证书发现                                                                 | 可执行文件目录          |
+| MCC_HOST_HELPER     | 宿主机 helper 可执行脚本路径（Docker 场景，绝对路径；容器会直接执行该脚本的 `hosts add` / `trust install` 子命令） | 未设置              |
+
 
 ### 使用统计自动补账目录
 
@@ -662,22 +681,26 @@ docker compose up -d --build
 
 在前端配置页面添加供应商：
 
-| 字段 | 说明 | 示例 |
-|------|------|------|
-| 名称 | 供应商显示名称 | 阿里云 DashScope |
-| API 地址 | 供应商的 API 端点 | `<https://dashscope.aliyuncs.com/api/v1/anthropic>` |
-| API Token | 认证密钥 | sk-xxx |
-| 模型映射 | 客户端模型 → 供应商模型 | claude-sonnet-4 → qwen-max |
+
+| 字段        | 说明            | 示例                                                  |
+| --------- | ------------- | --------------------------------------------------- |
+| 名称        | 供应商显示名称       | 阿里云 DashScope                                       |
+| API 地址    | 供应商的 API 端点   | `<https://dashscope.aliyuncs.com/api/v1/anthropic>` |
+| API Token | 认证密钥          | sk-xxx                                              |
+| 模型映射      | 客户端模型 → 供应商模型 | claude-sonnet-4 → qwen-max                          |
+
 
 ### 连接模式
 
 顶部 header 里的“连接模式”区域会显示当前首选模式、实际生效模式和三种模式切换按钮。切换按钮会持久化到后端配置，下一次启动时生效。
 
-| 模式 | 用途 | `~/.claude/settings.json` |
-|------|------|---------------------------|
-| 透明模式 | 优先级最高，能拦截硬编码端点 | 可保持默认，或显式设置 `ANTHROPIC_BASE_URL=https://api.anthropic.com` |
+
+| 模式   | 用途                 | `~/.claude/settings.json`                                                        |
+| ---- | ------------------ | -------------------------------------------------------------------------------- |
+| 透明模式 | 优先级最高，能拦截硬编码端点     | 可保持默认，或显式设置 `ANTHROPIC_BASE_URL=https://api.anthropic.com`                       |
 | 隧道模式 | 不改 hosts，靠代理环境变量转发 | `HTTPS_PROXY=https://127.0.0.1:443` + `NODE_EXTRA_CA_CERTS=/path/to/data/ca.crt` |
-| 网关模式 | 最低权限后备，只覆盖显式配置的客户端 | `ANTHROPIC_BASE_URL=http://127.0.0.1:17487` |
+| 网关模式 | 最低权限后备，只覆盖显式配置的客户端 | `ANTHROPIC_BASE_URL=http://127.0.0.1:17487`                                      |
+
 
 #### 透明模式
 
@@ -730,15 +753,18 @@ docker compose up -d --build
 
 ## ✅ 首次运行检查清单
 
-| 步骤 | 自动完成 | 说明 |
-|------|----------|------|
-| 生成 CA 证书 | ✅ | 启动时自动生成到 `data/ca.crt` |
-| 修改 hosts | 尝试 | 需要管理员权限；失败会降级 |
-| 安装 CA 信任 | 尝试 | 需要管理员权限；失败会降级 |
-| 持久化 MCC 根目录 | 尝试 | 写入 shell profile 或 Windows 环境变量 |
-| 启动代理 | ✅ | 即使引导失败也会启动 |
+
+| 步骤          | 自动完成 | 说明                              |
+| ----------- | ---- | ------------------------------- |
+| 生成 CA 证书    | ✅    | 启动时自动生成到 `data/ca.crt`          |
+| 修改 hosts    | 尝试   | 需要管理员权限；失败会降级                   |
+| 安装 CA 信任    | 尝试   | 需要管理员权限；失败会降级                   |
+| 持久化 MCC 根目录 | 尝试   | 写入 shell profile 或 Windows 环境变量 |
+| 启动代理        | ✅    | 即使引导失败也会启动                      |
+
 
 **日志中应该看到：**
+
 - `CA certificate: /path/to/data/ca.crt`
 - `[Bootstrap]` 开头的引导结果信息
 - 如果引导成功：`Transparent mode configured`
@@ -757,10 +783,12 @@ docker compose up -d --build
 ### Docker 限制
 
 Docker 容器**不能**直接修改宿主机的 hosts 文件或 CA 信任库。日志会明确区分：
+
 - `helper 缺失`：容器内没有宿主机 helper（`MCC_HOST_HELPER` 未设置）
 - `宿主机权限不足`：helper 存在但无法获得宿主机权限
 
 Docker 场景下推荐：
+
 - 在宿主机手动配置 hosts 和 CA 信任
 - 或使用隧道模式（设置 `HTTPS_PROXY`）
 
@@ -835,10 +863,12 @@ Import-Certificate -FilePath "C:\mcc\data\ca.crt" -CertStoreLocation Cert:\Local
 
 ## 🔌 端口说明
 
-| 端口 | 用途 |
-|------|------|
-| 443 | 代理服务入口 |
-| 8442 | 配置页面 |
+
+| 端口   | 用途     |
+| ---- | ------ |
+| 443  | 代理服务入口 |
+| 8442 | 配置页面   |
+
 
 ## 📂 项目结构
 
