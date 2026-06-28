@@ -123,28 +123,34 @@ func (c *ProviderQuotaConfig) Validate() error {
 			return fmt.Errorf("base_url must not contain userinfo")
 		}
 	}
+	if c.ZenMuxBaseURL != "" {
+		u, err := url.Parse(c.ZenMuxBaseURL)
+		if err != nil {
+			return fmt.Errorf("invalid zenmux_base_url: %w", err)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return fmt.Errorf("zenmux_base_url must use http or https scheme")
+		}
+		if u.Host == "" {
+			return fmt.Errorf("zenmux_base_url must have a host")
+		}
+		if u.User != nil {
+			return fmt.Errorf("zenmux_base_url must not contain userinfo")
+		}
+	}
 
 	// Template-specific validation.
 	if c.Enabled {
 		switch c.TemplateType {
 		case TemplateNewAPI:
 			if c.BaseURL == "" {
-				return fmt.Errorf("newapi requires base_url")
+				return fmt.Errorf("%w: newapi requires base_url", ErrMissingCredentials)
 			}
 			if c.AccessToken == "" {
-				return fmt.Errorf("newapi requires access_token")
+				return fmt.Errorf("%w: newapi requires access_token", ErrMissingCredentials)
 			}
 			if c.UserID == "" {
-				return fmt.Errorf("newapi requires user_id")
-			}
-		case TemplateTokenPlan:
-			if c.CodingPlanProvider == "zenmux" && c.BaseURL == "" {
-				return fmt.Errorf("zenmux requires base_url (quota endpoint)")
-			}
-			if c.CodingPlanProvider == "volcengine" {
-				if c.AccessKeyID == "" || c.SecretAccessKey == "" {
-					return fmt.Errorf("volcengine requires access_key_id and secret_access_key")
-				}
+				return fmt.Errorf("%w: newapi requires user_id", ErrMissingCredentials)
 			}
 		}
 	}

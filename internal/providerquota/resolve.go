@@ -145,13 +145,71 @@ func ResolveTokenPlanProvider(cardAPIURL, explicitProvider string) (provider str
 	return explicitProvider, false, nil
 }
 
+// resolveZenMuxCredentials resolves one complete endpoint/credential pair.
+// Overrides are atomic: a partial override is invalid and is never combined
+// with one half of the provider card's credentials.
+func resolveZenMuxCredentials(cfg *ProviderQuotaConfig, cardAPIURL, cardAPIToken string) (string, string, error) {
+	if cfg == nil {
+		return "", "", fmt.Errorf("%w: zenmux configuration is missing", ErrMissingCredentials)
+	}
+	hasOverrideURL := cfg.ZenMuxBaseURL != ""
+	hasOverrideKey := cfg.ZenMuxAPIKey != ""
+	if hasOverrideURL != hasOverrideKey {
+		return "", "", fmt.Errorf("%w: zenmux override requires both zenmux_base_url and zenmux_api_key", ErrMissingCredentials)
+	}
+	if hasOverrideURL {
+		return cfg.ZenMuxBaseURL, cfg.ZenMuxAPIKey, nil
+	}
+	if cardAPIURL == "" || cardAPIToken == "" {
+		return "", "", fmt.Errorf("%w: zenmux requires a complete override or provider card URL and token", ErrMissingCredentials)
+	}
+	return cardAPIURL, cardAPIToken, nil
+}
+
+// ValidateForCard validates template requirements that depend on the provider
+// card's URL/token and therefore cannot be checked by Validate alone.
+func (c *ProviderQuotaConfig) ValidateForCard(cardAPIURL, cardAPIToken string) error {
+	if c == nil {
+		return nil
+	}
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	if !c.Enabled || c.TemplateType != TemplateTokenPlan {
+		return nil
+	}
+
+	provider, isMiMo, err := ResolveTokenPlanProvider(cardAPIURL, c.CodingPlanProvider)
+	if err != nil {
+		return err
+	}
+	if isMiMo {
+		return nil
+	}
+	switch provider {
+	case "zenmux":
+		_, _, err := resolveZenMuxCredentials(c, cardAPIURL, cardAPIToken)
+		return err
+	case "volcengine":
+		if c.AccessKeyID == "" || c.SecretAccessKey == "" {
+			return fmt.Errorf("%w: volcengine requires access_key_id and secret_access_key", ErrMissingCredentials)
+		}
+	case "":
+		return errors.New("unsupported_provider: could not detect token plan provider; set coding_plan_provider explicitly")
+	default:
+		if cardAPIToken == "" {
+			return fmt.Errorf("%w: token plan provider requires the provider card token", ErrMissingCredentials)
+		}
+	}
+	return nil
+}
+
 // resolveQueryPlan produces a validated queryPlan for the given config and card
 // credentials. Every credential decision is template/provider-specific:
 //
-//   - general/custom: quota APIKey override, else card APIToken.
+//   - general/custom: ScriptAPIKey override, else card APIToken.
 //   - newapi: only AccessToken (never APIKey or card APIToken).
-//   - token_plan/zenmux: only the dedicated APIKey (BaseURL+APIKey required,
-//     NO card-token fallback).
+//   - token_plan/zenmux: complete ZenMux override pair, else complete card pair.
 //   - token_plan/kimi,zhipu,minimax: only the card APIToken (ignore stale
 //     APIKey/AccessToken).
 //   - token_plan/volcengine: only AK/SK.
@@ -164,6 +222,10 @@ func resolveQueryPlan(cfg *ProviderQuotaConfig, cardAPIURL, cardAPIToken string)
 	if cfg == nil {
 		return nil, errors.New("not_configured")
 	}
+	MigrateLegacyCredentials(cfg, cardAPIURL)
+	if err := cfg.ValidateForCard(cardAPIURL, cardAPIToken); err != nil {
+		return nil, err
+	}
 	switch cfg.TemplateType {
 	case TemplateGeneral, TemplateCustom:
 		baseURL := cfg.BaseURL
@@ -171,8 +233,8 @@ func resolveQueryPlan(cfg *ProviderQuotaConfig, cardAPIURL, cardAPIToken string)
 			baseURL = cardAPIURL
 		}
 		token := cardAPIToken
-		if cfg.APIKey != "" {
-			token = cfg.APIKey
+		if cfg.ScriptAPIKey != "" {
+			token = cfg.ScriptAPIKey
 		}
 		return &queryPlan{template: cfg.TemplateType, scriptURL: baseURL, token: token}, nil
 
@@ -196,10 +258,11 @@ func resolveQueryPlan(cfg *ProviderQuotaConfig, cardAPIURL, cardAPIToken string)
 		}
 		switch provider {
 		case "zenmux":
-			if cfg.BaseURL == "" || cfg.APIKey == "" {
-				return nil, fmt.Errorf("%w: zenmux requires base_url and api_key", ErrMissingCredentials)
+			endpoint, token, err := resolveZenMuxCredentials(cfg, cardAPIURL, cardAPIToken)
+			if err != nil {
+				return nil, err
 			}
-			return &queryPlan{template: TemplateTokenPlan, provider: "zenmux", adapterURL: cfg.BaseURL, token: cfg.APIKey}, nil
+			return &queryPlan{template: TemplateTokenPlan, provider: "zenmux", adapterURL: endpoint, token: token}, nil
 		case "volcengine":
 			if cfg.AccessKeyID == "" || cfg.SecretAccessKey == "" {
 				return nil, fmt.Errorf("%w: volcengine requires access_key_id and secret_access_key", ErrMissingCredentials)
