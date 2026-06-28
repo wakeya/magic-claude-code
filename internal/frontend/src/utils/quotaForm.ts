@@ -150,27 +150,37 @@ export function buildSavePayload(
 }
 
 // buildTestPayload constructs the POST /usage/test body. Unlike save, it does
-// not clear secrets, and always carries the effective provider + base_url so
-// the backend draft query targets the right endpoint.
+// not clear secrets, but — like buildSavePayload — it only carries fields
+// applicable to the current template/provider so stale credentials from a
+// different configuration are not transmitted to the backend at all.
 export function buildTestPayload(
   form: QuotaFormState,
   detectedTokenPlan: string
 ): Record<string, unknown> {
   const provider = effectiveTokenPlanProvider(form.coding_plan_provider, detectedTokenPlan)
+  const usesBaseURL =
+    ['general', 'custom', 'newapi'].includes(form.template_type) ||
+    showZenMuxFields(form.template_type, provider)
+  const usesAPIKey = ['general', 'custom'].includes(form.template_type) || showZenMuxFields(form.template_type, provider)
+  const usesAccessToken = form.template_type === 'newapi'
+  const usesVolcSK = showVolcengineFields(form.template_type, provider)
+
   const data: Record<string, unknown> = {
     enabled: true,
     template_type: form.template_type,
     timeout_seconds: form.timeout_seconds,
-    script: form.script,
-    base_url: form.base_url,
   }
+  if (['general', 'custom'].includes(form.template_type)) {
+    data.script = form.script
+  }
+  if (usesBaseURL) data.base_url = form.base_url
   if (form.template_type === 'token_plan' && provider) {
     data.coding_plan_provider = provider
   }
-  if (form.api_key) data.api_key = form.api_key
-  if (form.access_token) data.access_token = form.access_token
-  if (form.user_id) data.user_id = form.user_id
-  if (form.access_key_id) data.access_key_id = form.access_key_id
-  if (form.secret_access_key) data.secret_access_key = form.secret_access_key
+  if (usesAPIKey && form.api_key) data.api_key = form.api_key
+  if (usesAccessToken && form.access_token) data.access_token = form.access_token
+  if (usesAccessToken && form.user_id) data.user_id = form.user_id
+  if (usesVolcSK && form.access_key_id) data.access_key_id = form.access_key_id
+  if (usesVolcSK && form.secret_access_key) data.secret_access_key = form.secret_access_key
   return data
 }

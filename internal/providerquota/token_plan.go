@@ -65,6 +65,9 @@ func DetectTokenPlanProvider(apiURL string) (provider string, isMiMo bool) {
 // cardAPIURL is the provider card's API URL; it is used to derive the
 // Volcengine region and ignored by providers with fixed endpoints (Kimi,
 // Zhipu, MiniMax). ZenMux uses cfg.BaseURL as its dedicated quota endpoint.
+// apiToken is the Bearer credential for kimi/zhipu/minimax/zenmux; it is
+// intentionally unused by volcengine (which signs with cfg AK/SK) and is
+// passed empty by resolveQueryPlan for that provider.
 func (a *TokenPlanAdapter) Query(ctx context.Context, provider string, cfg *ProviderQuotaConfig, cardAPIURL, apiToken string) *ProviderQuotaResult {
 	start := time.Now()
 

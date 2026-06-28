@@ -242,3 +242,35 @@ test('shouldShowOfficialBalanceInfo: only under official_balance with detection'
   assert.equal(shouldShowOfficialBalanceInfo('general', 'deepseek'), false)
   assert.equal(shouldShowOfficialBalanceInfo('token_plan', 'deepseek'), false)
 })
+
+test('buildTestPayload: Kimi test does not carry stale ZenMux api_key', () => {
+  const form: QuotaFormState = {
+    ...baseForm,
+    template_type: 'token_plan',
+    coding_plan_provider: 'kimi',
+    api_key: 'stale-zenmux-key',
+    access_token: 'stale-newapi-token',
+    access_key_id: 'stale-ak',
+    secret_access_key: 'stale-sk',
+  }
+  const payload = buildTestPayload(form, '')
+  assert.equal('api_key' in payload, false, 'stale api_key must not be sent for kimi test')
+  assert.equal('access_token' in payload, false, 'access_token must not be sent for kimi test')
+  assert.equal('access_key_id' in payload, false, 'access_key_id must not be sent for kimi test')
+  assert.equal('secret_access_key' in payload, false, 'secret_access_key must not be sent for kimi test')
+})
+
+test('buildTestPayload: ZenMux test carries base_url + api_key only', () => {
+  const form: QuotaFormState = {
+    ...baseForm,
+    template_type: 'token_plan',
+    coding_plan_provider: 'zenmux',
+    base_url: 'https://quota.zenmux.example/v1',
+    api_key: 'zenmux-key',
+    access_token: 'stale-tok',
+  }
+  const payload = buildTestPayload(form, '')
+  assert.equal(payload['base_url'], 'https://quota.zenmux.example/v1')
+  assert.equal(payload['api_key'], 'zenmux-key')
+  assert.equal('access_token' in payload, false)
+})
