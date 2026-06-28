@@ -84,6 +84,33 @@ func TestParseStepFunBalance(t *testing.T) {
 	}
 }
 
+// TestParseStepFunBalanceString verifies that a number encoded as a JSON string
+// (which StepFun and Novita actually return) is parsed correctly, not silently
+// treated as 0.
+func TestParseStepFunBalanceString(t *testing.T) {
+	body := []byte(`{"balance": "88.88"}`)
+	result, err := parseStepFunBalance(body, time.Now())
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if *result.Balances[0].Remaining != 88.88 {
+		t.Errorf("remaining = %f, want 88.88", *result.Balances[0].Remaining)
+	}
+}
+
+func TestParseNovitaBalanceString(t *testing.T) {
+	// Novita may return availableBalance as a string in 0.0001 USD units.
+	body := []byte(`{"availableBalance": "123456"}`)
+	result, err := parseNovitaBalance(body, time.Now())
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	expected := 123456.0 / 10000
+	if *result.Balances[0].Remaining != expected {
+		t.Errorf("remaining = %f, want %f", *result.Balances[0].Remaining, expected)
+	}
+}
+
 func TestParseSiliconFlowBalance(t *testing.T) {
 	body := []byte(`{"data": {"totalBalance": 50.25}}`)
 	result, err := parseSiliconFlowBalance(body, "CNY", time.Now())

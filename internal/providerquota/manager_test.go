@@ -178,6 +178,144 @@ func TestManagerDedupDistinguishesDraftAndProduction(t *testing.T) {
 	}
 }
 
+// TestDraftQueryFallsBackToCardCredentials verifies that a draft (test) query
+// with empty BaseURL/APIKey falls back to the provider card's APIURL/APIToken.
+// This is required so first-time Token Plan / Official Balance tests work
+// without the user re-entering the card credentials.
+func TestDraftQueryFallsBackToCardCredentials(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		json.NewEncoder(w).Encode(map[string]any{"balance": 42})
+	}))
+	defer srv.Close()
+
+	db := setupTestDB(t)
+	store := NewSnapshotStore(db)
+	insertTestProvider(t, db, "p1")
+	configGet := &mockConfigGet{
+		providers: map[string]ProviderConfig{
+			"p1": {
+				ID:       "p1",
+				Enabled:  true,
+				APIURL:   srv.URL,
+				APIToken: "card-secret-token",
+				QuotaQuery: &ProviderQuotaConfig{
+					Enabled:      true,
+					TemplateType: TemplateGeneral,
+					Script: `({
+						request: { url: "{{baseUrl}}/balance", method: "GET", headers: { "Authorization": "Bearer {{apiKey}}" } },
+						extractor: function(r) { return { remaining: r.balance, unit: "USD" }; }
+					})`,
+					TimeoutSeconds: 10,
+				},
+			},
+		},
+	}
+
+	mgr := NewManager(store, configGet, 4)
+
+	// Draft has NO BaseURL and NO APIKey — must fall back to the card.
+	result, err := mgr.Query(context.Background(), "p1", QueryOptions{
+		Draft: &ProviderQuotaConfig{
+			Enabled:      true,
+			TemplateType: TemplateGeneral,
+			Script: `({
+				request: { url: "{{baseUrl}}/balance", method: "GET", headers: { "Authorization": "Bearer {{apiKey}}" } },
+				extractor: function(r) { return { remaining: r.balance, unit: "USD" }; }
+			})`,
+			TimeoutSeconds: 10,
+			// BaseURL and APIKey intentionally empty.
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("draft query failed: %s - %s", result.ErrorCode, result.ErrorMessage)
+	}
+	if gotAuth != "Bearer card-secret-token" {
+		t.Errorf("Authorization = %q, want 'Bearer card-secret-token' (card fallback)", gotAuth)
+	}
+}
+
+// TestDraftQueriesNotDeduplicatedByBaseURL verifies that two concurrent draft
+// queries with the SAME BaseURL but DIFFERENT credentials/scripts are NOT
+// deduplicated against each other — each must execute independently. Sharing a
+// result would leak the wrong credentials' response across test runs.
+func TestDraftQueriesNotDeduplicatedByBaseURL(t *testing.T) {
+	var seenAuths sync.Map
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		bal := 0.0
+		if auth == "Bearer cred-A" {
+			bal = 10
+		} else if auth == "Bearer cred-B" {
+			bal = 20
+		}
+		seenAuths.Store(auth, true)
+		// Small delay so the two drafts overlap.
+		time.Sleep(30 * time.Millisecond)
+		json.NewEncoder(w).Encode(map[string]any{"balance": bal})
+	}))
+	defer srv.Close()
+
+	db := setupTestDB(t)
+	store := NewSnapshotStore(db)
+	insertTestProvider(t, db, "p1")
+	configGet := &mockConfigGet{
+		providers: map[string]ProviderConfig{
+			"p1": {ID: "p1", Enabled: true, APIURL: srv.URL, APIToken: "card-tok"},
+		},
+	}
+	mgr := NewManager(store, configGet, 4)
+
+	script := `({
+		request: { url: "{{baseUrl}}/balance", method: "GET", headers: { "Authorization": "Bearer {{apiKey}}" } },
+		extractor: function(r) { return { remaining: r.balance, unit: "USD" }; }
+	})`
+	makeDraft := func(key string) *ProviderQuotaConfig {
+		return &ProviderQuotaConfig{
+			Enabled: true, TemplateType: TemplateGeneral,
+			BaseURL: srv.URL, APIKey: key, Script: script, TimeoutSeconds: 10,
+		}
+	}
+
+	var wg sync.WaitGroup
+	var resA, resB *ProviderQuotaResult
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		r, _ := mgr.Query(context.Background(), "p1", QueryOptions{Draft: makeDraft("cred-A")})
+		resA = r
+	}()
+	go func() {
+		defer wg.Done()
+		r, _ := mgr.Query(context.Background(), "p1", QueryOptions{Draft: makeDraft("cred-B")})
+		resB = r
+	}()
+	wg.Wait()
+
+	// Both credentials must have been used (two independent upstream requests).
+	_, hasA := seenAuths.Load("Bearer cred-A")
+	_, hasB := seenAuths.Load("Bearer cred-B")
+	if !hasA || !hasB {
+		t.Errorf("expected both cred-A and cred-B to hit upstream; hasA=%v hasB=%v", hasA, hasB)
+	}
+	// Results must reflect the respective credentials, not a shared one.
+	if resA == nil || resB == nil {
+		t.Fatalf("results nil: A=%v B=%v", resA, resB)
+	}
+	if len(resA.Balances) == 0 || len(resB.Balances) == 0 {
+		t.Fatalf("missing balances")
+	}
+	a := *resA.Balances[0].Remaining
+	b := *resB.Balances[0].Remaining
+	if a == b {
+		t.Errorf("draft results identical (remaining=%v), expected distinct per credential", a)
+	}
+}
+
 func TestManagerRespectsConcurrencyLimit(t *testing.T) {
 	var maxConcurrent atomic.Int32
 	var currentConcurrent atomic.Int32
@@ -403,7 +541,7 @@ func TestSchedulerAppliesJitter(t *testing.T) {
 	}
 
 	start := time.Now()
-	mgr.scanAndQuery(context.Background())
+	mgr.scanAndQuery(context.Background(), true)
 
 	// Wait for all three upstream requests.
 	deadline := time.Now().Add(5 * time.Second)
@@ -447,5 +585,92 @@ func TestSchedulerAppliesJitter(t *testing.T) {
 	// The latest request must be near the largest jitter (160ms).
 	if maxOff < 130*time.Millisecond {
 		t.Errorf("latest request too early: %v (want >= 130ms)", maxOff)
+	}
+}
+
+// TestSchedulerPeriodicScanNoJitter verifies that subsequent (non-startup)
+// scans fire due queries immediately without jitter, so periodic refresh is
+// not delayed by up to 30s on every tick.
+func TestSchedulerPeriodicScanNoJitter(t *testing.T) {
+	var mu sync.Mutex
+	var requestTimes []time.Time
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requestTimes = append(requestTimes, time.Now())
+		mu.Unlock()
+		json.NewEncoder(w).Encode(map[string]any{"balance": 1})
+	}))
+	defer srv.Close()
+
+	db := setupTestDB(t)
+	store := NewSnapshotStore(db)
+	insertTestProvider(t, db, "p1")
+	insertTestProvider(t, db, "p2")
+	script := `({
+		request: { url: "{{baseUrl}}/balance", method: "GET" },
+		extractor: function(r) { return { remaining: r.balance, unit: "USD" }; }
+	})`
+	qq := func() *ProviderQuotaConfig {
+		return &ProviderQuotaConfig{Enabled: true, TemplateType: TemplateGeneral, Script: script, TimeoutSeconds: 10, AutoQueryIntervalMinutes: 5}
+	}
+	configGet := &mockConfigGet{
+		providers: map[string]ProviderConfig{
+			"p1": {ID: "p1", Enabled: true, APIURL: srv.URL, APIToken: "tok", QuotaQuery: qq()},
+			"p2": {ID: "p2", Enabled: true, APIURL: srv.URL, APIToken: "tok", QuotaQuery: qq()},
+		},
+	}
+
+	mgr := NewManager(store, configGet, 4)
+	// Large jitter that would clearly delay queries if applied.
+	mgr.jitterFn = func(id string) time.Duration { return 5 * time.Second }
+
+	// Non-startup scan (applyJitter=false) must fire immediately.
+	start := time.Now()
+	mgr.scanAndQuery(context.Background(), false)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		n := len(requestTimes)
+		mu.Unlock()
+		if n >= 2 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	elapsed := time.Since(start)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requestTimes) != 2 {
+		t.Fatalf("expected 2 requests, got %d", len(requestTimes))
+	}
+	// With jitter disabled, both must fire well under the 5s jitter delay.
+	if elapsed > 1*time.Second {
+		t.Errorf("periodic scan delayed by jitter: elapsed = %v (want < 1s)", elapsed)
+	}
+}
+
+// TestManagerStopTerminatesScheduler verifies Stop() stops the ticker and
+// returns (closing the done channel), so callers can shut down cleanly.
+func TestManagerStopTerminatesScheduler(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewSnapshotStore(db)
+	mgr := NewManager(store, nil, 4)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+
+	// Stop must return promptly (not block forever).
+	done := make(chan struct{})
+	go func() {
+		mgr.Stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Manager.Stop() did not return within 3s")
 	}
 }

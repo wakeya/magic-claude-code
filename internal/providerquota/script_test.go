@@ -334,7 +334,6 @@ func TestScriptExecutorURLSchemeCheck(t *testing.T) {
 }
 
 func TestScriptExecutorOriginCheck(t *testing.T) {
-	// Script targeting a different host than the effective base URL.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"balance": 1})
 	}))
@@ -355,6 +354,61 @@ func TestScriptExecutorOriginCheck(t *testing.T) {
 	}
 	if result.ErrorCode != "invalid_config" {
 		t.Errorf("error_code = %q, want invalid_config", result.ErrorCode)
+	}
+}
+
+// TestScriptRejectsHTTPSSchemeDowngrade verifies that a script request using
+// HTTP against an HTTPS effective Base URL is rejected, preventing credential
+// leakage over an insecure downgrade to the same host.
+func TestScriptRejectsHTTPSSchemeDowngrade(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"balance": 1})
+	}))
+	defer srv.Close()
+
+	// Effective Base URL is HTTPS; script requests plain HTTP on same host.
+	// srv.URL from NewTLSServer is already https:// — derive the http variant.
+	httpURL := strings.Replace(srv.URL, "https://", "http://", 1)
+	tlsURL := srv.URL
+
+	script := `({
+		request: { url: "` + httpURL + `/balance", method: "GET", headers: { "Authorization": "Bearer secret" } },
+		extractor: function(r) { return { remaining: r.balance }; }
+	})`
+
+	exec := NewScriptExecutor(5 * time.Second)
+	result, err := exec.ExecuteScript(context.Background(), script, nil, tlsURL)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Success {
+		t.Error("expected failure for HTTPS→HTTP scheme downgrade")
+	}
+	if result.ErrorCode != "invalid_config" {
+		t.Errorf("error_code = %q, want invalid_config", result.ErrorCode)
+	}
+}
+
+// TestScriptAllowsSameOriginHTTP verifies that HTTP is allowed when the
+// provider's effective Base URL itself is HTTP (same-origin HTTP provider).
+func TestScriptAllowsSameOriginHTTP(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"balance": 5})
+	}))
+	defer srv.Close()
+
+	script := `({
+		request: { url: "` + srv.URL + `/balance", method: "GET" },
+		extractor: function(r) { return { remaining: r.balance, unit: "USD" }; }
+	})`
+
+	exec := NewScriptExecutor(5 * time.Second)
+	result, err := exec.ExecuteScript(context.Background(), script, nil, srv.URL)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Errorf("same-origin HTTP should be allowed: %s", result.ErrorMessage)
 	}
 }
 

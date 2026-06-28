@@ -262,25 +262,61 @@ func (a *TokenPlanAdapter) queryZhipu(ctx context.Context, baseHost string, apiT
 		DurationMS: time.Since(start).Milliseconds(),
 	}
 
+	// Collect TOKENS_LIMIT entries. Classify each into a five_hour or
+	// seven_day slot. When unit is explicit (3/6) use it; when unit is
+	// missing, fall back to reset-time presence: entries without nextResetTime
+	// are the rolling 5-hour window, entries with a reset are the weekly one.
+	// At most one tier per window slot.
+	type candidate struct {
+		pct       float64
+		resetTime time.Time
+		hasReset  bool
+	}
+	var fiveHour, sevenDay *candidate
+	var unitless []candidate
 	for _, lim := range resp.Data.Limits {
 		if !strings.EqualFold(lim.Type, "TOKENS_LIMIT") {
 			continue
 		}
-		window := WindowFiveHour
-		if lim.Unit == 6 {
-			window = WindowSevenDay
-		}
-		tier := QuotaTier{
-			Name:        window,
-			Utilization: lim.Percentage, // Already 0-100 per reference
-		}
-		// Parse reset time (milliseconds).
+		c := candidate{pct: lim.Percentage}
 		if rt, err := lim.NextResetTime.Float64(); err == nil && rt > 0 {
-			t := time.UnixMilli(int64(rt)).UTC()
+			c.resetTime = time.UnixMilli(int64(rt)).UTC()
+			c.hasReset = true
+		}
+		switch lim.Unit {
+		case 3:
+			fiveHour = &c
+		case 6:
+			sevenDay = &c
+		default:
+			unitless = append(unitless, c)
+		}
+	}
+
+	// Fill empty slots from unit-less candidates: no-reset entries fill
+	// five_hour, reset-bearing entries fill seven_day.
+	for _, c := range unitless {
+		cc := c
+		if !cc.hasReset && fiveHour == nil {
+			fiveHour = &cc
+		} else if cc.hasReset && sevenDay == nil {
+			sevenDay = &cc
+		}
+	}
+
+	addTier := func(window string, c *candidate) {
+		if c == nil {
+			return
+		}
+		tier := QuotaTier{Name: window, Utilization: c.pct}
+		if c.hasReset {
+			t := c.resetTime
 			tier.ResetsAt = &t
 		}
 		result.Tiers = append(result.Tiers, tier)
 	}
+	addTier(WindowFiveHour, fiveHour)
+	addTier(WindowSevenDay, sevenDay)
 
 	if err := NormalizeResult(result); err != nil {
 		return errorResult("invalid_response", sanitizeError(err.Error(), nil), start)
@@ -510,13 +546,13 @@ func (a *TokenPlanAdapter) queryVolcengine(ctx context.Context, cfg *ProviderQuo
 }
 
 func (a *TokenPlanAdapter) queryVolcengineAPI(ctx context.Context, action string, cfg *ProviderQuotaConfig, start time.Time) *ProviderQuotaResult {
-	region := "cn-beijing" // default; can be derived from base URL if needed
+	region := volcRegionFromBaseURL(cfg.BaseURL)
 	service := "ark"
 
 	query := map[string]string{
-		"Action":    action,
-		"Version":   "2024-01-01",
-		"RegionId":  region,
+		"Action":  action,
+		"Version": "2024-01-01",
+		"Region":  region,
 	}
 
 	signedReq := SignVolcengineRequestV4(query, cfg.AccessKeyID, cfg.SecretAccessKey, service, region, time.Now())
@@ -739,6 +775,31 @@ func isVolcengineAuthError(msg string) bool {
 	return false
 }
 
+// volcRegionFromBaseURL derives the Volcengine region from the provider Base
+// URL host. The Ark gateway hosts follow the pattern ark.<region>.volces.com,
+// e.g. ark.cn-beijing.volces.com → cn-beijing. Falls back to cn-beijing when
+// the host does not match the pattern.
+func volcRegionFromBaseURL(baseURL string) string {
+	if baseURL == "" {
+		return "cn-beijing"
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return "cn-beijing"
+	}
+	host := strings.ToLower(u.Hostname())
+	// Expected pattern: ark.<region>.volces.com. Extract the <region> segment.
+	parts := strings.Split(host, ".")
+	// parts == ["ark", "<region>", "volces", "com"]
+	if len(parts) == 4 && parts[0] == "ark" && parts[2] == "volces" && parts[3] == "com" {
+		region := strings.TrimSpace(parts[1])
+		if region != "" {
+			return region
+		}
+	}
+	return "cn-beijing"
+}
+
 // --- Volcengine V4 Signing ---
 
 type volcSignedRequest struct {
@@ -756,7 +817,8 @@ func SignVolcengineRequestV4(query map[string]string, accessKeyID, secretKey, se
 	amzDate := now.UTC().Format("20060102T150405Z")
 	bodyHash := sha256Hex("")
 
-	query["X-Date"] = amzDate
+	// X-Date is a signed header only — it must NOT appear in the query string
+	// (the reference protocol puts it in the x-date header, not as a param).
 
 	// Sort query parameters.
 	keys := make([]string, 0, len(query))

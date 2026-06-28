@@ -315,6 +315,9 @@ export interface QuotaSnapshot {
 export interface ProviderUsageResponse {
   config: PublicQuotaConfig
   snapshot?: QuotaSnapshot
+  detected_token_plan?: string
+  detected_balance?: string
+  is_mimo?: boolean
 }
 
 export interface ProviderUsageUpdateRequest {

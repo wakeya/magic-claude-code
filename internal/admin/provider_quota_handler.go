@@ -94,6 +94,12 @@ func (s *Server) getProviderUsage(w http.ResponseWriter, _ *http.Request, id str
 
 	publicConfig := providerquota.ToPublicConfig(provider.QuotaQuery)
 
+	// Detect token-plan provider / official-balance provider / MiMo from the
+	// card API URL so the frontend can show the right fields and warnings
+	// before the user saves anything.
+	detectedTokenPlan, isMiMo := providerquota.DetectTokenPlanProvider(provider.APIURL)
+	detectedBalance := providerquota.DetectBalanceProvider(provider.APIURL)
+
 	var snapDTO *providerquota.SanitizedSnapshot
 	if s.quotaManager != nil {
 		snap, err := s.quotaManager.GetSnapshot(id)
@@ -105,8 +111,11 @@ func (s *Server) getProviderUsage(w http.ResponseWriter, _ *http.Request, id str
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"config":   publicConfig,
-		"snapshot": snapDTO,
+		"config":                   publicConfig,
+		"snapshot":                 snapDTO,
+		"detected_token_plan":      detectedTokenPlan,
+		"detected_balance":         detectedBalance,
+		"is_mimo":                  isMiMo,
 	})
 }
 

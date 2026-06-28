@@ -52,14 +52,32 @@
             {{ t('quota.xiaomi_mimo_unsupported') }}
           </div>
 
+          <!-- Token Plan: detected provider + manual selector -->
+          <div v-if="form.template_type === 'token_plan' && !isMiMo">
+            <label class="block text-sm font-medium mb-1">{{ t('quota.coding_plan_provider') }}</label>
+            <select v-model="form.coding_plan_provider" class="w-full app-control rounded-md px-3 py-2 text-sm">
+              <option value="">{{ t('quota.auto_detect') || '自动检测' }}</option>
+              <option value="kimi">Kimi</option>
+              <option value="zhipu_cn">智谱 (CN)</option>
+              <option value="zhipu_en">Zhipu (EN)</option>
+              <option value="minimax_cn">MiniMax (CN)</option>
+              <option value="minimax_en">MiniMax (EN)</option>
+              <option value="zenmux">ZenMux</option>
+              <option value="volcengine">火山方舟</option>
+            </select>
+            <div v-if="detectedTokenPlan && !form.coding_plan_provider" class="text-xs text-text-secondary mt-1">
+              {{ detectedTokenPlan }}
+            </div>
+          </div>
+
           <!-- Base URL (for general, custom, newapi, zenmux) -->
-          <div v-if="showBaseURL">
+          <div v-if="showBaseURL || showZenMuxFields">
             <label class="block text-sm font-medium mb-1">{{ t('quota.base_url') }}</label>
             <input v-model="form.base_url" type="text" class="w-full app-control rounded-md px-3 py-2 text-sm" :placeholder="t('quota.base_url_hint')" />
           </div>
 
-          <!-- API Key (for general, custom) -->
-          <div v-if="showAPIKey">
+          <!-- API Key (for general, custom, zenmux) -->
+          <div v-if="showAPIKey || showZenMuxFields">
             <label class="block text-sm font-medium mb-1">{{ t('quota.api_key') }}</label>
             <div class="flex gap-2">
               <input v-model="form.api_key" type="password" class="flex-1 app-control rounded-md px-3 py-2 text-sm" :placeholder="savedConfig?.api_key_configured ? t('quota.api_key_configured') : ''" />
@@ -82,7 +100,7 @@
             <input v-model="form.user_id" type="text" class="w-full app-control rounded-md px-3 py-2 text-sm" />
           </div>
 
-          <!-- Volcengine AK/SK -->
+          <!-- Volcengine AK/SK (shown when detected or saved as volcengine) -->
           <template v-if="form.template_type === 'token_plan' && isVolcengine">
             <div>
               <label class="block text-sm font-medium mb-1">{{ t('quota.access_key_id') }}</label>
@@ -196,10 +214,14 @@ const saveOk = ref(false)
 const savedConfig = ref<PublicQuotaConfig | null>(null)
 const snapshot = ref<QuotaSnapshot | null>(null)
 const testResult = ref<ProviderQuotaResult | null>(null)
+const detectedTokenPlan = ref('')
+const detectedBalance = ref('')
+const isMiMoDetected = ref(false)
 
 const form = reactive({
   enabled: false,
   template_type: 'general',
+  coding_plan_provider: '',
   timeout_seconds: 10,
   auto_query_interval_minutes: 5,
   script: '',
@@ -218,13 +240,16 @@ const showBaseURL = computed(() => ['general', 'custom', 'newapi'].includes(form
 const showAPIKey = computed(() => ['general', 'custom'].includes(form.template_type))
 const showAccessToken = computed(() => form.template_type === 'newapi')
 const showScript = computed(() => ['general', 'custom'].includes(form.template_type))
-const isVolcengine = computed(() => {
-  // Heuristic: if provider URL contains volces.com
-  return savedConfig.value?.coding_plan_provider === 'volcengine'
-})
-const isMiMo = computed(() => {
-  return false // Detected on the backend side
-})
+
+// Effective token-plan provider: saved explicit value wins, else auto-detected.
+const effectiveTokenPlanProvider = computed(() =>
+  form.coding_plan_provider || detectedTokenPlan.value || ''
+)
+const isVolcengine = computed(() => effectiveTokenPlanProvider.value === 'volcengine')
+const isZenMux = computed(() => effectiveTokenPlanProvider.value === 'zenmux')
+const isMiMo = computed(() => isMiMoDetected.value)
+// ZenMux needs its own Base URL + API Key under token_plan.
+const showZenMuxFields = computed(() => form.template_type === 'token_plan' && isZenMux.value)
 
 function goBack() {
   const tab = new URLSearchParams(window.location.search).get('tab')
@@ -260,10 +285,14 @@ async function loadConfig() {
     const data = await api.getProviderUsage(providerId.value)
     savedConfig.value = data.config
     snapshot.value = data.snapshot || null
+    detectedTokenPlan.value = data.detected_token_plan || ''
+    detectedBalance.value = data.detected_balance || ''
+    isMiMoDetected.value = !!data.is_mimo
 
     // Populate form from saved config.
     form.enabled = data.config.enabled
     form.template_type = data.config.template_type || 'general'
+    form.coding_plan_provider = data.config.coding_plan_provider || ''
     form.timeout_seconds = data.config.timeout_seconds || 10
     form.auto_query_interval_minutes = data.config.auto_query_interval_minutes ?? 5
     form.script = data.config.script || ''
@@ -292,9 +321,12 @@ async function saveConfig() {
       timeout_seconds: form.timeout_seconds,
       auto_query_interval_minutes: form.auto_query_interval_minutes,
     }
+    if (form.template_type === 'token_plan' && effectiveTokenPlanProvider.value) {
+      data.coding_plan_provider = effectiveTokenPlanProvider.value
+    }
     if (showScript.value) data.script = form.script
-    if (showBaseURL.value) data.base_url = form.base_url
-    if (showAPIKey.value && form.api_key) data.api_key = form.api_key
+    if (showBaseURL.value || showZenMuxFields.value) data.base_url = form.base_url
+    if ((showAPIKey.value || showZenMuxFields.value) && form.api_key) data.api_key = form.api_key
     if (showAccessToken.value && form.access_token) data.access_token = form.access_token
     if (form.user_id) data.user_id = form.user_id
     if (form.access_key_id) data.access_key_id = form.access_key_id
@@ -331,6 +363,9 @@ async function testQuery() {
       timeout_seconds: form.timeout_seconds,
       script: form.script,
       base_url: form.base_url,
+    }
+    if (form.template_type === 'token_plan' && effectiveTokenPlanProvider.value) {
+      data.coding_plan_provider = effectiveTokenPlanProvider.value
     }
     if (form.api_key) data.api_key = form.api_key
     if (form.access_token) data.access_token = form.access_token

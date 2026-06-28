@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -324,6 +325,8 @@ func parseNovitaBalance(body []byte, start time.Time) (*ProviderQuotaResult, err
 }
 
 // toFloat64FromAny converts various numeric types to float64.
+// Supports JSON numbers, native Go numbers, and numeric strings (some
+// providers — e.g. StepFun, Novita — encode amounts as JSON strings).
 func toFloat64FromAny(v any) float64 {
 	switch n := v.(type) {
 	case float64:
@@ -337,6 +340,12 @@ func toFloat64FromAny(v any) float64 {
 		return float64(n)
 	case int64:
 		return float64(n)
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(n), 64)
+		if err != nil {
+			return 0
+		}
+		return f
 	default:
 		return 0
 	}

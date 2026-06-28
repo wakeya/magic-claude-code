@@ -77,18 +77,18 @@ type QueryOptions struct {
 }
 
 // Query performs a quota query for the given provider.
-// It deduplicates concurrent requests for the same provider and query type.
-// Draft (test) queries and production queries use distinct dedup keys so a
-// test query never shares or overwrites a production result.
+// Production queries (manual refresh + scheduler) are deduplicated per provider
+// so concurrent callers share one upstream result. Draft/test queries bypass
+// singleflight entirely: each test run executes independently with its own
+// credentials/script, so two different drafts never share a result.
 func (m *Manager) Query(ctx context.Context, providerID string, opts QueryOptions) (*ProviderQuotaResult, error) {
-	// Build a dedup key that separates draft/test queries from production ones.
-	// Two concurrent production queries for the same provider share a result;
-	// a draft query is independent (different key) so it cannot accidentally
-	// receive a production snapshot or block one.
-	dedupKey := "prod:" + providerID
+	// Draft queries are never deduplicated — they carry ephemeral test config
+	// (credentials, scripts) that may differ even for the same provider+BaseURL.
 	if opts.Draft != nil {
-		dedupKey = "draft:" + providerID + ":" + opts.Draft.BaseURL
+		return m.executeQuery(ctx, providerID, opts)
 	}
+
+	dedupKey := "prod:" + providerID
 
 	// Check if there's already an in-flight request.
 	m.inFlightMu.Lock()
@@ -126,46 +126,55 @@ func (m *Manager) Query(ctx context.Context, providerID string, opts QueryOption
 }
 
 func (m *Manager) executeQuery(ctx context.Context, providerID string, opts QueryOptions) (*ProviderQuotaResult, error) {
-	// Get provider config.
+	// Always load the provider card to get APIURL/APIToken as fallback.
+	// This is essential for Token Plan / Official Balance first-time tests,
+	// where the draft does not carry the card's URL/token.
+	var cardAPIURL, cardAPIToken string
+	if m.configGet != nil {
+		if provider := m.configGet.GetProviderByID(providerID); provider != nil {
+			cardAPIURL = provider.APIURL
+			cardAPIToken = provider.APIToken
+		}
+	}
+
+	// Resolve the effective quota config: use draft if provided, else the
+	// stored provider config.
 	quotaCfg := opts.Draft
-	var apiToken, apiURL string
-	if opts.Draft != nil {
-		// For draft/test queries, use the draft config.
-		// The caller must provide APIURL and APIToken separately.
-		apiURL = opts.Draft.BaseURL
-		apiToken = opts.Draft.APIKey
-		if opts.Draft.AccessToken != "" {
-			apiToken = opts.Draft.AccessToken
+	if quotaCfg == nil {
+		if card := m.configGet; card != nil {
+			provider := card.GetProviderByID(providerID)
+			if provider == nil {
+				return errorResult("not_configured", "provider not found", time.Now()), nil
+			}
+			if !provider.Enabled {
+				return errorResult("not_configured", "provider is disabled", time.Now()), nil
+			}
+			quotaCfg = provider.QuotaQuery
 		}
-	} else if m.configGet != nil {
-		provider := m.configGet.GetProviderByID(providerID)
-		if provider == nil {
-			return errorResult("not_configured", "provider not found", time.Now()), nil
-		}
-		if !provider.Enabled {
-			return errorResult("not_configured", "provider is disabled", time.Now()), nil
-		}
-		quotaCfg = provider.QuotaQuery
-		apiURL = provider.APIURL
-		apiToken = provider.APIToken
 	}
 
 	if quotaCfg == nil || !quotaCfg.Enabled {
 		return errorResult("not_configured", "quota query not configured", time.Now()), nil
 	}
 
-	// Determine effective credentials.
+	// Effective credentials: draft/provider overrides take precedence, but fall
+	// back to the card's APIURL/APIToken when the override is empty. Secrets
+	// from the card are used in-memory only and never persisted (drafts and
+	// fallbacks skip SaveUpsert).
 	effectiveBaseURL := quotaCfg.BaseURL
 	if effectiveBaseURL == "" {
-		effectiveBaseURL = apiURL
+		effectiveBaseURL = cardAPIURL
 	}
-	effectiveToken := apiToken
+	effectiveToken := cardAPIToken
 	if quotaCfg.APIKey != "" {
 		effectiveToken = quotaCfg.APIKey
 	}
 	if quotaCfg.AccessToken != "" {
 		effectiveToken = quotaCfg.AccessToken
 	}
+
+	// apiURL is used by Token Plan / Official Balance host detection.
+	apiURL := effectiveBaseURL
 
 	timeout := time.Duration(quotaCfg.TimeoutSeconds) * time.Second
 
@@ -275,13 +284,13 @@ func (m *Manager) Start(ctx context.Context) {
 func (m *Manager) run(ctx context.Context) {
 	defer close(m.done)
 
-	// Apply startup jitter based on provider IDs.
-	m.scanAndQuery(ctx)
+	// First scan applies startup jitter to spread the initial fan-out.
+	m.scanAndQuery(ctx, true)
 
 	for {
 		select {
 		case <-m.scanTicker.C:
-			m.scanAndQuery(ctx)
+			m.scanAndQuery(ctx, false)
 		case <-m.stopCh:
 			return
 		case <-ctx.Done():
@@ -291,7 +300,9 @@ func (m *Manager) run(ctx context.Context) {
 }
 
 // scanAndQuery checks which providers are due and triggers queries.
-func (m *Manager) scanAndQuery(ctx context.Context) {
+// applyJitter spreads the startup fan-out; subsequent periodic scans fire
+// immediately so a due provider is not delayed by up to 30s on every tick.
+func (m *Manager) scanAndQuery(ctx context.Context, applyJitter bool) {
 	if m.configGet == nil {
 		return
 	}
@@ -328,10 +339,12 @@ func (m *Manager) scanAndQuery(ctx context.Context) {
 			continue
 		}
 
-		// Fire async query with per-provider jitter to avoid a thundering
-		// herd of simultaneous upstream requests at startup / scan time.
-		go func(providerID string) {
-			if m.jitterFn != nil {
+		// Fire async query. Startup jitter spreads the initial fan-out and is
+		// only applied on the first scan; periodic scans fire immediately.
+		providerID := p.ID
+		interval := time.Duration(p.QuotaQuery.AutoQueryIntervalMinutes) * time.Minute
+		go func() {
+			if applyJitter && m.jitterFn != nil {
 				jitter := m.jitterFn(providerID)
 				if jitter > 0 {
 					select {
@@ -341,8 +354,16 @@ func (m *Manager) scanAndQuery(ctx context.Context) {
 					}
 				}
 			}
+			// Re-check due after the jitter wait — a manual refresh or a
+			// concurrent scan may have already populated the snapshot, making
+			// this scheduled query redundant.
+			if snap, err := m.store.Get(providerID); err == nil && snap != nil {
+				if time.Since(snap.QueriedAt) < interval {
+					return
+				}
+			}
 			_, _ = m.Query(ctx, providerID, QueryOptions{})
-		}(p.ID)
+		}()
 	}
 }
 

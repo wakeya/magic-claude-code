@@ -200,10 +200,43 @@ func TestZhipuAuthNoBearer(t *testing.T) {
 	}
 }
 
+// TestZhipuMissingUnitClassification verifies that when unit is absent, the
+// parser falls back to reset-time ordering instead of labeling every limit as
+// five_hour. Two unit-less entries must produce one five_hour and one seven_day.
+func TestZhipuMissingUnitClassification(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Two TOKENS_LIMIT entries, neither has "unit".
+		w.Write([]byte(`{"success": true, "data": {"limits": [
+			{"type": "TOKENS_LIMIT", "percentage": 15},
+			{"type": "TOKENS_LIMIT", "percentage": 40, "nextResetTime": 1719600000000}
+		]}}`))
+	}))
+	defer srv.Close()
+
+	transport := &urlRewriteTransport{original: "https://open.bigmodel.cn", replaced: srv.URL, inner: http.DefaultTransport}
+	adapter := &TokenPlanAdapter{HTTPClient: &http.Client{Transport: transport, Timeout: 5 * time.Second}}
+
+	result := adapter.Query(context.Background(), "zhipu_cn", nil, "raw-key-123")
+	if !result.Success {
+		t.Fatalf("query failed: %s - %s", result.ErrorCode, result.ErrorMessage)
+	}
+	if len(result.Tiers) != 2 {
+		t.Fatalf("expected 2 tiers, got %d", len(result.Tiers))
+	}
+	names := map[string]bool{}
+	for _, tier := range result.Tiers {
+		names[tier.Name] = true
+	}
+	if !names[WindowFiveHour] || !names[WindowSevenDay] {
+		t.Errorf("expected one %s and one %s; got %v", WindowFiveHour, WindowSevenDay, names)
+	}
+}
+
 func TestVolcengineSigningDeterministic(t *testing.T) {
 	fixedTime := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
-	query1 := map[string]string{"Action": "GetAFPUsage", "Version": "2024-01-01", "RegionId": "cn-north-1"}
-	query2 := map[string]string{"Action": "GetAFPUsage", "Version": "2024-01-01", "RegionId": "cn-north-1"}
+	query1 := map[string]string{"Action": "GetAFPUsage", "Version": "2024-01-01", "Region": "cn-beijing"}
+	query2 := map[string]string{"Action": "GetAFPUsage", "Version": "2024-01-01", "Region": "cn-beijing"}
 
 	sig1 := SignVolcengineRequestV4(query1, "AKLT-test", "secret-key", "ark", "cn-beijing", fixedTime)
 	sig2 := SignVolcengineRequestV4(query2, "AKLT-test", "secret-key", "ark", "cn-beijing", fixedTime)
@@ -213,6 +246,53 @@ func TestVolcengineSigningDeterministic(t *testing.T) {
 	}
 	if sig1.bodyHash != sig2.bodyHash {
 		t.Errorf("body hashes not deterministic")
+	}
+}
+
+// TestVolcengineCanonicalQueryFormat verifies the signed query string matches
+// the Volcengine protocol: it must contain Region (not RegionId), Action,
+// Version; and must NOT contain X-Date (X-Date is a signed header, not a query
+// parameter).
+func TestVolcengineCanonicalQueryFormat(t *testing.T) {
+	fixedTime := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	query := map[string]string{"Action": "GetAFPUsage", "Version": "2024-01-01", "Region": "cn-beijing"}
+
+	sig := SignVolcengineRequestV4(query, "AKLT-test", "secret-key", "ark", "cn-beijing", fixedTime)
+	qs := sig.queryString
+
+	if !strings.Contains(qs, "Region=cn-beijing") {
+		t.Errorf("query string missing Region=cn-beijing: %s", qs)
+	}
+	if strings.Contains(qs, "RegionId") {
+		t.Errorf("query string must not contain RegionId (use Region): %s", qs)
+	}
+	if strings.Contains(qs, "X-Date") {
+		t.Errorf("query string must not contain X-Date (it is a header): %s", qs)
+	}
+	if !strings.Contains(qs, "Action=GetAFPUsage") {
+		t.Errorf("query string missing Action: %s", qs)
+	}
+}
+
+// TestVolcengineRegionFromBaseURL verifies the region is derived from the
+// provider Base URL host (e.g. ark.cn-beijing.volces.com → cn-beijing) rather
+// than being hardcoded.
+func TestVolcengineRegionFromBaseURL(t *testing.T) {
+	tests := []struct {
+		baseURL string
+		want    string
+	}{
+		{"https://ark.cn-beijing.volces.com/api/v3", "cn-beijing"},
+		{"https://ark.cn-shanghai.volces.com/api/v3", "cn-shanghai"},
+		{"https://ark.ap-southeast-1.volces.com/api/v3", "ap-southeast-1"},
+		{"https://ark.volces.com/api/v3", "cn-beijing"}, // default when undetectable
+		{"", "cn-beijing"},                               // default
+	}
+	for _, tt := range tests {
+		got := volcRegionFromBaseURL(tt.baseURL)
+		if got != tt.want {
+			t.Errorf("volcRegionFromBaseURL(%q) = %q, want %q", tt.baseURL, got, tt.want)
+		}
 	}
 }
 

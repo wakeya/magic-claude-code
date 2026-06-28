@@ -261,10 +261,10 @@ func (e *ScriptExecutor) doHTTPRequest(ctx context.Context, req *ScriptRequest, 
 	}
 
 	// Resolve the allowed origin from effective base URL.
-	var allowedHost string
+	var allowedOrigin *url.URL
 	if effectiveBaseURL != "" {
 		if baseU, err := url.Parse(effectiveBaseURL); err == nil {
-			allowedHost = baseU.Host
+			allowedOrigin = baseU
 		}
 	}
 
@@ -289,12 +289,13 @@ func (e *ScriptExecutor) doHTTPRequest(ctx context.Context, req *ScriptRequest, 
 			baseURL, _ := url.Parse(currentURL)
 			redirectURL = baseURL.ResolveReference(redirectURL)
 
-			// Same-origin check against both current URL and effective base.
-			if redirectURL.Host != baseURL.Host {
-				return nil, 0, fmt.Errorf("cross-origin redirect rejected: %s -> %s", baseURL.Host, redirectURL.Host)
+			// Same-origin check (scheme + host + port) against the current URL.
+			if !sameOrigin(redirectURL, baseURL) {
+				return nil, 0, fmt.Errorf("cross-origin redirect rejected: %s://%s -> %s://%s", baseURL.Scheme, baseURL.Host, redirectURL.Scheme, redirectURL.Host)
 			}
-			if allowedHost != "" && redirectURL.Host != allowedHost {
-				return nil, 0, fmt.Errorf("redirect target not in allowed origin: %s", redirectURL.Host)
+			// And against the effective base URL (no scheme downgrade leak).
+			if allowedOrigin != nil && !sameOrigin(redirectURL, allowedOrigin) {
+				return nil, 0, fmt.Errorf("redirect target not in allowed origin: %s://%s", redirectURL.Scheme, redirectURL.Host)
 			}
 
 			currentURL = redirectURL.String()
@@ -344,12 +345,14 @@ func validateScriptRequest(req *ScriptRequest, effectiveBaseURL string) error {
 		return fmt.Errorf("request URL must not contain userinfo")
 	}
 
-	// Origin check: request URL must match effective base URL host.
+	// Origin check: the request URL must share scheme, hostname and effective
+	// port with the effective Base URL. This prevents an HTTPS provider from
+	// leaking credentials to a plaintext HTTP endpoint on the same host.
 	if effectiveBaseURL != "" {
 		baseU, err := url.Parse(effectiveBaseURL)
 		if err == nil && baseU.Host != "" {
-			if u.Host != baseU.Host {
-				return fmt.Errorf("request URL host %q does not match effective base URL host %q", u.Host, baseU.Host)
+			if !sameOrigin(u, baseU) {
+				return fmt.Errorf("request URL origin (%s) does not match effective base URL origin (%s://%s)", u.String(), baseU.Scheme, baseU.Host)
 			}
 		}
 	}
@@ -384,6 +387,27 @@ func substitutePlaceholders(s string, values map[string]string) string {
 		s = strings.ReplaceAll(s, "{{"+key+"}}", val)
 	}
 	return s
+}
+
+// sameOrigin reports whether two URLs share scheme, hostname and effective port.
+// A missing port resolves to the scheme default (80 for HTTP, 443 for HTTPS),
+// so http://host and http://host:80 are the same origin, while https://host
+// (443) and http://host (80) are not — preventing HTTPS→HTTP downgrades.
+func sameOrigin(a, b *url.URL) bool {
+	return a.Scheme == b.Scheme && a.Hostname() == b.Hostname() && effectivePort(a) == effectivePort(b)
+}
+
+// effectivePort returns the explicit port, or the scheme default if absent.
+func effectivePort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	switch u.Scheme {
+	case "https":
+		return "443"
+	default:
+		return "80"
+	}
 }
 
 func classifyHTTPError(err error) string {
