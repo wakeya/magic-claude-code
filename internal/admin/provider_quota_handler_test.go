@@ -219,9 +219,12 @@ func TestProviderUsageQueryNoManager(t *testing.T) {
 }
 
 func TestApplyQuotaUpdateSecretPatch(t *testing.T) {
-	// Test: empty value keeps existing.
+	// Test: empty value keeps existing (AccessToken belongs to NewAPI, so the
+	// fixture sets that template so NormalizeForTemplate treats it as applicable).
 	existing := &providerquota.ProviderQuotaConfig{
-		AccessToken: "existing-token",
+		TemplateType: providerquota.TemplateNewAPI,
+		AccessToken:  "existing-token",
+		BaseURL:      "https://panel.example.com",
 	}
 	req := providerQuotaUpdateRequest{} // No AccessToken set.
 	result := applyQuotaUpdate(existing, req)
@@ -234,6 +237,75 @@ func TestApplyQuotaUpdateSecretPatch(t *testing.T) {
 	result2 := applyQuotaUpdate(existing, req2)
 	if result2.AccessToken != "" {
 		t.Errorf("access_token after clear = %q, want empty", result2.AccessToken)
+	}
+}
+
+// TestSaveNormalizesInapplicableFields verifies the backend safety boundary:
+// saving a Kimi token_plan config clears stale ZenMux APIKey / NewAPI
+// AccessToken / Volcengine AK-SK left over from a previous configuration.
+func TestSaveNormalizesInapplicableFields(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{
+		{
+			ID: "test-p", Name: "Test", APIURL: "https://api.kimi.com/coding/v1",
+			APIToken: "tok", Enabled: true,
+			QuotaQuery: &providerquota.ProviderQuotaConfig{
+				Enabled:            true,
+				TemplateType:       "token_plan",
+				CodingPlanProvider: "zenmux",
+				BaseURL:            "https://quota.zenmux.example/v1",
+				APIKey:             "stale-zenmux-key",
+				AccessToken:        "stale-newapi-tok",
+				UserID:             "stale-u1",
+				AccessKeyID:        "stale-ak",
+				SecretAccessKey:    "stale-sk",
+			},
+			CreatedAt: timeNow(), UpdatedAt: timeNow(),
+		},
+	}
+	store := config.NewMockStore(cfg)
+	srv := NewServer(&AdminConfig{Password: "test"}, store, nil)
+
+	// Save: switch to Kimi token_plan (no secrets provided → keep applicable;
+	// normalize clears inapplicable ones).
+	body, _ := json.Marshal(map[string]any{
+		"enabled":              true,
+		"template_type":        "token_plan",
+		"coding_plan_provider": "kimi",
+	})
+	req := httptest.NewRequest("PUT", "/api/providers/test-p/usage", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "session", Value: srv.GetAuth().GenerateToken()})
+	w := httptest.NewRecorder()
+	srv.handleProviderUsage(w, req)
+	if w.Code != 200 {
+		t.Fatalf("PUT status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	// Reload and verify stale fields were normalized away.
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	p := loaded.GetProviderByID("test-p")
+	if p == nil || p.QuotaQuery == nil {
+		t.Fatal("provider/quota missing")
+	}
+	q := p.QuotaQuery
+	if q.APIKey != "" {
+		t.Errorf("APIKey = %q, want cleared for kimi", q.APIKey)
+	}
+	if q.AccessToken != "" {
+		t.Errorf("AccessToken = %q, want cleared for kimi", q.AccessToken)
+	}
+	if q.BaseURL != "" {
+		t.Errorf("BaseURL = %q, want cleared for kimi", q.BaseURL)
+	}
+	if q.AccessKeyID != "" || q.SecretAccessKey != "" {
+		t.Errorf("AK/SK = %q/%q, want cleared for kimi", q.AccessKeyID, q.SecretAccessKey)
+	}
+	if q.CodingPlanProvider != "kimi" {
+		t.Errorf("coding_plan_provider = %q, want kimi", q.CodingPlanProvider)
 	}
 }
 

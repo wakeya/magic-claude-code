@@ -339,6 +339,12 @@ func applyQuotaUpdate(existing *providerquota.ProviderQuotaConfig, req providerQ
 	applySecretPatch(&c.AccessToken, req.AccessToken, req.ClearAccessToken)
 	applySecretPatch(&c.SecretAccessKey, req.SecretAccessKey, req.ClearSecretAccessKey)
 
+	// Backend safety boundary: clear fields inapplicable to the new
+	// template/provider so stale secrets from a previous configuration cannot
+	// persist and later leak via a different credential route. This runs after
+	// the partial update + secret patch, so applicable secrets are retained.
+	providerquota.NormalizeForTemplate(c)
+
 	return c
 }
 

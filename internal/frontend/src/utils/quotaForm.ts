@@ -48,6 +48,22 @@ export function showZenMuxFields(templateType: TemplateType, provider: string): 
   return templateType === 'token_plan' && isZenMux(provider)
 }
 
+// MiMo deferral warning is only meaningful for token_plan (MiMo is a token-plan
+// host). Suppress it for other templates so a detected MiMo card does not show
+// a misleading warning under, e.g., official_balance.
+export function shouldShowMiMoWarning(templateType: TemplateType, isMiMo: boolean): boolean {
+  return templateType === 'token_plan' && isMiMo
+}
+
+// Official-balance detection info is shown only under official_balance and only
+// when a provider was actually detected from the card URL.
+export function shouldShowOfficialBalanceInfo(
+  templateType: TemplateType,
+  detectedBalance: string
+): boolean {
+  return templateType === 'official_balance' && !!detectedBalance
+}
+
 // Volcengine shows AK/SK when detected or explicitly selected.
 export function showVolcengineFields(templateType: TemplateType, provider: string): boolean {
   return templateType === 'token_plan' && isVolcengine(provider)
@@ -78,14 +94,20 @@ export interface SavedConfig {
 //  - base_url / api_key are sent only when the template/provider uses them.
 //    Switching away from ZenMux therefore drops the stale ZenMux URL so the
 //    backend does not persist or query it.
+//  - When switching away from a template/provider that had a configured secret,
+//    an explicit clear_* flag is emitted as defense-in-depth (the backend
+//    NormalizeForTemplate is the primary safety boundary).
 export function buildSavePayload(
   form: QuotaFormState,
   detectedTokenPlan: string,
-  _saved: SavedConfig | null
+  saved: SavedConfig | null
 ): Record<string, unknown> {
   const provider = effectiveTokenPlanProvider(form.coding_plan_provider, detectedTokenPlan)
   const zenmux = showZenMuxFields(form.template_type, provider)
   const baseURL = ['general', 'custom', 'newapi'].includes(form.template_type) || zenmux
+  const usesAPIKey = ['general', 'custom'].includes(form.template_type) || zenmux
+  const usesAccessToken = form.template_type === 'newapi'
+  const usesVolcSK = showVolcengineFields(form.template_type, provider)
 
   const data: Record<string, unknown> = {
     enabled: form.enabled,
@@ -108,15 +130,19 @@ export function buildSavePayload(
     // silently retained by the backend's partial update.
     data.base_url = ''
   }
-  if (showAPIKeyField(form.template_type, provider) && form.api_key) data.api_key = form.api_key
-  if (form.template_type === 'newapi' && form.access_token) data.access_token = form.access_token
-  if (form.template_type === 'newapi' && form.user_id) data.user_id = form.user_id
-  if (showVolcengineFields(form.template_type, provider) && form.access_key_id) {
-    data.access_key_id = form.access_key_id
-  }
-  if (showVolcengineFields(form.template_type, provider) && form.secret_access_key) {
-    data.secret_access_key = form.secret_access_key
-  }
+  if (usesAPIKey && form.api_key) data.api_key = form.api_key
+  if (usesAccessToken && form.access_token) data.access_token = form.access_token
+  if (usesAccessToken && form.user_id) data.user_id = form.user_id
+  if (usesVolcSK && form.access_key_id) data.access_key_id = form.access_key_id
+  if (usesVolcSK && form.secret_access_key) data.secret_access_key = form.secret_access_key
+
+  // Defense-in-depth: emit explicit clear flags when a previously configured
+  // secret is no longer applicable to the new template/provider.
+  if (saved?.api_key_configured && !usesAPIKey) data.clear_api_key = true
+  if (saved?.access_token_configured && !usesAccessToken) data.clear_access_token = true
+  if (saved?.secret_access_key_configured && !usesVolcSK) data.clear_secret_access_key = true
+
+  // User-initiated explicit clears always propagate.
   if (form.clear_api_key) data.clear_api_key = true
   if (form.clear_access_token) data.clear_access_token = true
   if (form.clear_secret_access_key) data.clear_secret_access_key = true

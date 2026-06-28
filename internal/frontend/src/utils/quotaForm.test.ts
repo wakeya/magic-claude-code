@@ -8,6 +8,8 @@ import {
   showAPIKeyField,
   buildSavePayload,
   buildTestPayload,
+  shouldShowMiMoWarning,
+  shouldShowOfficialBalanceInfo,
   type QuotaFormState,
 } from './quotaForm.ts'
 
@@ -145,6 +147,61 @@ test('buildSavePayload: clear flags propagate', () => {
   assert.equal(payload['clear_secret_access_key'], true)
 })
 
+test('buildSavePayload: switching ZenMux → Kimi clears configured api_key', () => {
+  const form: QuotaFormState = {
+    ...baseForm,
+    template_type: 'token_plan',
+    coding_plan_provider: 'kimi',
+  }
+  const payload = buildSavePayload(form, '', {
+    api_key_configured: true,
+    access_token_configured: false,
+    secret_access_key_configured: false,
+  })
+  assert.equal(payload['clear_api_key'], true, 'should clear stale ZenMux api_key')
+})
+
+test('buildSavePayload: leaving NewAPI clears configured access_token', () => {
+  const form: QuotaFormState = {
+    ...baseForm,
+    template_type: 'general',
+  }
+  const payload = buildSavePayload(form, '', {
+    api_key_configured: false,
+    access_token_configured: true,
+    secret_access_key_configured: false,
+  })
+  assert.equal(payload['clear_access_token'], true, 'should clear stale NewAPI access_token')
+})
+
+test('buildSavePayload: leaving Volcengine clears configured secret_access_key', () => {
+  const form: QuotaFormState = {
+    ...baseForm,
+    template_type: 'general',
+  }
+  const payload = buildSavePayload(form, '', {
+    api_key_configured: false,
+    access_token_configured: false,
+    secret_access_key_configured: true,
+  })
+  assert.equal(payload['clear_secret_access_key'], true, 'should clear stale Volcengine SK')
+})
+
+test('buildSavePayload: staying in ZenMux does not clear api_key', () => {
+  const form: QuotaFormState = {
+    ...baseForm,
+    template_type: 'token_plan',
+    coding_plan_provider: 'zenmux',
+    base_url: 'https://quota.zenmux.example/v1',
+  }
+  const payload = buildSavePayload(form, '', {
+    api_key_configured: true,
+    access_token_configured: false,
+    secret_access_key_configured: false,
+  })
+  assert.equal(payload['clear_api_key'], undefined, 'should not clear api_key when staying in ZenMux')
+})
+
 test('buildTestPayload: carries effective provider for token_plan', () => {
   const form: QuotaFormState = {
     ...baseForm,
@@ -170,4 +227,18 @@ test('buildTestPayload: newapi carries access_token + user_id', () => {
   const payload = buildTestPayload(form, '')
   assert.equal(payload['access_token'], 'tok')
   assert.equal(payload['user_id'], 'u1')
+})
+
+test('shouldShowMiMoWarning: only under token_plan', () => {
+  assert.equal(shouldShowMiMoWarning('token_plan', true), true)
+  assert.equal(shouldShowMiMoWarning('general', true), false, 'MiMo must not show outside token_plan')
+  assert.equal(shouldShowMiMoWarning('official_balance', true), false)
+  assert.equal(shouldShowMiMoWarning('token_plan', false), false)
+})
+
+test('shouldShowOfficialBalanceInfo: only under official_balance with detection', () => {
+  assert.equal(shouldShowOfficialBalanceInfo('official_balance', 'deepseek'), true)
+  assert.equal(shouldShowOfficialBalanceInfo('official_balance', ''), false)
+  assert.equal(shouldShowOfficialBalanceInfo('general', 'deepseek'), false)
+  assert.equal(shouldShowOfficialBalanceInfo('token_plan', 'deepseek'), false)
 })

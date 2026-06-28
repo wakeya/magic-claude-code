@@ -778,3 +778,370 @@ func TestVolcengineRegionFromCardURLManager(t *testing.T) {
 		t.Errorf("expected Region=cn-shanghai in signed query; got %q", capturedQuery)
 	}
 }
+
+// TestManagerTokenPlanProviderMismatch verifies that an explicit token-plan
+// provider conflicting with the card URL is rejected BEFORE any network
+// request, so a card's credentials are never sent to a different provider.
+func TestManagerTokenPlanProviderMismatch(t *testing.T) {
+	tests := []struct {
+		name           string
+		cardAPIURL     string
+		explicit       string
+		wantErrContain string
+	}{
+		{"MiniMax card + explicit Kimi", "https://api.minimaxi.com/v1/chat", "kimi", "provider_mismatch"},
+		{"Kimi card + explicit MiniMax", "https://api.kimi.com/coding/v1", "minimax_cn", "provider_mismatch"},
+		{"MiMo card + explicit Kimi", "https://token-plan-cn.xiaomimimo.com/v1", "kimi", "unsupported_provider"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var reqCount int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				atomic.AddInt32(&reqCount, 1)
+				json.NewEncoder(w).Encode(map[string]any{"balance": 1})
+			}))
+			defer srv.Close()
+
+			db := setupTestDB(t)
+			store := NewSnapshotStore(db)
+			insertTestProvider(t, db, "p1")
+			configGet := &mockConfigGet{
+				providers: map[string]ProviderConfig{
+					"p1": {ID: "p1", Enabled: true, APIURL: tt.cardAPIURL, APIToken: "card-secret"},
+				},
+			}
+			mgr := NewManager(store, configGet, 4)
+			mgr.adapterHTTPClient = &http.Client{
+				Transport: &urlRewriteTransport{replaced: srv.URL, inner: http.DefaultTransport},
+				Timeout:   5 * time.Second,
+			}
+
+			result, err := mgr.Query(context.Background(), "p1", QueryOptions{
+				Draft: &ProviderQuotaConfig{
+					Enabled:            true,
+					TemplateType:       TemplateTokenPlan,
+					CodingPlanProvider: tt.explicit,
+					TimeoutSeconds:     10,
+				},
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result.Success {
+				t.Error("expected failure for provider mismatch")
+			}
+			if !strings.Contains(result.ErrorCode, tt.wantErrContain) {
+				t.Errorf("ErrorCode = %q, want to contain %q", result.ErrorCode, tt.wantErrContain)
+			}
+			if got := atomic.LoadInt32(&reqCount); got != 0 {
+				t.Errorf("upstream requests = %d, want 0 (mismatch must fail before network)", got)
+			}
+		})
+	}
+}
+
+// TestManagerCredentialsBoundPerTemplate verifies that each template/provider
+// uses ONLY its designated credential and ignores stale secrets left over from
+// a different template. The card token must never leak to a mismatched route.
+func TestManagerCredentialsBoundPerTemplate(t *testing.T) {
+	t.Run("Kimi ignores stale ZenMux APIKey and AccessToken", func(t *testing.T) {
+		var gotAuth string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotAuth = r.Header.Get("Authorization")
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"limits":[{"name":"coding","detail":{"limit":1000,"remaining":800,"resetTime":1719500000000}}]}`))
+		}))
+		defer srv.Close()
+
+		db := setupTestDB(t)
+		store := NewSnapshotStore(db)
+		insertTestProvider(t, db, "p1")
+		configGet := &mockConfigGet{
+			providers: map[string]ProviderConfig{
+				"p1": {ID: "p1", Enabled: true, APIURL: "https://api.kimi.com/coding/v1", APIToken: "kimi-card-secret"},
+			},
+		}
+		mgr := NewManager(store, configGet, 4)
+		mgr.adapterHTTPClient = &http.Client{
+			Transport: &urlRewriteTransport{replaced: srv.URL, inner: http.DefaultTransport},
+			Timeout:   5 * time.Second,
+		}
+
+		// Draft carries STALE ZenMux APIKey + AccessToken that must be ignored.
+		_, err := mgr.Query(context.Background(), "p1", QueryOptions{
+			Draft: &ProviderQuotaConfig{
+				Enabled: true, TemplateType: TemplateTokenPlan,
+				CodingPlanProvider: "kimi",
+				APIKey:             "stale-zenmux-key",
+				AccessToken:        "stale-newapi-token",
+				TimeoutSeconds:     10,
+			},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if gotAuth != "Bearer kimi-card-secret" {
+			t.Errorf("Authorization = %q, want 'Bearer kimi-card-secret' (card token, not stale secrets)", gotAuth)
+		}
+	})
+
+	t.Run("Official Balance ignores stale APIKey and AccessToken", func(t *testing.T) {
+		var gotAuth string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotAuth = r.Header.Get("Authorization")
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"balance_infos":[{"currency":"CNY","total_balance":10}],"is_available":true}`))
+		}))
+		defer srv.Close()
+
+		db := setupTestDB(t)
+		store := NewSnapshotStore(db)
+		insertTestProvider(t, db, "p1")
+		configGet := &mockConfigGet{
+			providers: map[string]ProviderConfig{
+				"p1": {ID: "p1", Enabled: true, APIURL: "https://api.deepseek.com/v1", APIToken: "deepseek-card-secret"},
+			},
+		}
+		mgr := NewManager(store, configGet, 4)
+		mgr.adapterHTTPClient = &http.Client{
+			Transport: &urlRewriteTransport{replaced: srv.URL, inner: http.DefaultTransport},
+			Timeout:   5 * time.Second,
+		}
+
+		_, err := mgr.Query(context.Background(), "p1", QueryOptions{
+			Draft: &ProviderQuotaConfig{
+				Enabled: true, TemplateType: TemplateOfficialBalance,
+				APIKey:      "stale-general-key",
+				AccessToken: "stale-newapi-token",
+				TimeoutSeconds: 10,
+			},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if gotAuth != "Bearer deepseek-card-secret" {
+			t.Errorf("Authorization = %q, want 'Bearer deepseek-card-secret' (card token)", gotAuth)
+		}
+	})
+
+	t.Run("ZenMux without dedicated APIKey fails before network", func(t *testing.T) {
+		var reqCount int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt32(&reqCount, 1)
+			json.NewEncoder(w).Encode(map[string]any{"success": true})
+		}))
+		defer srv.Close()
+
+		db := setupTestDB(t)
+		store := NewSnapshotStore(db)
+		insertTestProvider(t, db, "p1")
+		configGet := &mockConfigGet{
+			providers: map[string]ProviderConfig{
+				"p1": {ID: "p1", Enabled: true, APIURL: "https://zenmux.example.com/v1", APIToken: "card-must-not-leak"},
+			},
+		}
+		mgr := NewManager(store, configGet, 4)
+		mgr.adapterHTTPClient = &http.Client{
+			Transport: &urlRewriteTransport{replaced: srv.URL, inner: http.DefaultTransport},
+			Timeout:   5 * time.Second,
+		}
+
+		result, err := mgr.Query(context.Background(), "p1", QueryOptions{
+			Draft: &ProviderQuotaConfig{
+				Enabled: true, TemplateType: TemplateTokenPlan,
+				CodingPlanProvider: "zenmux",
+				BaseURL:            "https://quota.zenmux.example/v1",
+				// APIKey intentionally empty — must NOT fall back to card token.
+				TimeoutSeconds: 10,
+			},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result.Success {
+			t.Error("expected failure for ZenMux without dedicated APIKey")
+		}
+		if result.ErrorCode != "missing_credentials" {
+			t.Errorf("ErrorCode = %q, want missing_credentials", result.ErrorCode)
+		}
+		if got := atomic.LoadInt32(&reqCount); got != 0 {
+			t.Errorf("upstream requests = %d, want 0 (ZenMux must not send card token)", got)
+		}
+	})
+
+	t.Run("ZenMux with dedicated APIKey sends only that key", func(t *testing.T) {
+		var gotAuth string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotAuth = r.Header.Get("Authorization")
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"success":true,"data":{"quota_5_hour":{"usage_percentage":0.1,"max_value_usd":100}}}`))
+		}))
+		defer srv.Close()
+
+		db := setupTestDB(t)
+		store := NewSnapshotStore(db)
+		insertTestProvider(t, db, "p1")
+		configGet := &mockConfigGet{
+			providers: map[string]ProviderConfig{
+				"p1": {ID: "p1", Enabled: true, APIURL: "https://zenmux.example.com/v1", APIToken: "card-must-not-leak"},
+			},
+		}
+		mgr := NewManager(store, configGet, 4)
+		mgr.adapterHTTPClient = &http.Client{
+			Transport: &urlRewriteTransport{replaced: srv.URL, inner: http.DefaultTransport},
+			Timeout:   5 * time.Second,
+		}
+
+		_, err := mgr.Query(context.Background(), "p1", QueryOptions{
+			Draft: &ProviderQuotaConfig{
+				Enabled: true, TemplateType: TemplateTokenPlan,
+				CodingPlanProvider: "zenmux",
+				BaseURL:            "https://quota.zenmux.example/v1",
+				APIKey:             "zenmux-dedicated-key",
+				TimeoutSeconds:     10,
+			},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if gotAuth != "Bearer zenmux-dedicated-key" {
+			t.Errorf("Authorization = %q, want 'Bearer zenmux-dedicated-key'", gotAuth)
+		}
+	})
+
+	t.Run("NewAPI uses only AccessToken", func(t *testing.T) {
+		var gotAuth string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotAuth = r.Header.Get("Authorization")
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"success":true,"data":{"quota":500000,"used_quota":0,"group":"default"}}`))
+		}))
+		defer srv.Close()
+
+		db := setupTestDB(t)
+		store := NewSnapshotStore(db)
+		insertTestProvider(t, db, "p1")
+		configGet := &mockConfigGet{
+			providers: map[string]ProviderConfig{
+				"p1": {ID: "p1", Enabled: true, APIURL: "https://panel.example.com", APIToken: "card-must-not-leak"},
+			},
+		}
+		mgr := NewManager(store, configGet, 4)
+		mgr.adapterHTTPClient = &http.Client{
+			Transport: &urlRewriteTransport{replaced: srv.URL, inner: http.DefaultTransport},
+			Timeout:   5 * time.Second,
+		}
+
+		_, err := mgr.Query(context.Background(), "p1", QueryOptions{
+			Draft: &ProviderQuotaConfig{
+				Enabled: true, TemplateType: TemplateNewAPI,
+				BaseURL:     "https://panel.example.com",
+				AccessToken: "newapi-access-token",
+				APIKey:      "stale-general-key",
+				UserID:      "u1",
+				TimeoutSeconds: 10,
+			},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if gotAuth != "Bearer newapi-access-token" {
+			t.Errorf("Authorization = %q, want 'Bearer newapi-access-token'", gotAuth)
+		}
+	})
+
+	t.Run("General APIKey override beats card token", func(t *testing.T) {
+		var gotAuth string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotAuth = r.Header.Get("Authorization")
+			json.NewEncoder(w).Encode(map[string]any{"balance": 5})
+		}))
+		defer srv.Close()
+
+		db := setupTestDB(t)
+		store := NewSnapshotStore(db)
+		insertTestProvider(t, db, "p1")
+		configGet := &mockConfigGet{
+			providers: map[string]ProviderConfig{
+				"p1": {ID: "p1", Enabled: true, APIURL: srv.URL, APIToken: "card-token"},
+			},
+		}
+		mgr := NewManager(store, configGet, 4)
+		mgr.adapterHTTPClient = &http.Client{
+			Transport: &urlRewriteTransport{replaced: srv.URL, inner: http.DefaultTransport},
+			Timeout:   5 * time.Second,
+		}
+
+		_, err := mgr.Query(context.Background(), "p1", QueryOptions{
+			Draft: &ProviderQuotaConfig{
+				Enabled: true, TemplateType: TemplateGeneral,
+				BaseURL: srv.URL, APIKey: "general-override-key",
+				Script: `({request:{url:"{{baseUrl}}/b",method:"GET",headers:{"Authorization":"Bearer {{apiKey}}"}},extractor:function(r){return{remaining:r.balance};}})`,
+				TimeoutSeconds: 10,
+			},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if gotAuth != "Bearer general-override-key" {
+			t.Errorf("Authorization = %q, want 'Bearer general-override-key'", gotAuth)
+		}
+	})
+}
+
+// TestManagerTokenPlanMatchingProviderRequests verifies that a matching
+// (explicit == detected) provider and an undetectable card with an explicit
+// provider both proceed to a normal upstream request.
+func TestManagerTokenPlanMatchingProviderRequests(t *testing.T) {
+	tests := []struct {
+		name       string
+		cardAPIURL string
+		explicit   string
+	}{
+		{"matching Kimi", "https://api.kimi.com/coding/v1", "kimi"},
+		{"undetectable card + explicit Kimi", "https://custom-gateway.example.com/v1", "kimi"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var reqCount int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				atomic.AddInt32(&reqCount, 1)
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(`{"limits":[{"name":"coding","detail":{"limit":1000,"remaining":800,"resetTime":1719500000000}}]}`))
+			}))
+			defer srv.Close()
+
+			db := setupTestDB(t)
+			store := NewSnapshotStore(db)
+			insertTestProvider(t, db, "p1")
+			configGet := &mockConfigGet{
+				providers: map[string]ProviderConfig{
+					"p1": {ID: "p1", Enabled: true, APIURL: tt.cardAPIURL, APIToken: "kimi-card-secret"},
+				},
+			}
+			mgr := NewManager(store, configGet, 4)
+			mgr.adapterHTTPClient = &http.Client{
+				Transport: &urlRewriteTransport{replaced: srv.URL, inner: http.DefaultTransport},
+				Timeout:   5 * time.Second,
+			}
+
+			result, err := mgr.Query(context.Background(), "p1", QueryOptions{
+				Draft: &ProviderQuotaConfig{
+					Enabled:            true,
+					TemplateType:       TemplateTokenPlan,
+					CodingPlanProvider: tt.explicit,
+					TimeoutSeconds:     10,
+				},
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !result.Success {
+				t.Errorf("expected success, got %s - %s", result.ErrorCode, result.ErrorMessage)
+			}
+			if got := atomic.LoadInt32(&reqCount); got != 1 {
+				t.Errorf("upstream requests = %d, want 1", got)
+			}
+		})
+	}
+}

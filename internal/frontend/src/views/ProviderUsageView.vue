@@ -47,9 +47,15 @@
             </select>
           </div>
 
-          <!-- Xiaomi MiMo warning -->
-          <div v-if="isMiMo" class="bg-warning-light border border-warning text-warning-dark rounded-md p-3 text-sm">
+          <!-- Xiaomi MiMo warning (only under token_plan) -->
+          <div v-if="showMiMoWarning" class="bg-warning-light border border-warning text-warning-dark rounded-md p-3 text-sm">
             {{ t('quota.xiaomi_mimo_unsupported') }}
+          </div>
+
+          <!-- Official balance: detected provider + fixed endpoint -->
+          <div v-if="showOfficialBalanceInfo" class="bg-primary-light border border-primary text-primary-dark rounded-md p-3 text-sm">
+            <div class="font-medium">{{ t('quota.detected_balance_provider') }}: {{ detectedBalance }}</div>
+            <div class="text-xs text-text-secondary mt-1">{{ t('quota.official_balance_endpoint_hint') }}</div>
           </div>
 
           <!-- Token Plan: detected provider + manual selector -->
@@ -202,6 +208,8 @@ import {
   showAPIKeyField,
   showZenMuxFields,
   showVolcengineFields,
+  shouldShowMiMoWarning,
+  shouldShowOfficialBalanceInfo,
   buildSavePayload,
   buildTestPayload,
 } from '@/utils/quotaForm'
@@ -261,6 +269,10 @@ const effectiveTokenPlanProvider = computed(() =>
 const isVolcengine = computed(() => showVolcengineFields(form.template_type, effectiveTokenPlanProvider.value))
 const isZenMux = computed(() => showZenMuxFields(form.template_type, effectiveTokenPlanProvider.value))
 const isMiMo = computed(() => isMiMoDetected.value)
+const showMiMoWarning = computed(() => shouldShowMiMoWarning(form.template_type, isMiMoDetected.value))
+const showOfficialBalanceInfo = computed(() =>
+  shouldShowOfficialBalanceInfo(form.template_type, detectedBalance.value)
+)
 // Alias kept for template clarity; isVolcengine/isZenMux already gate the fields.
 const showZenMuxFields = isZenMux
 

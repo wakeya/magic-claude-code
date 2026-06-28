@@ -2,8 +2,10 @@ package providerquota
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -162,24 +164,14 @@ func (m *Manager) executeQuery(ctx context.Context, providerID string, opts Quer
 		return errorResult("not_configured", "quota query not configured", time.Now()), nil
 	}
 
-	// Effective credentials: draft/provider overrides take precedence, but fall
-	// back to the card's APIURL/APIToken when the override is empty. Secrets
-	// from the card are used in-memory only and never persisted (drafts and
-	// fallbacks skip SaveUpsert).
-	effectiveBaseURL := quotaCfg.BaseURL
-	if effectiveBaseURL == "" {
-		effectiveBaseURL = cardAPIURL
+	// Resolve the query plan: provider binding, endpoint, and template/provider
+	// -specific credential. All mismatch and missing-credential validation fails
+	// HERE, before any network request, so a card's credentials can never be
+	// routed to a mismatched provider or a ZenMux URL.
+	plan, err := resolveQueryPlan(quotaCfg, cardAPIURL, cardAPIToken)
+	if err != nil {
+		return planErrorResult(providerID, quotaCfg.TemplateType, err, time.Now()), nil
 	}
-	effectiveToken := cardAPIToken
-	if quotaCfg.APIKey != "" {
-		effectiveToken = quotaCfg.APIKey
-	}
-	if quotaCfg.AccessToken != "" {
-		effectiveToken = quotaCfg.AccessToken
-	}
-
-	// apiURL is used by Token Plan / Official Balance host detection.
-	apiURL := effectiveBaseURL
 
 	timeout := time.Duration(quotaCfg.TimeoutSeconds) * time.Second
 
@@ -194,35 +186,44 @@ func (m *Manager) executeQuery(ctx context.Context, providerID string, opts Quer
 	start := time.Now()
 	var result *ProviderQuotaResult
 
-	switch quotaCfg.TemplateType {
-	case TemplateCustom, TemplateGeneral:
+	switch {
+	case plan.isMiMo:
+		result = &ProviderQuotaResult{
+			ProviderID:   providerID,
+			TemplateType: TemplateTokenPlan,
+			Success:      false,
+			ErrorCode:    "unsupported_provider",
+			ErrorMessage: "Xiaomi MiMo does not currently have a stable API-key quota endpoint",
+			QueriedAt:    time.Now(),
+			DurationMS:   time.Since(start).Milliseconds(),
+		}
+
+	case plan.template == TemplateCustom || plan.template == TemplateGeneral:
 		script := quotaCfg.Script
 		if script == "" {
-			script = defaultScript(quotaCfg.TemplateType)
+			script = defaultScript(plan.template)
 		}
-		exec := NewScriptExecutor(timeout)
+		exec := m.newScriptExecutor(timeout)
 		placeholders := map[string]string{
-			"baseUrl":     effectiveBaseURL,
-			"apiKey":      effectiveToken,
-			"accessToken": effectiveToken,
-			"userId":      quotaCfg.UserID,
+			"baseUrl": plan.scriptURL,
+			"apiKey":  plan.token,
 		}
-		r, err := exec.ExecuteScript(ctx, script, placeholders, effectiveBaseURL)
+		r, err := exec.ExecuteScript(ctx, script, placeholders, plan.scriptURL)
 		if err != nil {
 			return nil, err
 		}
 		r.ProviderID = providerID
-		r.TemplateType = quotaCfg.TemplateType
+		r.TemplateType = plan.template
 		result = r
 
-	case TemplateNewAPI:
-		exec := NewScriptExecutor(timeout)
+	case plan.template == TemplateNewAPI:
+		exec := m.newScriptExecutor(timeout)
 		placeholders := map[string]string{
-			"baseUrl":     effectiveBaseURL,
-			"accessToken": effectiveToken,
-			"userId":      quotaCfg.UserID,
+			"baseUrl":     plan.scriptURL,
+			"accessToken": plan.token,
+			"userId":      plan.userID,
 		}
-		r, err := exec.ExecuteScript(ctx, defaultNewAPIScript(), placeholders, effectiveBaseURL)
+		r, err := exec.ExecuteScript(ctx, defaultNewAPIScript(), placeholders, plan.scriptURL)
 		if err != nil {
 			return nil, err
 		}
@@ -230,54 +231,18 @@ func (m *Manager) executeQuery(ctx context.Context, providerID string, opts Quer
 		r.TemplateType = TemplateNewAPI
 		result = r
 
-	case TemplateTokenPlan:
-		// Explicit provider selection takes precedence over auto-detection
-		// (spec: "自动检测或显式匹配"). Auto-detect only runs when no provider
-		// is explicitly chosen.
-		provider := quotaCfg.CodingPlanProvider
-		var isMiMo bool
-		if provider == "" {
-			provider, isMiMo = DetectTokenPlanProvider(cardAPIURL)
-		} else {
-			// Still surface the MiMo deferral when the card URL is MiMo.
-			_, isMiMo = DetectTokenPlanProvider(cardAPIURL)
-		}
-		if isMiMo {
-			return &ProviderQuotaResult{
-				ProviderID:   providerID,
-				TemplateType: TemplateTokenPlan,
-				Success:      false,
-				ErrorCode:    "unsupported_provider",
-				ErrorMessage: "Xiaomi MiMo does not currently have a stable API-key quota endpoint",
-				QueriedAt:    time.Now(),
-				DurationMS:   time.Since(start).Milliseconds(),
-			}, nil
-		}
-		if provider == "" {
-			return errorResult("unsupported_provider", "could not detect token plan provider; set coding_plan_provider explicitly", start), nil
-		}
-		// The adapter base URL: ZenMux uses its dedicated quota URL; every
-		// other provider has a fixed endpoint derived from the card URL, so a
-		// stale quota BaseURL must NOT leak into the request.
-		adapterBaseURL := cardAPIURL
-		if provider == "zenmux" {
-			adapterBaseURL = quotaCfg.BaseURL
-		}
+	case plan.template == TemplateTokenPlan:
 		adapter := m.newTokenPlanAdapter(timeout)
-		result = adapter.Query(ctx, provider, quotaCfg, adapterBaseURL, effectiveToken)
+		result = adapter.Query(ctx, plan.provider, quotaCfg, plan.adapterURL, plan.token)
 		result.ProviderID = providerID
 		result.TemplateType = TemplateTokenPlan
 
-	case TemplateOfficialBalance:
-		provider := DetectBalanceProvider(apiURL)
-		if provider == "" {
-			return errorResult("unsupported_provider", "no official balance adapter for this host", start), nil
-		}
+	case plan.template == TemplateOfficialBalance:
 		adapter := NewBalanceAdapter(timeout)
 		if m.adapterHTTPClient != nil {
 			adapter.HTTPClient = m.adapterHTTPClient
 		}
-		result = adapter.Query(ctx, provider, effectiveToken)
+		result = adapter.Query(ctx, plan.provider, plan.token)
 		result.ProviderID = providerID
 		result.TemplateType = TemplateOfficialBalance
 
@@ -423,6 +388,41 @@ func (m *Manager) newTokenPlanAdapter(timeout time.Duration) *TokenPlanAdapter {
 		adapter.HTTPClient = m.adapterHTTPClient
 	}
 	return adapter
+}
+
+// newScriptExecutor builds a ScriptExecutor, injecting the test HTTP client
+// when configured so Manager → script integration tests can capture requests.
+func (m *Manager) newScriptExecutor(timeout time.Duration) *ScriptExecutor {
+	exec := NewScriptExecutor(timeout)
+	if m.adapterHTTPClient != nil {
+		exec.HTTPClient = m.adapterHTTPClient
+	}
+	return exec
+}
+
+// planErrorResult maps a resolveQueryPlan error to a stable ProviderQuotaResult
+// error code so the frontend can translate it without parsing messages.
+func planErrorResult(providerID, templateType string, err error, now time.Time) *ProviderQuotaResult {
+	code := "invalid_config"
+	msg := err.Error()
+	switch {
+	case errors.Is(err, ErrProviderMismatch):
+		code = "provider_mismatch"
+	case errors.Is(err, ErrMissingCredentials):
+		code = "missing_credentials"
+	case strings.HasPrefix(msg, "unsupported_provider"):
+		code = "unsupported_provider"
+	case strings.HasPrefix(msg, "not_configured"):
+		code = "not_configured"
+	}
+	return &ProviderQuotaResult{
+		ProviderID:   providerID,
+		TemplateType: templateType,
+		Success:      false,
+		ErrorCode:    code,
+		ErrorMessage: msg,
+		QueriedAt:    now,
+	}
 }
 
 // defaultScript returns the default script for general or custom templates.
