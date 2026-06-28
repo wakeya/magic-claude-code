@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"magic-claude-code/internal/config"
+	"magic-claude-code/internal/providerquota"
 )
 
 func TestProviderAPIRoundTripsMultimodalConfig(t *testing.T) {
@@ -347,6 +349,164 @@ func TestDuplicateProviderPreservesMultimodalConfig(t *testing.T) {
 	}
 }
 
+func TestDuplicateProviderMigratesAndCopiesSeparatedQuotaCredentials(t *testing.T) {
+	provider := config.Provider{
+		ID: "provider-a", Name: "Legacy ZenMux", APIURL: "https://api.zenmux.example/v1", APIToken: "card-token",
+		APIFormat: config.APIFormatAnthropic, Enabled: true,
+		QuotaQuery: &providerquota.ProviderQuotaConfig{
+			Enabled: true, TemplateType: providerquota.TemplateTokenPlan,
+			BaseURL: "https://quota.zenmux.example/usage", LegacyAPIKey: "legacy-zenmux-key",
+			ScriptAPIKey: "independent-script-key",
+		},
+	}
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{provider}
+	cfg.ActiveProviderID = provider.ID
+	store := config.NewMockStore(cfg)
+	server := NewServer(&AdminConfig{Password: "secret"}, store, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/provider-a/duplicate", nil)
+	rec := httptest.NewRecorder()
+	server.handleProviderRoutes(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(loaded.Providers) != 2 {
+		t.Fatalf("providers = %d, want 2", len(loaded.Providers))
+	}
+	q := loaded.Providers[1].QuotaQuery
+	if q == nil {
+		t.Fatal("duplicated quota config is nil")
+	}
+	if q.ZenMuxBaseURL != "https://quota.zenmux.example/usage" || q.ZenMuxAPIKey != "legacy-zenmux-key" {
+		t.Fatalf("duplicated ZenMux credentials = %+v", q)
+	}
+	if q.ScriptAPIKey != "independent-script-key" || q.LegacyAPIKey != "" || q.BaseURL != "" {
+		t.Fatalf("duplicated quota config not normalized: %+v", q)
+	}
+}
+
+func TestProviderUpdateInvalidatesQuotaSnapshotOnlyWhenCardCredentialsChange(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantDelete bool
+	}{
+		{name: "name only keeps snapshot", body: `{"name":"Renamed"}`},
+		{name: "API URL change deletes snapshot", body: `{"api_url":"https://new.example/v1"}`, wantDelete: true},
+		{name: "API token change deletes snapshot", body: `{"api_token":"new-card-token"}`, wantDelete: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			store, err := config.NewSQLiteStore(filepath.Join(dir, "proxy.db"), filepath.Join(dir, "config.json"))
+			if err != nil {
+				t.Fatalf("NewSQLiteStore() error = %v", err)
+			}
+			defer store.Close()
+
+			provider := config.Provider{
+				ID: "provider-a", Name: "Provider", APIURL: "https://gateway.example/v1", APIToken: "card-token",
+				APIFormat: config.APIFormatAnthropic, Enabled: true,
+				QuotaQuery: &providerquota.ProviderQuotaConfig{Enabled: true, TemplateType: providerquota.TemplateGeneral},
+				CreatedAt:  time.Now(), UpdatedAt: time.Now(),
+			}
+			cfg := config.DefaultConfig()
+			cfg.Providers = []config.Provider{provider}
+			cfg.ActiveProviderID = provider.ID
+			if err := store.Save(cfg); err != nil {
+				t.Fatalf("Save() error = %v", err)
+			}
+
+			snapshots := providerquota.NewSnapshotStore(store.DB())
+			if err := snapshots.SaveUpsert(provider.ID, &providerquota.ProviderQuotaResult{
+				ProviderID: provider.ID, TemplateType: providerquota.TemplateGeneral, Success: true, QueriedAt: time.Now(),
+				Balances: []providerquota.BalanceItem{{Unit: "USD"}},
+			}); err != nil {
+				t.Fatalf("SaveUpsert() error = %v", err)
+			}
+
+			server := NewServer(&AdminConfig{Password: "secret"}, store, nil)
+			server.SetQuotaManager(providerquota.NewManager(snapshots, nil, 1))
+			req := httptest.NewRequest(http.MethodPut, "/api/providers/provider-a", bytes.NewBufferString(tt.body))
+			rec := httptest.NewRecorder()
+			server.handleProvider(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+			}
+
+			got, err := snapshots.Get(provider.ID)
+			if err != nil {
+				t.Fatalf("Get() error = %v", err)
+			}
+			if tt.wantDelete && got != nil {
+				t.Fatal("snapshot was not deleted")
+			}
+			if !tt.wantDelete && got == nil {
+				t.Fatal("snapshot was deleted for a non-credential change")
+			}
+		})
+	}
+}
+
+func TestImportOverwriteInvalidatesSnapshotWhenFallbackCredentialsChange(t *testing.T) {
+	dir := t.TempDir()
+	store, err := config.NewSQLiteStore(filepath.Join(dir, "proxy.db"), filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	original := config.Provider{
+		ID: "provider-a", Name: "Provider", APIURL: "https://gateway.example/v1", APIToken: "old-token",
+		APIFormat: config.APIFormatAnthropic, Enabled: true,
+		QuotaQuery: &providerquota.ProviderQuotaConfig{Enabled: true, TemplateType: providerquota.TemplateGeneral},
+		CreatedAt:  time.Now(), UpdatedAt: time.Now(),
+	}
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{original}
+	cfg.ActiveProviderID = original.ID
+	if err := store.Save(cfg); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	snapshots := providerquota.NewSnapshotStore(store.DB())
+	if err := snapshots.SaveUpsert(original.ID, &providerquota.ProviderQuotaResult{
+		ProviderID: original.ID, TemplateType: providerquota.TemplateGeneral, Success: true, QueriedAt: time.Now(),
+		Balances: []providerquota.BalanceItem{{Unit: "USD"}},
+	}); err != nil {
+		t.Fatalf("SaveUpsert() error = %v", err)
+	}
+
+	replacement := original
+	replacement.APIToken = "new-token"
+	body, _ := json.Marshal(map[string]any{
+		"version": 1, "strategy": "overwrite", "providers": []config.Provider{replacement},
+	})
+	server := NewServer(&AdminConfig{Password: "secret"}, store, nil)
+	server.SetQuotaManager(providerquota.NewManager(snapshots, nil, 1))
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/import", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	server.handleImportProviders(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	got, err := snapshots.Get(original.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got != nil {
+		t.Fatal("overwrite left a snapshot bound to the old card token")
+	}
+}
+
 func TestExportProvidersReturnsSelectedWithRealTokens(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Providers = []config.Provider{
@@ -465,12 +625,12 @@ func importResp(t *testing.T, rec *httptest.ResponseRecorder) map[string]int {
 		t.Fatalf("import status = %d body = %s", rec.Code, rec.Body.String())
 	}
 	var raw struct {
-		Success    bool     `json:"success"`
-		Imported   int      `json:"imported"`
-		Skipped    int      `json:"skipped"`
-		Overwritten int     `json:"overwritten"`
-		Duplicated int      `json:"duplicated"`
-		Errors     []string `json:"errors"`
+		Success     bool     `json:"success"`
+		Imported    int      `json:"imported"`
+		Skipped     int      `json:"skipped"`
+		Overwritten int      `json:"overwritten"`
+		Duplicated  int      `json:"duplicated"`
+		Errors      []string `json:"errors"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
 		t.Fatalf("decode import response: %v", err)
