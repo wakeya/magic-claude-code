@@ -140,7 +140,7 @@ func TestManagerDedupDistinguishesDraftAndProduction(t *testing.T) {
 				Enabled:      true,
 				TemplateType: TemplateGeneral,
 				BaseURL:      srv.URL,
-				APIKey:       "draft-token",
+				ScriptAPIKey: "draft-token",
 				Script: `({
 					request: { url: "{{baseUrl}}/balance", method: "GET" },
 					extractor: function(r) { return { remaining: r.balance, unit: "USD" }; }
@@ -180,7 +180,7 @@ func TestManagerDedupDistinguishesDraftAndProduction(t *testing.T) {
 }
 
 // TestDraftQueryFallsBackToCardCredentials verifies that a draft (test) query
-// with empty BaseURL/APIKey falls back to the provider card's APIURL/APIToken.
+// with empty BaseURL/ScriptAPIKey falls back to the provider card credentials.
 // This is required so first-time Token Plan / Official Balance tests work
 // without the user re-entering the card credentials.
 func TestDraftQueryFallsBackToCardCredentials(t *testing.T) {
@@ -216,7 +216,7 @@ func TestDraftQueryFallsBackToCardCredentials(t *testing.T) {
 
 	mgr := NewManager(store, configGet, 4)
 
-	// Draft has NO BaseURL and NO APIKey — must fall back to the card.
+	// Draft has no BaseURL or ScriptAPIKey and must fall back to the card.
 	result, err := mgr.Query(context.Background(), "p1", QueryOptions{
 		Draft: &ProviderQuotaConfig{
 			Enabled:      true,
@@ -226,7 +226,7 @@ func TestDraftQueryFallsBackToCardCredentials(t *testing.T) {
 				extractor: function(r) { return { remaining: r.balance, unit: "USD" }; }
 			})`,
 			TimeoutSeconds: 10,
-			// BaseURL and APIKey intentionally empty.
+			// BaseURL and ScriptAPIKey intentionally empty.
 		},
 	})
 	if err != nil {
@@ -278,7 +278,7 @@ func TestDraftQueriesNotDeduplicatedByBaseURL(t *testing.T) {
 	makeDraft := func(key string) *ProviderQuotaConfig {
 		return &ProviderQuotaConfig{
 			Enabled: true, TemplateType: TemplateGeneral,
-			BaseURL: srv.URL, APIKey: key, Script: script, TimeoutSeconds: 10,
+			BaseURL: srv.URL, ScriptAPIKey: key, Script: script, TimeoutSeconds: 10,
 		}
 	}
 
@@ -454,7 +454,7 @@ func TestManagerTestQueryDoesNotPersist(t *testing.T) {
 			Enabled:      true,
 			TemplateType: TemplateGeneral,
 			BaseURL:      srv.URL,
-			APIKey:       "tok",
+			ScriptAPIKey: "tok",
 			Script: `({
 				request: { url: "{{baseUrl}}/balance", method: "GET" },
 				extractor: function(r) { return { remaining: r.balance, unit: "USD" }; }
@@ -844,7 +844,7 @@ func TestManagerTokenPlanProviderMismatch(t *testing.T) {
 // uses ONLY its designated credential and ignores stale secrets left over from
 // a different template. The card token must never leak to a mismatched route.
 func TestManagerCredentialsBoundPerTemplate(t *testing.T) {
-	t.Run("Kimi ignores stale ZenMux APIKey and AccessToken", func(t *testing.T) {
+	t.Run("Kimi ignores stale ZenMux key and AccessToken", func(t *testing.T) {
 		var gotAuth string
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			gotAuth = r.Header.Get("Authorization")
@@ -1005,7 +1005,7 @@ func TestManagerCredentialsBoundPerTemplate(t *testing.T) {
 		}
 	})
 
-	t.Run("ZenMux with dedicated APIKey sends only that key", func(t *testing.T) {
+	t.Run("ZenMux with dedicated key sends only that key", func(t *testing.T) {
 		var gotAuth string
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			gotAuth = r.Header.Get("Authorization")
@@ -1074,7 +1074,7 @@ func TestManagerCredentialsBoundPerTemplate(t *testing.T) {
 				Enabled: true, TemplateType: TemplateNewAPI,
 				BaseURL:        "https://panel.example.com",
 				AccessToken:    "newapi-access-token",
-				APIKey:         "stale-general-key",
+				ScriptAPIKey:   "stale-general-key",
 				UserID:         "u1",
 				TimeoutSeconds: 10,
 			},
@@ -1087,7 +1087,7 @@ func TestManagerCredentialsBoundPerTemplate(t *testing.T) {
 		}
 	})
 
-	t.Run("General APIKey override beats card token", func(t *testing.T) {
+	t.Run("General ScriptAPIKey override beats card token", func(t *testing.T) {
 		var gotAuth string
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			gotAuth = r.Header.Get("Authorization")
@@ -1112,7 +1112,7 @@ func TestManagerCredentialsBoundPerTemplate(t *testing.T) {
 		_, err := mgr.Query(context.Background(), "p1", QueryOptions{
 			Draft: &ProviderQuotaConfig{
 				Enabled: true, TemplateType: TemplateGeneral,
-				BaseURL: srv.URL, APIKey: "general-override-key",
+				BaseURL: srv.URL, ScriptAPIKey: "general-override-key",
 				Script:         `({request:{url:"{{baseUrl}}/b",method:"GET",headers:{"Authorization":"Bearer {{apiKey}}"}},extractor:function(r){return{remaining:r.balance};}})`,
 				TimeoutSeconds: 10,
 			},

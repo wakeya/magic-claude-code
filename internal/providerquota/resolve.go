@@ -30,27 +30,14 @@ type queryPlan struct {
 	isMiMo      bool
 }
 
-// NormalizeForTemplate clears quota-config fields that are inapplicable to the
-// current template_type + effective provider. It is the backend safety boundary
-// that prevents stale secrets from a previous configuration from persisting and
-// later leaking via a different credential route.
-//
-// cardAPIURL is the provider card's API URL, used to resolve the effective
-// token-plan provider when CodingPlanProvider is empty (auto-detect). Without
-// it, auto-detected ZenMux/Volcengine configs would have their required
-// credentials wiped on save.
-//
-// prev is the config before this update. It detects credential-purpose
-// switches for the overloaded APIKey field (General/Custom "script" key vs
-// ZenMux "dedicated" key): when the purpose changes the stale key is cleared so
-// it cannot be sent to the new destination. Applicable secrets are retained
-// when the purpose is unchanged (preserving secret-patch semantics).
-//
-// It must run after partial updates are applied.
-func NormalizeForTemplate(c *ProviderQuotaConfig, cardAPIURL string, prev *ProviderQuotaConfig) {
+// NormalizeForTemplate clears fields whose meaning is unambiguous and limited
+// to another template. Script and ZenMux override fields are intentionally kept
+// independently so switching templates cannot reinterpret or destroy them.
+func NormalizeForTemplate(c *ProviderQuotaConfig, cardAPIURL string, _ *ProviderQuotaConfig) {
 	if c == nil {
 		return
 	}
+	MigrateLegacyCredentials(c, cardAPIURL)
 	isTokenPlan := c.TemplateType == TemplateTokenPlan
 	isScriptBased := c.TemplateType == TemplateGeneral || c.TemplateType == TemplateCustom
 
@@ -65,31 +52,10 @@ func NormalizeForTemplate(c *ProviderQuotaConfig, cardAPIURL string, prev *Provi
 		provider, _ = DetectTokenPlanProvider(cardAPIURL)
 	}
 
-	// BaseURL applies to: general, custom, newapi, and token_plan+zenmux.
-	baseURLApplies := isScriptBased ||
-		c.TemplateType == TemplateNewAPI ||
-		(isTokenPlan && provider == "zenmux")
+	// BaseURL is the generic script/NewAPI URL. ZenMux has ZenMuxBaseURL.
+	baseURLApplies := isScriptBased || c.TemplateType == TemplateNewAPI
 	if !baseURLApplies {
 		c.BaseURL = ""
-	}
-
-	// APIKey is overloaded: General/Custom use it as the script {{apiKey}}
-	// override, ZenMux uses it as the dedicated Bearer key. These are distinct
-	// credential purposes and must not transfer across the boundary.
-	newKeyDomain := apiKeyDomain(c.TemplateType, provider)
-	if newKeyDomain == "" {
-		c.APIKey = ""
-	} else if prev != nil {
-		prevProvider := prev.CodingPlanProvider
-		if prevProvider == "" && prev.TemplateType == TemplateTokenPlan {
-			prevProvider, _ = DetectTokenPlanProvider(cardAPIURL)
-		}
-		prevDomain := apiKeyDomain(prev.TemplateType, prevProvider)
-		// If the key's credential purpose changed, the persisted key belongs to
-		// a different destination and must not be reused.
-		if prevDomain != "" && prevDomain != newKeyDomain {
-			c.APIKey = ""
-		}
 	}
 
 	// AccessToken and UserID apply only to newapi.
@@ -103,18 +69,6 @@ func NormalizeForTemplate(c *ProviderQuotaConfig, cardAPIURL string, prev *Provi
 		c.AccessKeyID = ""
 		c.SecretAccessKey = ""
 	}
-}
-
-// apiKeyDomain classifies the credential purpose of the overloaded APIKey field.
-// Returns "" when APIKey is not used by the given template/provider.
-func apiKeyDomain(templateType, provider string) string {
-	if templateType == TemplateGeneral || templateType == TemplateCustom {
-		return "script"
-	}
-	if templateType == TemplateTokenPlan && provider == "zenmux" {
-		return "zenmux"
-	}
-	return ""
 }
 
 // ResolveTokenPlanProvider binds an explicit token-plan provider selection to
@@ -208,10 +162,10 @@ func (c *ProviderQuotaConfig) ValidateForCard(cardAPIURL, cardAPIToken string) e
 // credentials. Every credential decision is template/provider-specific:
 //
 //   - general/custom: ScriptAPIKey override, else card APIToken.
-//   - newapi: only AccessToken (never APIKey or card APIToken).
+//   - newapi: only AccessToken (never script/ZenMux keys or card APIToken).
 //   - token_plan/zenmux: complete ZenMux override pair, else complete card pair.
 //   - token_plan/kimi,zhipu,minimax: only the card APIToken (ignore stale
-//     APIKey/AccessToken).
+//     separated keys/AccessToken).
 //   - token_plan/volcengine: only AK/SK.
 //   - official_balance: only the card APIToken.
 //

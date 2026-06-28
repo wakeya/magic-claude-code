@@ -40,14 +40,11 @@ type ProviderQuotaConfig struct {
 
 	// Script and ZenMux credentials are separate security domains. LegacyAPIKey
 	// only decodes the pre-separation api_key field and is cleared by migration.
-	BaseURL       string `json:"base_url,omitempty"`
-	ScriptAPIKey  string `json:"script_api_key,omitempty"`
-	ZenMuxBaseURL string `json:"zenmux_base_url,omitempty"`
-	ZenMuxAPIKey  string `json:"zenmux_api_key,omitempty"`
-	LegacyAPIKey  string `json:"api_key,omitempty"`
-	// APIKey is retained temporarily for source compatibility with callers that
-	// construct configs in memory. It is never serialized.
-	APIKey             string `json:"-"`
+	BaseURL            string `json:"base_url,omitempty"`
+	ScriptAPIKey       string `json:"script_api_key,omitempty"`
+	ZenMuxBaseURL      string `json:"zenmux_base_url,omitempty"`
+	ZenMuxAPIKey       string `json:"zenmux_api_key,omitempty"`
+	LegacyAPIKey       string `json:"api_key,omitempty"`
 	AccessToken        string `json:"access_token,omitempty"`
 	UserID             string `json:"user_id,omitempty"`
 	CodingPlanProvider string `json:"coding_plan_provider,omitempty"`
@@ -164,7 +161,7 @@ func (c *ProviderQuotaConfig) HasSecrets() bool {
 		return false
 	}
 	return c.ScriptAPIKey != "" || c.ZenMuxAPIKey != "" || c.LegacyAPIKey != "" ||
-		c.APIKey != "" || c.AccessToken != "" || c.SecretAccessKey != ""
+		c.AccessToken != "" || c.SecretAccessKey != ""
 }
 
 // MigrateLegacyCredentials converts the pre-separation api_key/base_url
@@ -174,9 +171,6 @@ func MigrateLegacyCredentials(c *ProviderQuotaConfig, cardAPIURL string) {
 		return
 	}
 	legacyKey := c.LegacyAPIKey
-	if legacyKey == "" {
-		legacyKey = c.APIKey
-	}
 
 	switch c.TemplateType {
 	case TemplateGeneral, TemplateCustom:
@@ -201,7 +195,6 @@ func MigrateLegacyCredentials(c *ProviderQuotaConfig, cardAPIURL string) {
 	}
 
 	c.LegacyAPIKey = ""
-	c.APIKey = ""
 }
 
 // QuotaTier represents a time-window quota tier (e.g. 5-hour, 7-day, monthly).
@@ -368,12 +361,10 @@ type PublicQuotaConfig struct {
 	AutoQueryIntervalMinutes int    `json:"auto_query_interval_minutes"`
 	Script                   string `json:"script,omitempty"`
 
-	BaseURL                string `json:"base_url,omitempty"`
-	ScriptAPIKeyConfigured bool   `json:"script_api_key_configured"`
-	ZenMuxBaseURL          string `json:"zenmux_base_url,omitempty"`
-	ZenMuxAPIKeyConfigured bool   `json:"zenmux_api_key_configured"`
-	// APIKeyConfigured is retained for old frontend clients during migration.
-	APIKeyConfigured          bool   `json:"api_key_configured,omitempty"`
+	BaseURL                   string `json:"base_url,omitempty"`
+	ScriptAPIKeyConfigured    bool   `json:"script_api_key_configured"`
+	ZenMuxBaseURL             string `json:"zenmux_base_url,omitempty"`
+	ZenMuxAPIKeyConfigured    bool   `json:"zenmux_api_key_configured"`
 	AccessTokenConfigured     bool   `json:"access_token_configured"`
 	UserID                    string `json:"user_id,omitempty"`
 	CodingPlanProvider        string `json:"coding_plan_provider,omitempty"`
@@ -397,7 +388,6 @@ func ToPublicConfig(c *ProviderQuotaConfig) PublicQuotaConfig {
 		ScriptAPIKeyConfigured:    c.ScriptAPIKey != "",
 		ZenMuxBaseURL:             c.ZenMuxBaseURL,
 		ZenMuxAPIKeyConfigured:    c.ZenMuxAPIKey != "",
-		APIKeyConfigured:          c.APIKey != "" || c.LegacyAPIKey != "",
 		AccessTokenConfigured:     c.AccessToken != "",
 		UserID:                    c.UserID,
 		CodingPlanProvider:        c.CodingPlanProvider,
