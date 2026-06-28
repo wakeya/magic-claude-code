@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -672,5 +673,108 @@ func TestManagerStopTerminatesScheduler(t *testing.T) {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("Manager.Stop() did not return within 3s")
+	}
+}
+
+// TestTokenPlanExplicitProviderNotOverridden verifies that an explicit
+// CodingPlanProvider takes precedence over auto-detection, and that a stale
+// quota BaseURL (e.g. a leftover ZenMux URL) does NOT redirect the query.
+// Selecting Kimi with a stale ZenMux BaseURL must still hit Kimi.
+func TestTokenPlanExplicitProviderNotOverridden(t *testing.T) {
+	// Mock that stands in for api.kimi.com.
+	kimiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"limits":[{"name":"coding","detail":{"limit":1000,"remaining":800,"resetTime":1719500000000}}]}`))
+	}))
+	defer kimiSrv.Close()
+
+	db := setupTestDB(t)
+	store := NewSnapshotStore(db)
+	insertTestProvider(t, db, "p1")
+	configGet := &mockConfigGet{
+		providers: map[string]ProviderConfig{
+			"p1": {
+				ID:       "p1",
+				Enabled:  true,
+				APIURL:   "https://api.kimi.com/coding/v1", // card URL → Kimi
+				APIToken: "kimi-token",
+			},
+		},
+	}
+	mgr := NewManager(store, configGet, 4)
+	// Route all adapter HTTP traffic to the Kimi mock.
+	mgr.adapterHTTPClient = &http.Client{
+		Transport: &urlRewriteTransport{original: "api.kimi.com", replaced: kimiSrv.URL, inner: http.DefaultTransport},
+		Timeout:   5 * time.Second,
+	}
+
+	// Draft explicitly selects Kimi but carries a STALE ZenMux BaseURL.
+	result, err := mgr.Query(context.Background(), "p1", QueryOptions{
+		Draft: &ProviderQuotaConfig{
+			Enabled:            true,
+			TemplateType:       TemplateTokenPlan,
+			CodingPlanProvider: "kimi",
+			BaseURL:            "https://quota.zenmux.example/v1", // stale
+			TimeoutSeconds:     10,
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("explicit Kimi selection should query Kimi, not the stale ZenMux URL; got %s - %s",
+			result.ErrorCode, result.ErrorMessage)
+	}
+}
+
+// TestVolcengineRegionFromCardURLManager verifies the full Manager → adapter
+// path derives the Volcengine region from the provider card URL (not the empty
+// quota BaseURL). A Shanghai card must sign Region=cn-shanghai.
+func TestVolcengineRegionFromCardURLManager(t *testing.T) {
+	var capturedQuery string
+	// Mock standing in for open.volcengineapi.com.
+	volcSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedQuery = r.URL.RawQuery
+		// Return an empty AFP result so the adapter produces a business fallback.
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"Result": {}, "ResponseMetadata": {}}`))
+	}))
+	defer volcSrv.Close()
+
+	db := setupTestDB(t)
+	store := NewSnapshotStore(db)
+	insertTestProvider(t, db, "p1")
+	configGet := &mockConfigGet{
+		providers: map[string]ProviderConfig{
+			"p1": {
+				ID:       "p1",
+				Enabled:  true,
+				APIURL:   "https://ark.cn-shanghai.volces.com/api/v3",
+				APIToken: "unused",
+			},
+		},
+	}
+	mgr := NewManager(store, configGet, 4)
+	mgr.adapterHTTPClient = &http.Client{
+		Transport: &urlRewriteTransport{original: "open.volcengineapi.com", replaced: volcSrv.URL, inner: http.DefaultTransport},
+		Timeout:   5 * time.Second,
+	}
+
+	_, err := mgr.Query(context.Background(), "p1", QueryOptions{
+		Draft: &ProviderQuotaConfig{
+			Enabled:            true,
+			TemplateType:       TemplateTokenPlan,
+			CodingPlanProvider: "volcengine",
+			AccessKeyID:        "AKLT-test",
+			SecretAccessKey:    "secret-key",
+			TimeoutSeconds:     10,
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The signed query is captured regardless of result success.
+	if !strings.Contains(capturedQuery, "Region=cn-shanghai") {
+		t.Errorf("expected Region=cn-shanghai in signed query; got %q", capturedQuery)
 	}
 }

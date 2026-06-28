@@ -94,7 +94,7 @@ func TestKimiIntegration(t *testing.T) {
 	transport := &urlRewriteTransport{original: "https://api.kimi.com", replaced: srv.URL, inner: http.DefaultTransport}
 	adapter := &TokenPlanAdapter{HTTPClient: &http.Client{Transport: transport, Timeout: 5 * time.Second}}
 
-	result := adapter.Query(context.Background(), "kimi", nil, "kimi-token")
+	result := adapter.Query(context.Background(), "kimi", nil, "https://api.kimi.com", "kimi-token")
 	if !result.Success {
 		t.Fatalf("query failed: %s - %s", result.ErrorCode, result.ErrorMessage)
 	}
@@ -188,7 +188,7 @@ func TestZhipuAuthNoBearer(t *testing.T) {
 	transport := &urlRewriteTransport{original: "https://open.bigmodel.cn", replaced: srv.URL, inner: http.DefaultTransport}
 	adapter := &TokenPlanAdapter{HTTPClient: &http.Client{Transport: transport, Timeout: 5 * time.Second}}
 
-	result := adapter.Query(context.Background(), "zhipu_cn", nil, "raw-key-123")
+	result := adapter.Query(context.Background(), "zhipu_cn", nil, "https://open.bigmodel.cn", "raw-key-123")
 	if !result.Success {
 		t.Fatalf("query failed: %s - %s", result.ErrorCode, result.ErrorMessage)
 	}
@@ -217,7 +217,40 @@ func TestZhipuMissingUnitClassification(t *testing.T) {
 	transport := &urlRewriteTransport{original: "https://open.bigmodel.cn", replaced: srv.URL, inner: http.DefaultTransport}
 	adapter := &TokenPlanAdapter{HTTPClient: &http.Client{Transport: transport, Timeout: 5 * time.Second}}
 
-	result := adapter.Query(context.Background(), "zhipu_cn", nil, "raw-key-123")
+	result := adapter.Query(context.Background(), "zhipu_cn", nil, "https://open.bigmodel.cn", "raw-key-123")
+	if !result.Success {
+		t.Fatalf("query failed: %s - %s", result.ErrorCode, result.ErrorMessage)
+	}
+	if len(result.Tiers) != 2 {
+		t.Fatalf("expected 2 tiers, got %d", len(result.Tiers))
+	}
+	names := map[string]bool{}
+	for _, tier := range result.Tiers {
+		names[tier.Name] = true
+	}
+	if !names[WindowFiveHour] || !names[WindowSevenDay] {
+		t.Errorf("expected one %s and one %s; got %v", WindowFiveHour, WindowSevenDay, names)
+	}
+}
+
+// TestZhipuMissingUnitBothWithReset verifies the fallback when BOTH unit-less
+// TOKENS_LIMIT entries carry a reset time: the earlier reset fills five_hour
+// and the later fills seven_day, instead of dropping the 5-hour bucket.
+func TestZhipuMissingUnitBothWithReset(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Two unit-less entries, BOTH with reset times (earlier → 5h, later → 7d).
+		w.Write([]byte(`{"success": true, "data": {"limits": [
+			{"type": "TOKENS_LIMIT", "percentage": 30, "nextResetTime": 1719500000000},
+			{"type": "TOKENS_LIMIT", "percentage": 60, "nextResetTime": 1720000000000}
+		]}}`))
+	}))
+	defer srv.Close()
+
+	transport := &urlRewriteTransport{original: "https://open.bigmodel.cn", replaced: srv.URL, inner: http.DefaultTransport}
+	adapter := &TokenPlanAdapter{HTTPClient: &http.Client{Transport: transport, Timeout: 5 * time.Second}}
+
+	result := adapter.Query(context.Background(), "zhipu_cn", nil, "https://open.bigmodel.cn", "raw-key-123")
 	if !result.Success {
 		t.Fatalf("query failed: %s - %s", result.ErrorCode, result.ErrorMessage)
 	}

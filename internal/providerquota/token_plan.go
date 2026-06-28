@@ -62,7 +62,10 @@ func DetectTokenPlanProvider(apiURL string) (provider string, isMiMo bool) {
 }
 
 // Query dispatches to the appropriate provider-specific query.
-func (a *TokenPlanAdapter) Query(ctx context.Context, provider string, cfg *ProviderQuotaConfig, apiToken string) *ProviderQuotaResult {
+// cardAPIURL is the provider card's API URL; it is used to derive the
+// Volcengine region and ignored by providers with fixed endpoints (Kimi,
+// Zhipu, MiniMax). ZenMux uses cfg.BaseURL as its dedicated quota endpoint.
+func (a *TokenPlanAdapter) Query(ctx context.Context, provider string, cfg *ProviderQuotaConfig, cardAPIURL, apiToken string) *ProviderQuotaResult {
 	start := time.Now()
 
 	switch provider {
@@ -79,7 +82,7 @@ func (a *TokenPlanAdapter) Query(ctx context.Context, provider string, cfg *Prov
 	case "zenmux":
 		return a.queryZenMux(ctx, cfg, apiToken, start)
 	case "volcengine":
-		return a.queryVolcengine(ctx, cfg, apiToken, start)
+		return a.queryVolcengine(ctx, cfg, cardAPIURL, apiToken, start)
 	default:
 		return errorResult("unsupported_provider", "unknown token plan provider: "+provider, start)
 	}
@@ -293,13 +296,23 @@ func (a *TokenPlanAdapter) queryZhipu(ctx context.Context, baseHost string, apiT
 		}
 	}
 
-	// Fill empty slots from unit-less candidates: no-reset entries fill
-	// five_hour, reset-bearing entries fill seven_day.
+	// Fill empty slots from unit-less candidates, using the reference reset-time
+	// ordering: sort so entries without a reset come first, then by reset time
+	// ascending. The first fills five_hour, the second fills seven_day. This
+	// keeps the 5-hour bucket even when every unit-less entry has a reset time.
+	sort.SliceStable(unitless, func(i, j int) bool {
+		ri, rj := unitless[i], unitless[j]
+		// Entries without a reset rank before those with one.
+		if ri.hasReset != rj.hasReset {
+			return !ri.hasReset
+		}
+		return ri.resetTime.Before(rj.resetTime)
+	})
 	for _, c := range unitless {
 		cc := c
-		if !cc.hasReset && fiveHour == nil {
+		if fiveHour == nil {
 			fiveHour = &cc
-		} else if cc.hasReset && sevenDay == nil {
+		} else if sevenDay == nil {
 			sevenDay = &cc
 		}
 	}
@@ -532,21 +545,23 @@ func (a *TokenPlanAdapter) queryZenMux(ctx context.Context, cfg *ProviderQuotaCo
 // POST to open.volcengineapi.com with V4 signing (service=ark).
 // Tries GetAFPUsage first, then GetCodingPlanUsage.
 
-func (a *TokenPlanAdapter) queryVolcengine(ctx context.Context, cfg *ProviderQuotaConfig, apiToken string, start time.Time) *ProviderQuotaResult {
+func (a *TokenPlanAdapter) queryVolcengine(ctx context.Context, cfg *ProviderQuotaConfig, cardAPIURL, apiToken string, start time.Time) *ProviderQuotaResult {
 	if cfg == nil || cfg.AccessKeyID == "" || cfg.SecretAccessKey == "" {
 		return errorResult("missing_credentials", "Volcengine requires AK/SK", start)
 	}
 
 	// Try GetAFPUsage first, then GetCodingPlanUsage.
-	result := a.queryVolcengineAPI(ctx, "GetAFPUsage", cfg, start)
+	result := a.queryVolcengineAPI(ctx, "GetAFPUsage", cfg, cardAPIURL, start)
 	if result.Success || result.ErrorCode != "upstream_business_error" {
 		return result
 	}
-	return a.queryVolcengineAPI(ctx, "GetCodingPlanUsage", cfg, start)
+	return a.queryVolcengineAPI(ctx, "GetCodingPlanUsage", cfg, cardAPIURL, start)
 }
 
-func (a *TokenPlanAdapter) queryVolcengineAPI(ctx context.Context, action string, cfg *ProviderQuotaConfig, start time.Time) *ProviderQuotaResult {
-	region := volcRegionFromBaseURL(cfg.BaseURL)
+func (a *TokenPlanAdapter) queryVolcengineAPI(ctx context.Context, action string, cfg *ProviderQuotaConfig, cardAPIURL string, start time.Time) *ProviderQuotaResult {
+	// Derive region from the provider card URL (e.g. ark.cn-shanghai.volces.com
+	// → cn-shanghai). cfg.BaseURL is typically empty for Volcengine.
+	region := volcRegionFromBaseURL(cardAPIURL)
 	service := "ark"
 
 	query := map[string]string{

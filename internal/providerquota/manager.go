@@ -3,6 +3,7 @@ package providerquota
 import (
 	"context"
 	"log"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -43,6 +44,10 @@ type Manager struct {
 	// scheduled query fires. Defaults to jitterForProvider (deterministic
 	// 0–30s hash); overridable for tests.
 	jitterFn func(providerID string) time.Duration
+
+	// adapterHTTPClient, when non-nil, is used by all adapters instead of the
+	// default per-query client. Test seam for Manager → adapter integration.
+	adapterHTTPClient *http.Client
 }
 
 type inflightEntry struct {
@@ -226,7 +231,17 @@ func (m *Manager) executeQuery(ctx context.Context, providerID string, opts Quer
 		result = r
 
 	case TemplateTokenPlan:
-		provider, isMiMo := DetectTokenPlanProvider(apiURL)
+		// Explicit provider selection takes precedence over auto-detection
+		// (spec: "自动检测或显式匹配"). Auto-detect only runs when no provider
+		// is explicitly chosen.
+		provider := quotaCfg.CodingPlanProvider
+		var isMiMo bool
+		if provider == "" {
+			provider, isMiMo = DetectTokenPlanProvider(cardAPIURL)
+		} else {
+			// Still surface the MiMo deferral when the card URL is MiMo.
+			_, isMiMo = DetectTokenPlanProvider(cardAPIURL)
+		}
 		if isMiMo {
 			return &ProviderQuotaResult{
 				ProviderID:   providerID,
@@ -239,10 +254,17 @@ func (m *Manager) executeQuery(ctx context.Context, providerID string, opts Quer
 			}, nil
 		}
 		if provider == "" {
-			provider = quotaCfg.CodingPlanProvider
+			return errorResult("unsupported_provider", "could not detect token plan provider; set coding_plan_provider explicitly", start), nil
 		}
-		adapter := NewTokenPlanAdapter(timeout)
-		result = adapter.Query(ctx, provider, quotaCfg, effectiveToken)
+		// The adapter base URL: ZenMux uses its dedicated quota URL; every
+		// other provider has a fixed endpoint derived from the card URL, so a
+		// stale quota BaseURL must NOT leak into the request.
+		adapterBaseURL := cardAPIURL
+		if provider == "zenmux" {
+			adapterBaseURL = quotaCfg.BaseURL
+		}
+		adapter := m.newTokenPlanAdapter(timeout)
+		result = adapter.Query(ctx, provider, quotaCfg, adapterBaseURL, effectiveToken)
 		result.ProviderID = providerID
 		result.TemplateType = TemplateTokenPlan
 
@@ -252,6 +274,9 @@ func (m *Manager) executeQuery(ctx context.Context, providerID string, opts Quer
 			return errorResult("unsupported_provider", "no official balance adapter for this host", start), nil
 		}
 		adapter := NewBalanceAdapter(timeout)
+		if m.adapterHTTPClient != nil {
+			adapter.HTTPClient = m.adapterHTTPClient
+		}
 		result = adapter.Query(ctx, provider, effectiveToken)
 		result.ProviderID = providerID
 		result.TemplateType = TemplateOfficialBalance
@@ -389,6 +414,15 @@ func (m *Manager) GetAllSnapshots() (map[string]*QuotaSnapshot, error) {
 // DeleteSnapshot removes the snapshot for a provider.
 func (m *Manager) DeleteSnapshot(providerID string) error {
 	return m.store.Delete(providerID)
+}
+// newTokenPlanAdapter builds a TokenPlanAdapter, injecting the test HTTP
+// client when configured.
+func (m *Manager) newTokenPlanAdapter(timeout time.Duration) *TokenPlanAdapter {
+	adapter := NewTokenPlanAdapter(timeout)
+	if m.adapterHTTPClient != nil {
+		adapter.HTTPClient = m.adapterHTTPClient
+	}
+	return adapter
 }
 
 // defaultScript returns the default script for general or custom templates.

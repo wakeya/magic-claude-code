@@ -196,6 +196,15 @@ import { useApi } from '@/composables/useApi'
 import { useI18n } from '@/composables/useI18n'
 import type { PublicQuotaConfig, QuotaSnapshot, ProviderQuotaResult } from '@/composables/useApi'
 import QuotaResultDisplay from '@/components/QuotaResultDisplay.vue'
+import {
+  effectiveTokenPlanProvider as resolveEffectiveProvider,
+  showBaseURLField,
+  showAPIKeyField,
+  showZenMuxFields,
+  showVolcengineFields,
+  buildSavePayload,
+  buildTestPayload,
+} from '@/utils/quotaForm'
 
 const route = useRoute()
 const router = useRouter()
@@ -236,20 +245,24 @@ const form = reactive({
   clear_secret_access_key: false,
 })
 
-const showBaseURL = computed(() => ['general', 'custom', 'newapi'].includes(form.template_type))
-const showAPIKey = computed(() => ['general', 'custom'].includes(form.template_type))
+const showBaseURL = computed(() =>
+  showBaseURLField(form.template_type, effectiveTokenPlanProvider.value)
+)
+const showAPIKey = computed(() =>
+  showAPIKeyField(form.template_type, effectiveTokenPlanProvider.value)
+)
 const showAccessToken = computed(() => form.template_type === 'newapi')
 const showScript = computed(() => ['general', 'custom'].includes(form.template_type))
 
 // Effective token-plan provider: saved explicit value wins, else auto-detected.
 const effectiveTokenPlanProvider = computed(() =>
-  form.coding_plan_provider || detectedTokenPlan.value || ''
+  resolveEffectiveProvider(form.coding_plan_provider, detectedTokenPlan.value)
 )
-const isVolcengine = computed(() => effectiveTokenPlanProvider.value === 'volcengine')
-const isZenMux = computed(() => effectiveTokenPlanProvider.value === 'zenmux')
+const isVolcengine = computed(() => showVolcengineFields(form.template_type, effectiveTokenPlanProvider.value))
+const isZenMux = computed(() => showZenMuxFields(form.template_type, effectiveTokenPlanProvider.value))
 const isMiMo = computed(() => isMiMoDetected.value)
-// ZenMux needs its own Base URL + API Key under token_plan.
-const showZenMuxFields = computed(() => form.template_type === 'token_plan' && isZenMux.value)
+// Alias kept for template clarity; isVolcengine/isZenMux already gate the fields.
+const showZenMuxFields = isZenMux
 
 function goBack() {
   const tab = new URLSearchParams(window.location.search).get('tab')
@@ -315,25 +328,7 @@ async function saveConfig() {
   saving.value = true
   saveMsg.value = ''
   try {
-    const data: Record<string, any> = {
-      enabled: form.enabled,
-      template_type: form.template_type,
-      timeout_seconds: form.timeout_seconds,
-      auto_query_interval_minutes: form.auto_query_interval_minutes,
-    }
-    if (form.template_type === 'token_plan' && effectiveTokenPlanProvider.value) {
-      data.coding_plan_provider = effectiveTokenPlanProvider.value
-    }
-    if (showScript.value) data.script = form.script
-    if (showBaseURL.value || showZenMuxFields.value) data.base_url = form.base_url
-    if ((showAPIKey.value || showZenMuxFields.value) && form.api_key) data.api_key = form.api_key
-    if (showAccessToken.value && form.access_token) data.access_token = form.access_token
-    if (form.user_id) data.user_id = form.user_id
-    if (form.access_key_id) data.access_key_id = form.access_key_id
-    if (form.secret_access_key) data.secret_access_key = form.secret_access_key
-    if (form.clear_api_key) data.clear_api_key = true
-    if (form.clear_access_token) data.clear_access_token = true
-    if (form.clear_secret_access_key) data.clear_secret_access_key = true
+    const data = buildSavePayload(form, detectedTokenPlan.value, savedConfig.value)
 
     const res = await api.updateProviderUsage(providerId.value, data)
     savedConfig.value = res.config
@@ -357,21 +352,7 @@ async function testQuery() {
   testing.value = true
   testResult.value = null
   try {
-    const data: Record<string, any> = {
-      enabled: true,
-      template_type: form.template_type,
-      timeout_seconds: form.timeout_seconds,
-      script: form.script,
-      base_url: form.base_url,
-    }
-    if (form.template_type === 'token_plan' && effectiveTokenPlanProvider.value) {
-      data.coding_plan_provider = effectiveTokenPlanProvider.value
-    }
-    if (form.api_key) data.api_key = form.api_key
-    if (form.access_token) data.access_token = form.access_token
-    if (form.user_id) data.user_id = form.user_id
-    if (form.access_key_id) data.access_key_id = form.access_key_id
-    if (form.secret_access_key) data.secret_access_key = form.secret_access_key
+    const data = buildTestPayload(form, detectedTokenPlan.value)
 
     const res = await api.testProviderUsage(providerId.value, data)
     testResult.value = res.result
