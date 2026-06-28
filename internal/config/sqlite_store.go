@@ -324,6 +324,7 @@ func (s *SQLiteStore) loadProviders() ([]Provider, error) {
 		if err != nil {
 			return nil, fmt.Errorf("decode provider %s quota_query_config: %w", p.ID, err)
 		}
+		providerquota.MigrateLegacyCredentials(qq, p.APIURL)
 		p.QuotaQuery = qq
 		p.Enabled = enabled == 1
 		p.CreatedAt = parseSQLiteTime(createdAt)

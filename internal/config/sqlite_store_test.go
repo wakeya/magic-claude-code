@@ -710,6 +710,9 @@ func TestSQLiteStorePersistsQuotaQueryConfig(t *testing.T) {
 		TimeoutSeconds:           15,
 		AutoQueryIntervalMinutes: 10,
 		BaseURL:                  "https://panel.example.com",
+		ScriptAPIKey:             "script-secret",
+		ZenMuxBaseURL:            "https://quota.zenmux.example/usage",
+		ZenMuxAPIKey:             "zenmux-secret",
 		AccessToken:              "secret-at",
 		UserID:                   "user-1",
 	}
@@ -741,6 +744,12 @@ func TestSQLiteStorePersistsQuotaQueryConfig(t *testing.T) {
 	if got.QuotaQuery.UserID != "user-1" {
 		t.Errorf("UserID = %q, want user-1", got.QuotaQuery.UserID)
 	}
+	if got.QuotaQuery.ScriptAPIKey != "script-secret" || got.QuotaQuery.ZenMuxAPIKey != "zenmux-secret" {
+		t.Errorf("separated keys did not round-trip: %+v", got.QuotaQuery)
+	}
+	if got.QuotaQuery.ZenMuxBaseURL != "https://quota.zenmux.example/usage" {
+		t.Errorf("ZenMuxBaseURL = %q", got.QuotaQuery.ZenMuxBaseURL)
+	}
 	if got.QuotaQuery.TimeoutSeconds != 15 {
 		t.Errorf("TimeoutSeconds = %d, want 15", got.QuotaQuery.TimeoutSeconds)
 	}
@@ -769,22 +778,88 @@ func TestSQLiteStorePersistsQuotaQueryConfig(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreMigratesLegacyQuotaCredentialsOnLoad(t *testing.T) {
+	tests := []struct {
+		name       string
+		cardURL    string
+		legacyJSON string
+		assert     func(*testing.T, *providerquota.ProviderQuotaConfig)
+	}{
+		{
+			name:       "general",
+			cardURL:    "https://gateway.example/v1",
+			legacyJSON: `{"enabled":true,"template_type":"general","api_key":"script-old"}`,
+			assert: func(t *testing.T, cfg *providerquota.ProviderQuotaConfig) {
+				if cfg.ScriptAPIKey != "script-old" || cfg.LegacyAPIKey != "" {
+					t.Fatalf("loaded config = %+v", cfg)
+				}
+			},
+		},
+		{
+			name:       "auto zenmux after card URL change",
+			cardURL:    "https://gateway.example/v1",
+			legacyJSON: `{"enabled":true,"template_type":"token_plan","base_url":"https://quota.zenmux.example/usage","api_key":"zenmux-old"}`,
+			assert: func(t *testing.T, cfg *providerquota.ProviderQuotaConfig) {
+				if cfg.ZenMuxBaseURL != "https://quota.zenmux.example/usage" || cfg.ZenMuxAPIKey != "zenmux-old" {
+					t.Fatalf("loaded config = %+v", cfg)
+				}
+				if cfg.BaseURL != "" || cfg.LegacyAPIKey != "" {
+					t.Fatalf("legacy fields remain: %+v", cfg)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			store, err := NewSQLiteStore(filepath.Join(dir, "proxy.db"), filepath.Join(dir, "config.json"))
+			if err != nil {
+				t.Fatalf("NewSQLiteStore() error = %v", err)
+			}
+			defer store.Close()
+
+			provider := testProvider("legacy-quota", "Legacy", tt.cardURL, "card-token", true)
+			cfg := DefaultConfig()
+			cfg.Providers = []Provider{provider}
+			cfg.ActiveProviderID = provider.ID
+			if err := store.Save(cfg); err != nil {
+				t.Fatalf("Save() error = %v", err)
+			}
+			if _, err := store.DB().Exec(`UPDATE providers SET quota_query_config = ? WHERE id = ?`, tt.legacyJSON, provider.ID); err != nil {
+				t.Fatalf("seed legacy config: %v", err)
+			}
+
+			loaded, err := store.Load()
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			got := loaded.GetProviderByID(provider.ID)
+			if got == nil || got.QuotaQuery == nil {
+				t.Fatal("legacy quota config missing after load")
+			}
+			tt.assert(t, got.QuotaQuery)
+		})
+	}
+}
+
 func TestSQLiteStoreQuotaQuerySecretsNotInPublicResponse(t *testing.T) {
 	// Verify that the public config builder strips all secrets.
 	cfg := &providerquota.ProviderQuotaConfig{
-		Enabled:          true,
-		TemplateType:     providerquota.TemplateNewAPI,
-		APIKey:           "secret-key",
-		AccessToken:      "secret-at",
-		SecretAccessKey:  "secret-sk",
-		AccessKeyID:      "AKLT1234",
-		BaseURL:          "https://example.com",
-		TimeoutSeconds:   10,
+		Enabled:                  true,
+		TemplateType:             providerquota.TemplateNewAPI,
+		ScriptAPIKey:             "script-secret",
+		ZenMuxAPIKey:             "zenmux-secret",
+		AccessToken:              "secret-at",
+		SecretAccessKey:          "secret-sk",
+		AccessKeyID:              "AKLT1234",
+		BaseURL:                  "https://example.com",
+		TimeoutSeconds:           10,
 		AutoQueryIntervalMinutes: 5,
 	}
 	pub := providerquota.ToPublicConfig(cfg)
-	if pub.APIKeyConfigured != true {
-		t.Error("APIKeyConfigured should be true")
+	if !pub.ScriptAPIKeyConfigured || !pub.ZenMuxAPIKeyConfigured {
+		t.Error("separated configured flags should be true")
 	}
 	if pub.AccessTokenConfigured != true {
 		t.Error("AccessTokenConfigured should be true")
