@@ -227,14 +227,14 @@ func TestApplyQuotaUpdateSecretPatch(t *testing.T) {
 		BaseURL:      "https://panel.example.com",
 	}
 	req := providerQuotaUpdateRequest{} // No AccessToken set.
-	result := applyQuotaUpdate(existing, req)
+	result := applyQuotaUpdate(existing, req, "")
 	if result.AccessToken != "existing-token" {
 		t.Errorf("access_token = %q, want existing-token", result.AccessToken)
 	}
 
 	// Test: clear flag clears the field.
 	req2 := providerQuotaUpdateRequest{ClearAccessToken: true}
-	result2 := applyQuotaUpdate(existing, req2)
+	result2 := applyQuotaUpdate(existing, req2, "")
 	if result2.AccessToken != "" {
 		t.Errorf("access_token after clear = %q, want empty", result2.AccessToken)
 	}
@@ -306,6 +306,162 @@ func TestSaveNormalizesInapplicableFields(t *testing.T) {
 	}
 	if q.CodingPlanProvider != "kimi" {
 		t.Errorf("coding_plan_provider = %q, want kimi", q.CodingPlanProvider)
+	}
+}
+
+// TestSaveAutoDetectedZenMuxRetainsCredentials verifies that saving a
+// token_plan config with an EMPTY coding_plan_provider but a ZenMux-detectable
+// card URL retains the dedicated BaseURL/APIKey (blocker 1: auto-detect must
+// not wipe required credentials during normalization).
+func TestSaveAutoDetectedZenMuxRetainsCredentials(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{
+		{
+			ID: "test-p", Name: "Test", APIURL: "https://zenmux.example.com/v1",
+			APIToken: "tok", Enabled: true, CreatedAt: timeNow(), UpdatedAt: timeNow(),
+		},
+	}
+	store := config.NewMockStore(cfg)
+	srv := NewServer(&AdminConfig{Password: "test"}, store, nil)
+
+	body, _ := json.Marshal(map[string]any{
+		"enabled":       true,
+		"template_type": "token_plan",
+		"base_url":      "https://quota.zenmux.example/v1",
+		"api_key":       "zenmux-dedicated-key",
+	})
+	req := httptest.NewRequest("PUT", "/api/providers/test-p/usage", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "session", Value: srv.GetAuth().GenerateToken()})
+	w := httptest.NewRecorder()
+	srv.handleProviderUsage(w, req)
+	if w.Code != 200 {
+		t.Fatalf("PUT status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	loaded, _ := store.Load()
+	q := loaded.GetProviderByID("test-p").QuotaQuery
+	if q.BaseURL != "https://quota.zenmux.example/v1" {
+		t.Errorf("BaseURL = %q, want retained for auto-detected zenmux", q.BaseURL)
+	}
+	if q.APIKey != "zenmux-dedicated-key" {
+		t.Errorf("APIKey = %q, want retained for auto-detected zenmux", q.APIKey)
+	}
+}
+
+// TestSaveAutoDetectedVolcengineRetainsAKSK verifies auto-detected Volcengine
+// retains AK/SK.
+func TestSaveAutoDetectedVolcengineRetainsAKSK(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{
+		{
+			ID: "test-p", Name: "Test", APIURL: "https://ark.cn-beijing.volces.com/api/v3",
+			APIToken: "tok", Enabled: true, CreatedAt: timeNow(), UpdatedAt: timeNow(),
+		},
+	}
+	store := config.NewMockStore(cfg)
+	srv := NewServer(&AdminConfig{Password: "test"}, store, nil)
+
+	body, _ := json.Marshal(map[string]any{
+		"enabled":           true,
+		"template_type":     "token_plan",
+		"access_key_id":     "AKLT1234",
+		"secret_access_key": "secret-sk",
+	})
+	req := httptest.NewRequest("PUT", "/api/providers/test-p/usage", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "session", Value: srv.GetAuth().GenerateToken()})
+	w := httptest.NewRecorder()
+	srv.handleProviderUsage(w, req)
+	if w.Code != 200 {
+		t.Fatalf("PUT status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	loaded, _ := store.Load()
+	q := loaded.GetProviderByID("test-p").QuotaQuery
+	if q.AccessKeyID != "AKLT1234" || q.SecretAccessKey != "secret-sk" {
+		t.Errorf("AK/SK = %q/%q, want retained for auto-detected volcengine", q.AccessKeyID, q.SecretAccessKey)
+	}
+}
+
+// TestSaveGeneralToZenMuxClearsStaleAPIKey verifies switching General → ZenMux
+// without a new key clears the stale General APIKey (blocker 2).
+func TestSaveGeneralToZenMuxClearsStaleAPIKey(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{
+		{
+			ID: "test-p", Name: "Test", APIURL: "https://zenmux.example.com/v1",
+			APIToken: "tok", Enabled: true,
+			QuotaQuery: &providerquota.ProviderQuotaConfig{
+				Enabled:      true,
+				TemplateType: "general",
+				APIKey:       "general-override-secret",
+			},
+			CreatedAt: timeNow(), UpdatedAt: timeNow(),
+		},
+	}
+	store := config.NewMockStore(cfg)
+	srv := NewServer(&AdminConfig{Password: "test"}, store, nil)
+
+	body, _ := json.Marshal(map[string]any{
+		"enabled":              true,
+		"template_type":        "token_plan",
+		"coding_plan_provider": "zenmux",
+		"base_url":             "https://quota.zenmux.example/v1",
+	})
+	req := httptest.NewRequest("PUT", "/api/providers/test-p/usage", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "session", Value: srv.GetAuth().GenerateToken()})
+	w := httptest.NewRecorder()
+	srv.handleProviderUsage(w, req)
+	if w.Code != 200 {
+		t.Fatalf("PUT status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	loaded, _ := store.Load()
+	q := loaded.GetProviderByID("test-p").QuotaQuery
+	if q.APIKey != "" {
+		t.Errorf("APIKey = %q, want cleared (General key must not become ZenMux key)", q.APIKey)
+	}
+}
+
+// TestSaveZenMuxToGeneralClearsStaleAPIKey verifies the reverse switch.
+func TestSaveZenMuxToGeneralClearsStaleAPIKey(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{
+		{
+			ID: "test-p", Name: "Test", APIURL: "https://gw.example.com/v1",
+			APIToken: "tok", Enabled: true,
+			QuotaQuery: &providerquota.ProviderQuotaConfig{
+				Enabled:            true,
+				TemplateType:       "token_plan",
+				CodingPlanProvider: "zenmux",
+				BaseURL:            "https://quota.zenmux.example/v1",
+				APIKey:             "zenmux-dedicated-secret",
+			},
+			CreatedAt: timeNow(), UpdatedAt: timeNow(),
+		},
+	}
+	store := config.NewMockStore(cfg)
+	srv := NewServer(&AdminConfig{Password: "test"}, store, nil)
+
+	body, _ := json.Marshal(map[string]any{
+		"enabled":       true,
+		"template_type": "general",
+	})
+	req := httptest.NewRequest("PUT", "/api/providers/test-p/usage", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "session", Value: srv.GetAuth().GenerateToken()})
+	w := httptest.NewRecorder()
+	srv.handleProviderUsage(w, req)
+	if w.Code != 200 {
+		t.Fatalf("PUT status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	loaded, _ := store.Load()
+	q := loaded.GetProviderByID("test-p").QuotaQuery
+	if q.APIKey != "" {
+		t.Errorf("APIKey = %q, want cleared (ZenMux key must not become General key)", q.APIKey)
 	}
 }
 

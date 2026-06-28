@@ -140,7 +140,7 @@ func (s *Server) updateProviderUsage(w http.ResponseWriter, r *http.Request, id 
 	}
 
 	// Build or update the quota config.
-	newCfg := applyQuotaUpdate(provider.QuotaQuery, req)
+	newCfg := applyQuotaUpdate(provider.QuotaQuery, req, provider.APIURL)
 	if err := newCfg.Validate(); err != nil {
 		jsonErr, _ := json.Marshal(map[string]string{"error": err.Error()})
 		http.Error(w, string(jsonErr), http.StatusBadRequest)
@@ -199,7 +199,7 @@ func (s *Server) handleProviderUsageTest(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Build draft config.
-	draft := applyQuotaUpdate(provider.QuotaQuery, req)
+	draft := applyQuotaUpdate(provider.QuotaQuery, req, provider.APIURL)
 	if err := draft.Validate(); err != nil {
 		jsonErr, _ := json.Marshal(map[string]string{"error": err.Error()})
 		http.Error(w, string(jsonErr), http.StatusBadRequest)
@@ -299,7 +299,9 @@ type providerQuotaUpdateRequest struct {
 }
 
 // applyQuotaUpdate applies partial updates to a quota config.
-func applyQuotaUpdate(existing *providerquota.ProviderQuotaConfig, req providerQuotaUpdateRequest) *providerquota.ProviderQuotaConfig {
+// cardAPIURL is the provider card's API URL, used by NormalizeForTemplate to
+// resolve the effective token-plan provider for auto-detected configs.
+func applyQuotaUpdate(existing *providerquota.ProviderQuotaConfig, req providerQuotaUpdateRequest, cardAPIURL string) *providerquota.ProviderQuotaConfig {
 	c := &providerquota.ProviderQuotaConfig{}
 	if existing != nil {
 		cp := *existing
@@ -343,7 +345,9 @@ func applyQuotaUpdate(existing *providerquota.ProviderQuotaConfig, req providerQ
 	// template/provider so stale secrets from a previous configuration cannot
 	// persist and later leak via a different credential route. This runs after
 	// the partial update + secret patch, so applicable secrets are retained.
-	providerquota.NormalizeForTemplate(c)
+	// cardAPIURL resolves the effective provider for auto-detected configs;
+	// existing detects credential-purpose switches for the overloaded APIKey.
+	providerquota.NormalizeForTemplate(c, cardAPIURL, existing)
 
 	return c
 }

@@ -31,15 +31,23 @@ type queryPlan struct {
 }
 
 // NormalizeForTemplate clears quota-config fields that are inapplicable to the
-// current template_type + coding_plan_provider. It is the backend safety
-// boundary that prevents stale secrets from a previous configuration (e.g. a
-// leftover ZenMux APIKey after switching to Kimi) from persisting and later
-// leaking via a different credential route.
+// current template_type + effective provider. It is the backend safety boundary
+// that prevents stale secrets from a previous configuration from persisting and
+// later leaking via a different credential route.
 //
-// It must run after partial updates are applied and respects the secret-patch
-// "keep current applicable secret" semantics: only fields that are NOT
-// applicable to the current template/provider are cleared.
-func NormalizeForTemplate(c *ProviderQuotaConfig) {
+// cardAPIURL is the provider card's API URL, used to resolve the effective
+// token-plan provider when CodingPlanProvider is empty (auto-detect). Without
+// it, auto-detected ZenMux/Volcengine configs would have their required
+// credentials wiped on save.
+//
+// prev is the config before this update. It detects credential-purpose
+// switches for the overloaded APIKey field (General/Custom "script" key vs
+// ZenMux "dedicated" key): when the purpose changes the stale key is cleared so
+// it cannot be sent to the new destination. Applicable secrets are retained
+// when the purpose is unchanged (preserving secret-patch semantics).
+//
+// It must run after partial updates are applied.
+func NormalizeForTemplate(c *ProviderQuotaConfig, cardAPIURL string, prev *ProviderQuotaConfig) {
 	if c == nil {
 		return
 	}
@@ -51,9 +59,11 @@ func NormalizeForTemplate(c *ProviderQuotaConfig) {
 		c.CodingPlanProvider = ""
 	}
 
-	// Determine the effective token-plan provider (explicit or detected is not
-	// known here without the card URL; use the stored value as-is).
+	// Effective provider: explicit selection, else auto-detected from card URL.
 	provider := c.CodingPlanProvider
+	if provider == "" && isTokenPlan {
+		provider, _ = DetectTokenPlanProvider(cardAPIURL)
+	}
 
 	// BaseURL applies to: general, custom, newapi, and token_plan+zenmux.
 	baseURLApplies := isScriptBased ||
@@ -63,10 +73,23 @@ func NormalizeForTemplate(c *ProviderQuotaConfig) {
 		c.BaseURL = ""
 	}
 
-	// APIKey applies to: general, custom, and token_plan+zenmux.
-	apiKeyApplies := isScriptBased || (isTokenPlan && provider == "zenmux")
-	if !apiKeyApplies {
+	// APIKey is overloaded: General/Custom use it as the script {{apiKey}}
+	// override, ZenMux uses it as the dedicated Bearer key. These are distinct
+	// credential purposes and must not transfer across the boundary.
+	newKeyDomain := apiKeyDomain(c.TemplateType, provider)
+	if newKeyDomain == "" {
 		c.APIKey = ""
+	} else if prev != nil {
+		prevProvider := prev.CodingPlanProvider
+		if prevProvider == "" && prev.TemplateType == TemplateTokenPlan {
+			prevProvider, _ = DetectTokenPlanProvider(cardAPIURL)
+		}
+		prevDomain := apiKeyDomain(prev.TemplateType, prevProvider)
+		// If the key's credential purpose changed, the persisted key belongs to
+		// a different destination and must not be reused.
+		if prevDomain != "" && prevDomain != newKeyDomain {
+			c.APIKey = ""
+		}
 	}
 
 	// AccessToken and UserID apply only to newapi.
@@ -80,6 +103,18 @@ func NormalizeForTemplate(c *ProviderQuotaConfig) {
 		c.AccessKeyID = ""
 		c.SecretAccessKey = ""
 	}
+}
+
+// apiKeyDomain classifies the credential purpose of the overloaded APIKey field.
+// Returns "" when APIKey is not used by the given template/provider.
+func apiKeyDomain(templateType, provider string) string {
+	if templateType == TemplateGeneral || templateType == TemplateCustom {
+		return "script"
+	}
+	if templateType == TemplateTokenPlan && provider == "zenmux" {
+		return "zenmux"
+	}
+	return ""
 }
 
 // ResolveTokenPlanProvider binds an explicit token-plan provider selection to
