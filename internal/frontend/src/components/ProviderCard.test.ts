@@ -63,6 +63,6 @@ test('DashboardView passes quota snapshots to ProviderCard', () => {
   assert.match(dashSource, /:quota-snapshot|quotaSnapshot/)
 })
 
-test('DashboardView handles usage navigation', () => {
-  assert.match(dashSource, /goToUsage|provider-usage/)
+test('DashboardView opens provider usage in a modal', () => {
+  assert.match(dashSource, /openProviderUsage|ProviderUsageModal/)
 })

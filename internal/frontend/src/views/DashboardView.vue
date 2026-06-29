@@ -165,7 +165,7 @@
           @toggle="handleToggle(p.id)"
           @test="handleTest(p.id)"
           @duplicate="handleDuplicate"
-          @usage="goToUsage(p.id)"
+          @usage="openProviderUsage(p.id)"
           @toggle-select="toggleProviderSelect"
           @refresh-quota="refreshProviderQuota(p.id)"
         />
@@ -801,6 +801,13 @@
     </div>
 
     <ProviderModal v-if="showModal" :provider="editingProvider" @close="closeModal" @saved="handleSaved" />
+    <ProviderUsageModal
+      v-if="usageProviderId"
+      :provider-id="usageProviderId"
+      :provider-name="usageProviderName"
+      @close="closeProviderUsage"
+      @saved="handleProviderUsageSaved"
+    />
 
     <!-- 导入预览弹窗 -->
     <div v-if="importPreview" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" @click.self="importPreview = null">
@@ -828,7 +835,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import type { EChartsType } from 'echarts/core'
 import {
@@ -856,6 +863,8 @@ import UsageCoverageHelp from '@/components/UsageCoverageHelp.vue'
 import UsageStatsScopeHelp from '@/components/UsageStatsScopeHelp.vue'
 import SessionBrowser from '@/components/SessionBrowser.vue'
 import { formatPercent } from '@/utils/formatters'
+
+const ProviderUsageModal = defineAsyncComponent(() => import('@/components/ProviderUsageModal.vue'))
 
 /** Format listen address as a canonical addr:port string (brackets for IPv6). */
 function formatListenAddress(addr: string, port: number): string {
@@ -990,6 +999,11 @@ const usageRequestTotalPages = computed(() =>
 
 const showModal = ref(false)
 const editingProvider = ref<Provider | null>(null)
+const usageProviderId = ref('')
+const usageTriggerEl = ref<HTMLElement | null>(null)
+const usageProviderName = computed(() =>
+  providers.value.find((provider) => provider.id === usageProviderId.value)?.name || usageProviderId.value
+)
 const showUsageClearModal = ref(false)
 const resetUsageSessionSync = ref(false)
 const usageClearLoading = ref(false)
@@ -1219,8 +1233,28 @@ async function refreshProviderQuota(providerId: string) {
   }
 }
 
-function goToUsage(providerId: string) {
-  router.push(`/providers/${providerId}/usage`)
+function openProviderUsage(providerId: string) {
+  usageTriggerEl.value = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  usageProviderId.value = providerId
+}
+
+async function closeProviderUsage(reloadSnapshots = true) {
+  usageProviderId.value = ''
+  if (reloadSnapshots) await loadQuotaSnapshots()
+  await nextTick()
+  usageTriggerEl.value?.focus()
+  usageTriggerEl.value = null
+}
+
+async function handleProviderUsageSaved(snapshot: QuotaSnapshot | null) {
+  const nextSnapshots = { ...quotaSnapshots.value }
+  if (snapshot) {
+    nextSnapshots[snapshot.provider_id] = snapshot
+  } else {
+    delete nextSnapshots[usageProviderId.value]
+  }
+  quotaSnapshots.value = nextSnapshots
+  await closeProviderUsage(false)
 }
 
 async function loadCerts() {
@@ -1788,9 +1822,18 @@ watch(themeMode, () => {
 
 onMounted(async () => {
   // Initialize tab from query parameter.
-  const urlTab = new URLSearchParams(window.location.search).get('tab')
+  const query = new URLSearchParams(window.location.search)
+  const urlTab = query.get('tab')
   if (urlTab && ['status', 'providers', 'connection', 'certs', 'usage', 'sessions'].includes(urlTab)) {
     activeTab.value = urlTab as MainTab
+  }
+
+  const usageProvider = query.get('usage_provider')
+  if (usageProvider) {
+    activeTab.value = 'providers'
+    usageProviderId.value = usageProvider
+    query.delete('usage_provider')
+    await router.replace(query.toString() ? `/?${query.toString()}` : '/')
   }
 
   await syncTheme(api.getPreferences)
