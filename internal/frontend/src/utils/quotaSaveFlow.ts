@@ -48,6 +48,13 @@ export async function runQuotaSaveFlow(
   let config: PublicQuotaConfig
   try {
     const response = await deps.update(payload)
+    if (!response.success) {
+      return {
+        ok: false,
+        configSaved: false,
+        error: 'Quota configuration save failed',
+      }
+    }
     config = response.config
   } catch (error: unknown) {
     return {
@@ -57,7 +64,7 @@ export async function runQuotaSaveFlow(
     }
   }
 
-  if (payload.enabled === false) {
+  if (config.enabled === false) {
     return {
       ok: true,
       configSaved: true,
@@ -78,7 +85,11 @@ export async function runQuotaSaveFlow(
     }
 
     const reloaded = await deps.reload()
-    if (!reloaded.snapshot) {
+    if (
+      !reloaded.snapshot
+      || reloaded.snapshot.provider_id !== response.result.provider_id
+      || reloaded.snapshot.queried_at !== response.result.queried_at
+    ) {
       return {
         ok: false,
         configSaved: true,

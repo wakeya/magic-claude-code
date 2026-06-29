@@ -98,6 +98,33 @@ test('update failure stops before query and reports the config was not saved', a
   })
 })
 
+test('resolved update failure skips query and reload', async () => {
+  const { runQuotaSaveFlow } = await loadQuotaSaveFlow()
+  const calls: string[] = []
+
+  const outcome = await runQuotaSaveFlow({ enabled: true }, {
+    async update() {
+      calls.push('update')
+      return { success: false, config }
+    },
+    async query() {
+      calls.push('query')
+      return { success: true, result: queryResult }
+    },
+    async reload() {
+      calls.push('reload')
+      return { config, snapshot }
+    },
+  })
+
+  assert.deepEqual(calls, ['update'])
+  assert.deepEqual(outcome, {
+    ok: false,
+    configSaved: false,
+    error: 'Quota configuration save failed',
+  })
+})
+
 test('query response or result failure keeps the saved config and does not reload', async () => {
   const { runQuotaSaveFlow } = await loadQuotaSaveFlow()
   const cases = [
@@ -141,11 +168,63 @@ test('query response or result failure keeps the saved config and does not reloa
   }
 })
 
-test('disabled save only updates and succeeds with no snapshot', async () => {
+test('reload rejects a stale snapshot from an earlier query', async () => {
+  const { runQuotaSaveFlow } = await loadQuotaSaveFlow()
+
+  const outcome = await runQuotaSaveFlow({ enabled: true }, {
+    async update() {
+      return { success: true, config }
+    },
+    async query() {
+      return { success: true, result: queryResult }
+    },
+    async reload() {
+      return {
+        config,
+        snapshot: { ...snapshot, queried_at: '2026-06-29T11:00:00Z' },
+      }
+    },
+  })
+
+  assert.deepEqual(outcome, {
+    ok: false,
+    configSaved: true,
+    config,
+    error: 'Quota snapshot missing after query',
+  })
+})
+
+test('reload rejects a snapshot for a different provider', async () => {
+  const { runQuotaSaveFlow } = await loadQuotaSaveFlow()
+
+  const outcome = await runQuotaSaveFlow({ enabled: true }, {
+    async update() {
+      return { success: true, config }
+    },
+    async query() {
+      return { success: true, result: queryResult }
+    },
+    async reload() {
+      return {
+        config,
+        snapshot: { ...snapshot, provider_id: 'provider-2' },
+      }
+    },
+  })
+
+  assert.deepEqual(outcome, {
+    ok: false,
+    configSaved: true,
+    config,
+    error: 'Quota snapshot missing after query',
+  })
+})
+
+test('persisted disabled config skips query when payload omits enabled', async () => {
   const { runQuotaSaveFlow } = await loadQuotaSaveFlow()
   const calls: string[] = []
 
-  const outcome = await runQuotaSaveFlow({ enabled: false }, {
+  const outcome = await runQuotaSaveFlow({}, {
     async update() {
       calls.push('update')
       return { success: true, config: { ...config, enabled: false } }
