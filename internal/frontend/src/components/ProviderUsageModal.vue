@@ -36,7 +36,7 @@
       </div>
 
       <main v-else class="grid grid-cols-1 lg:grid-cols-2 gap-6 p-6">
-        <section>
+        <section class="min-w-0">
           <h3 class="text-lg font-bold mb-4">{{ t('quota.title') }}</h3>
 
           <div class="space-y-4">
@@ -89,8 +89,8 @@
 
             <div v-if="showAPIKey">
               <label class="block text-sm font-medium mb-1">{{ t('quota.script_api_key') }}</label>
-              <div class="flex gap-2">
-                <input v-model="form.script_api_key" type="password" class="flex-1 app-control rounded-md px-3 py-2 text-sm" :placeholder="savedConfig?.script_api_key_configured ? t('quota.script_api_key_configured') : ''" />
+              <div class="flex flex-wrap sm:flex-nowrap gap-2 min-w-0">
+                <input v-model="form.script_api_key" type="password" class="min-w-0 flex-1 app-control rounded-md px-3 py-2 text-sm" :placeholder="savedConfig?.script_api_key_configured ? t('quota.script_api_key_configured') : ''" />
                 <button v-if="savedConfig?.script_api_key_configured" type="button" class="text-xs text-danger hover:underline whitespace-nowrap" @click="form.clear_script_api_key = true">{{ t('quota.clear_script_key') }}</button>
               </div>
             </div>
@@ -102,8 +102,8 @@
               </div>
               <div>
                 <label class="block text-sm font-medium mb-1">{{ t('quota.zenmux_api_key') }}</label>
-                <div class="flex gap-2">
-                  <input v-model="form.zenmux_api_key" type="password" class="flex-1 app-control rounded-md px-3 py-2 text-sm" :placeholder="savedConfig?.zenmux_api_key_configured ? t('quota.zenmux_api_key_configured') : ''" />
+                <div class="flex flex-wrap sm:flex-nowrap gap-2 min-w-0">
+                  <input v-model="form.zenmux_api_key" type="password" class="min-w-0 flex-1 app-control rounded-md px-3 py-2 text-sm" :placeholder="savedConfig?.zenmux_api_key_configured ? t('quota.zenmux_api_key_configured') : ''" />
                   <button v-if="savedConfig?.zenmux_api_key_configured" type="button" class="text-xs text-danger hover:underline whitespace-nowrap" @click="clearZenMuxOverride">{{ t('quota.clear_zenmux_override') }}</button>
                 </div>
               </div>
@@ -111,8 +111,8 @@
 
             <div v-if="showAccessToken">
               <label class="block text-sm font-medium mb-1">{{ t('quota.access_token') }}</label>
-              <div class="flex gap-2">
-                <input v-model="form.access_token" type="password" class="flex-1 app-control rounded-md px-3 py-2 text-sm" :placeholder="savedConfig?.access_token_configured ? t('quota.access_token_configured') : ''" />
+              <div class="flex flex-wrap sm:flex-nowrap gap-2 min-w-0">
+                <input v-model="form.access_token" type="password" class="min-w-0 flex-1 app-control rounded-md px-3 py-2 text-sm" :placeholder="savedConfig?.access_token_configured ? t('quota.access_token_configured') : ''" />
                 <button v-if="savedConfig?.access_token_configured" type="button" class="text-xs text-danger hover:underline whitespace-nowrap" @click="form.clear_access_token = true">{{ t('quota.clear_token') }}</button>
               </div>
             </div>
@@ -129,8 +129,8 @@
               </div>
               <div>
                 <label class="block text-sm font-medium mb-1">{{ t('quota.secret_access_key') }}</label>
-                <div class="flex gap-2">
-                  <input v-model="form.secret_access_key" type="password" class="flex-1 app-control rounded-md px-3 py-2 text-sm" :placeholder="savedConfig?.secret_access_key_configured ? t('quota.secret_access_key_configured') : ''" />
+                <div class="flex flex-wrap sm:flex-nowrap gap-2 min-w-0">
+                  <input v-model="form.secret_access_key" type="password" class="min-w-0 flex-1 app-control rounded-md px-3 py-2 text-sm" :placeholder="savedConfig?.secret_access_key_configured ? t('quota.secret_access_key_configured') : ''" />
                   <button v-if="savedConfig?.secret_access_key_configured" type="button" class="text-xs text-danger hover:underline whitespace-nowrap" @click="form.clear_secret_access_key = true">{{ t('quota.clear_sk') }}</button>
                 </div>
               </div>
@@ -157,7 +157,7 @@
           </div>
         </section>
 
-        <section>
+        <section class="min-w-0">
           <div class="flex items-center justify-between gap-3 mb-4">
             <h3 class="text-lg font-bold">{{ t('quota.last_result') }}</h3>
             <button
@@ -262,7 +262,9 @@ const detectedTokenPlan = ref('')
 const detectedBalance = ref('')
 const isMiMoDetected = ref(false)
 let previousBodyOverflow = ''
+let disposed = false
 let savedTimer: ReturnType<typeof setTimeout> | null = null
+let settleSavedDelay: (() => void) | null = null
 
 const form = reactive<QuotaFormState>({
   enabled: false,
@@ -308,7 +310,47 @@ function requestClose() {
 }
 
 function handleKeydown(event: KeyboardEvent) {
-  if (event.key === 'Escape') requestClose()
+  if (event.key === 'Escape') {
+    requestClose()
+    return
+  }
+  if (event.key !== 'Tab' || !dialogEl.value) return
+
+  const focusable = Array.from(dialogEl.value.querySelectorAll<HTMLElement>(
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  )).filter(element => element.getAttribute('aria-hidden') !== 'true')
+
+  if (focusable.length === 0) {
+    event.preventDefault()
+    dialogEl.value.focus()
+    return
+  }
+
+  const first = focusable[0]
+  const last = focusable[focusable.length - 1]
+  const active = document.activeElement
+  if (event.shiftKey && (active === first || !focusable.includes(active as HTMLElement))) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && (active === last || !focusable.includes(active as HTMLElement))) {
+    event.preventDefault()
+    first.focus()
+  }
+}
+
+function waitForSavedDelay(): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false
+    const settle = (shouldEmit: boolean) => {
+      if (settled) return
+      settled = true
+      savedTimer = null
+      settleSavedDelay = null
+      resolve(shouldEmit)
+    }
+    settleSavedDelay = () => settle(false)
+    savedTimer = setTimeout(() => settle(!disposed), 800)
+  })
 }
 
 function clearZenMuxOverride() {
@@ -358,6 +400,7 @@ async function loadConfig() {
   loadError.value = ''
   try {
     const data = await api.getProviderUsage(props.providerId)
+    if (disposed) return
     savedConfig.value = data.config
     snapshot.value = data.snapshot || null
     detectedTokenPlan.value = data.detected_token_plan || ''
@@ -365,6 +408,7 @@ async function loadConfig() {
     isMiMoDetected.value = !!data.is_mimo
     populateForm(data.config)
   } catch (error: unknown) {
+    if (disposed) return
     const detail = errorMessage(error)
     if (detail.toLowerCase().includes('not found') || detail.includes('404')) {
       notFound.value = true
@@ -372,7 +416,7 @@ async function loadConfig() {
       loadError.value = `${t('quota.load_failed')}: ${detail}`
     }
   } finally {
-    loading.value = false
+    if (!disposed) loading.value = false
   }
 }
 
@@ -382,8 +426,10 @@ async function testQuery() {
   try {
     const payload = buildTestPayload(form, detectedTokenPlan.value) as ProviderUsageUpdateRequest
     const response = await api.testProviderUsage(props.providerId, payload)
+    if (disposed) return
     testResult.value = response.result
   } catch (error: unknown) {
+    if (disposed) return
     testResult.value = {
       provider_id: props.providerId,
       template_type: form.template_type,
@@ -394,7 +440,7 @@ async function testQuery() {
       duration_ms: 0,
     }
   } finally {
-    testing.value = false
+    if (!disposed) testing.value = false
   }
 }
 
@@ -403,17 +449,20 @@ async function refreshNow() {
   refreshError.value = ''
   try {
     const response = await api.queryProviderUsage(props.providerId)
+    if (disposed) return
     if (!response.success || !response.result.success) {
       throw new Error(response.result.error_message || t('quota.query_failed'))
     }
     const data = await api.getProviderUsage(props.providerId)
+    if (disposed) return
     snapshot.value = data.snapshot || null
     testResult.value = null
   } catch (cause: unknown) {
+    if (disposed) return
     const error = errorMessage(cause)
     refreshError.value = error
   } finally {
-    refreshing.value = false
+    if (!disposed) refreshing.value = false
   }
 }
 
@@ -428,6 +477,7 @@ async function saveConfig() {
       query: () => api.queryProviderUsage(props.providerId),
       reload: () => api.getProviderUsage(props.providerId),
     })
+    if (disposed) return
 
     if (outcome.configSaved) {
       savedConfig.value = outcome.config
@@ -445,15 +495,14 @@ async function saveConfig() {
     snapshot.value = outcome.snapshot
     testResult.value = null
     saveOk.value = true
-    saveMsg.value = t('quota.query_success')
-    await new Promise<void>((resolve) => {
-      savedTimer = setTimeout(() => {
-        emit('saved', outcome.snapshot)
-        resolve()
-      }, 800)
-    })
+    saveMsg.value = outcome.snapshot === null
+      ? t('quota.save_success')
+      : t('quota.query_success')
+    const shouldEmit = await waitForSavedDelay()
+    if (!shouldEmit || disposed) return
+    emit('saved', outcome.snapshot)
   } finally {
-    saving.value = false
+    if (!disposed) saving.value = false
   }
 }
 
@@ -462,13 +511,16 @@ onMounted(async () => {
   document.body.style.overflow = 'hidden'
   document.addEventListener('keydown', handleKeydown)
   await nextTick()
+  if (disposed) return
   dialogEl.value?.focus()
   await loadConfig()
 })
 
 onUnmounted(() => {
+  disposed = true
+  if (savedTimer !== null) clearTimeout(savedTimer)
+  settleSavedDelay?.()
   document.body.style.overflow = previousBodyOverflow
   document.removeEventListener('keydown', handleKeydown)
-  if (savedTimer !== null) clearTimeout(savedTimer)
 })
 </script>

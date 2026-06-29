@@ -16,6 +16,12 @@ function functionSource(name: string, nextName: string): string {
   return start >= 0 && end > start ? modalSource.slice(start, end) : ''
 }
 
+function sourceBetween(startMarker: string, endMarker: string): string {
+  const start = modalSource.indexOf(startMarker)
+  const end = modalSource.indexOf(endMarker, start + startMarker.length)
+  return start >= 0 && end > start ? modalSource.slice(start, end) : ''
+}
+
 test('ProviderUsageModal exists before its source contract is inspected', () => {
   assert.equal(modalExists, true, 'ProviderUsageModal.vue must exist')
 })
@@ -55,12 +61,56 @@ test('locks body scrolling, focuses the dialog, and closes on Escape', () => {
   assert.match(modalSource, /document\.removeEventListener\('keydown',\s*handleKeydown\)/)
 })
 
+test('traps forward and reverse Tab focus inside the dialog', () => {
+  assert.match(modalSource, /event\.key\s*!==\s*'Tab'/)
+  assert.match(modalSource, /dialogEl\.value\.querySelectorAll<HTMLElement>\(/)
+  assert.match(modalSource, /button:not\(\[disabled\]\)/)
+  assert.match(modalSource, /if \(focusable\.length === 0\)[\s\S]*?event\.preventDefault\(\)[\s\S]*?dialogEl\.value\.focus\(\)/)
+  assert.match(modalSource, /!focusable\.includes\(active as HTMLElement\)/)
+  assert.match(modalSource, /event\.shiftKey[\s\S]*?last\.focus\(\)/)
+  assert.match(modalSource, /!event\.shiftKey[\s\S]*?first\.focus\(\)/)
+})
+
+test('settles the save delay and prevents post-unmount async mutations or events', () => {
+  assert.match(modalSource, /let disposed = false/)
+  assert.match(modalSource, /let settleSavedDelay:\s*\(\(\)\s*=>\s*void\)\s*\|\s*null\s*=\s*null/)
+  assert.match(modalSource, /function waitForSavedDelay\(\): Promise<boolean>[\s\S]*?setTimeout\([\s\S]*?800\)/)
+
+  const loadSource = sourceBetween('async function loadConfig()', 'async function testQuery()')
+  const testSource = sourceBetween('async function testQuery()', 'async function refreshNow()')
+  const refreshSource = sourceBetween('async function refreshNow()', 'async function saveConfig()')
+  const saveSource = sourceBetween('async function saveConfig()', 'onMounted(')
+  const mountedSource = sourceBetween('onMounted(', 'onUnmounted(')
+  const unmountedSource = modalSource.slice(modalSource.indexOf('onUnmounted('))
+
+  assert.match(loadSource, /await api\.getProviderUsage\([\s\S]*?if \(disposed\) return/)
+  assert.match(testSource, /await api\.testProviderUsage\([\s\S]*?if \(disposed\) return/)
+  assert.match(refreshSource, /await api\.queryProviderUsage\([\s\S]*?if \(disposed\) return[\s\S]*?await api\.getProviderUsage\([\s\S]*?if \(disposed\) return/)
+  assert.match(saveSource, /await runQuotaSaveFlow\([\s\S]*?if \(disposed\) return/)
+  assert.match(saveSource, /const shouldEmit = await waitForSavedDelay\(\)[\s\S]*?if \(!shouldEmit \|\| disposed\) return[\s\S]*?emit\('saved',\s*outcome\.snapshot\)/)
+  assert.match(mountedSource, /await nextTick\(\)[\s\S]*?if \(disposed\) return/)
+  assert.match(unmountedSource, /disposed = true[\s\S]*?clearTimeout\(savedTimer\)[\s\S]*?settleSavedDelay\?\.\(\)[\s\S]*?document\.body\.style\.overflow/)
+})
+
+test('keeps both columns and credential rows shrinkable on narrow screens', () => {
+  assert.equal((modalSource.match(/<section class="min-w-0">/g) || []).length, 2)
+  assert.ok(
+    (modalSource.match(/class="flex flex-wrap sm:flex-nowrap gap-2 min-w-0"/g) || []).length >= 4,
+    'all credential rows should wrap safely',
+  )
+  assert.ok(
+    (modalSource.match(/class="min-w-0 flex-1 app-control/g) || []).length >= 4,
+    'credential inputs should be allowed to shrink',
+  )
+})
+
 test('wires compound save through runQuotaSaveFlow and delays successful saved event by 800ms', () => {
   assert.match(modalSource, /runQuotaSaveFlow\(payload,\s*\{/)
   assert.match(modalSource, /update:\s*\(data\)\s*=>\s*api\.updateProviderUsage\(props\.providerId,\s*data\)/)
   assert.match(modalSource, /query:\s*\(\)\s*=>\s*api\.queryProviderUsage\(props\.providerId\)/)
   assert.match(modalSource, /reload:\s*\(\)\s*=>\s*api\.getProviderUsage\(props\.providerId\)/)
-  assert.match(modalSource, /setTimeout\(\(\)\s*=>\s*\{[\s\S]*?emit\('saved',\s*outcome\.snapshot\)[\s\S]*?\},\s*800\)/)
+  assert.match(modalSource, /const shouldEmit = await waitForSavedDelay\(\)/)
+  assert.match(modalSource, /if \(!shouldEmit \|\| disposed\) return[\s\S]*?emit\('saved',\s*outcome\.snapshot\)/)
   assert.match(modalSource, /if \(outcome\.configSaved\)[\s\S]*?savedConfig\.value\s*=\s*outcome\.config[\s\S]*?clearSubmittedSecrets\(\)/)
   assert.match(modalSource, /function clearSubmittedSecrets\(\)[\s\S]*?form\.script_api_key\s*=\s*''[\s\S]*?form\.clear_secret_access_key\s*=\s*false/)
   assert.match(modalSource, /t\('quota\.saved_query_failed',\s*\{\s*error:\s*outcome\.error\s*\}\)/)
@@ -89,4 +139,10 @@ test('defines required bilingual modal messages', () => {
   assert.match(i18nSource, /'quota\.modal_subtitle': 'Configure automatic queries and view the latest result'/)
   assert.match(i18nSource, /'quota\.load_failed': 'Failed to load quota configuration'/)
   assert.match(i18nSource, /'quota\.saved_query_failed': 'Configuration saved, but the query failed: \{error\}'/)
+})
+
+test('uses a localized save-success message when disabled config skips querying', () => {
+  assert.match(modalSource, /outcome\.snapshot === null\s*\? t\('quota\.save_success'\)\s*:\s*t\('quota\.query_success'\)/)
+  assert.match(i18nSource, /'quota\.save_success': '配置保存成功'/)
+  assert.match(i18nSource, /'quota\.save_success': 'Configuration saved successfully'/)
 })
