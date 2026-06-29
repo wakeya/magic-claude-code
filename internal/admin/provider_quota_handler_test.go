@@ -208,6 +208,87 @@ func TestProviderUsageTestNoManager(t *testing.T) {
 	}
 }
 
+func TestProviderUsageRejectsConflictingSecretPatches(t *testing.T) {
+	secretFields := []struct {
+		valueField string
+		clearField string
+	}{
+		{valueField: "script_api_key", clearField: "clear_script_api_key"},
+		{valueField: "zenmux_api_key", clearField: "clear_zenmux_api_key"},
+		{valueField: "access_token", clearField: "clear_access_token"},
+		{valueField: "secret_access_key", clearField: "clear_secret_access_key"},
+	}
+	endpoints := []struct {
+		name   string
+		method string
+		path   string
+		serve  func(*Server, http.ResponseWriter, *http.Request)
+	}{
+		{
+			name:   "save",
+			method: http.MethodPut,
+			path:   "/api/providers/test-p/usage",
+			serve: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.handleProviderUsage(w, r)
+			},
+		},
+		{
+			name:   "test",
+			method: http.MethodPost,
+			path:   "/api/providers/test-p/usage/test",
+			serve: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.handleProviderUsageTest(w, r)
+			},
+		},
+	}
+
+	for _, endpoint := range endpoints {
+		for _, fields := range secretFields {
+			t.Run(endpoint.name+"/"+fields.valueField, func(t *testing.T) {
+				cfg := config.DefaultConfig()
+				cfg.Providers = []config.Provider{{
+					ID:        "test-p",
+					Name:      "Test",
+					APIURL:    "https://api.example.com",
+					APIToken:  "card-token",
+					Enabled:   true,
+					CreatedAt: timeNow(),
+					UpdatedAt: timeNow(),
+				}}
+				store := config.NewMockStore(cfg)
+				server := NewServer(&AdminConfig{Password: "test"}, store, nil)
+
+				body, err := json.Marshal(map[string]any{
+					fields.valueField: "replacement",
+					fields.clearField: true,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				req := httptest.NewRequest(endpoint.method, endpoint.path, bytes.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				w := httptest.NewRecorder()
+
+				endpoint.serve(server, w, req)
+
+				if w.Code != http.StatusBadRequest {
+					t.Fatalf("status = %d, want 400; body = %s", w.Code, w.Body.String())
+				}
+				if !containsStr(w.Body.String(), fields.valueField) {
+					t.Fatalf("body = %q, want field %q", w.Body.String(), fields.valueField)
+				}
+				loaded, err := store.Load()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if loaded.Providers[0].QuotaQuery != nil {
+					t.Fatalf("conflicting request mutated quota config: %+v", loaded.Providers[0].QuotaQuery)
+				}
+			})
+		}
+	}
+}
+
 func TestProviderUsageQueryNoManager(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Providers = []config.Provider{

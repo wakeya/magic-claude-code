@@ -126,6 +126,11 @@ func (s *Server) updateProviderUsage(w http.ResponseWriter, r *http.Request, id 
 		http.Error(w, `{"error": "invalid request"}`, http.StatusBadRequest)
 		return
 	}
+	if err := validateProviderQuotaSecretPatches(req); err != nil {
+		jsonErr, _ := json.Marshal(map[string]string{"error": err.Error()})
+		http.Error(w, string(jsonErr), http.StatusBadRequest)
+		return
+	}
 
 	cfg, err := s.configStore.Load()
 	if err != nil {
@@ -183,6 +188,11 @@ func (s *Server) handleProviderUsageTest(w http.ResponseWriter, r *http.Request)
 	var req providerQuotaUpdateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error": "invalid request"}`, http.StatusBadRequest)
+		return
+	}
+	if err := validateProviderQuotaSecretPatches(req); err != nil {
+		jsonErr, _ := json.Marshal(map[string]string{"error": err.Error()})
+		http.Error(w, string(jsonErr), http.StatusBadRequest)
 		return
 	}
 
@@ -301,6 +311,25 @@ type providerQuotaUpdateRequest struct {
 	ClearAPIKey              bool    `json:"clear_api_key"` // backward-compatible client input
 	ClearAccessToken         bool    `json:"clear_access_token"`
 	ClearSecretAccessKey     bool    `json:"clear_secret_access_key"`
+}
+
+func validateProviderQuotaSecretPatches(req providerQuotaUpdateRequest) error {
+	patches := []struct {
+		name  string
+		value *string
+		clear bool
+	}{
+		{name: "script_api_key", value: req.ScriptAPIKey, clear: req.ClearScriptAPIKey},
+		{name: "zenmux_api_key", value: req.ZenMuxAPIKey, clear: req.ClearZenMuxAPIKey},
+		{name: "access_token", value: req.AccessToken, clear: req.ClearAccessToken},
+		{name: "secret_access_key", value: req.SecretAccessKey, clear: req.ClearSecretAccessKey},
+	}
+	for _, patch := range patches {
+		if patch.clear && patch.value != nil && *patch.value != "" {
+			return fmt.Errorf("%s cannot be replaced and cleared in the same request", patch.name)
+		}
+	}
+	return nil
 }
 
 // applyQuotaUpdate applies partial updates to a quota config.
