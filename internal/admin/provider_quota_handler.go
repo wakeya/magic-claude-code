@@ -451,7 +451,8 @@ func isMaterialQuotaChange(old, new *providerquota.ProviderQuotaConfig) bool {
 	if old == nil || new == nil {
 		return true
 	}
-	return old.TemplateType != new.TemplateType ||
+	return old.Enabled != new.Enabled ||
+		old.TemplateType != new.TemplateType ||
 		old.Script != new.Script ||
 		old.BaseURL != new.BaseURL ||
 		old.ScriptAPIKey != new.ScriptAPIKey ||

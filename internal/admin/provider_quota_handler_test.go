@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -107,6 +108,52 @@ func TestProviderUsagePutAndRetrieve(t *testing.T) {
 	}
 	if configDTO["enabled"] != true {
 		t.Error("expected enabled=true")
+	}
+}
+
+func TestProviderUsagePutDisabledDeletesExistingSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	store, err := config.NewSQLiteStore(filepath.Join(dir, "proxy.db"), filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	provider := config.Provider{
+		ID: "test-p", Name: "Test", APIURL: "https://api.example.com", APIToken: "secret-token", Enabled: true,
+		QuotaQuery: &providerquota.ProviderQuotaConfig{Enabled: true, TemplateType: providerquota.TemplateGeneral},
+		CreatedAt:  timeNow(), UpdatedAt: timeNow(),
+	}
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{provider}
+	if err := store.Save(cfg); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	remaining := 42.50
+	snapshots := providerquota.NewSnapshotStore(store.DB())
+	if err := snapshots.SaveUpsert(provider.ID, &providerquota.ProviderQuotaResult{
+		ProviderID: provider.ID, TemplateType: providerquota.TemplateGeneral, Success: true, QueriedAt: time.Now(),
+		Balances: []providerquota.BalanceItem{{Remaining: &remaining, Unit: "USD"}},
+	}); err != nil {
+		t.Fatalf("SaveUpsert() error = %v", err)
+	}
+
+	srv := NewServer(&AdminConfig{Password: "test"}, store, nil)
+	srv.SetQuotaManager(providerquota.NewManager(snapshots, nil, 1))
+	req := httptest.NewRequest(http.MethodPut, "/api/providers/test-p/usage", bytes.NewBufferString(`{"enabled":false}`))
+	w := httptest.NewRecorder()
+	srv.handleProviderUsage(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	got, err := snapshots.Get(provider.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got != nil {
+		t.Fatal("disabling quota query left the existing snapshot in storage")
 	}
 }
 
@@ -818,6 +865,15 @@ func TestIsMaterialQuotaChange(t *testing.T) {
 				t.Errorf("isMaterialQuotaChange = %v, want %v", got, tt.expect)
 			}
 		})
+	}
+}
+
+func TestIsMaterialQuotaChangeWhenEnabledChanges(t *testing.T) {
+	old := &providerquota.ProviderQuotaConfig{Enabled: true, TemplateType: "general"}
+	newCfg := &providerquota.ProviderQuotaConfig{Enabled: false, TemplateType: "general"}
+
+	if !isMaterialQuotaChange(old, newCfg) {
+		t.Fatal("enabled true -> false should invalidate snapshots")
 	}
 }
 
