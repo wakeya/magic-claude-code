@@ -123,6 +123,46 @@ test('buildSavePayload propagates independent clear flags', () => {
   assert.equal('clear_script_api_key' in zenmuxClear, false)
 })
 
+test('buildSavePayload does not emit clear flags with replacement secrets', () => {
+  const script = buildSavePayload({
+    ...baseForm,
+    script_api_key: 'replacement',
+    clear_script_api_key: true,
+  }, '', null)
+  assert.equal(script['script_api_key'], 'replacement')
+  assert.equal('clear_script_api_key' in script, false)
+
+  const zenmux = buildSavePayload({
+    ...baseForm,
+    template_type: 'token_plan',
+    coding_plan_provider: 'zenmux',
+    zenmux_base_url: 'https://quota.zenmux.example/usage',
+    zenmux_api_key: 'replacement',
+    clear_zenmux_api_key: true,
+  }, '', null)
+  assert.equal(zenmux['zenmux_api_key'], 'replacement')
+  assert.equal('clear_zenmux_api_key' in zenmux, false)
+
+  const newapi = buildSavePayload({
+    ...baseForm,
+    template_type: 'newapi',
+    access_token: 'replacement',
+    clear_access_token: true,
+  }, '', null)
+  assert.equal(newapi['access_token'], 'replacement')
+  assert.equal('clear_access_token' in newapi, false)
+
+  const volcengine = buildSavePayload({
+    ...baseForm,
+    template_type: 'token_plan',
+    coding_plan_provider: 'volcengine',
+    secret_access_key: 'replacement',
+    clear_secret_access_key: true,
+  }, '', null)
+  assert.equal(volcengine['secret_access_key'], 'replacement')
+  assert.equal('clear_secret_access_key' in volcengine, false)
+})
+
 test('buildSavePayload preserves NewAPI and Volcengine cleanup behavior', () => {
   const payload = buildSavePayload(baseForm, '', {
     script_api_key_configured: false,

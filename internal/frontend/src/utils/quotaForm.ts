@@ -109,6 +109,10 @@ export function buildSavePayload(
   const usesScriptAPIKey = ['general', 'custom'].includes(form.template_type)
   const usesAccessToken = form.template_type === 'newapi'
   const usesVolcSK = showVolcengineFields(form.template_type, provider)
+  const replacesScriptAPIKey = usesScriptAPIKey && !!form.script_api_key
+  const replacesZenMuxAPIKey = zenmux && !!form.zenmux_api_key
+  const replacesAccessToken = usesAccessToken && !!form.access_token
+  const replacesSecretAccessKey = usesVolcSK && !!form.secret_access_key
 
   const data: Record<string, unknown> = {
     enabled: form.enabled,
@@ -129,27 +133,28 @@ export function buildSavePayload(
     // ZenMux URL is intentionally unaffected.
     data.base_url = ''
   }
-  if (usesScriptAPIKey && form.script_api_key) data.script_api_key = form.script_api_key
+  if (replacesScriptAPIKey) data.script_api_key = form.script_api_key
   if (zenmux) {
     // Empty URL + omitted key selects the complete card credential fallback.
     data.zenmux_base_url = form.zenmux_base_url
-    if (form.zenmux_api_key) data.zenmux_api_key = form.zenmux_api_key
+    if (replacesZenMuxAPIKey) data.zenmux_api_key = form.zenmux_api_key
   }
-  if (usesAccessToken && form.access_token) data.access_token = form.access_token
+  if (replacesAccessToken) data.access_token = form.access_token
   if (usesAccessToken && form.user_id) data.user_id = form.user_id
   if (usesVolcSK && form.access_key_id) data.access_key_id = form.access_key_id
-  if (usesVolcSK && form.secret_access_key) data.secret_access_key = form.secret_access_key
+  if (replacesSecretAccessKey) data.secret_access_key = form.secret_access_key
 
   // NewAPI and Volcengine retain their existing cleanup behavior. Script and
   // ZenMux keys are independent and are never auto-cleared on template switch.
   if (saved?.access_token_configured && !usesAccessToken) data.clear_access_token = true
   if (saved?.secret_access_key_configured && !usesVolcSK) data.clear_secret_access_key = true
 
-  // User-initiated explicit clears always propagate.
-  if (form.clear_script_api_key) data.clear_script_api_key = true
-  if (form.clear_zenmux_api_key) data.clear_zenmux_api_key = true
-  if (form.clear_access_token) data.clear_access_token = true
-  if (form.clear_secret_access_key) data.clear_secret_access_key = true
+  // Explicit clears propagate only when the same request does not replace the
+  // credential. This keeps the backend patch contract unambiguous.
+  if (form.clear_script_api_key && !replacesScriptAPIKey) data.clear_script_api_key = true
+  if (form.clear_zenmux_api_key && !replacesZenMuxAPIKey) data.clear_zenmux_api_key = true
+  if (form.clear_access_token && !replacesAccessToken) data.clear_access_token = true
+  if (form.clear_secret_access_key && !replacesSecretAccessKey) data.clear_secret_access_key = true
   return data
 }
 
