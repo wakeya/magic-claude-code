@@ -140,7 +140,7 @@ func TestManagerDedupDistinguishesDraftAndProduction(t *testing.T) {
 				Enabled:      true,
 				TemplateType: TemplateGeneral,
 				BaseURL:      srv.URL,
-				APIKey:       "draft-token",
+				ScriptAPIKey: "draft-token",
 				Script: `({
 					request: { url: "{{baseUrl}}/balance", method: "GET" },
 					extractor: function(r) { return { remaining: r.balance, unit: "USD" }; }
@@ -180,7 +180,7 @@ func TestManagerDedupDistinguishesDraftAndProduction(t *testing.T) {
 }
 
 // TestDraftQueryFallsBackToCardCredentials verifies that a draft (test) query
-// with empty BaseURL/APIKey falls back to the provider card's APIURL/APIToken.
+// with empty BaseURL/ScriptAPIKey falls back to the provider card credentials.
 // This is required so first-time Token Plan / Official Balance tests work
 // without the user re-entering the card credentials.
 func TestDraftQueryFallsBackToCardCredentials(t *testing.T) {
@@ -216,7 +216,7 @@ func TestDraftQueryFallsBackToCardCredentials(t *testing.T) {
 
 	mgr := NewManager(store, configGet, 4)
 
-	// Draft has NO BaseURL and NO APIKey — must fall back to the card.
+	// Draft has no BaseURL or ScriptAPIKey and must fall back to the card.
 	result, err := mgr.Query(context.Background(), "p1", QueryOptions{
 		Draft: &ProviderQuotaConfig{
 			Enabled:      true,
@@ -226,7 +226,7 @@ func TestDraftQueryFallsBackToCardCredentials(t *testing.T) {
 				extractor: function(r) { return { remaining: r.balance, unit: "USD" }; }
 			})`,
 			TimeoutSeconds: 10,
-			// BaseURL and APIKey intentionally empty.
+			// BaseURL and ScriptAPIKey intentionally empty.
 		},
 	})
 	if err != nil {
@@ -278,7 +278,7 @@ func TestDraftQueriesNotDeduplicatedByBaseURL(t *testing.T) {
 	makeDraft := func(key string) *ProviderQuotaConfig {
 		return &ProviderQuotaConfig{
 			Enabled: true, TemplateType: TemplateGeneral,
-			BaseURL: srv.URL, APIKey: key, Script: script, TimeoutSeconds: 10,
+			BaseURL: srv.URL, ScriptAPIKey: key, Script: script, TimeoutSeconds: 10,
 		}
 	}
 
@@ -454,7 +454,7 @@ func TestManagerTestQueryDoesNotPersist(t *testing.T) {
 			Enabled:      true,
 			TemplateType: TemplateGeneral,
 			BaseURL:      srv.URL,
-			APIKey:       "tok",
+			ScriptAPIKey: "tok",
 			Script: `({
 				request: { url: "{{baseUrl}}/balance", method: "GET" },
 				extractor: function(r) { return { remaining: r.balance, unit: "USD" }; }
@@ -844,7 +844,7 @@ func TestManagerTokenPlanProviderMismatch(t *testing.T) {
 // uses ONLY its designated credential and ignores stale secrets left over from
 // a different template. The card token must never leak to a mismatched route.
 func TestManagerCredentialsBoundPerTemplate(t *testing.T) {
-	t.Run("Kimi ignores stale ZenMux APIKey and AccessToken", func(t *testing.T) {
+	t.Run("Kimi ignores stale ZenMux key and AccessToken", func(t *testing.T) {
 		var gotAuth string
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			gotAuth = r.Header.Get("Authorization")
@@ -867,12 +867,13 @@ func TestManagerCredentialsBoundPerTemplate(t *testing.T) {
 			Timeout:   5 * time.Second,
 		}
 
-		// Draft carries STALE ZenMux APIKey + AccessToken that must be ignored.
+		// Draft carries stale purpose-specific secrets that must be ignored.
 		_, err := mgr.Query(context.Background(), "p1", QueryOptions{
 			Draft: &ProviderQuotaConfig{
 				Enabled: true, TemplateType: TemplateTokenPlan,
 				CodingPlanProvider: "kimi",
-				APIKey:             "stale-zenmux-key",
+				ScriptAPIKey:       "stale-script-key",
+				ZenMuxAPIKey:       "stale-zenmux-key",
 				AccessToken:        "stale-newapi-token",
 				TimeoutSeconds:     10,
 			},
@@ -885,7 +886,7 @@ func TestManagerCredentialsBoundPerTemplate(t *testing.T) {
 		}
 	})
 
-	t.Run("Official Balance ignores stale APIKey and AccessToken", func(t *testing.T) {
+	t.Run("Official Balance ignores stale separated keys and AccessToken", func(t *testing.T) {
 		var gotAuth string
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			gotAuth = r.Header.Get("Authorization")
@@ -911,8 +912,9 @@ func TestManagerCredentialsBoundPerTemplate(t *testing.T) {
 		_, err := mgr.Query(context.Background(), "p1", QueryOptions{
 			Draft: &ProviderQuotaConfig{
 				Enabled: true, TemplateType: TemplateOfficialBalance,
-				APIKey:      "stale-general-key",
-				AccessToken: "stale-newapi-token",
+				ScriptAPIKey:   "stale-general-key",
+				ZenMuxAPIKey:   "stale-zenmux-key",
+				AccessToken:    "stale-newapi-token",
 				TimeoutSeconds: 10,
 			},
 		})
@@ -924,11 +926,14 @@ func TestManagerCredentialsBoundPerTemplate(t *testing.T) {
 		}
 	})
 
-	t.Run("ZenMux without dedicated APIKey fails before network", func(t *testing.T) {
+	t.Run("ZenMux without override uses complete card fallback pair", func(t *testing.T) {
 		var reqCount int32
+		var gotAuth string
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			atomic.AddInt32(&reqCount, 1)
-			json.NewEncoder(w).Encode(map[string]any{"success": true})
+			gotAuth = r.Header.Get("Authorization")
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"success":true,"data":{"quota_5_hour":{"usage_percentage":0.1,"max_value_usd":100}}}`))
 		}))
 		defer srv.Close()
 
@@ -950,26 +955,57 @@ func TestManagerCredentialsBoundPerTemplate(t *testing.T) {
 			Draft: &ProviderQuotaConfig{
 				Enabled: true, TemplateType: TemplateTokenPlan,
 				CodingPlanProvider: "zenmux",
-				BaseURL:            "https://quota.zenmux.example/v1",
-				// APIKey intentionally empty — must NOT fall back to card token.
-				TimeoutSeconds: 10,
+				TimeoutSeconds:     10,
 			},
 		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if result.Success {
-			t.Error("expected failure for ZenMux without dedicated APIKey")
+		if !result.Success {
+			t.Fatalf("fallback query failed: %+v", result)
 		}
-		if result.ErrorCode != "missing_credentials" {
-			t.Errorf("ErrorCode = %q, want missing_credentials", result.ErrorCode)
+		if gotAuth != "Bearer card-must-not-leak" {
+			t.Errorf("Authorization = %q, want card fallback token", gotAuth)
 		}
-		if got := atomic.LoadInt32(&reqCount); got != 0 {
-			t.Errorf("upstream requests = %d, want 0 (ZenMux must not send card token)", got)
+		if got := atomic.LoadInt32(&reqCount); got != 1 {
+			t.Errorf("upstream requests = %d, want 1", got)
 		}
 	})
 
-	t.Run("ZenMux with dedicated APIKey sends only that key", func(t *testing.T) {
+	t.Run("ZenMux half override fails before network", func(t *testing.T) {
+		var reqCount int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt32(&reqCount, 1)
+		}))
+		defer srv.Close()
+
+		db := setupTestDB(t)
+		store := NewSnapshotStore(db)
+		insertTestProvider(t, db, "p1")
+		configGet := &mockConfigGet{providers: map[string]ProviderConfig{
+			"p1": {ID: "p1", Enabled: true, APIURL: "https://zenmux.example.com/v1", APIToken: "card-token"},
+		}}
+		mgr := NewManager(store, configGet, 4)
+		mgr.adapterHTTPClient = &http.Client{Transport: &urlRewriteTransport{replaced: srv.URL, inner: http.DefaultTransport}}
+
+		result, err := mgr.Query(context.Background(), "p1", QueryOptions{Draft: &ProviderQuotaConfig{
+			Enabled: true, TemplateType: TemplateTokenPlan,
+			CodingPlanProvider: "zenmux",
+			ZenMuxBaseURL:      "https://quota.zenmux.example/v1",
+			TimeoutSeconds:     10,
+		}})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result.ErrorCode != "missing_credentials" {
+			t.Fatalf("ErrorCode = %q, want missing_credentials", result.ErrorCode)
+		}
+		if got := atomic.LoadInt32(&reqCount); got != 0 {
+			t.Fatalf("upstream requests = %d, want 0", got)
+		}
+	})
+
+	t.Run("ZenMux with dedicated key sends only that key", func(t *testing.T) {
 		var gotAuth string
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			gotAuth = r.Header.Get("Authorization")
@@ -996,8 +1032,9 @@ func TestManagerCredentialsBoundPerTemplate(t *testing.T) {
 			Draft: &ProviderQuotaConfig{
 				Enabled: true, TemplateType: TemplateTokenPlan,
 				CodingPlanProvider: "zenmux",
-				BaseURL:            "https://quota.zenmux.example/v1",
-				APIKey:             "zenmux-dedicated-key",
+				ZenMuxBaseURL:      "https://quota.zenmux.example/v1",
+				ZenMuxAPIKey:       "zenmux-dedicated-key",
+				ScriptAPIKey:       "script-must-not-leak",
 				TimeoutSeconds:     10,
 			},
 		})
@@ -1035,10 +1072,10 @@ func TestManagerCredentialsBoundPerTemplate(t *testing.T) {
 		_, err := mgr.Query(context.Background(), "p1", QueryOptions{
 			Draft: &ProviderQuotaConfig{
 				Enabled: true, TemplateType: TemplateNewAPI,
-				BaseURL:     "https://panel.example.com",
-				AccessToken: "newapi-access-token",
-				APIKey:      "stale-general-key",
-				UserID:      "u1",
+				BaseURL:        "https://panel.example.com",
+				AccessToken:    "newapi-access-token",
+				ScriptAPIKey:   "stale-general-key",
+				UserID:         "u1",
 				TimeoutSeconds: 10,
 			},
 		})
@@ -1050,7 +1087,7 @@ func TestManagerCredentialsBoundPerTemplate(t *testing.T) {
 		}
 	})
 
-	t.Run("General APIKey override beats card token", func(t *testing.T) {
+	t.Run("General ScriptAPIKey override beats card token", func(t *testing.T) {
 		var gotAuth string
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			gotAuth = r.Header.Get("Authorization")
@@ -1075,8 +1112,8 @@ func TestManagerCredentialsBoundPerTemplate(t *testing.T) {
 		_, err := mgr.Query(context.Background(), "p1", QueryOptions{
 			Draft: &ProviderQuotaConfig{
 				Enabled: true, TemplateType: TemplateGeneral,
-				BaseURL: srv.URL, APIKey: "general-override-key",
-				Script: `({request:{url:"{{baseUrl}}/b",method:"GET",headers:{"Authorization":"Bearer {{apiKey}}"}},extractor:function(r){return{remaining:r.balance};}})`,
+				BaseURL: srv.URL, ScriptAPIKey: "general-override-key",
+				Script:         `({request:{url:"{{baseUrl}}/b",method:"GET",headers:{"Authorization":"Bearer {{apiKey}}"}},extractor:function(r){return{remaining:r.balance};}})`,
 				TimeoutSeconds: 10,
 			},
 		})

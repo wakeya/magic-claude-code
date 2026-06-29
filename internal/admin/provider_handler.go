@@ -231,7 +231,6 @@ func (s *Server) getProvider(w http.ResponseWriter, _ *http.Request, id string) 
 		http.Error(w, `{"error": "provider not found"}`, http.StatusNotFound)
 		return
 	}
-
 	json.NewEncoder(w).Encode(providerResponseMap(*provider, provider.ID == cfg.ActiveProviderID))
 }
 
@@ -276,6 +275,8 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request, id strin
 		http.Error(w, `{"error": "provider not found"}`, http.StatusNotFound)
 		return
 	}
+	oldAPIURL := provider.APIURL
+	oldAPIToken := provider.APIToken
 
 	// 更新字段
 	if req.Name != "" {
@@ -362,6 +363,10 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request, id strin
 	if err := s.configStore.Save(cfg); err != nil {
 		http.Error(w, `{"error": "failed to save config"}`, http.StatusInternalServerError)
 		return
+	}
+	if provider.QuotaQuery != nil && s.quotaManager != nil &&
+		(oldAPIURL != provider.APIURL || oldAPIToken != provider.APIToken) {
+		_ = s.quotaManager.DeleteSnapshot(id)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -790,7 +795,7 @@ func (s *Server) handleProviderDuplicate(w http.ResponseWriter, r *http.Request)
 		Retry429MaxAttempts:       provider.Retry429MaxAttempts,
 		Retry429InitialDelayMS:    provider.Retry429InitialDelayMS,
 		Retry429MaxDelayMS:        provider.Retry429MaxDelayMS,
-		QuotaQuery:                copyQuotaQueryConfig(provider.QuotaQuery),
+		QuotaQuery:                copyQuotaQueryConfig(provider.QuotaQuery, provider.APIURL),
 		Enabled:                   true,
 		CreatedAt:                 now,
 		UpdatedAt:                 now,
@@ -910,6 +915,7 @@ func (s *Server) handleImportProviders(w http.ResponseWriter, r *http.Request) {
 		Duplicated  int      `json:"duplicated"`
 		Errors      []string `json:"errors"`
 	}{Success: true, Errors: []string{}}
+	invalidateSnapshots := make(map[string]bool)
 
 	// 文件内去重：skip/overwrite 策略下同一 ID 只处理首次出现；
 	// duplicate 策略下每条都生成新 ID，无需去重。
@@ -937,6 +943,10 @@ func (s *Server) handleImportProviders(w http.ResponseWriter, r *http.Request) {
 				orig := cfg.Providers[existingIdx[p.ID]]
 				cp.CreatedAt = orig.CreatedAt // 保留原创建时间
 				cp.UpdatedAt = now
+				if orig.APIURL != cp.APIURL || orig.APIToken != cp.APIToken ||
+					isMaterialQuotaChange(orig.QuotaQuery, cp.QuotaQuery) {
+					invalidateSnapshots[p.ID] = true
+				}
 				cfg.Providers[existingIdx[p.ID]] = cp
 				summary.Overwritten++
 			case "duplicate":
@@ -964,6 +974,11 @@ func (s *Server) handleImportProviders(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error": "failed to save config"}`, http.StatusInternalServerError)
 		return
 	}
+	if s.quotaManager != nil {
+		for id := range invalidateSnapshots {
+			_ = s.quotaManager.DeleteSnapshot(id)
+		}
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(summary)
@@ -981,10 +996,11 @@ func randomHex(length int) string {
 // copyQuotaQueryConfig returns a deep copy of the quota config,
 // including secret fields. Used for provider duplication where
 // secrets should be copied but the snapshot is not.
-func copyQuotaQueryConfig(c *providerquota.ProviderQuotaConfig) *providerquota.ProviderQuotaConfig {
+func copyQuotaQueryConfig(c *providerquota.ProviderQuotaConfig, cardAPIURL string) *providerquota.ProviderQuotaConfig {
 	if c == nil {
 		return nil
 	}
 	cp := *c
+	providerquota.MigrateLegacyCredentials(&cp, cardAPIURL)
 	return &cp
 }

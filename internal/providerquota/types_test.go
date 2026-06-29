@@ -271,12 +271,13 @@ func TestNormalizeResultKeepsValidSuccess(t *testing.T) {
 func TestEncodeDecodeQuotaConfigRoundTrip(t *testing.T) {
 	cfg := &ProviderQuotaConfig{
 		Enabled:                  true,
-		TemplateType:             TemplateNewAPI,
+		TemplateType:             TemplateCustom,
 		TimeoutSeconds:           15,
 		AutoQueryIntervalMinutes: 10,
 		BaseURL:                  "https://example.com",
-		AccessToken:              "secret123",
-		UserID:                   "user1",
+		ScriptAPIKey:             "script-secret",
+		ZenMuxBaseURL:            "https://quota.zenmux.example/usage",
+		ZenMuxAPIKey:             "zenmux-secret",
 	}
 	encoded, err := EncodeQuotaConfig(cfg)
 	if err != nil {
@@ -289,8 +290,79 @@ func TestEncodeDecodeQuotaConfigRoundTrip(t *testing.T) {
 	if decoded.TemplateType != cfg.TemplateType {
 		t.Errorf("template = %q, want %q", decoded.TemplateType, cfg.TemplateType)
 	}
-	if decoded.AccessToken != cfg.AccessToken {
-		t.Errorf("access_token = %q, want %q", decoded.AccessToken, cfg.AccessToken)
+	if decoded.ScriptAPIKey != cfg.ScriptAPIKey {
+		t.Errorf("script_api_key = %q, want %q", decoded.ScriptAPIKey, cfg.ScriptAPIKey)
+	}
+	if decoded.ZenMuxBaseURL != cfg.ZenMuxBaseURL {
+		t.Errorf("zenmux_base_url = %q, want %q", decoded.ZenMuxBaseURL, cfg.ZenMuxBaseURL)
+	}
+	if decoded.ZenMuxAPIKey != cfg.ZenMuxAPIKey {
+		t.Errorf("zenmux_api_key = %q, want %q", decoded.ZenMuxAPIKey, cfg.ZenMuxAPIKey)
+	}
+}
+
+func TestMigrateLegacyQuotaCredentials(t *testing.T) {
+	tests := []struct {
+		name       string
+		cfg        *ProviderQuotaConfig
+		cardAPIURL string
+		assert     func(*testing.T, *ProviderQuotaConfig)
+	}{
+		{
+			name: "general key becomes script key",
+			cfg:  &ProviderQuotaConfig{TemplateType: TemplateGeneral, LegacyAPIKey: "script-old"},
+			assert: func(t *testing.T, cfg *ProviderQuotaConfig) {
+				if cfg.ScriptAPIKey != "script-old" || cfg.LegacyAPIKey != "" {
+					t.Fatalf("migrated config = %+v", cfg)
+				}
+			},
+		},
+		{
+			name: "structural zenmux override survives card URL change",
+			cfg: &ProviderQuotaConfig{
+				TemplateType: TemplateTokenPlan,
+				BaseURL:      "https://quota.zenmux.example/usage",
+				LegacyAPIKey: "zenmux-old",
+			},
+			cardAPIURL: "https://gateway.example/v1",
+			assert: func(t *testing.T, cfg *ProviderQuotaConfig) {
+				if cfg.ZenMuxBaseURL != "https://quota.zenmux.example/usage" || cfg.ZenMuxAPIKey != "zenmux-old" {
+					t.Fatalf("migrated config = %+v", cfg)
+				}
+				if cfg.BaseURL != "" || cfg.LegacyAPIKey != "" {
+					t.Fatalf("legacy fields remain: %+v", cfg)
+				}
+			},
+		},
+		{
+			name: "new field wins over legacy value",
+			cfg: &ProviderQuotaConfig{
+				TemplateType: TemplateGeneral,
+				ScriptAPIKey: "script-new",
+				LegacyAPIKey: "script-old",
+			},
+			assert: func(t *testing.T, cfg *ProviderQuotaConfig) {
+				if cfg.ScriptAPIKey != "script-new" || cfg.LegacyAPIKey != "" {
+					t.Fatalf("migrated config = %+v", cfg)
+				}
+			},
+		},
+		{
+			name: "unrelated legacy key is discarded",
+			cfg:  &ProviderQuotaConfig{TemplateType: TemplateOfficialBalance, LegacyAPIKey: "stale"},
+			assert: func(t *testing.T, cfg *ProviderQuotaConfig) {
+				if cfg.LegacyAPIKey != "" || cfg.ScriptAPIKey != "" || cfg.ZenMuxAPIKey != "" {
+					t.Fatalf("migrated config = %+v", cfg)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			MigrateLegacyCredentials(tt.cfg, tt.cardAPIURL)
+			tt.assert(t, tt.cfg)
+		})
 	}
 }
 
@@ -342,18 +414,26 @@ func TestEncodeDecodeResultRoundTrip(t *testing.T) {
 
 func TestToPublicConfig(t *testing.T) {
 	cfg := &ProviderQuotaConfig{
-		Enabled:          true,
-		TemplateType:     TemplateNewAPI,
-		TimeoutSeconds:   15,
-		APIKey:           "secret-key",
-		AccessToken:      "secret-token",
-		SecretAccessKey:  "secret-sk",
-		AccessKeyID:      "AKLT1234",
-		BaseURL:          "https://example.com",
+		Enabled:         true,
+		TemplateType:    TemplateNewAPI,
+		TimeoutSeconds:  15,
+		ScriptAPIKey:    "script-secret",
+		ZenMuxBaseURL:   "https://quota.zenmux.example/usage",
+		ZenMuxAPIKey:    "zenmux-secret",
+		AccessToken:     "secret-token",
+		SecretAccessKey: "secret-sk",
+		AccessKeyID:     "AKLT1234",
+		BaseURL:         "https://example.com",
 	}
 	pub := ToPublicConfig(cfg)
-	if pub.APIKeyConfigured != true {
-		t.Error("api_key_configured should be true")
+	if !pub.ScriptAPIKeyConfigured {
+		t.Error("script_api_key_configured should be true")
+	}
+	if !pub.ZenMuxAPIKeyConfigured {
+		t.Error("zenmux_api_key_configured should be true")
+	}
+	if pub.ZenMuxBaseURL != cfg.ZenMuxBaseURL {
+		t.Errorf("zenmux_base_url = %q, want %q", pub.ZenMuxBaseURL, cfg.ZenMuxBaseURL)
 	}
 	if pub.AccessTokenConfigured != true {
 		t.Error("access_token_configured should be true")
@@ -368,7 +448,7 @@ func TestToPublicConfig(t *testing.T) {
 	// Verify secrets are not in the public config.
 	data, _ := json.Marshal(pub)
 	s := string(data)
-	if contains(s, "secret-key") || contains(s, "secret-token") || contains(s, "secret-sk") {
+	if contains(s, "script-secret") || contains(s, "zenmux-secret") || contains(s, "secret-token") || contains(s, "secret-sk") {
 		t.Errorf("public config contains secret: %s", s)
 	}
 }
@@ -385,9 +465,14 @@ func TestHasSecrets(t *testing.T) {
 	if c.HasSecrets() {
 		t.Error("empty config should have no secrets")
 	}
-	c.APIKey = "key"
+	c.ScriptAPIKey = "key"
 	if !c.HasSecrets() {
-		t.Error("config with api_key should have secrets")
+		t.Error("config with script_api_key should have secrets")
+	}
+	c.ScriptAPIKey = ""
+	c.ZenMuxAPIKey = "zenmux-key"
+	if !c.HasSecrets() {
+		t.Error("config with zenmux_api_key should have secrets")
 	}
 }
 

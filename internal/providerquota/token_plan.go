@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,6 +27,33 @@ func NewTokenPlanAdapter(timeout time.Duration) *TokenPlanAdapter {
 	return &TokenPlanAdapter{
 		HTTPClient: &http.Client{Timeout: timeout},
 	}
+}
+
+// authenticatedHTTPClient returns a shallow copy of base with a redirect
+// policy that keeps credentials on the original scheme, host, and port. The
+// caller-provided client is never mutated because it may be shared by adapters.
+func authenticatedHTTPClient(base *http.Client, original *url.URL) *http.Client {
+	if base == nil {
+		base = http.DefaultClient
+	}
+	client := *base
+	previous := client.CheckRedirect
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if !sameOrigin(req.URL, original) {
+			return fmt.Errorf(
+				"authenticated redirect rejected: %s://%s -> %s://%s",
+				original.Scheme, original.Host, req.URL.Scheme, req.URL.Host,
+			)
+		}
+		if previous != nil {
+			return previous(req, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
+	return &client
 }
 
 // DetectTokenPlanProvider identifies the token plan provider from an API URL.
@@ -64,7 +92,7 @@ func DetectTokenPlanProvider(apiURL string) (provider string, isMiMo bool) {
 // Query dispatches to the appropriate provider-specific query.
 // cardAPIURL is the provider card's API URL; it is used to derive the
 // Volcengine region and ignored by providers with fixed endpoints (Kimi,
-// Zhipu, MiniMax). ZenMux uses cfg.BaseURL as its dedicated quota endpoint.
+// Zhipu, MiniMax). For ZenMux it carries the already-resolved quota endpoint.
 // apiToken is the Bearer credential for kimi/zhipu/minimax/zenmux; it is
 // intentionally unused by volcengine (which signs with cfg AK/SK) and is
 // passed empty by resolveQueryPlan for that provider.
@@ -83,7 +111,7 @@ func (a *TokenPlanAdapter) Query(ctx context.Context, provider string, cfg *Prov
 	case "minimax_en":
 		return a.queryMiniMax(ctx, "https://api.minimax.io", apiToken, start)
 	case "zenmux":
-		return a.queryZenMux(ctx, cfg, apiToken, start)
+		return a.queryZenMux(ctx, cardAPIURL, apiToken, start)
 	case "volcengine":
 		return a.queryVolcengine(ctx, cfg, cardAPIURL, apiToken, start)
 	default:
@@ -131,8 +159,8 @@ func (a *TokenPlanAdapter) queryKimi(ctx context.Context, apiToken string, start
 	}
 
 	result := &ProviderQuotaResult{
-		Success:   true,
-		QueriedAt: time.Now(),
+		Success:    true,
+		QueriedAt:  time.Now(),
 		DurationMS: time.Since(start).Milliseconds(),
 	}
 
@@ -246,11 +274,11 @@ func (a *TokenPlanAdapter) queryZhipu(ctx context.Context, baseHost string, apiT
 		Data    struct {
 			Level  string `json:"level"`
 			Limits []struct {
-				Type         string      `json:"type"`
-				Percentage   float64     `json:"percentage"`
+				Type          string      `json:"type"`
+				Percentage    float64     `json:"percentage"`
 				NextResetTime json.Number `json:"nextResetTime"`
-				Unit         int         `json:"unit"`
-				Number       json.Number `json:"number"`
+				Unit          int         `json:"unit"`
+				Number        json.Number `json:"number"`
 			} `json:"limits"`
 		} `json:"data"`
 	}
@@ -263,8 +291,8 @@ func (a *TokenPlanAdapter) queryZhipu(ctx context.Context, baseHost string, apiT
 	}
 
 	result := &ProviderQuotaResult{
-		Success:   true,
-		QueriedAt: time.Now(),
+		Success:    true,
+		QueriedAt:  time.Now(),
 		DurationMS: time.Since(start).Milliseconds(),
 	}
 
@@ -366,12 +394,12 @@ func (a *TokenPlanAdapter) queryMiniMax(ctx context.Context, baseHost string, ap
 			StatusMsg  string `json:"status_msg"`
 		} `json:"base_resp"`
 		ModelRemains []struct {
-			ModelName                      string      `json:"model_name"`
-			CurrentIntervalRemainingPct    float64     `json:"current_interval_remaining_percent"`
-			EndTime                        json.Number `json:"end_time"`
-			CurrentWeeklyStatus            int         `json:"current_weekly_status"`
-			CurrentWeeklyRemainingPct      float64     `json:"current_weekly_remaining_percent"`
-			WeeklyEndTime                  json.Number `json:"weekly_end_time"`
+			ModelName                   string      `json:"model_name"`
+			CurrentIntervalRemainingPct float64     `json:"current_interval_remaining_percent"`
+			EndTime                     json.Number `json:"end_time"`
+			CurrentWeeklyStatus         int         `json:"current_weekly_status"`
+			CurrentWeeklyRemainingPct   float64     `json:"current_weekly_remaining_percent"`
+			WeeklyEndTime               json.Number `json:"weekly_end_time"`
 		} `json:"model_remains"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
@@ -406,8 +434,8 @@ func (a *TokenPlanAdapter) queryMiniMax(ctx context.Context, baseHost string, ap
 	}
 
 	result := &ProviderQuotaResult{
-		Success:   true,
-		QueriedAt: time.Now(),
+		Success:    true,
+		QueriedAt:  time.Now(),
 		DurationMS: time.Since(start).Milliseconds(),
 	}
 
@@ -448,12 +476,12 @@ func (a *TokenPlanAdapter) queryMiniMax(ctx context.Context, baseHost string, ap
 // --- ZenMux ---
 // Response: { "success": bool, "message": "", "data": { "quota_5_hour": { "usage_percentage" (0-1), "resets_at", "used_value_usd", "max_value_usd" }, "quota_7_day": {...} } }
 
-func (a *TokenPlanAdapter) queryZenMux(ctx context.Context, cfg *ProviderQuotaConfig, apiToken string, start time.Time) *ProviderQuotaResult {
-	if cfg == nil || cfg.BaseURL == "" {
+func (a *TokenPlanAdapter) queryZenMux(ctx context.Context, quotaURL, apiToken string, start time.Time) *ProviderQuotaResult {
+	if quotaURL == "" {
 		return errorResult("missing_credentials", "ZenMux requires a quota URL", start)
 	}
 
-	req, _ := http.NewRequestWithContext(ctx, "GET", cfg.BaseURL, nil)
+	req, _ := http.NewRequestWithContext(ctx, "GET", quotaURL, nil)
 	req.Header.Set("Authorization", "Bearer "+apiToken)
 	req.Header.Set("Accept", "application/json")
 
@@ -473,16 +501,16 @@ func (a *TokenPlanAdapter) queryZenMux(ctx context.Context, cfg *ProviderQuotaCo
 		Message string `json:"message"`
 		Data    struct {
 			Quota5Hour struct {
-				UsagePercentage float64     `json:"usage_percentage"`
-				ResetsAt        string      `json:"resets_at"`
-				UsedValueUSD    float64     `json:"used_value_usd"`
-				MaxValueUSD     float64     `json:"max_value_usd"`
+				UsagePercentage float64 `json:"usage_percentage"`
+				ResetsAt        string  `json:"resets_at"`
+				UsedValueUSD    float64 `json:"used_value_usd"`
+				MaxValueUSD     float64 `json:"max_value_usd"`
 			} `json:"quota_5_hour"`
 			Quota7Day struct {
-				UsagePercentage float64     `json:"usage_percentage"`
-				ResetsAt        string      `json:"resets_at"`
-				UsedValueUSD    float64     `json:"used_value_usd"`
-				MaxValueUSD     float64     `json:"max_value_usd"`
+				UsagePercentage float64 `json:"usage_percentage"`
+				ResetsAt        string  `json:"resets_at"`
+				UsedValueUSD    float64 `json:"used_value_usd"`
+				MaxValueUSD     float64 `json:"max_value_usd"`
 			} `json:"quota_7_day"`
 		} `json:"data"`
 	}
@@ -495,8 +523,8 @@ func (a *TokenPlanAdapter) queryZenMux(ctx context.Context, cfg *ProviderQuotaCo
 	}
 
 	result := &ProviderQuotaResult{
-		Success:   true,
-		QueriedAt: time.Now(),
+		Success:    true,
+		QueriedAt:  time.Now(),
 		DurationMS: time.Since(start).Milliseconds(),
 	}
 
@@ -655,8 +683,8 @@ func parseVolcengineAFP(result json.RawMessage, start time.Time) *ProviderQuotaR
 	}
 
 	res := &ProviderQuotaResult{
-		Success:   true,
-		QueriedAt: time.Now(),
+		Success:    true,
+		QueriedAt:  time.Now(),
 		DurationMS: time.Since(start).Milliseconds(),
 	}
 
@@ -707,8 +735,8 @@ func parseVolcengineCodingPlan(result json.RawMessage, start time.Time) *Provide
 	}
 
 	res := &ProviderQuotaResult{
-		Success:   true,
-		QueriedAt: time.Now(),
+		Success:    true,
+		QueriedAt:  time.Now(),
 		DurationMS: time.Since(start).Milliseconds(),
 	}
 
@@ -895,7 +923,7 @@ func sha256Hex(s string) string {
 
 // doRequest is a helper that performs an HTTP request and returns the body.
 func (a *TokenPlanAdapter) doRequest(req *http.Request) ([]byte, int, error) {
-	resp, err := a.HTTPClient.Do(req)
+	resp, err := authenticatedHTTPClient(a.HTTPClient, req.URL).Do(req)
 	if err != nil {
 		return nil, 0, err
 	}

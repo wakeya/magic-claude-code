@@ -76,20 +76,35 @@
             </div>
           </div>
 
-          <!-- Base URL (for general, custom, newapi, zenmux) -->
-          <div v-if="showBaseURL || showZenMuxFields">
+          <!-- Generic Base URL (for general, custom, newapi) -->
+          <div v-if="showBaseURL">
             <label class="block text-sm font-medium mb-1">{{ t('quota.base_url') }}</label>
             <input v-model="form.base_url" type="text" class="w-full app-control rounded-md px-3 py-2 text-sm" :placeholder="t('quota.base_url_hint')" />
           </div>
 
-          <!-- API Key (for general, custom, zenmux) -->
-          <div v-if="showAPIKey || showZenMuxFields">
-            <label class="block text-sm font-medium mb-1">{{ t('quota.api_key') }}</label>
+          <!-- Script API Key (for general, custom) -->
+          <div v-if="showAPIKey">
+            <label class="block text-sm font-medium mb-1">{{ t('quota.script_api_key') }}</label>
             <div class="flex gap-2">
-              <input v-model="form.api_key" type="password" class="flex-1 app-control rounded-md px-3 py-2 text-sm" :placeholder="savedConfig?.api_key_configured ? t('quota.api_key_configured') : ''" />
-              <button v-if="savedConfig?.api_key_configured" class="text-xs text-danger hover:underline whitespace-nowrap" @click="form.clear_api_key = true">{{ t('quota.clear_key') }}</button>
+              <input v-model="form.script_api_key" type="password" class="flex-1 app-control rounded-md px-3 py-2 text-sm" :placeholder="savedConfig?.script_api_key_configured ? t('quota.script_api_key_configured') : ''" />
+              <button v-if="savedConfig?.script_api_key_configured" class="text-xs text-danger hover:underline whitespace-nowrap" @click="form.clear_script_api_key = true">{{ t('quota.clear_script_key') }}</button>
             </div>
           </div>
+
+          <!-- ZenMux atomic override pair; leave both empty for card fallback. -->
+          <template v-if="showZenMuxFields">
+            <div>
+              <label class="block text-sm font-medium mb-1">{{ t('quota.zenmux_base_url') }}</label>
+              <input v-model="form.zenmux_base_url" type="text" class="w-full app-control rounded-md px-3 py-2 text-sm" :placeholder="t('quota.zenmux_base_url_hint')" />
+            </div>
+            <div>
+              <label class="block text-sm font-medium mb-1">{{ t('quota.zenmux_api_key') }}</label>
+              <div class="flex gap-2">
+                <input v-model="form.zenmux_api_key" type="password" class="flex-1 app-control rounded-md px-3 py-2 text-sm" :placeholder="savedConfig?.zenmux_api_key_configured ? t('quota.zenmux_api_key_configured') : ''" />
+                <button v-if="savedConfig?.zenmux_api_key_configured" class="text-xs text-danger hover:underline whitespace-nowrap" @click="clearZenMuxOverride">{{ t('quota.clear_zenmux_override') }}</button>
+              </div>
+            </div>
+          </template>
 
           <!-- Access Token (for newapi) -->
           <div v-if="showAccessToken">
@@ -243,12 +258,15 @@ const form = reactive({
   auto_query_interval_minutes: 5,
   script: '',
   base_url: '',
-  api_key: '',
+  script_api_key: '',
+  zenmux_base_url: '',
+  zenmux_api_key: '',
   access_token: '',
   user_id: '',
   access_key_id: '',
   secret_access_key: '',
-  clear_api_key: false,
+  clear_script_api_key: false,
+  clear_zenmux_api_key: false,
   clear_access_token: false,
   clear_secret_access_key: false,
 })
@@ -279,6 +297,12 @@ const showZenMuxFields = isZenMux
 function goBack() {
   const tab = new URLSearchParams(window.location.search).get('tab')
   router.push(tab ? `/?tab=${tab}` : '/?tab=providers')
+}
+
+function clearZenMuxOverride() {
+  form.zenmux_base_url = ''
+  form.zenmux_api_key = ''
+  form.clear_zenmux_api_key = true
 }
 
 function formatRelativeTime(isoStr: string): string {
@@ -322,9 +346,11 @@ async function loadConfig() {
     form.auto_query_interval_minutes = data.config.auto_query_interval_minutes ?? 5
     form.script = data.config.script || ''
     form.base_url = data.config.base_url || ''
+    form.zenmux_base_url = data.config.zenmux_base_url || ''
     form.user_id = data.config.user_id || ''
     form.access_key_id = data.config.access_key_id || ''
-    form.clear_api_key = false
+    form.clear_script_api_key = false
+    form.clear_zenmux_api_key = false
     form.clear_access_token = false
     form.clear_secret_access_key = false
   } catch (e: any) {
@@ -346,10 +372,12 @@ async function saveConfig() {
     savedConfig.value = res.config
     saveOk.value = true
     saveMsg.value = t('quota.query_success')
-    form.api_key = ''
+    form.script_api_key = ''
+    form.zenmux_api_key = ''
     form.access_token = ''
     form.secret_access_key = ''
-    form.clear_api_key = false
+    form.clear_script_api_key = false
+    form.clear_zenmux_api_key = false
     form.clear_access_token = false
     form.clear_secret_access_key = false
   } catch (e: any) {

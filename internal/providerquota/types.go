@@ -15,10 +15,10 @@ import (
 
 // Known template types.
 const (
-	TemplateCustom         = "custom"
-	TemplateGeneral        = "general"
-	TemplateNewAPI         = "newapi"
-	TemplateTokenPlan      = "token_plan"
+	TemplateCustom          = "custom"
+	TemplateGeneral         = "general"
+	TemplateNewAPI          = "newapi"
+	TemplateTokenPlan       = "token_plan"
 	TemplateOfficialBalance = "official_balance"
 )
 
@@ -38,10 +38,13 @@ type ProviderQuotaConfig struct {
 	AutoQueryIntervalMinutes int    `json:"auto_query_interval_minutes,omitempty"`
 	Script                   string `json:"script,omitempty"`
 
-	// Credential overrides; when empty the provider's own APIURL/APIToken
-	// are used as fallback (for templates that support it).
+	// Script and ZenMux credentials are separate security domains. LegacyAPIKey
+	// only decodes the pre-separation api_key field and is cleared by migration.
 	BaseURL            string `json:"base_url,omitempty"`
-	APIKey             string `json:"api_key,omitempty"`
+	ScriptAPIKey       string `json:"script_api_key,omitempty"`
+	ZenMuxBaseURL      string `json:"zenmux_base_url,omitempty"`
+	ZenMuxAPIKey       string `json:"zenmux_api_key,omitempty"`
+	LegacyAPIKey       string `json:"api_key,omitempty"`
 	AccessToken        string `json:"access_token,omitempty"`
 	UserID             string `json:"user_id,omitempty"`
 	CodingPlanProvider string `json:"coding_plan_provider,omitempty"`
@@ -62,7 +65,7 @@ var KnownTemplates = map[string]bool{
 func DefaultQuotaQueryConfig() *ProviderQuotaConfig {
 	return &ProviderQuotaConfig{
 		Enabled:                  false,
-		TimeoutSeconds:          10,
+		TimeoutSeconds:           10,
 		AutoQueryIntervalMinutes: 5,
 	}
 }
@@ -117,28 +120,34 @@ func (c *ProviderQuotaConfig) Validate() error {
 			return fmt.Errorf("base_url must not contain userinfo")
 		}
 	}
+	if c.ZenMuxBaseURL != "" {
+		u, err := url.Parse(c.ZenMuxBaseURL)
+		if err != nil {
+			return fmt.Errorf("invalid zenmux_base_url: %w", err)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return fmt.Errorf("zenmux_base_url must use http or https scheme")
+		}
+		if u.Host == "" {
+			return fmt.Errorf("zenmux_base_url must have a host")
+		}
+		if u.User != nil {
+			return fmt.Errorf("zenmux_base_url must not contain userinfo")
+		}
+	}
 
 	// Template-specific validation.
 	if c.Enabled {
 		switch c.TemplateType {
 		case TemplateNewAPI:
 			if c.BaseURL == "" {
-				return fmt.Errorf("newapi requires base_url")
+				return fmt.Errorf("%w: newapi requires base_url", ErrMissingCredentials)
 			}
 			if c.AccessToken == "" {
-				return fmt.Errorf("newapi requires access_token")
+				return fmt.Errorf("%w: newapi requires access_token", ErrMissingCredentials)
 			}
 			if c.UserID == "" {
-				return fmt.Errorf("newapi requires user_id")
-			}
-		case TemplateTokenPlan:
-			if c.CodingPlanProvider == "zenmux" && c.BaseURL == "" {
-				return fmt.Errorf("zenmux requires base_url (quota endpoint)")
-			}
-			if c.CodingPlanProvider == "volcengine" {
-				if c.AccessKeyID == "" || c.SecretAccessKey == "" {
-					return fmt.Errorf("volcengine requires access_key_id and secret_access_key")
-				}
+				return fmt.Errorf("%w: newapi requires user_id", ErrMissingCredentials)
 			}
 		}
 	}
@@ -151,7 +160,41 @@ func (c *ProviderQuotaConfig) HasSecrets() bool {
 	if c == nil {
 		return false
 	}
-	return c.APIKey != "" || c.AccessToken != "" || c.SecretAccessKey != ""
+	return c.ScriptAPIKey != "" || c.ZenMuxAPIKey != "" || c.LegacyAPIKey != "" ||
+		c.AccessToken != "" || c.SecretAccessKey != ""
+}
+
+// MigrateLegacyCredentials converts the pre-separation api_key/base_url
+// representation into purpose-specific fields. New fields always win.
+func MigrateLegacyCredentials(c *ProviderQuotaConfig, cardAPIURL string) {
+	if c == nil {
+		return
+	}
+	legacyKey := c.LegacyAPIKey
+
+	switch c.TemplateType {
+	case TemplateGeneral, TemplateCustom:
+		if c.ScriptAPIKey == "" {
+			c.ScriptAPIKey = legacyKey
+		}
+	case TemplateTokenPlan:
+		// Before field separation, BaseURL+api_key could only form a ZenMux
+		// override. Treat that persisted shape as authoritative even if an
+		// auto-detected card URL has subsequently changed.
+		legacyZenMux := legacyKey != "" && c.BaseURL != "" &&
+			(c.CodingPlanProvider == "" || c.CodingPlanProvider == "zenmux")
+		if legacyZenMux {
+			if c.ZenMuxBaseURL == "" {
+				c.ZenMuxBaseURL = c.BaseURL
+			}
+			if c.ZenMuxAPIKey == "" {
+				c.ZenMuxAPIKey = legacyKey
+			}
+			c.BaseURL = ""
+		}
+	}
+
+	c.LegacyAPIKey = ""
 }
 
 // QuotaTier represents a time-window quota tier (e.g. 5-hour, 7-day, monthly).
@@ -159,7 +202,7 @@ type QuotaTier struct {
 	Name        string     `json:"name"`
 	Label       string     `json:"label,omitempty"`
 	Utilization float64    `json:"utilization"`
-	ResetsAt   *time.Time `json:"resets_at,omitempty"`
+	ResetsAt    *time.Time `json:"resets_at,omitempty"`
 	Used        *float64   `json:"used,omitempty"`
 	Total       *float64   `json:"total,omitempty"`
 	Remaining   *float64   `json:"remaining,omitempty"`
@@ -279,11 +322,11 @@ func NormalizeResult(r *ProviderQuotaResult) error {
 
 // QuotaSnapshot is the persisted latest query state for a provider.
 type QuotaSnapshot struct {
-	ProviderID      string              `json:"provider_id"`
-	Result          *ProviderQuotaResult `json:"result"`
-	LastSuccess     *ProviderQuotaResult `json:"last_success,omitempty"`
-	QueriedAt       time.Time           `json:"queried_at"`
-	UpdatedAt       time.Time           `json:"updated_at"`
+	ProviderID  string               `json:"provider_id"`
+	Result      *ProviderQuotaResult `json:"result"`
+	LastSuccess *ProviderQuotaResult `json:"last_success,omitempty"`
+	QueriedAt   time.Time            `json:"queried_at"`
+	UpdatedAt   time.Time            `json:"updated_at"`
 }
 
 // errorResult creates a ProviderQuotaResult with an error.
@@ -300,13 +343,13 @@ func errorResult(code, msg string, start time.Time) *ProviderQuotaResult {
 // SanitizedSnapshot is the DTO returned by the admin API.
 // It strips sensitive fields and provides convenience booleans.
 type SanitizedSnapshot struct {
-	ProviderID        string              `json:"provider_id"`
-	Result            *ProviderQuotaResult `json:"result,omitempty"`
-	LastSuccess       *ProviderQuotaResult `json:"last_success,omitempty"`
-	QueriedAt         time.Time           `json:"queried_at"`
-	UpdatedAt         time.Time           `json:"updated_at"`
-	HasLastSuccess    bool                `json:"has_last_success"`
-	IsStale           bool                `json:"is_stale"`
+	ProviderID     string               `json:"provider_id"`
+	Result         *ProviderQuotaResult `json:"result,omitempty"`
+	LastSuccess    *ProviderQuotaResult `json:"last_success,omitempty"`
+	QueriedAt      time.Time            `json:"queried_at"`
+	UpdatedAt      time.Time            `json:"updated_at"`
+	HasLastSuccess bool                 `json:"has_last_success"`
+	IsStale        bool                 `json:"is_stale"`
 }
 
 // PublicQuotaConfig is the DTO returned by the admin API for a provider's
@@ -318,13 +361,15 @@ type PublicQuotaConfig struct {
 	AutoQueryIntervalMinutes int    `json:"auto_query_interval_minutes"`
 	Script                   string `json:"script,omitempty"`
 
-	BaseURL            string `json:"base_url,omitempty"`
-	APIKeyConfigured   bool   `json:"api_key_configured"`
-	AccessTokenConfigured bool `json:"access_token_configured"`
-	UserID             string `json:"user_id,omitempty"`
-	CodingPlanProvider string `json:"coding_plan_provider,omitempty"`
-	AccessKeyID        string `json:"access_key_id,omitempty"`
-	SecretAccessKeyConfigured bool `json:"secret_access_key_configured"`
+	BaseURL                   string `json:"base_url,omitempty"`
+	ScriptAPIKeyConfigured    bool   `json:"script_api_key_configured"`
+	ZenMuxBaseURL             string `json:"zenmux_base_url,omitempty"`
+	ZenMuxAPIKeyConfigured    bool   `json:"zenmux_api_key_configured"`
+	AccessTokenConfigured     bool   `json:"access_token_configured"`
+	UserID                    string `json:"user_id,omitempty"`
+	CodingPlanProvider        string `json:"coding_plan_provider,omitempty"`
+	AccessKeyID               string `json:"access_key_id,omitempty"`
+	SecretAccessKeyConfigured bool   `json:"secret_access_key_configured"`
 }
 
 // ToPublicConfig converts a ProviderQuotaConfig to a PublicQuotaConfig,
@@ -334,17 +379,19 @@ func ToPublicConfig(c *ProviderQuotaConfig) PublicQuotaConfig {
 		return PublicQuotaConfig{}
 	}
 	return PublicQuotaConfig{
-		Enabled:                  c.Enabled,
-		TemplateType:             c.TemplateType,
-		TimeoutSeconds:           c.TimeoutSeconds,
-		AutoQueryIntervalMinutes: c.AutoQueryIntervalMinutes,
-		Script:                   c.Script,
-		BaseURL:                  c.BaseURL,
-		APIKeyConfigured:         c.APIKey != "",
-		AccessTokenConfigured:    c.AccessToken != "",
-		UserID:                   c.UserID,
-		CodingPlanProvider:       c.CodingPlanProvider,
-		AccessKeyID:              maskAccessKeyID(c.AccessKeyID),
+		Enabled:                   c.Enabled,
+		TemplateType:              c.TemplateType,
+		TimeoutSeconds:            c.TimeoutSeconds,
+		AutoQueryIntervalMinutes:  c.AutoQueryIntervalMinutes,
+		Script:                    c.Script,
+		BaseURL:                   c.BaseURL,
+		ScriptAPIKeyConfigured:    c.ScriptAPIKey != "",
+		ZenMuxBaseURL:             c.ZenMuxBaseURL,
+		ZenMuxAPIKeyConfigured:    c.ZenMuxAPIKey != "",
+		AccessTokenConfigured:     c.AccessToken != "",
+		UserID:                    c.UserID,
+		CodingPlanProvider:        c.CodingPlanProvider,
+		AccessKeyID:               maskAccessKeyID(c.AccessKeyID),
 		SecretAccessKeyConfigured: c.SecretAccessKey != "",
 	}
 }

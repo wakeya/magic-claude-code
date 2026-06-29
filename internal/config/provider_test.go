@@ -1,6 +1,38 @@
 package config
 
-import "testing"
+import (
+	"testing"
+
+	"magic-claude-code/internal/providerquota"
+)
+
+func TestProviderValidateMigratesLegacyQuotaCredentials(t *testing.T) {
+	p := NewProvider("Legacy", "https://gateway.example/v1", "card-token")
+	p.QuotaQuery = &providerquota.ProviderQuotaConfig{
+		Enabled:      true,
+		TemplateType: providerquota.TemplateGeneral,
+		LegacyAPIKey: "legacy-script",
+	}
+
+	if err := p.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if p.QuotaQuery.ScriptAPIKey != "legacy-script" || p.QuotaQuery.LegacyAPIKey != "" {
+		t.Fatalf("quota config not migrated: %+v", p.QuotaQuery)
+	}
+}
+
+func TestProviderValidateUsesCardContextForQuota(t *testing.T) {
+	p := NewProvider("Volcengine", "https://ark.cn-shanghai.volces.com/api/v3", "card-token")
+	p.QuotaQuery = &providerquota.ProviderQuotaConfig{
+		Enabled:      true,
+		TemplateType: providerquota.TemplateTokenPlan,
+	}
+
+	if err := p.Validate(); err == nil {
+		t.Fatal("Validate() accepted auto-detected Volcengine without AK/SK")
+	}
+}
 
 func TestProviderValidate_RateLimitDisabled(t *testing.T) {
 	p := NewProvider("Test", "https://example.com", "token")

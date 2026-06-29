@@ -111,11 +111,11 @@ func (s *Server) getProviderUsage(w http.ResponseWriter, _ *http.Request, id str
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"config":                   publicConfig,
-		"snapshot":                 snapDTO,
-		"detected_token_plan":      detectedTokenPlan,
-		"detected_balance":         detectedBalance,
-		"is_mimo":                  isMiMo,
+		"config":              publicConfig,
+		"snapshot":            snapDTO,
+		"detected_token_plan": detectedTokenPlan,
+		"detected_balance":    detectedBalance,
+		"is_mimo":             isMiMo,
 	})
 }
 
@@ -124,6 +124,11 @@ func (s *Server) updateProviderUsage(w http.ResponseWriter, r *http.Request, id 
 	var req providerQuotaUpdateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error": "invalid request"}`, http.StatusBadRequest)
+		return
+	}
+	if err := validateProviderQuotaSecretPatches(req); err != nil {
+		jsonErr, _ := json.Marshal(map[string]string{"error": err.Error()})
+		http.Error(w, string(jsonErr), http.StatusBadRequest)
 		return
 	}
 
@@ -141,7 +146,7 @@ func (s *Server) updateProviderUsage(w http.ResponseWriter, r *http.Request, id 
 
 	// Build or update the quota config.
 	newCfg := applyQuotaUpdate(provider.QuotaQuery, req, provider.APIURL)
-	if err := newCfg.Validate(); err != nil {
+	if err := newCfg.ValidateForCard(provider.APIURL, provider.APIToken); err != nil {
 		jsonErr, _ := json.Marshal(map[string]string{"error": err.Error()})
 		http.Error(w, string(jsonErr), http.StatusBadRequest)
 		return
@@ -185,6 +190,11 @@ func (s *Server) handleProviderUsageTest(w http.ResponseWriter, r *http.Request)
 		http.Error(w, `{"error": "invalid request"}`, http.StatusBadRequest)
 		return
 	}
+	if err := validateProviderQuotaSecretPatches(req); err != nil {
+		jsonErr, _ := json.Marshal(map[string]string{"error": err.Error()})
+		http.Error(w, string(jsonErr), http.StatusBadRequest)
+		return
+	}
 
 	cfg, err := s.configStore.Load()
 	if err != nil {
@@ -200,7 +210,7 @@ func (s *Server) handleProviderUsageTest(w http.ResponseWriter, r *http.Request)
 
 	// Build draft config.
 	draft := applyQuotaUpdate(provider.QuotaQuery, req, provider.APIURL)
-	if err := draft.Validate(); err != nil {
+	if err := draft.ValidateForCard(provider.APIURL, provider.APIToken); err != nil {
 		jsonErr, _ := json.Marshal(map[string]string{"error": err.Error()})
 		http.Error(w, string(jsonErr), http.StatusBadRequest)
 		return
@@ -213,8 +223,8 @@ func (s *Server) handleProviderUsageTest(w http.ResponseWriter, r *http.Request)
 
 	// Run test query (Draft mode - no persistence).
 	result, err := s.quotaManager.Query(r.Context(), id, providerquota.QueryOptions{
-		Draft:  draft,
-		Force:  true,
+		Draft: draft,
+		Force: true,
 	})
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error": %q}`, err.Error()), http.StatusInternalServerError)
@@ -287,15 +297,39 @@ type providerQuotaUpdateRequest struct {
 	AutoQueryIntervalMinutes *int    `json:"auto_query_interval_minutes"`
 	Script                   *string `json:"script"`
 	BaseURL                  *string `json:"base_url"`
-	APIKey                   *string `json:"api_key"`
+	ScriptAPIKey             *string `json:"script_api_key"`
+	ZenMuxBaseURL            *string `json:"zenmux_base_url"`
+	ZenMuxAPIKey             *string `json:"zenmux_api_key"`
+	APIKey                   *string `json:"api_key"` // backward-compatible client input
 	AccessToken              *string `json:"access_token"`
 	UserID                   *string `json:"user_id"`
 	CodingPlanProvider       *string `json:"coding_plan_provider"`
 	AccessKeyID              *string `json:"access_key_id"`
 	SecretAccessKey          *string `json:"secret_access_key"`
-	ClearAPIKey              bool    `json:"clear_api_key"`
+	ClearScriptAPIKey        bool    `json:"clear_script_api_key"`
+	ClearZenMuxAPIKey        bool    `json:"clear_zenmux_api_key"`
+	ClearAPIKey              bool    `json:"clear_api_key"` // backward-compatible client input
 	ClearAccessToken         bool    `json:"clear_access_token"`
 	ClearSecretAccessKey     bool    `json:"clear_secret_access_key"`
+}
+
+func validateProviderQuotaSecretPatches(req providerQuotaUpdateRequest) error {
+	patches := []struct {
+		name  string
+		value *string
+		clear bool
+	}{
+		{name: "script_api_key", value: req.ScriptAPIKey, clear: req.ClearScriptAPIKey},
+		{name: "zenmux_api_key", value: req.ZenMuxAPIKey, clear: req.ClearZenMuxAPIKey},
+		{name: "access_token", value: req.AccessToken, clear: req.ClearAccessToken},
+		{name: "secret_access_key", value: req.SecretAccessKey, clear: req.ClearSecretAccessKey},
+	}
+	for _, patch := range patches {
+		if patch.clear && patch.value != nil && *patch.value != "" {
+			return fmt.Errorf("%s cannot be replaced and cleared in the same request", patch.name)
+		}
+	}
+	return nil
 }
 
 // applyQuotaUpdate applies partial updates to a quota config.
@@ -307,6 +341,7 @@ func applyQuotaUpdate(existing *providerquota.ProviderQuotaConfig, req providerQ
 		cp := *existing
 		c = &cp
 	}
+	providerquota.MigrateLegacyCredentials(c, cardAPIURL)
 
 	if req.Enabled != nil {
 		c.Enabled = *req.Enabled
@@ -326,6 +361,9 @@ func applyQuotaUpdate(existing *providerquota.ProviderQuotaConfig, req providerQ
 	if req.BaseURL != nil {
 		c.BaseURL = *req.BaseURL
 	}
+	if req.ZenMuxBaseURL != nil {
+		c.ZenMuxBaseURL = *req.ZenMuxBaseURL
+	}
 	if req.UserID != nil {
 		c.UserID = *req.UserID
 	}
@@ -336,20 +374,57 @@ func applyQuotaUpdate(existing *providerquota.ProviderQuotaConfig, req providerQ
 		c.AccessKeyID = *req.AccessKeyID
 	}
 
-	// Secret patch semantics.
-	applySecretPatch(&c.APIKey, req.APIKey, req.ClearAPIKey)
+	// Purpose-specific secret patch semantics.
+	applySecretPatch(&c.ScriptAPIKey, req.ScriptAPIKey, req.ClearScriptAPIKey)
+	applySecretPatch(&c.ZenMuxAPIKey, req.ZenMuxAPIKey, req.ClearZenMuxAPIKey)
 	applySecretPatch(&c.AccessToken, req.AccessToken, req.ClearAccessToken)
 	applySecretPatch(&c.SecretAccessKey, req.SecretAccessKey, req.ClearSecretAccessKey)
+
+	// Backward-compatible api_key/base_url requests are routed once according
+	// to the new effective purpose. New purpose-specific fields take priority.
+	legacyPurpose := quotaAPIKeyPurpose(c, cardAPIURL)
+	if legacyPurpose == "zenmux" && req.ZenMuxBaseURL == nil && req.BaseURL != nil {
+		c.ZenMuxBaseURL = *req.BaseURL
+		c.BaseURL = ""
+	}
+	if req.APIKey != nil || req.ClearAPIKey {
+		switch legacyPurpose {
+		case "script":
+			if req.ScriptAPIKey == nil && !req.ClearScriptAPIKey {
+				applySecretPatch(&c.ScriptAPIKey, req.APIKey, req.ClearAPIKey)
+			}
+		case "zenmux":
+			if req.ZenMuxAPIKey == nil && !req.ClearZenMuxAPIKey {
+				applySecretPatch(&c.ZenMuxAPIKey, req.APIKey, req.ClearAPIKey)
+			}
+		}
+	}
 
 	// Backend safety boundary: clear fields inapplicable to the new
 	// template/provider so stale secrets from a previous configuration cannot
 	// persist and later leak via a different credential route. This runs after
 	// the partial update + secret patch, so applicable secrets are retained.
 	// cardAPIURL resolves the effective provider for auto-detected configs;
-	// existing detects credential-purpose switches for the overloaded APIKey.
 	providerquota.NormalizeForTemplate(c, cardAPIURL, existing)
 
 	return c
+}
+
+func quotaAPIKeyPurpose(c *providerquota.ProviderQuotaConfig, cardAPIURL string) string {
+	if c == nil {
+		return ""
+	}
+	if c.TemplateType == providerquota.TemplateGeneral || c.TemplateType == providerquota.TemplateCustom {
+		return "script"
+	}
+	if c.TemplateType != providerquota.TemplateTokenPlan {
+		return ""
+	}
+	provider, _, err := providerquota.ResolveTokenPlanProvider(cardAPIURL, c.CodingPlanProvider)
+	if err == nil && provider == "zenmux" {
+		return "zenmux"
+	}
+	return ""
 }
 
 // applySecretPatch applies secret field update semantics:
@@ -379,7 +454,9 @@ func isMaterialQuotaChange(old, new *providerquota.ProviderQuotaConfig) bool {
 	return old.TemplateType != new.TemplateType ||
 		old.Script != new.Script ||
 		old.BaseURL != new.BaseURL ||
-		old.APIKey != new.APIKey ||
+		old.ScriptAPIKey != new.ScriptAPIKey ||
+		old.ZenMuxBaseURL != new.ZenMuxBaseURL ||
+		old.ZenMuxAPIKey != new.ZenMuxAPIKey ||
 		old.AccessToken != new.AccessToken ||
 		old.UserID != new.UserID ||
 		old.CodingPlanProvider != new.CodingPlanProvider ||

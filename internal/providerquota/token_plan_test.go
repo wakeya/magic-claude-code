@@ -2,6 +2,7 @@ package providerquota
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,65 @@ import (
 	"testing"
 	"time"
 )
+
+func TestTokenPlanAdapterRejectsUnsafeAuthenticatedRedirects(t *testing.T) {
+	tests := []struct {
+		name      string
+		newTarget func(http.Handler) *httptest.Server
+	}{
+		{name: "https to http", newTarget: httptest.NewServer},
+		{name: "cross origin https", newTarget: httptest.NewTLSServer},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotAuth string
+			target := tt.newTarget(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotAuth = r.Header.Get("Authorization")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"success":true,"data":{"quota_5_hour":{"usage_percentage":0.1,"used_value_usd":1,"max_value_usd":10},"quota_7_day":{"usage_percentage":0.2,"used_value_usd":2,"max_value_usd":10}}}`))
+			}))
+			defer target.Close()
+
+			source := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, target.URL, http.StatusFound)
+			}))
+			defer source.Close()
+
+			client := source.Client()
+			client.Transport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true} // test servers only
+			adapter := &TokenPlanAdapter{HTTPClient: client}
+			result := adapter.Query(context.Background(), "zenmux", &ProviderQuotaConfig{}, source.URL, "card-secret")
+
+			if gotAuth != "" {
+				t.Fatalf("unsafe redirect target received Authorization: %q", gotAuth)
+			}
+			if result.Success {
+				t.Fatal("unsafe redirect unexpectedly succeeded")
+			}
+		})
+	}
+}
+
+func TestTokenPlanAdapterAllowsSameOriginHTTPSRedirect(t *testing.T) {
+	var gotAuth string
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/start" {
+			http.Redirect(w, r, "/final", http.StatusFound)
+			return
+		}
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"data":{"quota_5_hour":{"usage_percentage":0.1,"used_value_usd":1,"max_value_usd":10},"quota_7_day":{"usage_percentage":0.2,"used_value_usd":2,"max_value_usd":10}}}`))
+	}))
+	defer server.Close()
+
+	adapter := &TokenPlanAdapter{HTTPClient: server.Client()}
+	result := adapter.Query(context.Background(), "zenmux", &ProviderQuotaConfig{}, server.URL+"/start", "card-secret")
+	if !result.Success || gotAuth != "Bearer card-secret" {
+		t.Fatalf("result=%+v Authorization=%q", result, gotAuth)
+	}
+}
 
 func TestDetectTokenPlanProvider(t *testing.T) {
 	tests := []struct {

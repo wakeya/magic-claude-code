@@ -187,7 +187,8 @@ func (p *Provider) Validate() error {
 
 	// Validate quota query config if present.
 	if p.QuotaQuery != nil {
-		if err := p.QuotaQuery.Validate(); err != nil {
+		providerquota.MigrateLegacyCredentials(p.QuotaQuery, p.APIURL)
+		if err := p.QuotaQuery.ValidateForCard(p.APIURL, p.APIToken); err != nil {
 			return fmt.Errorf("quota_query: %w", err)
 		}
 	}

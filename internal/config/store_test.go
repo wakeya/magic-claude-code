@@ -5,7 +5,57 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"magic-claude-code/internal/providerquota"
 )
+
+func TestJSONStoreMigratesLegacyQuotaCredentials(t *testing.T) {
+	tests := []struct {
+		name      string
+		quotaJSON string
+		assert    func(*testing.T, *providerquota.ProviderQuotaConfig)
+	}{
+		{
+			name:      "general api_key becomes script key",
+			quotaJSON: `{"enabled":true,"template_type":"general","timeout_seconds":10,"api_key":"legacy-script"}`,
+			assert: func(t *testing.T, quota *providerquota.ProviderQuotaConfig) {
+				t.Helper()
+				if quota.ScriptAPIKey != "legacy-script" || quota.LegacyAPIKey != "" {
+					t.Fatalf("quota = %+v", quota)
+				}
+			},
+		},
+		{
+			name:      "legacy zenmux pair becomes atomic override",
+			quotaJSON: `{"enabled":true,"template_type":"token_plan","timeout_seconds":10,"base_url":"https://quota.zenmux.example/usage","api_key":"legacy-zenmux"}`,
+			assert: func(t *testing.T, quota *providerquota.ProviderQuotaConfig) {
+				t.Helper()
+				if quota.ZenMuxBaseURL != "https://quota.zenmux.example/usage" ||
+					quota.ZenMuxAPIKey != "legacy-zenmux" || quota.BaseURL != "" || quota.LegacyAPIKey != "" {
+					t.Fatalf("quota = %+v", quota)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			data := []byte(`{"providers":[{"id":"p1","name":"p1","api_url":"https://gateway.example/v1","api_token":"card-token","enabled":true,"quota_query":` + tt.quotaJSON + `}]}`)
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := NewStore(path).Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(cfg.Providers) != 1 || cfg.Providers[0].QuotaQuery == nil {
+				t.Fatalf("providers = %+v", cfg.Providers)
+			}
+			tt.assert(t, cfg.Providers[0].QuotaQuery)
+		})
+	}
+}
 
 func TestStore_SaveAndLoad(t *testing.T) {
 	// 创建临时目录

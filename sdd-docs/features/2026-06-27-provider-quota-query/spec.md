@@ -225,7 +225,7 @@ used, total, remaining, unit,
 isValid, invalidMessage, extra
 ```
 
-`utilization` always means used percentage. Derive it from used/total or remaining/total when possible. `extra` is capped at 256 characters. A normal balance is not a time window unless `window` is explicitly returned. Dedicated query Base URL/API key may override provider credentials. Request URLs must share the effective query Base URL origin.
+`utilization` always means used percentage. Derive it from used/total or remaining/total when possible. `extra` is capped at 256 characters. A normal balance is not a time window unless `window` is explicitly returned. General/Custom use a dedicated script Base URL and Script API key; the script key falls back to the provider token when empty. Request URLs must share the effective script Base URL origin. Script credentials are never used by the ZenMux adapter.
 
 #### `token_plan`
 
@@ -236,7 +236,7 @@ isValid, invalidMessage, extra
 | Zhipu EN | `api.z.ai` | Same path on `https://api.z.ai` | same parsing |
 | MiniMax CN | `api.minimaxi.com` | `GET .../v1/api/openplatform/coding_plan/remains`, Bearer | `model_name=general`; invert remaining percentage; weekly only when status=1 |
 | MiniMax EN | `api.minimax.io` | same on `.io` | same parsing |
-| ZenMux | `zenmux` | GET configured quota URL, Bearer | `quota_5_hour`, `quota_7_day`; usage fraction x100; preserve USD values |
+| ZenMux | `zenmux` | Use the override URL/key only when both exist; when both are empty, atomically fall back to card APIURL/APIToken; reject half-overrides | `quota_5_hour`, `quota_7_day`; usage fraction x100; preserve USD values |
 | Volcengine | `volces.com/api/coding` | `open.volcengineapi.com`, dedicated AK/SK signing | try `GetAFPUsage`, then `GetCodingPlanUsage`; 5h/7d/monthly |
 
 `token-plan-*.xiaomimimo.com` is not supported by this table. Implementers must follow the Xiaomi MiMo deferral decision rather than treating any `token-plan` hostname as a generic native adapter.
@@ -265,7 +265,9 @@ Add `*ProviderQuotaConfig` to `config.Provider` with:
 ```text
 enabled, template_type, timeout_seconds,
 auto_query_interval_minutes, script,
-base_url, api_key, access_token, user_id,
+base_url, script_api_key,
+zenmux_base_url, zenmux_api_key,
+access_token, user_id,
 coding_plan_provider, access_key_id, secret_access_key
 ```
 
@@ -275,10 +277,13 @@ Validation:
 - Timeout defaults to 10 and is 2–30 seconds.
 - Interval defaults to 5 and is 0 or 1–1440 minutes.
 - Script is at most 64 KiB.
-- Base URL is absolute HTTP/HTTPS without userinfo.
+- Base URL and ZenMux Base URL are absolute HTTP/HTTPS without userinfo.
 - NewAPI requires Base URL/access token/user ID.
 - Token Plan must auto-detect or explicitly match its URL.
-- Volcengine requires AK/SK; ZenMux requires an explicit quota URL.
+- Volcengine requires AK/SK.
+- A ZenMux override requires both `zenmux_base_url` and `zenmux_api_key`; when both are empty, the card APIURL/APIToken must be complete. Never mix one override half with one card half.
+
+Legacy migration: General/Custom `api_key` becomes `script_api_key`; the persisted Token Plan shape `base_url + api_key` becomes the ZenMux override pair even if the card URL later changes; unrelated legacy keys are discarded. New fields win and new encodes never reproduce the legacy representation.
 
 Add `quota_query_config TEXT NOT NULL DEFAULT '{}'` to `providers`; JSON, SQLite, and mock stores must have the same semantics.
 
@@ -379,14 +384,16 @@ All endpoints use existing session authentication:
 | POST | `/api/providers/{id}/usage/test` | Run unsaved draft; persist neither config nor snapshot |
 | POST | `/api/providers/{id}/usage/query` | Manual production query and snapshot persistence |
 
-Public config returns `*_configured` booleans and masked AccessKey ID only, never raw API key/access token/secret key.
+Public config returns `script_api_key_configured`, `zenmux_api_key_configured`, the non-secret `zenmux_base_url`, other `*_configured` booleans, and masked AccessKey ID only. It never returns a raw API key/access token/secret key.
 
 Secret patch semantics:
 
-- Missing/empty field keeps stored secret; if absent, supported templates fall back to provider APIToken.
-- Explicit `clear_*` clears a dedicated secret.
+- Missing/empty field keeps the stored secret for that purpose; General/Custom fall back to provider APIToken when no script key exists.
+- `clear_script_api_key` and `clear_zenmux_api_key` clear only their own credential domains.
+- ZenMux overrides are atomic; only an empty URL and empty key select the card credential pair.
 - Non-empty value replaces it.
 - Responses only expose configured flags.
+- Legacy `api_key`/`clear_api_key` inputs are routed at the request boundary by the effective template/provider and are never written into the new model.
 
 Status semantics: 400 invalid local config/script/URL, 404 missing provider, 405 wrong method, 200 with `success=false` for completed upstream/auth/parse failures, and 500 for redacted local storage/internal failures. Provider subtree routing must recognize usage suffixes before generic provider-ID dispatch.
 
@@ -412,10 +419,10 @@ Preserve the approved layout:
 
 Template fields:
 
-- General: optional API key/Base URL override, timeout, interval, script editor.
-- Custom: effective variables, optional overrides, timeout, interval, editor, return-field help.
+- General: optional Script API key/Base URL override, timeout, interval, script editor.
+- Custom: effective variables, optional Script API key/Base URL override, timeout, interval, editor, return-field help.
 - NewAPI: Base URL, Access Token, User ID, timeout, interval; script may be read-only.
-- Token Plan: detected/selected provider; ZenMux URL/key; Volcengine AK/SK; others reuse provider credentials.
+- Token Plan: detected/selected provider; separate ZenMux quota URL/key with an atomic card-fallback hint; Volcengine AK/SK; others reuse provider credentials.
 - Official balance: detected provider/fixed endpoint, no script editor.
 
 Test runs the unsaved draft and updates a clearly marked test result only. It does not update the provider card. Saving does not implicitly query; manual refresh or the scheduler creates a production snapshot.
@@ -456,7 +463,7 @@ Formatting:
 7. Import validates quota config; old exports default to disabled.
 8. Overwrite import replaces config and deletes/invalidates old snapshots.
 9. Duplicate import gets new ID and no snapshot.
-10. Provider-token updates affect fallback credentials; dedicated overrides remain unchanged.
+10. Provider URL/token updates delete snapshots that may depend on card fallback; subsequent queries use the new card pair while independent Script/ZenMux overrides remain unchanged.
 
 ### 9. Stable Error Codes
 

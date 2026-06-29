@@ -259,7 +259,9 @@ export interface PublicQuotaConfig {
   auto_query_interval_minutes: number
   script?: string
   base_url?: string
-  api_key_configured: boolean
+  script_api_key_configured: boolean
+  zenmux_base_url?: string
+  zenmux_api_key_configured: boolean
   access_token_configured: boolean
   user_id?: string
   coding_plan_provider?: string
@@ -327,13 +329,16 @@ export interface ProviderUsageUpdateRequest {
   auto_query_interval_minutes?: number
   script?: string
   base_url?: string
-  api_key?: string
+  script_api_key?: string
+  zenmux_base_url?: string
+  zenmux_api_key?: string
   access_token?: string
   user_id?: string
   coding_plan_provider?: string
   access_key_id?: string
   secret_access_key?: string
-  clear_api_key?: boolean
+  clear_script_api_key?: boolean
+  clear_zenmux_api_key?: boolean
   clear_access_token?: boolean
   clear_secret_access_key?: boolean
 }

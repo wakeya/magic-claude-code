@@ -17,12 +17,15 @@ export interface QuotaFormState {
   auto_query_interval_minutes: number
   script: string
   base_url: string
-  api_key: string
+  script_api_key: string
+  zenmux_base_url: string
+  zenmux_api_key: string
   access_token: string
   user_id: string
   access_key_id: string
   secret_access_key: string
-  clear_api_key: boolean
+  clear_script_api_key: boolean
+  clear_zenmux_api_key: boolean
   clear_access_token: boolean
   clear_secret_access_key: boolean
 }
@@ -69,20 +72,20 @@ export function showVolcengineFields(templateType: TemplateType, provider: strin
   return templateType === 'token_plan' && isVolcengine(provider)
 }
 
-// Base URL is shown for general/custom/newapi, plus ZenMux under token_plan.
-export function showBaseURLField(templateType: TemplateType, provider: string): boolean {
-  if (['general', 'custom', 'newapi'].includes(templateType)) return true
-  return showZenMuxFields(templateType, provider)
+// Generic Base URL belongs only to script templates and NewAPI. ZenMux has a
+// separately named override URL so the two destinations cannot be confused.
+export function showBaseURLField(templateType: TemplateType, _provider: string): boolean {
+  return ['general', 'custom', 'newapi'].includes(templateType)
 }
 
-// API Key is shown for general/custom, plus ZenMux under token_plan.
-export function showAPIKeyField(templateType: TemplateType, provider: string): boolean {
-  if (['general', 'custom'].includes(templateType)) return true
-  return showZenMuxFields(templateType, provider)
+// Script API Key belongs only to General/Custom.
+export function showAPIKeyField(templateType: TemplateType, _provider: string): boolean {
+  return ['general', 'custom'].includes(templateType)
 }
 
 export interface SavedConfig {
-  api_key_configured?: boolean
+  script_api_key_configured?: boolean
+  zenmux_api_key_configured?: boolean
   access_token_configured?: boolean
   secret_access_key_configured?: boolean
 }
@@ -91,12 +94,10 @@ export interface SavedConfig {
 // Key rules:
 //  - coding_plan_provider is sent only for token_plan, using the effective
 //    (explicit > detected) provider.
-//  - base_url / api_key are sent only when the template/provider uses them.
-//    Switching away from ZenMux therefore drops the stale ZenMux URL so the
-//    backend does not persist or query it.
-//  - When switching away from a template/provider that had a configured secret,
-//    an explicit clear_* flag is emitted as defense-in-depth (the backend
-//    NormalizeForTemplate is the primary safety boundary).
+//  - script and ZenMux credentials use distinct field names and are emitted
+//    only for their active purpose.
+//  - Inactive Script/ZenMux credentials are omitted and retained independently;
+//    only an explicit clear flag removes either one.
 export function buildSavePayload(
   form: QuotaFormState,
   detectedTokenPlan: string,
@@ -104,10 +105,14 @@ export function buildSavePayload(
 ): Record<string, unknown> {
   const provider = effectiveTokenPlanProvider(form.coding_plan_provider, detectedTokenPlan)
   const zenmux = showZenMuxFields(form.template_type, provider)
-  const baseURL = ['general', 'custom', 'newapi'].includes(form.template_type) || zenmux
-  const usesAPIKey = ['general', 'custom'].includes(form.template_type) || zenmux
+  const usesBaseURL = ['general', 'custom', 'newapi'].includes(form.template_type)
+  const usesScriptAPIKey = ['general', 'custom'].includes(form.template_type)
   const usesAccessToken = form.template_type === 'newapi'
   const usesVolcSK = showVolcengineFields(form.template_type, provider)
+  const replacesScriptAPIKey = usesScriptAPIKey && !!form.script_api_key
+  const replacesZenMuxAPIKey = zenmux && !!form.zenmux_api_key
+  const replacesAccessToken = usesAccessToken && !!form.access_token
+  const replacesSecretAccessKey = usesVolcSK && !!form.secret_access_key
 
   const data: Record<string, unknown> = {
     enabled: form.enabled,
@@ -121,31 +126,35 @@ export function buildSavePayload(
   if (['general', 'custom'].includes(form.template_type)) {
     data.script = form.script
   }
-  if (baseURL) {
+  if (usesBaseURL) {
     data.base_url = form.base_url
   } else {
-    // The current template/provider does not use a quota Base URL. Send an
-    // explicit empty value so a stale URL from a previous config (e.g. a
-    // leftover ZenMux URL after switching to Kimi) is cleared rather than
-    // silently retained by the backend's partial update.
+    // Clear the generic URL when leaving its templates. The independent
+    // ZenMux URL is intentionally unaffected.
     data.base_url = ''
   }
-  if (usesAPIKey && form.api_key) data.api_key = form.api_key
-  if (usesAccessToken && form.access_token) data.access_token = form.access_token
+  if (replacesScriptAPIKey) data.script_api_key = form.script_api_key
+  if (zenmux) {
+    // Empty URL + omitted key selects the complete card credential fallback.
+    data.zenmux_base_url = form.zenmux_base_url
+    if (replacesZenMuxAPIKey) data.zenmux_api_key = form.zenmux_api_key
+  }
+  if (replacesAccessToken) data.access_token = form.access_token
   if (usesAccessToken && form.user_id) data.user_id = form.user_id
   if (usesVolcSK && form.access_key_id) data.access_key_id = form.access_key_id
-  if (usesVolcSK && form.secret_access_key) data.secret_access_key = form.secret_access_key
+  if (replacesSecretAccessKey) data.secret_access_key = form.secret_access_key
 
-  // Defense-in-depth: emit explicit clear flags when a previously configured
-  // secret is no longer applicable to the new template/provider.
-  if (saved?.api_key_configured && !usesAPIKey) data.clear_api_key = true
+  // NewAPI and Volcengine retain their existing cleanup behavior. Script and
+  // ZenMux keys are independent and are never auto-cleared on template switch.
   if (saved?.access_token_configured && !usesAccessToken) data.clear_access_token = true
   if (saved?.secret_access_key_configured && !usesVolcSK) data.clear_secret_access_key = true
 
-  // User-initiated explicit clears always propagate.
-  if (form.clear_api_key) data.clear_api_key = true
-  if (form.clear_access_token) data.clear_access_token = true
-  if (form.clear_secret_access_key) data.clear_secret_access_key = true
+  // Explicit clears propagate only when the same request does not replace the
+  // credential. This keeps the backend patch contract unambiguous.
+  if (form.clear_script_api_key && !replacesScriptAPIKey) data.clear_script_api_key = true
+  if (form.clear_zenmux_api_key && !replacesZenMuxAPIKey) data.clear_zenmux_api_key = true
+  if (form.clear_access_token && !replacesAccessToken) data.clear_access_token = true
+  if (form.clear_secret_access_key && !replacesSecretAccessKey) data.clear_secret_access_key = true
   return data
 }
 
@@ -158,10 +167,9 @@ export function buildTestPayload(
   detectedTokenPlan: string
 ): Record<string, unknown> {
   const provider = effectiveTokenPlanProvider(form.coding_plan_provider, detectedTokenPlan)
-  const usesBaseURL =
-    ['general', 'custom', 'newapi'].includes(form.template_type) ||
-    showZenMuxFields(form.template_type, provider)
-  const usesAPIKey = ['general', 'custom'].includes(form.template_type) || showZenMuxFields(form.template_type, provider)
+  const usesBaseURL = ['general', 'custom', 'newapi'].includes(form.template_type)
+  const usesScriptAPIKey = ['general', 'custom'].includes(form.template_type)
+  const zenmux = showZenMuxFields(form.template_type, provider)
   const usesAccessToken = form.template_type === 'newapi'
   const usesVolcSK = showVolcengineFields(form.template_type, provider)
 
@@ -177,7 +185,11 @@ export function buildTestPayload(
   if (form.template_type === 'token_plan' && provider) {
     data.coding_plan_provider = provider
   }
-  if (usesAPIKey && form.api_key) data.api_key = form.api_key
+  if (usesScriptAPIKey && form.script_api_key) data.script_api_key = form.script_api_key
+  if (zenmux) {
+    data.zenmux_base_url = form.zenmux_base_url
+    if (form.zenmux_api_key) data.zenmux_api_key = form.zenmux_api_key
+  }
   if (usesAccessToken && form.access_token) data.access_token = form.access_token
   if (usesAccessToken && form.user_id) data.user_id = form.user_id
   if (usesVolcSK && form.access_key_id) data.access_key_id = form.access_key_id

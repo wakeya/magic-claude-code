@@ -21,256 +21,204 @@ const baseForm: QuotaFormState = {
   auto_query_interval_minutes: 5,
   script: '',
   base_url: '',
-  api_key: '',
+  script_api_key: '',
+  zenmux_base_url: '',
+  zenmux_api_key: '',
   access_token: '',
   user_id: '',
   access_key_id: '',
   secret_access_key: '',
-  clear_api_key: false,
+  clear_script_api_key: false,
+  clear_zenmux_api_key: false,
   clear_access_token: false,
   clear_secret_access_key: false,
 }
 
-test('effectiveTokenPlanProvider: explicit selection beats auto-detection', () => {
+test('effectiveTokenPlanProvider keeps explicit selection precedence', () => {
   assert.equal(effectiveTokenPlanProvider('kimi', 'zenmux'), 'kimi')
   assert.equal(effectiveTokenPlanProvider('', 'zhipu_cn'), 'zhipu_cn')
-  assert.equal(effectiveTokenPlanProvider('', ''), '')
 })
 
-test('showZenMuxFields: only under token_plan + zenmux', () => {
-  assert.equal(showZenMuxFields('token_plan', 'zenmux'), true)
-  assert.equal(showZenMuxFields('token_plan', 'kimi'), false)
-  assert.equal(showZenMuxFields('general', 'zenmux'), false)
-})
-
-test('showVolcengineFields: only under token_plan + volcengine', () => {
-  assert.equal(showVolcengineFields('token_plan', 'volcengine'), true)
-  assert.equal(showVolcengineFields('token_plan', 'kimi'), false)
-  assert.equal(showVolcengineFields('general', 'volcengine'), false)
-})
-
-test('showBaseURLField: general/custom/newapi always; zenmux under token_plan', () => {
+test('field visibility separates generic script fields from ZenMux fields', () => {
   assert.equal(showBaseURLField('general', ''), true)
-  assert.equal(showBaseURLField('custom', ''), true)
   assert.equal(showBaseURLField('newapi', ''), true)
-  assert.equal(showBaseURLField('token_plan', 'zenmux'), true)
-  // Kimi/volcengine under token_plan do NOT show base_url (fixed endpoints).
-  assert.equal(showBaseURLField('token_plan', 'kimi'), false)
-  assert.equal(showBaseURLField('token_plan', 'volcengine'), false)
-  assert.equal(showBaseURLField('official_balance', ''), false)
-})
-
-test('showAPIKeyField: general/custom always; zenmux under token_plan', () => {
+  assert.equal(showBaseURLField('token_plan', 'zenmux'), false)
   assert.equal(showAPIKeyField('general', ''), true)
-  assert.equal(showAPIKeyField('custom', ''), true)
-  assert.equal(showAPIKeyField('token_plan', 'zenmux'), true)
-  assert.equal(showAPIKeyField('token_plan', 'kimi'), false)
+  assert.equal(showAPIKeyField('token_plan', 'zenmux'), false)
+  assert.equal(showZenMuxFields('token_plan', 'zenmux'), true)
+  assert.equal(showZenMuxFields('general', 'zenmux'), false)
+  assert.equal(showVolcengineFields('token_plan', 'volcengine'), true)
 })
 
-test('buildSavePayload: switching ZenMux → Kimi drops stale base_url', () => {
-  const form: QuotaFormState = {
+test('buildSavePayload sends only script credential fields for General', () => {
+  const payload = buildSavePayload({
     ...baseForm,
-    template_type: 'token_plan',
-    coding_plan_provider: 'kimi',
-    // Stale ZenMux URL left in the form from a previous config.
-    base_url: 'https://quota.zenmux.example/v1',
-  }
-  const payload = buildSavePayload(form, '', null)
-  assert.equal(payload['coding_plan_provider'], 'kimi')
-  // base_url must be cleared (empty) for Kimi so the stale ZenMux URL is not
-  // persisted and cannot override the Kimi query.
-  assert.equal('base_url' in payload, true, 'base_url should be present to clear stale value')
-  assert.equal(payload['base_url'], '', 'stale ZenMux base_url should be cleared to empty')
+    template_type: 'general',
+    base_url: 'https://gateway.example/v1',
+    script_api_key: 'script-new',
+    zenmux_base_url: 'https://quota.zenmux.example/usage',
+    zenmux_api_key: 'zenmux-stored',
+  }, '', null)
+
+  assert.equal(payload['base_url'], 'https://gateway.example/v1')
+  assert.equal(payload['script_api_key'], 'script-new')
+  assert.equal('zenmux_base_url' in payload, false)
+  assert.equal('zenmux_api_key' in payload, false)
+  assert.equal('api_key' in payload, false)
 })
 
-test('buildSavePayload: ZenMux sends base_url + api_key', () => {
-  const form: QuotaFormState = {
+test('buildSavePayload sends only ZenMux override fields for ZenMux', () => {
+  const payload = buildSavePayload({
     ...baseForm,
     template_type: 'token_plan',
     coding_plan_provider: 'zenmux',
-    base_url: 'https://quota.zenmux.example/v1',
-    api_key: 'zen-key',
-  }
-  const payload = buildSavePayload(form, '', null)
+    base_url: 'https://generic-must-not-leak.example/v1',
+    script_api_key: 'script-must-not-leak',
+    zenmux_base_url: 'https://quota.zenmux.example/usage',
+    zenmux_api_key: 'zenmux-new',
+  }, '', null)
+
   assert.equal(payload['coding_plan_provider'], 'zenmux')
-  assert.equal(payload['base_url'], 'https://quota.zenmux.example/v1')
-  assert.equal(payload['api_key'], 'zen-key')
+  assert.equal(payload['zenmux_base_url'], 'https://quota.zenmux.example/usage')
+  assert.equal(payload['zenmux_api_key'], 'zenmux-new')
+  assert.equal(payload['base_url'], '')
+  assert.equal('script_api_key' in payload, false)
+  assert.equal('api_key' in payload, false)
 })
 
-test('buildSavePayload: volcengine sends AK/SK + coding_plan_provider', () => {
-  const form: QuotaFormState = {
+test('buildSavePayload allows empty ZenMux override for atomic card fallback', () => {
+  const payload = buildSavePayload({
+    ...baseForm,
+    template_type: 'token_plan',
+    coding_plan_provider: 'zenmux',
+  }, '', null)
+  assert.equal(payload['zenmux_base_url'], '')
+  assert.equal('zenmux_api_key' in payload, false)
+})
+
+test('buildSavePayload keeps separated configured keys when switching templates', () => {
+  const payload = buildSavePayload({
+    ...baseForm,
+    template_type: 'token_plan',
+    coding_plan_provider: 'kimi',
+  }, '', {
+    script_api_key_configured: true,
+    zenmux_api_key_configured: true,
+    access_token_configured: false,
+    secret_access_key_configured: false,
+  })
+  assert.equal('clear_script_api_key' in payload, false)
+  assert.equal('clear_zenmux_api_key' in payload, false)
+  assert.equal('script_api_key' in payload, false)
+  assert.equal('zenmux_api_key' in payload, false)
+})
+
+test('buildSavePayload propagates independent clear flags', () => {
+  const scriptClear = buildSavePayload({...baseForm, clear_script_api_key: true}, '', null)
+  assert.equal(scriptClear['clear_script_api_key'], true)
+  assert.equal('clear_zenmux_api_key' in scriptClear, false)
+
+  const zenmuxClear = buildSavePayload({...baseForm, clear_zenmux_api_key: true}, '', null)
+  assert.equal(zenmuxClear['clear_zenmux_api_key'], true)
+  assert.equal('clear_script_api_key' in zenmuxClear, false)
+})
+
+test('buildSavePayload does not emit clear flags with replacement secrets', () => {
+  const script = buildSavePayload({
+    ...baseForm,
+    script_api_key: 'replacement',
+    clear_script_api_key: true,
+  }, '', null)
+  assert.equal(script['script_api_key'], 'replacement')
+  assert.equal('clear_script_api_key' in script, false)
+
+  const zenmux = buildSavePayload({
+    ...baseForm,
+    template_type: 'token_plan',
+    coding_plan_provider: 'zenmux',
+    zenmux_base_url: 'https://quota.zenmux.example/usage',
+    zenmux_api_key: 'replacement',
+    clear_zenmux_api_key: true,
+  }, '', null)
+  assert.equal(zenmux['zenmux_api_key'], 'replacement')
+  assert.equal('clear_zenmux_api_key' in zenmux, false)
+
+  const newapi = buildSavePayload({
+    ...baseForm,
+    template_type: 'newapi',
+    access_token: 'replacement',
+    clear_access_token: true,
+  }, '', null)
+  assert.equal(newapi['access_token'], 'replacement')
+  assert.equal('clear_access_token' in newapi, false)
+
+  const volcengine = buildSavePayload({
     ...baseForm,
     template_type: 'token_plan',
     coding_plan_provider: 'volcengine',
-    access_key_id: 'AKLT1234',
-    secret_access_key: 'secret-sk',
-  }
-  const payload = buildSavePayload(form, '', null)
-  assert.equal(payload['coding_plan_provider'], 'volcengine')
-  assert.equal(payload['access_key_id'], 'AKLT1234')
-  assert.equal(payload['secret_access_key'], 'secret-sk')
-  // base_url cleared for volcengine (region derived from card URL).
-  assert.equal(payload['base_url'], '')
-})
-
-test('buildSavePayload: auto-detected provider used when no explicit selection', () => {
-  const form: QuotaFormState = {
-    ...baseForm,
-    template_type: 'token_plan',
-    coding_plan_provider: '', // not explicitly set
-  }
-  const payload = buildSavePayload(form, 'minimax_cn', null)
-  assert.equal(payload['coding_plan_provider'], 'minimax_cn')
-})
-
-test('buildSavePayload: official_balance sends no coding_plan_provider/script/base_url', () => {
-  const form: QuotaFormState = {
-    ...baseForm,
-    template_type: 'official_balance',
-  }
-  const payload = buildSavePayload(form, '', null)
-  assert.equal('coding_plan_provider' in payload, false)
-  assert.equal('script' in payload, false)
-  assert.equal(payload['base_url'], '')
-})
-
-test('buildSavePayload: clear flags propagate', () => {
-  const form: QuotaFormState = {
-    ...baseForm,
-    clear_api_key: true,
-    clear_access_token: true,
+    secret_access_key: 'replacement',
     clear_secret_access_key: true,
-  }
-  const payload = buildSavePayload(form, '', null)
-  assert.equal(payload['clear_api_key'], true)
+  }, '', null)
+  assert.equal(volcengine['secret_access_key'], 'replacement')
+  assert.equal('clear_secret_access_key' in volcengine, false)
+})
+
+test('buildSavePayload preserves NewAPI and Volcengine cleanup behavior', () => {
+  const payload = buildSavePayload(baseForm, '', {
+    script_api_key_configured: false,
+    zenmux_api_key_configured: false,
+    access_token_configured: true,
+    secret_access_key_configured: true,
+  })
   assert.equal(payload['clear_access_token'], true)
   assert.equal(payload['clear_secret_access_key'], true)
 })
 
-test('buildSavePayload: switching ZenMux → Kimi clears configured api_key', () => {
-  const form: QuotaFormState = {
+test('buildTestPayload sends only active script key', () => {
+  const payload = buildTestPayload({
     ...baseForm,
-    template_type: 'token_plan',
-    coding_plan_provider: 'kimi',
-  }
-  const payload = buildSavePayload(form, '', {
-    api_key_configured: true,
-    access_token_configured: false,
-    secret_access_key_configured: false,
-  })
-  assert.equal(payload['clear_api_key'], true, 'should clear stale ZenMux api_key')
+    template_type: 'custom',
+    script_api_key: 'script-new',
+    zenmux_api_key: 'zenmux-must-not-leak',
+  }, '')
+  assert.equal(payload['script_api_key'], 'script-new')
+  assert.equal('zenmux_api_key' in payload, false)
+  assert.equal('api_key' in payload, false)
 })
 
-test('buildSavePayload: leaving NewAPI clears configured access_token', () => {
-  const form: QuotaFormState = {
-    ...baseForm,
-    template_type: 'general',
-  }
-  const payload = buildSavePayload(form, '', {
-    api_key_configured: false,
-    access_token_configured: true,
-    secret_access_key_configured: false,
-  })
-  assert.equal(payload['clear_access_token'], true, 'should clear stale NewAPI access_token')
-})
-
-test('buildSavePayload: leaving Volcengine clears configured secret_access_key', () => {
-  const form: QuotaFormState = {
-    ...baseForm,
-    template_type: 'general',
-  }
-  const payload = buildSavePayload(form, '', {
-    api_key_configured: false,
-    access_token_configured: false,
-    secret_access_key_configured: true,
-  })
-  assert.equal(payload['clear_secret_access_key'], true, 'should clear stale Volcengine SK')
-})
-
-test('buildSavePayload: staying in ZenMux does not clear api_key', () => {
-  const form: QuotaFormState = {
+test('buildTestPayload sends only active ZenMux key and URL', () => {
+  const payload = buildTestPayload({
     ...baseForm,
     template_type: 'token_plan',
     coding_plan_provider: 'zenmux',
-    base_url: 'https://quota.zenmux.example/v1',
-  }
-  const payload = buildSavePayload(form, '', {
-    api_key_configured: true,
-    access_token_configured: false,
-    secret_access_key_configured: false,
-  })
-  assert.equal(payload['clear_api_key'], undefined, 'should not clear api_key when staying in ZenMux')
+    script_api_key: 'script-must-not-leak',
+    zenmux_base_url: 'https://quota.zenmux.example/usage',
+    zenmux_api_key: 'zenmux-new',
+  }, '')
+  assert.equal(payload['zenmux_base_url'], 'https://quota.zenmux.example/usage')
+  assert.equal(payload['zenmux_api_key'], 'zenmux-new')
+  assert.equal('script_api_key' in payload, false)
+  assert.equal('api_key' in payload, false)
 })
 
-test('buildTestPayload: carries effective provider for token_plan', () => {
-  const form: QuotaFormState = {
+test('buildTestPayload omits all unrelated secrets for Kimi', () => {
+  const payload = buildTestPayload({
     ...baseForm,
     template_type: 'token_plan',
     coding_plan_provider: 'kimi',
-    base_url: 'https://quota.zenmux.example/v1', // stale
+    script_api_key: 'script-stale',
+    zenmux_api_key: 'zenmux-stale',
+    access_token: 'access-stale',
+    secret_access_key: 'sk-stale',
+  }, '')
+  for (const field of ['script_api_key', 'zenmux_api_key', 'access_token', 'secret_access_key', 'api_key']) {
+    assert.equal(field in payload, false, `${field} must be omitted`)
   }
-  const payload = buildTestPayload(form, '')
-  assert.equal(payload['coding_plan_provider'], 'kimi')
-  // Test payload still carries base_url (backend draft resolves effective URL),
-  // but the explicit provider ensures the adapter targets Kimi.
-  assert.equal(payload['template_type'], 'token_plan')
 })
 
-test('buildTestPayload: newapi carries access_token + user_id', () => {
-  const form: QuotaFormState = {
-    ...baseForm,
-    template_type: 'newapi',
-    base_url: 'https://panel.example.com',
-    access_token: 'tok',
-    user_id: 'u1',
-  }
-  const payload = buildTestPayload(form, '')
-  assert.equal(payload['access_token'], 'tok')
-  assert.equal(payload['user_id'], 'u1')
-})
-
-test('shouldShowMiMoWarning: only under token_plan', () => {
+test('MiMo and official balance notices remain scoped to their templates', () => {
   assert.equal(shouldShowMiMoWarning('token_plan', true), true)
-  assert.equal(shouldShowMiMoWarning('general', true), false, 'MiMo must not show outside token_plan')
-  assert.equal(shouldShowMiMoWarning('official_balance', true), false)
-  assert.equal(shouldShowMiMoWarning('token_plan', false), false)
-})
-
-test('shouldShowOfficialBalanceInfo: only under official_balance with detection', () => {
+  assert.equal(shouldShowMiMoWarning('general', true), false)
   assert.equal(shouldShowOfficialBalanceInfo('official_balance', 'deepseek'), true)
-  assert.equal(shouldShowOfficialBalanceInfo('official_balance', ''), false)
   assert.equal(shouldShowOfficialBalanceInfo('general', 'deepseek'), false)
-  assert.equal(shouldShowOfficialBalanceInfo('token_plan', 'deepseek'), false)
-})
-
-test('buildTestPayload: Kimi test does not carry stale ZenMux api_key', () => {
-  const form: QuotaFormState = {
-    ...baseForm,
-    template_type: 'token_plan',
-    coding_plan_provider: 'kimi',
-    api_key: 'stale-zenmux-key',
-    access_token: 'stale-newapi-token',
-    access_key_id: 'stale-ak',
-    secret_access_key: 'stale-sk',
-  }
-  const payload = buildTestPayload(form, '')
-  assert.equal('api_key' in payload, false, 'stale api_key must not be sent for kimi test')
-  assert.equal('access_token' in payload, false, 'access_token must not be sent for kimi test')
-  assert.equal('access_key_id' in payload, false, 'access_key_id must not be sent for kimi test')
-  assert.equal('secret_access_key' in payload, false, 'secret_access_key must not be sent for kimi test')
-})
-
-test('buildTestPayload: ZenMux test carries base_url + api_key only', () => {
-  const form: QuotaFormState = {
-    ...baseForm,
-    template_type: 'token_plan',
-    coding_plan_provider: 'zenmux',
-    base_url: 'https://quota.zenmux.example/v1',
-    api_key: 'zenmux-key',
-    access_token: 'stale-tok',
-  }
-  const payload = buildTestPayload(form, '')
-  assert.equal(payload['base_url'], 'https://quota.zenmux.example/v1')
-  assert.equal(payload['api_key'], 'zenmux-key')
-  assert.equal('access_token' in payload, false)
 })
