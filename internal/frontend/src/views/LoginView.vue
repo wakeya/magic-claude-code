@@ -37,12 +37,13 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useApi } from '@/composables/useApi'
 import { useI18n } from '@/composables/useI18n'
 import { useTheme } from '@/composables/useTheme'
 
 const router = useRouter()
+const route = useRoute()
 const api = useApi()
 const { t } = useI18n()
 useTheme()
@@ -58,7 +59,11 @@ async function handleLogin() {
   try {
     const ok = await api.login(password.value)
     if (ok) {
-      router.push('/')
+      const redirect = Array.isArray(route.query.redirect) ? route.query.redirect[0] : route.query.redirect
+      const destination = typeof redirect === 'string' && redirect.startsWith('/') && !redirect.startsWith('//')
+        ? redirect
+        : '/'
+      router.push(destination)
     } else {
       error.value = t('login.error.invalid')
     }

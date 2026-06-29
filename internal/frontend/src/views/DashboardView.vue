@@ -803,6 +803,7 @@
     <ProviderModal v-if="showModal" :provider="editingProvider" @close="closeModal" @saved="handleSaved" />
     <ProviderUsageModal
       v-if="usageProviderId"
+      :key="usageProviderId"
       :provider-id="usageProviderId"
       :provider-name="usageProviderName"
       @close="closeProviderUsage"
@@ -836,7 +837,7 @@
 
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import type { EChartsType } from 'echarts/core'
 import {
   useApi,
@@ -873,6 +874,7 @@ function formatListenAddress(addr: string, port: number): string {
 }
 
 const router = useRouter()
+const route = useRoute()
 const api = useApi()
 const { t, locale } = useI18n()
 const { syncTheme, themeMode } = useTheme()
@@ -960,6 +962,7 @@ const usageChartEl = ref<HTMLDivElement | null>(null)
 let echartsModule: { init: (dom: HTMLDivElement) => EChartsType } | null = null
 let usageChart: EChartsType | null = null
 let statusRefreshTimer: number | null = null
+let quotaSnapshotLoadVersion = 0
 const defaultUsageDateRange = usageDateRangeForPreset('last_7_days')
 
 const usageFilters = reactive({
@@ -1007,6 +1010,20 @@ const usageProviderName = computed(() =>
 const showUsageClearModal = ref(false)
 const resetUsageSessionSync = ref(false)
 const usageClearLoading = ref(false)
+
+watch(
+  () => route.query.usage_provider,
+  (value) => {
+    const providerId = Array.isArray(value) ? value[0] : value
+    if (typeof providerId !== 'string' || !providerId) return
+    activeTab.value = 'providers'
+    usageTriggerEl.value = null
+    usageProviderId.value = providerId
+    const { usage_provider: _usageProvider, ...query } = route.query
+    void router.replace({ path: route.path, query, hash: route.hash })
+  },
+  { immediate: true },
+)
 
 function openAddModal() {
   editingProvider.value = null
@@ -1209,8 +1226,10 @@ async function loadProviders() {
 }
 
 async function loadQuotaSnapshots() {
+  const loadVersion = ++quotaSnapshotLoadVersion
   try {
     const data = await api.getAllProviderUsageSnapshots()
+    if (loadVersion !== quotaSnapshotLoadVersion) return
     quotaSnapshots.value = data.snapshots || {}
   } catch {
     // keep last value
@@ -1224,6 +1243,7 @@ async function refreshProviderQuota(providerId: string) {
     // Reload the single snapshot.
     const data = await api.getProviderUsage(providerId)
     if (data.snapshot) {
+      quotaSnapshotLoadVersion += 1
       quotaSnapshots.value = { ...quotaSnapshots.value, [providerId]: data.snapshot }
     }
   } catch {
@@ -1239,11 +1259,12 @@ function openProviderUsage(providerId: string) {
 }
 
 async function closeProviderUsage(reloadSnapshots = true) {
-  usageProviderId.value = ''
-  if (reloadSnapshots) await loadQuotaSnapshots()
-  await nextTick()
-  usageTriggerEl.value?.focus()
+  const trigger = usageTriggerEl.value
   usageTriggerEl.value = null
+  usageProviderId.value = ''
+  await nextTick()
+  if (trigger?.isConnected) trigger.focus()
+  if (reloadSnapshots) void loadQuotaSnapshots()
 }
 
 async function handleProviderUsageSaved(snapshot: QuotaSnapshot | null) {
@@ -1253,6 +1274,7 @@ async function handleProviderUsageSaved(snapshot: QuotaSnapshot | null) {
   } else {
     delete nextSnapshots[usageProviderId.value]
   }
+  quotaSnapshotLoadVersion += 1
   quotaSnapshots.value = nextSnapshots
   await closeProviderUsage(false)
 }
@@ -1822,18 +1844,9 @@ watch(themeMode, () => {
 
 onMounted(async () => {
   // Initialize tab from query parameter.
-  const query = new URLSearchParams(window.location.search)
-  const urlTab = query.get('tab')
-  if (urlTab && ['status', 'providers', 'connection', 'certs', 'usage', 'sessions'].includes(urlTab)) {
+  const urlTab = Array.isArray(route.query.tab) ? route.query.tab[0] : route.query.tab
+  if (!usageProviderId.value && urlTab && ['status', 'providers', 'connection', 'certs', 'usage', 'sessions'].includes(urlTab)) {
     activeTab.value = urlTab as MainTab
-  }
-
-  const usageProvider = query.get('usage_provider')
-  if (usageProvider) {
-    activeTab.value = 'providers'
-    usageProviderId.value = usageProvider
-    query.delete('usage_provider')
-    await router.replace(query.toString() ? `/?${query.toString()}` : '/')
   }
 
   await syncTheme(api.getPreferences)

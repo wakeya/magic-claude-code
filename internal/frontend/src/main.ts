@@ -14,7 +14,8 @@ const router = createRouter({
       name: 'provider-usage',
       redirect: (to) => ({
         path: '/',
-        query: { tab: 'providers', usage_provider: String(to.params.providerId) },
+        query: { ...to.query, tab: 'providers', usage_provider: String(to.params.providerId) },
+        hash: to.hash,
       }),
     },
     { path: '/', name: 'dashboard', component: DashboardView },
@@ -24,12 +25,13 @@ const router = createRouter({
 
 router.beforeEach(async (to) => {
   if (to.path === '/login') return true
+  const redirect = to.fullPath.startsWith('/') && !to.fullPath.startsWith('//') ? to.fullPath : '/'
   try {
     const res = await fetch('/api/status')
-    if (res.status === 401) return { name: 'login' }
+    if (res.status === 401) return { name: 'login', query: { redirect } }
     return true
   } catch {
-    return { name: 'login' }
+    return { name: 'login', query: { redirect } }
   }
 })
 
