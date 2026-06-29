@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,6 +27,33 @@ func NewTokenPlanAdapter(timeout time.Duration) *TokenPlanAdapter {
 	return &TokenPlanAdapter{
 		HTTPClient: &http.Client{Timeout: timeout},
 	}
+}
+
+// authenticatedHTTPClient returns a shallow copy of base with a redirect
+// policy that keeps credentials on the original scheme, host, and port. The
+// caller-provided client is never mutated because it may be shared by adapters.
+func authenticatedHTTPClient(base *http.Client, original *url.URL) *http.Client {
+	if base == nil {
+		base = http.DefaultClient
+	}
+	client := *base
+	previous := client.CheckRedirect
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if !sameOrigin(req.URL, original) {
+			return fmt.Errorf(
+				"authenticated redirect rejected: %s://%s -> %s://%s",
+				original.Scheme, original.Host, req.URL.Scheme, req.URL.Host,
+			)
+		}
+		if previous != nil {
+			return previous(req, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
+	return &client
 }
 
 // DetectTokenPlanProvider identifies the token plan provider from an API URL.
@@ -895,7 +923,7 @@ func sha256Hex(s string) string {
 
 // doRequest is a helper that performs an HTTP request and returns the body.
 func (a *TokenPlanAdapter) doRequest(req *http.Request) ([]byte, int, error) {
-	resp, err := a.HTTPClient.Do(req)
+	resp, err := authenticatedHTTPClient(a.HTTPClient, req.URL).Do(req)
 	if err != nil {
 		return nil, 0, err
 	}
