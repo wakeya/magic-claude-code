@@ -73,6 +73,33 @@ test('enabled save updates, queries, and reloads the persisted snapshot in order
   })
 })
 
+test('reload accepts the current query result when the snapshot write timestamp is later', async () => {
+  const { runQuotaSaveFlow } = await loadQuotaSaveFlow()
+  const persistedSnapshot = {
+    ...snapshot,
+    queried_at: '2026-06-29T12:00:00.001Z',
+  }
+
+  const outcome = await runQuotaSaveFlow({ enabled: true }, {
+    async update() {
+      return { success: true, config }
+    },
+    async query() {
+      return { success: true, result: queryResult }
+    },
+    async reload() {
+      return { config, snapshot: persistedSnapshot }
+    },
+  })
+
+  assert.deepEqual(outcome, {
+    ok: true,
+    configSaved: true,
+    config,
+    snapshot: persistedSnapshot,
+  })
+})
+
 test('update failure stops before query and reports the config was not saved', async () => {
   const { runQuotaSaveFlow } = await loadQuotaSaveFlow()
   let queryCalled = false
@@ -181,7 +208,10 @@ test('reload rejects a stale snapshot from an earlier query', async () => {
     async reload() {
       return {
         config,
-        snapshot: { ...snapshot, queried_at: '2026-06-29T11:00:00Z' },
+        snapshot: {
+          ...snapshot,
+          result: { ...queryResult, queried_at: '2026-06-29T11:00:00Z' },
+        },
       }
     },
   })

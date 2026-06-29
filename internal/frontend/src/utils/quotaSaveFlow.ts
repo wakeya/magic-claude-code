@@ -88,7 +88,7 @@ export async function runQuotaSaveFlow(
     if (
       !reloaded.snapshot
       || reloaded.snapshot.provider_id !== response.result.provider_id
-      || reloaded.snapshot.queried_at !== response.result.queried_at
+      || reloaded.snapshot.result?.queried_at !== response.result.queried_at
     ) {
       return {
         ok: false,
