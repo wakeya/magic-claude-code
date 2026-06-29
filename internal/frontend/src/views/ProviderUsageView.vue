@@ -221,7 +221,7 @@ import {
   effectiveTokenPlanProvider as resolveEffectiveProvider,
   showBaseURLField,
   showAPIKeyField,
-  showZenMuxFields,
+  showZenMuxFields as shouldShowZenMuxFields,
   showVolcengineFields,
   shouldShowMiMoWarning,
   shouldShowOfficialBalanceInfo,
@@ -285,7 +285,7 @@ const effectiveTokenPlanProvider = computed(() =>
   resolveEffectiveProvider(form.coding_plan_provider, detectedTokenPlan.value)
 )
 const isVolcengine = computed(() => showVolcengineFields(form.template_type, effectiveTokenPlanProvider.value))
-const isZenMux = computed(() => showZenMuxFields(form.template_type, effectiveTokenPlanProvider.value))
+const isZenMux = computed(() => shouldShowZenMuxFields(form.template_type, effectiveTokenPlanProvider.value))
 const isMiMo = computed(() => isMiMoDetected.value)
 const showMiMoWarning = computed(() => shouldShowMiMoWarning(form.template_type, isMiMoDetected.value))
 const showOfficialBalanceInfo = computed(() =>
