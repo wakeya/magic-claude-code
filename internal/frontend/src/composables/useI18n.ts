@@ -362,6 +362,9 @@ const messages: Record<Locale, Record<string, string>> = {
 
     // Provider Quota
     'quota.title': '额度查询配置',
+    'quota.modal_subtitle': '配置自动查询并查看最新结果',
+    'quota.load_failed': '加载用量配置失败',
+    'quota.saved_query_failed': '配置已保存，但查询失败：{error}',
     'quota.enabled': '启用额度查询',
     'quota.template_type': '查询模板',
     'quota.template.general': '通用余额模板',
@@ -767,6 +770,9 @@ const messages: Record<Locale, Record<string, string>> = {
 
     // Provider Quota
     'quota.title': 'Quota Query Configuration',
+    'quota.modal_subtitle': 'Configure automatic queries and view the latest result',
+    'quota.load_failed': 'Failed to load quota configuration',
+    'quota.saved_query_failed': 'Configuration saved, but the query failed: {error}',
     'quota.enabled': 'Enable Quota Query',
     'quota.template_type': 'Query Template',
     'quota.template.general': 'Generic Balance Template',
