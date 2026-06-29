@@ -20,7 +20,7 @@ A new, route-independent component owns the quota form and query state. It recei
 It emits:
 
 - `close`: cancel, backdrop, close button, or Escape requested dismissal.
-- `saved`: configuration was saved, a production query succeeded, and the refreshed snapshot is ready for the Provider card.
+- `saved`: configuration was saved; the payload is the refreshed snapshot when quota querying is enabled, or `null` when it was disabled.
 
 The component reuses `QuotaResultDisplay`, `quotaForm` utilities, `useApi`, and existing i18n keys. It does not use `useRoute` or `useRouter`.
 
@@ -28,7 +28,7 @@ The component reuses `QuotaResultDisplay`, `quotaForm` utilities, `useApi`, and 
 
 The Dashboard owns `usageProviderId`. The Provider card's Usage event sets this ID and opens an asynchronously loaded `ProviderUsageModal`; it does not navigate and does not change the URL.
 
-On `saved`, the Dashboard updates or reloads `quotaSnapshots`, clears `usageProviderId`, and restores focus to the Usage button that opened the modal. On a normal close, it clears the ID and reloads snapshots so manual refreshes performed inside the modal are reflected on the card.
+On `saved`, the Dashboard updates the Provider snapshot or removes it when the payload is `null`, clears `usageProviderId`, and restores focus to the Usage button that opened the modal. On a normal close, it clears the ID and reloads snapshots so manual refreshes performed inside the modal are reflected on the card.
 
 ### Legacy route compatibility
 
@@ -60,7 +60,9 @@ No new design-system colors or fonts are introduced. The existing application's 
 
 ### Save, query, and close sequence
 
-Save is intentionally a compound operation:
+Save is intentionally conditional on the saved Enabled state.
+
+When quota querying is enabled:
 
 1. Build and submit the saved quota configuration.
 2. Clear submitted secret inputs and reset clear-secret flags after the save succeeds.
@@ -70,6 +72,8 @@ Save is intentionally a compound operation:
 6. Emit `saved` with the snapshot, update the Provider card, and close the modal after the same short success delay used by `ProviderModal` (approximately 800 ms).
 
 If configuration saving fails, the modal remains open and shows the save error. If saving succeeds but the production query fails, the saved configuration is retained, the modal remains open, and a clear message states that configuration was saved but the query failed. This prevents closing onto a Provider card with no current result.
+
+When quota querying is disabled, saving skips the production query, emits `saved` with `null`, removes the Provider's snapshot display, and closes after the same success delay. A disabled configuration must not be reported as a query failure.
 
 ## Error and Empty States
 
@@ -98,6 +102,7 @@ Focused frontend tests cover:
 - The modal has the shared backdrop/panel structure, desktop two-column layout, mobile stacking, and dialog attributes.
 - Save calls update before production query.
 - Successful save plus query emits the refreshed snapshot and closes after the success delay.
+- Saving a disabled configuration skips querying, removes the card snapshot, and closes after the success delay.
 - Save failure and post-save query failure keep the modal open with distinct errors.
 - Test Query and Refresh Now do not close the modal.
 - Normal close reloads Dashboard snapshots and restores focus.
