@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	"magic-claude-code/internal/providerquota"
 )
 
 const (
@@ -175,6 +177,7 @@ func (c *Config) NormalizeDefaults() {
 	}
 	for i := range c.Providers {
 		c.Providers[i].normalizeDefaults()
+		providerquota.MigrateLegacyCredentials(c.Providers[i].QuotaQuery, c.Providers[i].APIURL)
 	}
 }
 
