@@ -73,7 +73,7 @@ function formatNum(v: number): string {
 
 function formatBalance(bal: BalanceItem): string {
   if (bal.remaining != null) {
-    const prefix = bal.unit === 'USD' || bal.unit === 'CNY' ? '$' : ''
+    const prefix = bal.unit === 'USD' ? '$' : bal.unit === 'CNY' ? '¥' : ''
     const val = bal.remaining.toFixed(2)
     return `${prefix}${val} ${bal.unit || ''}`.trim()
   }
