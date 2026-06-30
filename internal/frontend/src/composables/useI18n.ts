@@ -53,9 +53,9 @@ const messages: Record<Locale, Record<string, string>> = {
 
     // Listen status (read-only display in status overview)
     'listen.status.title': '监听状态',
-    'listen.status.proxy_label': '代理服务',
-    'listen.status.admin_label': '配置服务',
-    'listen.status.gateway_label': '路由服务',
+    'listen.status.proxy_label': '代理服务：',
+    'listen.status.admin_label': '配置服务：',
+    'listen.status.gateway_label': '路由服务：',
     'listen.status.modify_hint': '监听地址通过启动参数或配置文件修改，改后重启生效。注意：代理端口非 443 时客户端需配合端口转发（如 iptables）；配置服务监听改为 127.0.0.1 后仅本机可访问配置页面。',
     'listen.status.all_interfaces': '（所有接口）',
 
@@ -472,9 +472,9 @@ const messages: Record<Locale, Record<string, string>> = {
 
     // Listen status (read-only display in status overview)
     'listen.status.title': 'Listen Status',
-    'listen.status.proxy_label': 'Proxy',
-    'listen.status.admin_label': 'Admin',
-    'listen.status.gateway_label': 'Gateway',
+    'listen.status.proxy_label': 'Proxy: ',
+    'listen.status.admin_label': 'Admin: ',
+    'listen.status.gateway_label': 'Gateway: ',
     'listen.status.modify_hint': 'Listen addresses are changed via startup flags or the config file; restart after changing. Note: if the proxy port is not 443, clients need port forwarding (e.g. iptables); changing admin listen to 127.0.0.1 makes the config page accessible from localhost only.',
     'listen.status.all_interfaces': '(all interfaces)',
 

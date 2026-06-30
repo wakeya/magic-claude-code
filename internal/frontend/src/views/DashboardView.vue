@@ -74,22 +74,18 @@
           <div class="text-xs font-bold text-text-secondary uppercase tracking-widest mb-3">
             {{ t('listen.status.title') }}
           </div>
-          <div class="space-y-2 text-sm">
-            <div class="flex items-center gap-2">
-              <span class="text-text-secondary min-w-[80px]">{{ t('listen.status.proxy_label') }}</span>
-              <span class="font-mono">{{ formatListenAddress(status?.proxy_listen_addr || '0.0.0.0', status?.proxy_port || 443) }}
-                <span v-if="(status?.proxy_listen_addr || '0.0.0.0') === '0.0.0.0'" class="text-xs text-text-secondary ml-1">{{ t('listen.status.all_interfaces') }}</span>
-              </span>
+          <div class="grid grid-cols-3 gap-3 text-sm">
+            <div class="flex items-baseline gap-1 min-w-0">
+              <span class="text-text-secondary whitespace-nowrap">{{ t('listen.status.proxy_label') }}</span>
+              <span class="font-mono whitespace-nowrap">{{ formatListenAddress(status?.proxy_listen_addr || '0.0.0.0', status?.proxy_port || 443) }}<span v-if="(status?.proxy_listen_addr || '0.0.0.0') === '0.0.0.0'" class="text-text-secondary ml-0.5">{{ t('listen.status.all_interfaces') }}</span></span>
             </div>
-            <div class="flex items-center gap-2">
-              <span class="text-text-secondary min-w-[80px]">{{ t('listen.status.admin_label') }}</span>
-              <span class="font-mono">{{ formatListenAddress(status?.admin_listen_addr || '0.0.0.0', status?.admin_port || 8442) }}
-                <span v-if="(status?.admin_listen_addr || '0.0.0.0') === '0.0.0.0'" class="text-xs text-text-secondary ml-1">{{ t('listen.status.all_interfaces') }}</span>
-              </span>
+            <div class="flex items-baseline gap-1 min-w-0">
+              <span class="text-text-secondary whitespace-nowrap">{{ t('listen.status.admin_label') }}</span>
+              <span class="font-mono whitespace-nowrap">{{ formatListenAddress(status?.admin_listen_addr || '0.0.0.0', status?.admin_port || 8442) }}<span v-if="(status?.admin_listen_addr || '0.0.0.0') === '0.0.0.0'" class="text-text-secondary ml-0.5">{{ t('listen.status.all_interfaces') }}</span></span>
             </div>
-            <div class="flex items-center gap-2">
-              <span class="text-text-secondary min-w-[80px]">{{ t('listen.status.gateway_label') }}</span>
-              <span class="font-mono">{{ formatListenAddress(status?.gateway_listen_addr || '127.0.0.1', status?.gateway_listen_port || 17487) }}</span>
+            <div class="flex items-baseline gap-1 min-w-0">
+              <span class="text-text-secondary whitespace-nowrap">{{ t('listen.status.gateway_label') }}</span>
+              <span class="font-mono whitespace-nowrap">{{ formatListenAddress(status?.gateway_listen_addr || '127.0.0.1', status?.gateway_listen_port || 17487) }}</span>
             </div>
           </div>
           <p class="mt-3 text-[11px] text-text-secondary">{{ t('listen.status.modify_hint') }}</p>
@@ -97,7 +93,22 @@
 
         <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
           <div v-if="activeProvider" class="app-panel p-6 rounded-lg">
-            <h3 class="text-xs font-bold text-text-secondary uppercase tracking-widest mb-3.5">{{ t('status.active_provider') }}</h3>
+            <div class="flex items-start justify-between gap-3 mb-3.5">
+              <h3 class="text-xs font-bold text-text-secondary uppercase tracking-widest">{{ t('status.active_provider') }}</h3>
+              <div v-if="activeProviderQuotaDisplay" class="flex items-center gap-2 flex-wrap justify-end">
+                <span v-if="activeProviderQuotaDisplay.fiveHour != null" class="text-xs whitespace-nowrap" :class="utilizationColor(activeProviderQuotaDisplay.fiveHour)">
+                  {{ t('quota.five_hour') }}: {{ Math.round(activeProviderQuotaDisplay.fiveHour) }}%
+                  <span v-if="activeProviderQuotaDisplay.fiveHourReset" class="text-text-secondary ml-0.5">◷{{ formatCountdown(activeProviderQuotaDisplay.fiveHourReset) }}</span>
+                </span>
+                <span v-if="activeProviderQuotaDisplay.sevenDay != null" class="text-xs whitespace-nowrap" :class="utilizationColor(activeProviderQuotaDisplay.sevenDay)">
+                  {{ t('quota.seven_day') }}: {{ Math.round(activeProviderQuotaDisplay.sevenDay) }}%
+                  <span v-if="activeProviderQuotaDisplay.sevenDayReset" class="text-text-secondary ml-0.5">◷{{ formatCountdown(activeProviderQuotaDisplay.sevenDayReset) }}</span>
+                </span>
+                <span v-if="activeProviderQuotaDisplay.balance != null" class="text-xs font-medium whitespace-nowrap">
+                  {{ t('quota.balance') }}: {{ activeProviderQuotaDisplay.balanceUnit === 'USD' ? '$' : '' }}{{ activeProviderQuotaDisplay.balance.toFixed(2) }}
+                </span>
+              </div>
+            </div>
             <div class="text-xl font-bold mb-1">{{ activeProvider.name }}</div>
             <div class="text-[13px] text-text-secondary font-mono">{{ activeProvider.api_url }}</div>
             <div v-if="Object.keys(activeProvider.model_mappings).length" class="flex flex-wrap gap-2 mt-3.5">
@@ -980,6 +991,59 @@ const usageFilters = reactive({
 })
 
 const activeProvider = computed(() => providers.value.find((p) => p.id === activeProviderId.value))
+
+// 当前供应商额度摘要（服务状态页右上角）。镜像 ProviderCard 标题行的
+// 5h/7d 利用率 + 余额显示，复用已加载的 quotaSnapshots；此处内联、不引入
+// 刷新按钮，无成功快照时不显示。
+const activeProviderQuotaDisplay = computed(() => {
+  const active = activeProvider.value
+  if (!active) return null
+  const snap = quotaSnapshots.value[active.id]
+  const result = snap?.last_success || snap?.result
+  if (!result?.success || (!result.tiers?.length && !result.balances?.length)) return null
+
+  const display: { fiveHour?: number; fiveHourReset?: string; sevenDay?: number; sevenDayReset?: string; balance?: number; balanceUnit?: string } = {}
+
+  for (const tier of result.tiers || []) {
+    if (tier.name === 'five_hour') {
+      display.fiveHour = tier.utilization
+      display.fiveHourReset = tier.resets_at
+    } else if (tier.name === 'seven_day') {
+      display.sevenDay = tier.utilization
+      display.sevenDayReset = tier.resets_at
+    }
+  }
+
+  if (result.balances?.length) {
+    const bal = result.balances[0]
+    if (bal.remaining != null) {
+      display.balance = bal.remaining
+      display.balanceUnit = bal.unit
+    }
+  }
+
+  return display
+})
+
+function utilizationColor(pct: number): string {
+  if (pct >= 90) return 'text-danger font-bold'
+  if (pct >= 70) return 'text-warning-dark font-bold'
+  return 'text-secondary font-bold'
+}
+
+function formatCountdown(isoStr: string): string {
+  const reset = new Date(isoStr).getTime()
+  const now = Date.now()
+  const diff = reset - now
+  if (diff <= 0) return t('quota.reset_pending')
+  const hours = Math.floor(diff / 3600000)
+  const mins = Math.floor((diff % 3600000) / 60000)
+  const days = Math.floor(hours / 24)
+  const remHours = hours % 24
+  if (days > 0) return `${days}d${remHours}h`
+  if (hours > 0) return `${hours}h${mins}m`
+  return `${mins}m`
+}
 const allProvidersSelected = computed(() => providers.value.length > 0 && providers.value.every((p) => selectedProviderIds.value.has(p.id)))
 const someProvidersSelected = computed(() => {
   const sel = selectedProviderIds.value
