@@ -211,6 +211,75 @@ func TestProviderUsagePutReportsSnapshotDeleteFailureAfterConfigSave(t *testing.
 	}
 }
 
+func TestProviderUsagePutDisabledRetriesSnapshotDeleteAfterFailure(t *testing.T) {
+	provider := config.Provider{
+		ID: "test-p", Name: "Test", APIURL: "https://api.example.com", APIToken: "secret-token", Enabled: true,
+		QuotaQuery: &providerquota.ProviderQuotaConfig{Enabled: true, TemplateType: providerquota.TemplateGeneral},
+		CreatedAt:  timeNow(), UpdatedAt: timeNow(),
+	}
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{provider}
+	configStore := config.NewMockStore(cfg)
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "snapshots.db")
+	snapshotDB, err := config.NewSQLiteStore(dbPath, filepath.Join(dir, "unused.json"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	if err := snapshotDB.Save(cfg); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	snapshots := providerquota.NewSnapshotStore(snapshotDB.DB())
+	remaining := 42.50
+	if err := snapshots.SaveUpsert(provider.ID, &providerquota.ProviderQuotaResult{
+		ProviderID: provider.ID, TemplateType: providerquota.TemplateGeneral, Success: true, QueriedAt: time.Now(),
+		Balances: []providerquota.BalanceItem{{Remaining: &remaining, Unit: "USD"}},
+	}); err != nil {
+		t.Fatalf("SaveUpsert() error = %v", err)
+	}
+	if err := snapshotDB.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	srv := NewServer(&AdminConfig{Password: "test"}, configStore, nil)
+	srv.SetQuotaManager(providerquota.NewManager(snapshots, nil, 1))
+	firstReq := httptest.NewRequest(http.MethodPut, "/api/providers/test-p/usage", bytes.NewBufferString(`{"enabled":false}`))
+	firstRec := httptest.NewRecorder()
+	srv.handleProviderUsage(firstRec, firstReq)
+	if firstRec.Code != http.StatusInternalServerError {
+		t.Fatalf("first PUT status = %d, want %d; body = %s", firstRec.Code, http.StatusInternalServerError, firstRec.Body.String())
+	}
+
+	recoveredDB, err := config.NewSQLiteStore(dbPath, filepath.Join(dir, "unused.json"))
+	if err != nil {
+		t.Fatalf("reopen NewSQLiteStore() error = %v", err)
+	}
+	defer recoveredDB.Close()
+	recoveredSnapshots := providerquota.NewSnapshotStore(recoveredDB.DB())
+	srv.SetQuotaManager(providerquota.NewManager(recoveredSnapshots, nil, 1))
+	secondReq := httptest.NewRequest(http.MethodPut, "/api/providers/test-p/usage", bytes.NewBufferString(`{"enabled":false}`))
+	secondRec := httptest.NewRecorder()
+	srv.handleProviderUsage(secondRec, secondReq)
+	if secondRec.Code != http.StatusOK {
+		t.Fatalf("second PUT status = %d, want %d; body = %s", secondRec.Code, http.StatusOK, secondRec.Body.String())
+	}
+	snapshot, err := recoveredSnapshots.Get(provider.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if snapshot != nil {
+		t.Fatal("repeated disabled PUT left the stale snapshot in storage")
+	}
+
+	thirdReq := httptest.NewRequest(http.MethodPut, "/api/providers/test-p/usage", bytes.NewBufferString(`{"enabled":false}`))
+	thirdRec := httptest.NewRecorder()
+	srv.handleProviderUsage(thirdRec, thirdReq)
+	if thirdRec.Code != http.StatusOK {
+		t.Fatalf("idempotent PUT status = %d, want %d; body = %s", thirdRec.Code, http.StatusOK, thirdRec.Body.String())
+	}
+}
+
 func TestProviderUsageSecretRedaction(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Providers = []config.Provider{

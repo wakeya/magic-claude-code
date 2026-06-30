@@ -31,7 +31,7 @@ type Manager struct {
 	configGet ProviderConfigGetter
 
 	// Per-provider in-flight deduplication.
-	inFlight   map[string]*inflightEntry
+	inFlight   map[inflightKey]*inflightEntry
 	inFlightMu sync.Mutex
 
 	// Global concurrency limiter.
@@ -39,6 +39,9 @@ type Manager struct {
 
 	// Snapshot generations prevent a query that started before an invalidation
 	// from recreating the deleted snapshot after its upstream request finishes.
+	// Entries intentionally live for the Manager lifetime: removing one could
+	// reuse generation zero while an old query is still running. Growth is
+	// bounded by the provider IDs invalidated during that Manager's lifetime.
 	snapshotMu          sync.Mutex
 	snapshotGenerations map[string]uint64
 
@@ -63,6 +66,11 @@ type inflightEntry struct {
 	err    error
 }
 
+type inflightKey struct {
+	providerID string
+	generation uint64
+}
+
 // NewManager creates a Manager.
 // maxConcurrency caps the number of simultaneous upstream queries.
 func NewManager(store *SnapshotStore, configGet ProviderConfigGetter, maxConcurrency int) *Manager {
@@ -72,7 +80,7 @@ func NewManager(store *SnapshotStore, configGet ProviderConfigGetter, maxConcurr
 	return &Manager{
 		store:               store,
 		configGet:           configGet,
-		inFlight:            make(map[string]*inflightEntry),
+		inFlight:            make(map[inflightKey]*inflightEntry),
 		semaphore:           make(chan struct{}, maxConcurrency),
 		snapshotGenerations: make(map[string]uint64),
 		stopCh:              make(chan struct{}),
@@ -98,10 +106,13 @@ func (m *Manager) Query(ctx context.Context, providerID string, opts QueryOption
 	// Draft queries are never deduplicated — they carry ephemeral test config
 	// (credentials, scripts) that may differ even for the same provider+BaseURL.
 	if opts.Draft != nil {
-		return m.executeQuery(ctx, providerID, opts)
+		return m.executeQuery(ctx, providerID, opts, 0)
 	}
 
-	dedupKey := "prod:" + providerID
+	m.snapshotMu.Lock()
+	snapshotGeneration := m.snapshotGenerations[providerID]
+	m.snapshotMu.Unlock()
+	dedupKey := inflightKey{providerID: providerID, generation: snapshotGeneration}
 
 	// Check if there's already an in-flight request.
 	m.inFlightMu.Lock()
@@ -123,7 +134,7 @@ func (m *Manager) Query(ctx context.Context, providerID string, opts QueryOption
 	m.inFlightMu.Unlock()
 
 	// Execute the query.
-	result, err := m.executeQuery(ctx, providerID, opts)
+	result, err := m.executeQuery(ctx, providerID, opts, snapshotGeneration)
 
 	// Store the result.
 	entry.result = result
@@ -138,14 +149,8 @@ func (m *Manager) Query(ctx context.Context, providerID string, opts QueryOption
 	return result, err
 }
 
-func (m *Manager) executeQuery(ctx context.Context, providerID string, opts QueryOptions) (*ProviderQuotaResult, error) {
+func (m *Manager) executeQuery(ctx context.Context, providerID string, opts QueryOptions, snapshotGeneration uint64) (*ProviderQuotaResult, error) {
 	persistSnapshot := m.store != nil && !opts.Force && opts.Draft == nil
-	var snapshotGeneration uint64
-	if persistSnapshot {
-		m.snapshotMu.Lock()
-		snapshotGeneration = m.snapshotGenerations[providerID]
-		m.snapshotMu.Unlock()
-	}
 
 	// Always load the provider card to get APIURL/APIToken as fallback.
 	// This is essential for Token Plan / Official Balance first-time tests,

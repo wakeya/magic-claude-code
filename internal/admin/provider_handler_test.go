@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -455,6 +456,51 @@ func TestProviderUpdateInvalidatesQuotaSnapshotOnlyWhenCardCredentialsChange(t *
 	}
 }
 
+func TestProviderUpdateReportsSnapshotDeleteFailureAfterConfigSave(t *testing.T) {
+	provider := config.Provider{
+		ID: "provider-a", Name: "Provider", APIURL: "https://gateway.example/v1", APIToken: "old-token",
+		APIFormat: config.APIFormatAnthropic, Enabled: true,
+		QuotaQuery: &providerquota.ProviderQuotaConfig{Enabled: true, TemplateType: providerquota.TemplateGeneral},
+		CreatedAt:  time.Now(), UpdatedAt: time.Now(),
+	}
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{provider}
+	configStore := &quotaSaveTrackingStore{MockStore: config.NewMockStore(cfg)}
+
+	dir := t.TempDir()
+	snapshotDB, err := config.NewSQLiteStore(filepath.Join(dir, "snapshots.db"), filepath.Join(dir, "unused.json"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	snapshots := providerquota.NewSnapshotStore(snapshotDB.DB())
+	if err := snapshotDB.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	server := NewServer(&AdminConfig{Password: "secret"}, configStore, nil)
+	server.SetQuotaManager(providerquota.NewManager(snapshots, nil, 1))
+	req := httptest.NewRequest(http.MethodPut, "/api/providers/provider-a", bytes.NewBufferString(`{"api_token":"new-token"}`))
+	rec := httptest.NewRecorder()
+	server.handleProvider(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "config saved but failed to clear quota snapshot") {
+		t.Fatalf("body = %q, want partial-success cleanup error", rec.Body.String())
+	}
+	if configStore.saveCalls != 1 {
+		t.Fatalf("config Save() calls = %d, want 1", configStore.saveCalls)
+	}
+	saved, err := configStore.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if saved.Providers[0].APIToken != "new-token" {
+		t.Fatalf("saved API token = %q, want new-token", saved.Providers[0].APIToken)
+	}
+}
+
 func TestImportOverwriteInvalidatesSnapshotWhenFallbackCredentialsChange(t *testing.T) {
 	dir := t.TempDir()
 	store, err := config.NewSQLiteStore(filepath.Join(dir, "proxy.db"), filepath.Join(dir, "config.json"))
@@ -504,6 +550,76 @@ func TestImportOverwriteInvalidatesSnapshotWhenFallbackCredentialsChange(t *test
 	}
 	if got != nil {
 		t.Fatal("overwrite left a snapshot bound to the old card token")
+	}
+}
+
+func TestImportOverwriteReportsSnapshotDeleteFailureWithSavedSummary(t *testing.T) {
+	original := config.Provider{
+		ID: "provider-a", Name: "Provider", APIURL: "https://gateway.example/v1", APIToken: "old-token",
+		APIFormat: config.APIFormatAnthropic, Enabled: true,
+		QuotaQuery: &providerquota.ProviderQuotaConfig{Enabled: true, TemplateType: providerquota.TemplateGeneral},
+		CreatedAt:  time.Now(), UpdatedAt: time.Now(),
+	}
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{original}
+	configStore := &quotaSaveTrackingStore{MockStore: config.NewMockStore(cfg)}
+
+	dir := t.TempDir()
+	snapshotDB, err := config.NewSQLiteStore(filepath.Join(dir, "snapshots.db"), filepath.Join(dir, "unused.json"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	snapshots := providerquota.NewSnapshotStore(snapshotDB.DB())
+	if err := snapshotDB.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	replacement := original
+	replacement.APIToken = "new-token"
+	body, err := json.Marshal(map[string]any{
+		"version": 1, "strategy": "overwrite", "providers": []config.Provider{replacement},
+	})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	server := NewServer(&AdminConfig{Password: "secret"}, configStore, nil)
+	server.SetQuotaManager(providerquota.NewManager(snapshots, nil, 1))
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/import", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	server.handleImportProviders(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+	var summary struct {
+		Success     bool     `json:"success"`
+		Overwritten int      `json:"overwritten"`
+		Errors      []string `json:"errors"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &summary); err != nil {
+		t.Fatalf("Unmarshal() error = %v; body = %s", err, rec.Body.String())
+	}
+	if summary.Success {
+		t.Fatal("summary success = true, want false")
+	}
+	if summary.Overwritten != 1 {
+		t.Fatalf("summary overwritten = %d, want 1", summary.Overwritten)
+	}
+	if len(summary.Errors) != 1 || !strings.Contains(summary.Errors[0], "config saved but failed to clear quota snapshot") {
+		t.Fatalf("summary errors = %v, want snapshot cleanup error", summary.Errors)
+	}
+	if !strings.Contains(summary.Errors[0], "database is closed") {
+		t.Fatalf("summary errors = %v, want underlying delete error", summary.Errors)
+	}
+	if configStore.saveCalls != 1 {
+		t.Fatalf("config Save() calls = %d, want 1", configStore.saveCalls)
+	}
+	saved, err := configStore.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if saved.Providers[0].APIToken != "new-token" {
+		t.Fatalf("saved API token = %q, want new-token", saved.Providers[0].APIToken)
 	}
 }
 

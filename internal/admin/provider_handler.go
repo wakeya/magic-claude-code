@@ -366,7 +366,10 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request, id strin
 	}
 	if provider.QuotaQuery != nil && s.quotaManager != nil &&
 		(oldAPIURL != provider.APIURL || oldAPIToken != provider.APIToken) {
-		_ = s.quotaManager.DeleteSnapshot(id)
+		if err := s.quotaManager.DeleteSnapshot(id); err != nil {
+			http.Error(w, `{"error": "config saved but failed to clear quota snapshot"}`, http.StatusInternalServerError)
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -976,11 +979,18 @@ func (s *Server) handleImportProviders(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.quotaManager != nil {
 		for id := range invalidateSnapshots {
-			_ = s.quotaManager.DeleteSnapshot(id)
+			if err := s.quotaManager.DeleteSnapshot(id); err != nil {
+				summary.Success = false
+				summary.Errors = append(summary.Errors,
+					fmt.Sprintf("%s: config saved but failed to clear quota snapshot: %v", id, err))
+			}
 		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	if !summary.Success {
+		w.WriteHeader(http.StatusInternalServerError)
+	}
 	json.NewEncoder(w).Encode(summary)
 }
 

@@ -93,13 +93,13 @@ func TestManagerDeleteSnapshotInvalidatesInFlightQuery(t *testing.T) {
 	releaseResponse := make(chan struct{})
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(releaseResponse) }) }
-	defer release()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		close(requestStarted)
 		<-releaseResponse
 		_ = json.NewEncoder(w).Encode(map[string]any{"balance": 100})
 	}))
 	defer srv.Close()
+	defer release()
 
 	db := setupTestDB(t)
 	store := NewSnapshotStore(db)
@@ -159,6 +159,121 @@ func TestManagerDeleteSnapshotInvalidatesInFlightQuery(t *testing.T) {
 	}
 	if snapshot != nil {
 		t.Fatal("in-flight query recreated a snapshot after it was invalidated")
+	}
+}
+
+func TestManagerInvalidationStartsNewGenerationQuery(t *testing.T) {
+	firstStarted := make(chan struct{})
+	secondStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseFirst) }) }
+	var requestCount atomic.Int32
+	var secondAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch requestCount.Add(1) {
+		case 1:
+			close(firstStarted)
+			<-releaseFirst
+			_ = json.NewEncoder(w).Encode(map[string]any{"balance": 1})
+		case 2:
+			secondAuth = r.Header.Get("Authorization")
+			close(secondStarted)
+			_ = json.NewEncoder(w).Encode(map[string]any{"balance": 2})
+		default:
+			http.Error(w, "unexpected request", http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+	defer release()
+
+	db := setupTestDB(t)
+	store := NewSnapshotStore(db)
+	configGet := &mockConfigGet{providers: map[string]ProviderConfig{
+		"test-p": {
+			ID: "test-p", Enabled: true, APIURL: srv.URL, APIToken: "old-token",
+			QuotaQuery: &ProviderQuotaConfig{
+				Enabled: true, TemplateType: TemplateGeneral, TimeoutSeconds: 10,
+				Script: `({
+					request: { url: "{{baseUrl}}/balance", method: "GET", headers: { "Authorization": "Bearer {{apiKey}}" } },
+					extractor: function(r) { return { remaining: r.balance, unit: "USD" }; }
+				})`,
+			},
+		},
+	}}
+	mgr := NewManager(store, configGet, 2)
+	type queryOutcome struct {
+		result *ProviderQuotaResult
+		err    error
+	}
+	firstDone := make(chan queryOutcome, 1)
+	go func() {
+		result, err := mgr.Query(context.Background(), "test-p", QueryOptions{})
+		firstDone <- queryOutcome{result: result, err: err}
+	}()
+
+	select {
+	case <-firstStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first generation query did not reach upstream")
+	}
+	provider := configGet.providers["test-p"]
+	provider.APIToken = "new-token"
+	configGet.providers["test-p"] = provider
+	if err := mgr.DeleteSnapshot("test-p"); err != nil {
+		t.Fatalf("DeleteSnapshot() error = %v", err)
+	}
+
+	secondDone := make(chan queryOutcome, 1)
+	go func() {
+		result, err := mgr.Query(context.Background(), "test-p", QueryOptions{})
+		secondDone <- queryOutcome{result: result, err: err}
+	}()
+	select {
+	case <-secondStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("new generation query joined the invalidated in-flight query")
+	}
+	var second queryOutcome
+	select {
+	case second = <-secondDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("new generation query did not finish")
+	}
+	if second.err != nil || second.result == nil || !second.result.Success {
+		t.Fatalf("new generation Query() = (%+v, %v), want success", second.result, second.err)
+	}
+	if got := requestCount.Load(); got != 2 {
+		t.Fatalf("upstream requests = %d, want 2", got)
+	}
+	if secondAuth != "Bearer new-token" {
+		t.Fatalf("second Authorization = %q, want new token", secondAuth)
+	}
+	assertSnapshotRemaining(t, store, "test-p", 2)
+
+	release()
+	select {
+	case first := <-firstDone:
+		if first.err != nil || first.result == nil || !first.result.Success {
+			t.Fatalf("first generation Query() = (%+v, %v), want successful caller result", first.result, first.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first generation query did not finish")
+	}
+	assertSnapshotRemaining(t, store, "test-p", 2)
+}
+
+func assertSnapshotRemaining(t *testing.T, store *SnapshotStore, providerID string, want float64) {
+	t.Helper()
+	snapshot, err := store.Get(providerID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if snapshot == nil || snapshot.Result == nil || len(snapshot.Result.Balances) != 1 || snapshot.Result.Balances[0].Remaining == nil {
+		t.Fatalf("snapshot = %+v, want one remaining balance", snapshot)
+	}
+	if got := *snapshot.Result.Balances[0].Remaining; got != want {
+		t.Fatalf("snapshot remaining = %v, want %v", got, want)
 	}
 }
 

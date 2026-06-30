@@ -163,8 +163,9 @@ func (s *Server) updateProviderUsage(w http.ResponseWriter, r *http.Request, id 
 		return
 	}
 
-	// Delete stale snapshot if config materially changed.
-	if material && s.quotaManager != nil {
+	// Delete stale snapshots after material changes. Disabled configs always
+	// retry cleanup so a previous delete failure cannot strand a snapshot.
+	if (material || !newCfg.Enabled) && s.quotaManager != nil {
 		if err := s.quotaManager.DeleteSnapshot(id); err != nil {
 			http.Error(w, `{"error": "config saved but failed to clear quota snapshot"}`, http.StatusInternalServerError)
 			return
