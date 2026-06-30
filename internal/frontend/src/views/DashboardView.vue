@@ -864,6 +864,7 @@ import UsageCoverageHelp from '@/components/UsageCoverageHelp.vue'
 import UsageStatsScopeHelp from '@/components/UsageStatsScopeHelp.vue'
 import SessionBrowser from '@/components/SessionBrowser.vue'
 import { formatPercent } from '@/utils/formatters'
+import { runProviderImportFlow } from '@/utils/providerImportFlow'
 
 const ProviderUsageModal = defineAsyncComponent(() => import('@/components/ProviderUsageModal.vue'))
 
@@ -1168,14 +1169,34 @@ async function confirmImport() {
   if (!importPreview.value) return
   const { providers: toImport } = importPreview.value
   try {
-    const result = await api.importProviders(toImport, importStrategy.value)
-    importPreview.value = null
-    await loadProviders()
-    const params = { imported: result.imported, skipped: result.skipped, overwritten: result.overwritten, duplicated: result.duplicated }
-    if (result.success) {
-      alert(t('providers.import_done', params))
+    const result = await runProviderImportFlow({
+      importProviders: () => api.importProviders(toImport, importStrategy.value),
+      onImported: () => { importPreview.value = null },
+      reloadProviders: () => api.getProviders(),
+      reloadSnapshots: () => api.getAllProviderUsageSnapshots(),
+    })
+    const params = {
+      imported: result.summary.imported,
+      skipped: result.summary.skipped,
+      overwritten: result.summary.overwritten,
+      duplicated: result.summary.duplicated,
+      errors: result.summary.errors.join('; '),
+    }
+    if (result.kind === 'refresh_failed') {
+      alert(t('providers.import_refresh_failed', { ...params, refreshError: result.error }))
+      return
+    }
+
+    providers.value = result.providers.providers
+    activeProviderId.value = result.providers.active_provider_id
+    quotaSnapshotLoadVersion += 1
+    quotaSnapshots.value = result.snapshots.snapshots
+    if (result.kind === 'partial') {
+      alert(t('providers.import_partial', params))
+    } else if (result.kind === 'with_errors') {
+      alert(t('providers.import_with_errors', params))
     } else {
-      alert(t('providers.import_partial', { ...params, errors: result.errors.join('; ') }))
+      alert(t('providers.import_done', params))
     }
   } catch (error) {
     alert(t('providers.import_failed', { error: error instanceof Error ? error.message : String(error) }))

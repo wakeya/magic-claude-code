@@ -115,10 +115,72 @@ test('importProviders reports backend error and status for an unstructured HTTP 
   }
 })
 
-test('Dashboard refreshes persisted providers before reporting either import outcome', () => {
+test('importProviders rejects a non-2xx success envelope', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    success: true,
+    imported: 1,
+    skipped: 0,
+    overwritten: 0,
+    duplicated: 0,
+    errors: [],
+  }), { status: 500, headers: { 'Content-Type': 'application/json' } })
+
+  try {
+    await assert.rejects(useApi().importProviders([] as Provider[], 'overwrite'), /HTTP 500/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('importProviders rejects summaries with invalid counts', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    for (const imported of [-1, 1.5]) {
+      globalThis.fetch = async () => new Response(JSON.stringify({
+        success: false,
+        imported,
+        skipped: 0,
+        overwritten: 0,
+        duplicated: 0,
+        errors: ['cleanup failed'],
+      }), { status: 500, headers: { 'Content-Type': 'application/json' } })
+      await assert.rejects(useApi().importProviders([] as Provider[], 'overwrite'), /HTTP 500/)
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('importProviders reports status for a non-JSON response', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response('upstream unavailable', { status: 502 })
+
+  try {
+    await assert.rejects(useApi().importProviders([] as Provider[], 'overwrite'), /import failed.*HTTP 502/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('importProviders preserves network errors', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => { throw new Error('network offline') }
+
+  try {
+    await assert.rejects(useApi().importProviders([] as Provider[], 'overwrite'), /network offline/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('Dashboard wires import flow results into provider and snapshot state', () => {
   const section = dashSource.match(/async function confirmImport\(\)[\s\S]*?\n\}/)?.[0] || ''
-  assert.match(section, /const result = await api\.importProviders[\s\S]*?importPreview\.value = null[\s\S]*?await loadProviders\(\)[\s\S]*?if \(result\.success\)/)
-  assert.match(section, /providers\.import_partial/)
-  assert.match(section, /result\.errors\.join/)
+  assert.match(dashSource, /runProviderImportFlow/)
+  assert.match(section, /importPreview\.value = null/)
+  assert.match(section, /providers\.value = result\.providers\.providers/)
+  assert.match(section, /quotaSnapshotLoadVersion \+= 1/)
+  assert.match(section, /quotaSnapshots\.value = result\.snapshots\.snapshots/)
+  assert.match(section, /providers\.import_refresh_failed/)
   assert.doesNotMatch(section, /catch[\s\S]*?providers\.import_invalid/)
 })

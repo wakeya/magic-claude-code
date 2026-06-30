@@ -3,6 +3,7 @@ package admin
 import (
 	"bytes"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -584,6 +585,10 @@ func TestImportOverwriteReportsSnapshotDeleteFailureWithSavedSummary(t *testing.
 	}
 	server := NewServer(&AdminConfig{Password: "secret"}, configStore, nil)
 	server.SetQuotaManager(providerquota.NewManager(snapshots, nil, 1))
+	var logs bytes.Buffer
+	originalLogWriter := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(originalLogWriter)
 	req := httptest.NewRequest(http.MethodPost, "/api/providers/import", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	server.handleImportProviders(rec, req)
@@ -608,8 +613,14 @@ func TestImportOverwriteReportsSnapshotDeleteFailureWithSavedSummary(t *testing.
 	if len(summary.Errors) != 1 || !strings.Contains(summary.Errors[0], "config saved but failed to clear quota snapshot") {
 		t.Fatalf("summary errors = %v, want snapshot cleanup error", summary.Errors)
 	}
-	if !strings.Contains(summary.Errors[0], "database is closed") {
-		t.Fatalf("summary errors = %v, want underlying delete error", summary.Errors)
+	if strings.Contains(summary.Errors[0], "database is closed") {
+		t.Fatalf("summary errors leaked underlying delete error: %v", summary.Errors)
+	}
+	if summary.Errors[0] != "provider-a: config saved but failed to clear quota snapshot" {
+		t.Fatalf("summary errors = %v, want stable sanitized cleanup error", summary.Errors)
+	}
+	if !strings.Contains(logs.String(), "provider-a") || !strings.Contains(logs.String(), "database is closed") {
+		t.Fatalf("logs = %q, want provider ID and underlying delete error", logs.String())
 	}
 	if configStore.saveCalls != 1 {
 		t.Fatalf("config Save() calls = %d, want 1", configStore.saveCalls)

@@ -71,11 +71,12 @@ export interface ProviderImportSummary {
 function isProviderImportSummary(value: unknown): value is ProviderImportSummary {
   if (!value || typeof value !== 'object') return false
   const summary = value as Record<string, unknown>
+  const validCount = (count: unknown) => typeof count === 'number' && Number.isInteger(count) && count >= 0
   return typeof summary.success === 'boolean'
-    && typeof summary.imported === 'number'
-    && typeof summary.skipped === 'number'
-    && typeof summary.overwritten === 'number'
-    && typeof summary.duplicated === 'number'
+    && validCount(summary.imported)
+    && validCount(summary.skipped)
+    && validCount(summary.overwritten)
+    && validCount(summary.duplicated)
     && Array.isArray(summary.errors)
     && summary.errors.every((error) => typeof error === 'string')
 }
@@ -557,7 +558,7 @@ export function useApi() {
       body: JSON.stringify({ version: 1, providers, strategy }),
     })
     const body: unknown = await res.json().catch(() => null)
-    if (isProviderImportSummary(body)) return body
+    if (isProviderImportSummary(body) && (res.ok || !body.success)) return body
 
     const backendError = body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
       ? body.error

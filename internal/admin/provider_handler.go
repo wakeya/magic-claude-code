@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -980,9 +981,10 @@ func (s *Server) handleImportProviders(w http.ResponseWriter, r *http.Request) {
 	if s.quotaManager != nil {
 		for id := range invalidateSnapshots {
 			if err := s.quotaManager.DeleteSnapshot(id); err != nil {
+				log.Printf("admin: failed to clear quota snapshot after importing provider %q: %v", id, err)
 				summary.Success = false
 				summary.Errors = append(summary.Errors,
-					fmt.Sprintf("%s: config saved but failed to clear quota snapshot: %v", id, err))
+					fmt.Sprintf("%s: config saved but failed to clear quota snapshot", id))
 			}
 		}
 	}

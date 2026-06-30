@@ -104,7 +104,9 @@ func (s *Server) getProviderUsage(w http.ResponseWriter, _ *http.Request, id str
 	if s.quotaManager != nil {
 		snap, err := s.quotaManager.GetSnapshot(id)
 		if err != nil {
-			http.Error(w, `{"error": "failed to load quota snapshot"}`, http.StatusInternalServerError)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "failed to load quota snapshot"})
 			return
 		}
 		if snap != nil {

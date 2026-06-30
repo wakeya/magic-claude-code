@@ -86,8 +86,17 @@ func TestProviderUsageGetReportsSnapshotLoadFailure(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("GET status = %d, want %d; body = %s", w.Code, http.StatusInternalServerError, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "failed to load quota snapshot") {
-		t.Fatalf("GET body = %q, want snapshot load error", w.Body.String())
+	if got := w.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+	var response struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("Decode() error = %v; body = %s", err, w.Body.String())
+	}
+	if response.Error != "failed to load quota snapshot" {
+		t.Fatalf("error = %q, want snapshot load error", response.Error)
 	}
 }
 
