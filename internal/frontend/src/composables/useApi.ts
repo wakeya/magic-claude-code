@@ -558,7 +558,7 @@ export function useApi() {
       body: JSON.stringify({ version: 1, providers, strategy }),
     })
     const body: unknown = await res.json().catch(() => null)
-    if (isProviderImportSummary(body) && (res.ok || !body.success)) return body
+    if (isProviderImportSummary(body) && res.ok === body.success) return body
 
     const backendError = body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
       ? body.error

@@ -133,6 +133,46 @@ test('importProviders rejects a non-2xx success envelope', async () => {
   }
 })
 
+test('importProviders rejects a 2xx failure envelope', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    success: false,
+    imported: 1,
+    skipped: 0,
+    overwritten: 0,
+    duplicated: 0,
+    errors: ['cleanup failed'],
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+
+  try {
+    await assert.rejects(useApi().importProviders([] as Provider[], 'overwrite'), /HTTP 200/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('importProviders accepts a 2xx success envelope', async () => {
+  const summary: ProviderImportSummary = {
+    success: true,
+    imported: 1,
+    skipped: 0,
+    overwritten: 0,
+    duplicated: 0,
+    errors: [],
+  }
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(JSON.stringify(summary), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })
+
+  try {
+    assert.deepEqual(await useApi().importProviders([] as Provider[], 'overwrite'), summary)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('importProviders rejects summaries with invalid counts', async () => {
   const originalFetch = globalThis.fetch
   try {
