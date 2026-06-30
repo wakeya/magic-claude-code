@@ -59,6 +59,27 @@ export interface ProvidersResponse {
   active_provider_id: string
 }
 
+export interface ProviderImportSummary {
+  success: boolean
+  imported: number
+  skipped: number
+  overwritten: number
+  duplicated: number
+  errors: string[]
+}
+
+function isProviderImportSummary(value: unknown): value is ProviderImportSummary {
+  if (!value || typeof value !== 'object') return false
+  const summary = value as Record<string, unknown>
+  return typeof summary.success === 'boolean'
+    && typeof summary.imported === 'number'
+    && typeof summary.skipped === 'number'
+    && typeof summary.overwritten === 'number'
+    && typeof summary.duplicated === 'number'
+    && Array.isArray(summary.errors)
+    && summary.errors.every((error) => typeof error === 'string')
+}
+
 export interface CertificateInfo {
   ca_cert_path: string
   server_cert_path: string
@@ -529,14 +550,19 @@ export function useApi() {
   async function importProviders(
     providers: Provider[],
     strategy: 'skip' | 'overwrite' | 'duplicate'
-  ): Promise<{ success: boolean; imported: number; skipped: number; overwritten: number; duplicated: number; errors: string[] }> {
+  ): Promise<ProviderImportSummary> {
     const res = await fetch('/api/providers/import', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ version: 1, providers, strategy }),
     })
-    if (!res.ok) throw new Error(`import failed: ${res.status}`)
-    return res.json()
+    const body: unknown = await res.json().catch(() => null)
+    if (isProviderImportSummary(body)) return body
+
+    const backendError = body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+      ? body.error
+      : 'import failed'
+    throw new Error(`${backendError} (HTTP ${res.status})`)
   }
 
   async function testProvider(id: string): Promise<TestResult> {

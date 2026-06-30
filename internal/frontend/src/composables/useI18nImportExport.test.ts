@@ -29,6 +29,12 @@ test('i18n has import error and done keys', () => {
   assert.ok(keyExists('providers.import_done'), 'import_done missing')
 })
 
+test('i18n explains partial import persistence and cleanup errors in both locales', () => {
+  assert.equal(source.split("'providers.import_partial'").length - 1, 2)
+  assert.match(source, /部分成功[\s\S]*配置已保存[\s\S]*快照清理失败/)
+  assert.match(source, /partially succeeded[\s\S]*configuration (?:was )?saved[\s\S]*snapshot cleanup failed/i)
+})
+
 test('i18n has preview modal keys', () => {
   assert.ok(keyExists('providers.preview.title'), 'preview.title missing')
   assert.ok(keyExists('providers.preview.new'), 'preview.new missing')

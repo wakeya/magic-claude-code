@@ -1171,9 +1171,14 @@ async function confirmImport() {
     const result = await api.importProviders(toImport, importStrategy.value)
     importPreview.value = null
     await loadProviders()
-    alert(t('providers.import_done', { imported: result.imported, skipped: result.skipped, overwritten: result.overwritten, duplicated: result.duplicated }))
-  } catch {
-    alert(t('providers.import_invalid'))
+    const params = { imported: result.imported, skipped: result.skipped, overwritten: result.overwritten, duplicated: result.duplicated }
+    if (result.success) {
+      alert(t('providers.import_done', params))
+    } else {
+      alert(t('providers.import_partial', { ...params, errors: result.errors.join('; ') }))
+    }
+  } catch (error) {
+    alert(t('providers.import_failed', { error: error instanceof Error ? error.message : String(error) }))
   }
 }
 

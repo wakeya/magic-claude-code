@@ -103,7 +103,11 @@ func (s *Server) getProviderUsage(w http.ResponseWriter, _ *http.Request, id str
 	var snapDTO *providerquota.SanitizedSnapshot
 	if s.quotaManager != nil {
 		snap, err := s.quotaManager.GetSnapshot(id)
-		if err == nil && snap != nil {
+		if err != nil {
+			http.Error(w, `{"error": "failed to load quota snapshot"}`, http.StatusInternalServerError)
+			return
+		}
+		if snap != nil {
 			dto := sanitizeSnapshot(snap)
 			snapDTO = &dto
 		}

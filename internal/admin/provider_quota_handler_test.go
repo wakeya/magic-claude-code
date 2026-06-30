@@ -58,6 +58,39 @@ func TestProviderUsageGetNotFound(t *testing.T) {
 	}
 }
 
+func TestProviderUsageGetReportsSnapshotLoadFailure(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{{
+		ID: "test-p", Name: "Test", APIURL: "https://api.example.com", APIToken: "secret-token", Enabled: true,
+		CreatedAt: timeNow(), UpdatedAt: timeNow(),
+	}}
+	configStore := config.NewMockStore(cfg)
+
+	dir := t.TempDir()
+	snapshotDB, err := config.NewSQLiteStore(filepath.Join(dir, "snapshots.db"), filepath.Join(dir, "unused.json"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	snapshots := providerquota.NewSnapshotStore(snapshotDB.DB())
+	if err := snapshotDB.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	srv := NewServer(&AdminConfig{Password: "test"}, configStore, nil)
+	srv.SetQuotaManager(providerquota.NewManager(snapshots, nil, 1))
+	req := httptest.NewRequest(http.MethodGet, "/api/providers/test-p/usage", nil)
+	w := httptest.NewRecorder()
+
+	srv.handleProviderUsage(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("GET status = %d, want %d; body = %s", w.Code, http.StatusInternalServerError, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "failed to load quota snapshot") {
+		t.Fatalf("GET body = %q, want snapshot load error", w.Body.String())
+	}
+}
+
 func TestProviderUsagePutAndRetrieve(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Providers = []config.Provider{

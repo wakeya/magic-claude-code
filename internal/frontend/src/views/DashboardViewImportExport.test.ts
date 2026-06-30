@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { useApi, type Provider, type ProviderImportSummary } from '../composables/useApi.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const useApiSource = readFileSync(join(here, '..', 'composables', 'useApi.ts'), 'utf8')
@@ -72,4 +73,52 @@ test('useApi exportProviders checks res.ok', () => {
 test('useApi importProviders checks res.ok', () => {
   const methodSection = useApiSource.match(/importProviders[\s\S]*?\n  \}/)?.[0] || ''
   assert.match(methodSection, /res\.ok|!res\.ok|res\.status/)
+})
+
+test('importProviders preserves a structured summary returned with HTTP 500', async () => {
+  const summary: ProviderImportSummary = {
+    success: false,
+    imported: 1,
+    skipped: 2,
+    overwritten: 3,
+    duplicated: 4,
+    errors: ['config saved but failed to clear quota snapshot'],
+  }
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(JSON.stringify(summary), {
+    status: 500,
+    headers: { 'Content-Type': 'application/json' },
+  })
+
+  try {
+    const result = await useApi().importProviders([] as Provider[], 'overwrite')
+    assert.deepEqual(result, summary)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('importProviders reports backend error and status for an unstructured HTTP error', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: 'database unavailable' }), {
+    status: 503,
+    headers: { 'Content-Type': 'application/json' },
+  })
+
+  try {
+    await assert.rejects(
+      useApi().importProviders([] as Provider[], 'overwrite'),
+      /database unavailable.*503|503.*database unavailable/,
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('Dashboard refreshes persisted providers before reporting either import outcome', () => {
+  const section = dashSource.match(/async function confirmImport\(\)[\s\S]*?\n\}/)?.[0] || ''
+  assert.match(section, /const result = await api\.importProviders[\s\S]*?importPreview\.value = null[\s\S]*?await loadProviders\(\)[\s\S]*?if \(result\.success\)/)
+  assert.match(section, /providers\.import_partial/)
+  assert.match(section, /result\.errors\.join/)
+  assert.doesNotMatch(section, /catch[\s\S]*?providers\.import_invalid/)
 })
