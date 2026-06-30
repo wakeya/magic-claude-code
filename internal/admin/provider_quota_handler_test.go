@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +16,16 @@ import (
 
 type adminQuotaConfigGetter struct {
 	provider providerquota.ProviderConfig
+}
+
+type quotaSaveTrackingStore struct {
+	*config.MockStore
+	saveCalls int
+}
+
+func (s *quotaSaveTrackingStore) Save(cfg *config.Config) error {
+	s.saveCalls++
+	return s.MockStore.Save(cfg)
 }
 
 func (g *adminQuotaConfigGetter) GetProviderByID(id string) *providerquota.ProviderConfig {
@@ -154,6 +165,49 @@ func TestProviderUsagePutDisabledDeletesExistingSnapshot(t *testing.T) {
 	}
 	if got != nil {
 		t.Fatal("disabling quota query left the existing snapshot in storage")
+	}
+}
+
+func TestProviderUsagePutReportsSnapshotDeleteFailureAfterConfigSave(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{{
+		ID: "test-p", Name: "Test", APIURL: "https://api.example.com", APIToken: "secret-token", Enabled: true,
+		QuotaQuery: &providerquota.ProviderQuotaConfig{Enabled: true, TemplateType: providerquota.TemplateGeneral},
+		CreatedAt:  timeNow(), UpdatedAt: timeNow(),
+	}}
+	configStore := &quotaSaveTrackingStore{MockStore: config.NewMockStore(cfg)}
+
+	dir := t.TempDir()
+	snapshotDB, err := config.NewSQLiteStore(filepath.Join(dir, "snapshots.db"), filepath.Join(dir, "unused.json"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	snapshots := providerquota.NewSnapshotStore(snapshotDB.DB())
+	if err := snapshotDB.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	srv := NewServer(&AdminConfig{Password: "test"}, configStore, nil)
+	srv.SetQuotaManager(providerquota.NewManager(snapshots, nil, 1))
+	req := httptest.NewRequest(http.MethodPut, "/api/providers/test-p/usage", bytes.NewBufferString(`{"enabled":false}`))
+	w := httptest.NewRecorder()
+	srv.handleProviderUsage(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("PUT status = %d, want %d; body = %s", w.Code, http.StatusInternalServerError, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "config saved but failed to clear quota snapshot") {
+		t.Fatalf("PUT body = %q, want partial-success cleanup error", w.Body.String())
+	}
+	if configStore.saveCalls != 1 {
+		t.Fatalf("config Save() calls = %d, want 1", configStore.saveCalls)
+	}
+	saved, err := configStore.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if saved.Providers[0].QuotaQuery.Enabled {
+		t.Fatal("quota config was not saved before snapshot cleanup failed")
 	}
 }
 

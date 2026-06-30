@@ -88,6 +88,80 @@ func TestManagerDeduplicatesConcurrentQueries(t *testing.T) {
 	}
 }
 
+func TestManagerDeleteSnapshotInvalidatesInFlightQuery(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseResponse := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseResponse) }) }
+	defer release()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(requestStarted)
+		<-releaseResponse
+		_ = json.NewEncoder(w).Encode(map[string]any{"balance": 100})
+	}))
+	defer srv.Close()
+
+	db := setupTestDB(t)
+	store := NewSnapshotStore(db)
+	configGet := &mockConfigGet{
+		providers: map[string]ProviderConfig{
+			"test-p": {
+				ID:       "test-p",
+				Enabled:  true,
+				APIURL:   srv.URL,
+				APIToken: "test-token",
+				QuotaQuery: &ProviderQuotaConfig{
+					Enabled:      true,
+					TemplateType: TemplateGeneral,
+					Script: `({
+						request: { url: "{{baseUrl}}/balance", method: "GET" },
+						extractor: function(r) { return { remaining: r.balance, unit: "USD" }; }
+					})`,
+					TimeoutSeconds: 10,
+				},
+			},
+		},
+	}
+	mgr := NewManager(store, configGet, 1)
+
+	queryDone := make(chan error, 1)
+	go func() {
+		_, err := mgr.Query(context.Background(), "test-p", QueryOptions{})
+		queryDone <- err
+	}()
+
+	select {
+	case <-requestStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("production query did not reach the upstream server")
+	}
+	provider := configGet.providers["test-p"]
+	disabledQuota := *provider.QuotaQuery
+	disabledQuota.Enabled = false
+	provider.QuotaQuery = &disabledQuota
+	configGet.providers["test-p"] = provider
+	if err := mgr.DeleteSnapshot("test-p"); err != nil {
+		t.Fatalf("DeleteSnapshot() error = %v", err)
+	}
+	release()
+	select {
+	case err := <-queryDone:
+		if err != nil {
+			t.Fatalf("Query() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("production query did not finish")
+	}
+
+	snapshot, err := store.Get("test-p")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if snapshot != nil {
+		t.Fatal("in-flight query recreated a snapshot after it was invalidated")
+	}
+}
+
 // TestManagerDedupDistinguishesDraftAndProduction verifies that a concurrent
 // draft (test) query and a production query for the same provider are NOT
 // deduplicated against each other — they must execute independently. This

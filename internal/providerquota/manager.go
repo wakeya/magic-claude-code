@@ -37,6 +37,11 @@ type Manager struct {
 	// Global concurrency limiter.
 	semaphore chan struct{}
 
+	// Snapshot generations prevent a query that started before an invalidation
+	// from recreating the deleted snapshot after its upstream request finishes.
+	snapshotMu          sync.Mutex
+	snapshotGenerations map[string]uint64
+
 	// Scheduler control.
 	scanTicker *time.Ticker
 	stopCh     chan struct{}
@@ -65,13 +70,14 @@ func NewManager(store *SnapshotStore, configGet ProviderConfigGetter, maxConcurr
 		maxConcurrency = 4
 	}
 	return &Manager{
-		store:      store,
-		configGet:  configGet,
-		inFlight:   make(map[string]*inflightEntry),
-		semaphore:  make(chan struct{}, maxConcurrency),
-		stopCh:     make(chan struct{}),
-		done:       make(chan struct{}),
-		jitterFn:   jitterForProvider,
+		store:               store,
+		configGet:           configGet,
+		inFlight:            make(map[string]*inflightEntry),
+		semaphore:           make(chan struct{}, maxConcurrency),
+		snapshotGenerations: make(map[string]uint64),
+		stopCh:              make(chan struct{}),
+		done:                make(chan struct{}),
+		jitterFn:            jitterForProvider,
 	}
 }
 
@@ -133,6 +139,14 @@ func (m *Manager) Query(ctx context.Context, providerID string, opts QueryOption
 }
 
 func (m *Manager) executeQuery(ctx context.Context, providerID string, opts QueryOptions) (*ProviderQuotaResult, error) {
+	persistSnapshot := m.store != nil && !opts.Force && opts.Draft == nil
+	var snapshotGeneration uint64
+	if persistSnapshot {
+		m.snapshotMu.Lock()
+		snapshotGeneration = m.snapshotGenerations[providerID]
+		m.snapshotMu.Unlock()
+	}
+
 	// Always load the provider card to get APIURL/APIToken as fallback.
 	// This is essential for Token Plan / Official Balance first-time tests,
 	// where the draft does not carry the card's URL/token.
@@ -251,13 +265,15 @@ func (m *Manager) executeQuery(ctx context.Context, providerID string, opts Quer
 	}
 
 	// Persist the result.
-	if m.store != nil && !opts.Force {
-		// Force means test/draft query; don't persist.
-		// Actually, if Draft is set, don't persist either.
-		if opts.Draft == nil {
-			if err := m.store.SaveUpsert(providerID, result); err != nil {
-				log.Printf("providerquota: failed to save snapshot for %s: %v", providerID, err)
-			}
+	if persistSnapshot {
+		var saveErr error
+		m.snapshotMu.Lock()
+		if m.snapshotGenerations[providerID] == snapshotGeneration {
+			saveErr = m.store.SaveUpsert(providerID, result)
+		}
+		m.snapshotMu.Unlock()
+		if saveErr != nil {
+			log.Printf("providerquota: failed to save snapshot for %s: %v", providerID, saveErr)
 		}
 	}
 
@@ -378,8 +394,12 @@ func (m *Manager) GetAllSnapshots() (map[string]*QuotaSnapshot, error) {
 
 // DeleteSnapshot removes the snapshot for a provider.
 func (m *Manager) DeleteSnapshot(providerID string) error {
+	m.snapshotMu.Lock()
+	defer m.snapshotMu.Unlock()
+	m.snapshotGenerations[providerID]++
 	return m.store.Delete(providerID)
 }
+
 // newTokenPlanAdapter builds a TokenPlanAdapter, injecting the test HTTP
 // client when configured.
 func (m *Manager) newTokenPlanAdapter(timeout time.Duration) *TokenPlanAdapter {
