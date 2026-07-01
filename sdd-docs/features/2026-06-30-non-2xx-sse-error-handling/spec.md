@@ -4,8 +4,8 @@ Local page: N/A
 Proxy entry: `POST /v1/messages`, `POST /anthropic/v1/messages`
 Reference sources: Runtime Docker logs, `data/proxy.db`, `internal/proxy/handler.go`, `internal/proxy/heartbeat.go`
 Stack: Go 1.26 standard library (`net/http`, `io`, `log`) + SQLite usage recorder
-Last updated: 2026-06-30
-Progress: validated, 2 / 2 complete
+Last updated: 2026-07-01
+Progress: validated, 3 / 3 complete
 
 ## Overall Analysis (Source Analysis)
 
@@ -64,6 +64,7 @@ This approach is preferred over duplicating error capture inside the SSE branch 
 | --- | --- | --- | --- | --- |
 | 1 | Completed | Make HTTP error status take precedence over SSE media type | `internal/proxy/handler.go` | Regression tests prove error body forwarding, diagnostic logging, and usage persistence |
 | 2 | Completed | Verify streaming and rectifier regressions | `internal/proxy/server_test.go` and existing proxy tests | Targeted proxy tests and full Go test suite pass |
+| 3 | Completed | Restrict request summaries to safe diagnostic fields | `internal/proxy/handler.go`, `internal/proxy/server_test.go` | Security reproduction fails before the fix; allowlist, negative leak checks, status matrix, and race suite pass afterward |
 
 ## Requirements
 
@@ -90,6 +91,7 @@ This approach is preferred over duplicating error capture inside the SSE branch 
 8. Reactive 400 rectification behavior remains unchanged:
    - a successful retry follows the response path appropriate to the retry response;
    - an unsuccessful or inapplicable rectification forwards and records the restored final error once.
+9. Detailed error logs include only typed safe request fields: `model`, `stream`, numeric generation controls, and counts for `messages`, `tools`, or `input`. Prompt-bearing, identifying, credential, and unknown fields are omitted.
 
 ### Files in Scope
 
@@ -107,7 +109,7 @@ internal/proxy/
 2. Do not change the response body delivered to the client, including SSE-labeled JSON error bodies.
 3. Do not parse an HTTP error body as token usage.
 4. Preserve existing error sanitization and size limits: the client receives the complete body while persisted/logged error text remains bounded and secret-sanitized.
-5. Preserve existing compatibility header and request-parameter summarization; do not add raw message content, tool schemas, credentials, or authorization values to logs.
+5. Preserve existing compatibility header summarization. Request parameters must use an explicit typed allowlist; do not log raw system prompts, metadata, message/input content, tool schemas, credentials, authorization values, or unknown extensions.
 6. Do not add a configuration switch. Correct routing is protocol behavior, not a user preference.
 7. Keep the change localized; do not refactor unrelated streaming or usage-recording code.
 
@@ -403,7 +405,7 @@ internal/proxy/
 - [x] `go test ./...`
 - [x] `git diff --check`
 
-### Actual Verification Evidence
+#### Actual Verification Evidence
 
 Date: 2026-06-30
 Implementation commit: `43dd1f0` (`fix(proxy): record SSE-labeled HTTP errors`)
@@ -414,3 +416,53 @@ Implementation commit: `43dd1f0` (`fix(proxy): record SSE-labeled HTTP errors`)
 - `go test ./internal/proxy -count=1` passed in 4.515 seconds.
 - `go test ./...` passed for all Go packages; packages without tests reported `[no test files]`.
 - `git diff --check` produced no output, and inspection of `43dd1f0` confirmed one handler predicate change plus one focused regression test.
+
+### Task 3: Restrict Error-Log Request Summaries
+
+#### Requirements
+
+**Objective** - Prevent detailed HTTP error logs from copying prompt-bearing, identifying, credential, or unknown top-level request fields.
+
+**Outcomes** - `summarizeRequestParams` uses an explicit typed allowlist; Handler-level tests prove sensitive values do not reach logs while safe diagnostic fields remain available.
+
+**Evidence** - Before the fix, the focused Handler test reproduced `secret-system-prompt` in the process log. After the fix, the same path omits every sensitive marker for SSE-labeled 400, 429, and 500 responses.
+
+**Constraints** - Keep the status-first SSE predicate, complete response forwarding, error persistence, rectifier behavior, and detailed response logging unchanged. Unknown fields default to omission.
+
+**Edge Cases** - Allowlisted keys with object or string values of the wrong type; OpenAI Responses `input` arrays; stream and non-stream requests; 4xx and 5xx responses.
+
+**Verification** - Focused security tests, the complete proxy package, and `make test` with the race detector pass.
+
+#### Plan
+
+**Files:**
+
+- Modify: `internal/proxy/handler.go:742`
+- Test: `internal/proxy/server_test.go`
+- Archive: `sdd-docs/features/2026-06-30-non-2xx-sse-error-handling/review-notes.md`
+- Archive: `sdd-docs/features/2026-06-30-non-2xx-sse-error-handling/review-notes_ZH.md`
+
+- [x] Extend the Handler test with unique markers in `system`, `metadata`, a credential-shaped field, an unknown extension, and message content.
+- [x] Run the focused test before the fix and confirm it fails because `secret-system-prompt` appears in `[Proxy] Error` logs.
+- [x] Replace the request-summary denylist with typed allowlisting for `model`, `stream`, numeric generation controls, and collection counts.
+- [x] Table-drive the Handler path across 400/non-stream, 429/stream, and 500/stream responses.
+- [x] Add direct helper coverage for safe output and wrong-type omission.
+- [x] Run focused tests, full proxy tests, and `make test`.
+- [x] Commit code as `dcdc3c4` and direct helper coverage as `b37030b`.
+
+#### Verification
+
+- [x] Safe fields and collection counts remain in diagnostic logs.
+- [x] System prompts, metadata, credentials, unknown extensions, message content, tool content, and input content do not appear in logs.
+- [x] Wrongly typed values under allowlisted names are omitted.
+- [x] SSE-labeled 400, 429, and 500 responses retain status, body, HTTP error persistence, and no-heartbeat behavior.
+- [x] `go test ./internal/proxy -run 'TestProxyRecordsSSELabeledHTTPError|TestSummarizeRequestParamsAllowsOnlySafeDiagnostics' -count=1`
+- [x] `go test ./internal/proxy -count=1`
+- [x] `make test`
+
+#### Actual Verification Evidence
+
+- RED reproduced the CWE-532 path with `secret-system-prompt` present in the detailed error log.
+- GREEN focused tests passed after `dcdc3c4`; direct allowlist coverage passed in `b37030b`.
+- `go test ./internal/proxy -count=1` passed.
+- `make test` passed with `-race` and coverage enabled.
