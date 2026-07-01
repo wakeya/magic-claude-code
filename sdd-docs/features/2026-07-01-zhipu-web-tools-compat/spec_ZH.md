@@ -5,7 +5,7 @@
 观测供应商：智谱 Anthropic 兼容端点（`/api/anthropic/v1/messages`）
 技术栈：Go 1.26、`net/http`、现有反应式修复器
 最后更新：2026-07-01
-进度：`fix/sse-error-handling` 已并入 main；任务 0 完成（commit `b3931c8`）——安全 SSE 异常诊断已实现并以合成 fixture 验证；证据门决策为 GO；任务 1-3 待实施。
+进度：`fix/sse-error-handling` 已并入 main；全部任务完成——任务 0 安全 SSE 异常诊断（commit `b3931c8`）、任务 1 红灯测试、任务 2 1210 分类（commit `439b1ed`）、任务 3 回归验证通过（`make test -race` 绿）；真实供应商验证按设计未执行。
 
 ## 整体分析（源站分析）
 
@@ -142,9 +142,9 @@ Claude Code 会话 `202606302035` 以以下结构时间线结束：
 | 3 | 完成 | 明确待审 SSE 分支去向 | 稳定主线基线 | `fix/sse-error-handling` 已并入 main |
 | 4 | 完成 | 安全捕获异常 SSE 结构 | `internal/usage/sse.go`、代理异常日志与测试 | 合成不完整/error stream 输出纯结构证据；无内容泄露（commit `b3931c8`） |
 | 5 | 完成 | 审阅任务 0 证据门 | 本规格中的决策记录 | GO —— 见任务 0 证据门决策 |
-| 6 | 已规划 | 添加失败单元测试和代理回归测试 | `rectifier_test.go`、`server_test.go` | 修改生产代码前定向测试失败 |
-| 7 | 已规划 | 安全识别智谱不透明参数错误 | `rectifier.go` | 仅在工具清理改变请求时恢复 |
-| 8 | 已规划 | 完整回归并记录证据 | 更新进度和验证章节 | `make test` 通过 |
+| 6 | 完成 | 添加失败单元测试和代理回归测试 | `rectifier_test.go`、`server_test.go` | RED 已确认（3 通过 / 6 因正确原因失败）；任务 2 转绿（commit `439b1ed`） |
+| 7 | 完成 | 安全识别智谱不透明参数错误 | `rectifier.go` | 新增 `isOpaqueToolCompatibilityError`，位于更高优先级分类之后；仅 `cleanTools` 改变请求时恢复（commit `439b1ed`） |
+| 8 | 完成 | 完整回归并记录证据 | 更新进度和验证章节 | `make test -race` 通过（exit 0）；Kimi/thinking/content-type/SSE/usage 套件无回归 |
 
 ## 需求
 
@@ -353,8 +353,8 @@ git commit -m "feat(proxy): log safe SSE anomaly structure"
 
 #### 计划
 
-- [ ] 确认待审 SSE 分支已完成处置，并在选定实施基线上运行 `git status --short --branch`。
-- [ ] 修改 `internal/proxy/rectifier_test.go`，添加等价的表驱动测试：
+- [x] 确认待审 SSE 分支已完成处置，并在选定实施基线上运行 `git status --short --branch`。
+- [x] 修改 `internal/proxy/rectifier_test.go`，添加等价的表驱动测试：
 
 ```go
 func TestMatchErrorPattern_Zhipu1210(t *testing.T) {
@@ -394,9 +394,9 @@ func TestMatchErrorPattern_Zhipu1210(t *testing.T) {
 }
 ```
 
-- [ ] 修改 `internal/proxy/server_test.go`，添加表驱动 WebFetch/WebSearch fixture。后端第一次收到请求时返回精确的合成 1210 JSON；重试时断言根级 `$schema`、`additionalProperties` 和工具级 `cache_control` 已删除，同时 `name`、`properties`、`required`、WebFetch `format` 与 WebSearch `minLength` 仍保留，然后返回 HTTP 200。
-- [ ] 添加独立代理 fixture，其工具 schema 不含可清理字段。返回 1210 后断言后端只收到一次请求，客户端原样收到初始 400 body。
-- [ ] 运行：
+- [x] 修改 `internal/proxy/server_test.go`，添加表驱动 WebFetch/WebSearch fixture。后端第一次收到请求时返回精确的合成 1210 JSON；重试时断言根级 `$schema`、`additionalProperties` 和工具级 `cache_control` 已删除，同时 `name`、`properties`、`required`、WebFetch `format` 与 WebSearch `minLength` 仍保留，然后返回 HTTP 200。
+- [x] 添加独立代理 fixture，其工具 schema 不含可清理字段。返回 1210 后断言后端只收到一次请求，客户端原样收到初始 400 body。
+- [x] 运行：
 
 ```bash
 go test ./internal/proxy -run 'TestMatchErrorPattern_Zhipu1210|TestProxy(RetriesZhipu1210WebTools|DoesNotRetryZhipu1210WhenToolCleanupMakesNoChanges)' -count=1
@@ -406,8 +406,8 @@ go test ./internal/proxy -run 'TestMatchErrorPattern_Zhipu1210|TestProxy(Retries
 
 #### 验证
 
-- [ ] 红灯测试因目标行为缺失而失败，不是 fixture 语法或初始化错误。
-- [ ] 测试数据不包含真实凭据、prompt、会话或供应商 request ID。
+- [x] 红灯测试因目标行为缺失而失败，不是 fixture 语法或初始化错误。
+- [x] 测试数据不包含真实凭据、prompt、会话或供应商 request ID。
 
 ### 任务 2：添加最小 1210 分类
 
@@ -427,7 +427,7 @@ go test ./internal/proxy -run 'TestMatchErrorPattern_Zhipu1210|TestProxy(Retries
 
 #### 计划
 
-- [ ] 修改 `internal/proxy/rectifier.go`，新增以下窄范围 helper：
+- [x] 修改 `internal/proxy/rectifier.go`，新增以下窄范围 helper：
 
 ```go
 func isOpaqueToolCompatibilityError(errorBody []byte, lowerMessage string) bool
@@ -446,13 +446,13 @@ strings.Contains(lowerMessage, "[1210]") &&
     strings.Contains(lowerMessage, "api 调用参数有误")
 ```
 
-- [ ] 在 `matchErrorPattern` 中保持以下分类顺序：明确工具错误；thinking/signature 错误；unsupported/unknown content type（`PatternGenericBadRequest`）；不透明 1210 兼容错误；其余通用 invalid request。1210 匹配时返回 `PatternToolValidation`。这样复用 `cleanTools`，且只有 `RectifyRequest` 报告发生变化时 `tryRectify` 才会重试。
-- [ ] 不修改 `cleanTools`、`RectifyRequest` 或 `Handler.tryRectify`，除非处置后的主线已经改变这些契约；若契约变化，必须先更新本规格再实施。
-- [ ] 运行任务 1 的定向命令。
+- [x] 在 `matchErrorPattern` 中保持以下分类顺序：明确工具错误；thinking/signature 错误；unsupported/unknown content type（`PatternGenericBadRequest`）；不透明 1210 兼容错误；其余通用 invalid request。1210 匹配时返回 `PatternToolValidation`。这样复用 `cleanTools`，且只有 `RectifyRequest` 报告发生变化时 `tryRectify` 才会重试。
+- [x] 不修改 `cleanTools`、`RectifyRequest` 或 `Handler.tryRectify`，除非处置后的主线已经改变这些契约；若契约变化，必须先更新本规格再实施。
+- [x] 运行任务 1 的定向命令。
 
 预期：PASS。
 
-- [ ] 运行全部修复器相关测试：
+- [x] 运行全部修复器相关测试：
 
 ```bash
 go test ./internal/proxy -run 'TestMatchErrorPattern|TestCleanTools|TestRectifyRequest|TestProxyRetries' -count=1
@@ -460,7 +460,7 @@ go test ./internal/proxy -run 'TestMatchErrorPattern|TestCleanTools|TestRectifyR
 
 预期：PASS。
 
-- [ ] 审查定向 diff 后再提交：
+- [x] 审查定向 diff 后再提交：
 
 ```bash
 git diff --check
@@ -471,9 +471,9 @@ git commit -m "fix(proxy): recover Zhipu web tool parameter errors"
 
 #### 验证
 
-- [ ] 分类仅依赖结构化错误码或精确标记。
-- [ ] 未增加供应商主机名判断或主动请求转换。
-- [ ] 不可清理的请求不会重试。
+- [x] 分类仅依赖结构化错误码或精确标记。
+- [x] 未增加供应商主机名判断或主动请求转换。
+- [x] 不可清理的请求不会重试。
 
 ### 任务 3：回归验证并关闭规格
 
@@ -493,7 +493,7 @@ git commit -m "fix(proxy): recover Zhipu web tool parameter errors"
 
 #### 计划
 
-- [ ] 运行：
+- [x] 运行：
 
 ```bash
 make test
@@ -501,7 +501,7 @@ make test
 
 预期：PASS，包括仓库配置的 race detector。
 
-- [ ] 运行：
+- [x] 运行：
 
 ```bash
 git status --short
@@ -510,12 +510,33 @@ git diff --check HEAD^ HEAD
 
 预期：只包含本功能相关文件，且无空白错误。
 
-- [ ] 只有用户明确批准真实验证时，才通过已配置供应商发送一个最小合成请求；仅记录状态码、请求次数、工具名和是否发生清理，不记录原始 body 或凭据。否则明确记录“按设计未执行真实验证”。
-- [ ] 在 `spec.md` 与 `spec_ZH.md` 中更新 `Progress`、开发检查清单和本任务验证章节，写入精确命令、结果、commit hash 与剩余限制。
+- [x] 只有用户明确批准真实验证时，才通过已配置供应商发送一个最小合成请求；仅记录状态码、请求次数、工具名和是否发生清理，不记录原始 body 或凭据。否则明确记录“按设计未执行真实验证”。
+- [x] 在 `spec.md` 与 `spec_ZH.md` 中更新 `Progress`、开发检查清单和本任务验证章节，写入精确命令、结果、commit hash 与剩余限制。
 
 #### 验证
 
-- [ ] 定向测试通过。
-- [ ] `make test` 通过。
-- [ ] 中英文规格语义一致。
-- [ ] 明确记录真实验证状态。
+- [x] 定向测试通过。
+- [x] `make test` 通过。
+- [x] 中英文规格语义一致。
+- [x] 明确记录真实验证状态。
+
+#### 关闭证据（2026-07-01）
+
+**`zhipu-web-compat` 分支提交（未推送）：**
+- `b3931c8` —— `feat(proxy): log safe SSE anomaly structure`（任务 0）
+- `344ab54` —— `docs(zhipu-web): record Task 0 evidence gate decision`
+- `439b1ed` —— `fix(proxy): recover Zhipu web tool parameter errors`（任务 1+2）
+
+**命令与结果：**
+- `go test ./internal/usage -count=1` → 56 通过。
+- `go test ./internal/proxy -run 'TestMatchErrorPattern|TestCleanTools|TestRectifyRequest|TestProxyRetries' -count=1` → 43 通过。
+- `go test ./internal/proxy -run 'TestMatchErrorPattern_Zhipu1210|TestProxy(RetriesZhipu1210WebTools|DoesNotRetryZhipu1210WhenToolCleanupMakesNoChanges)' -count=1` → 9 通过（`439b1ed` 前 RED，之后 GREEN）。
+- `make test`（= `go test -v -race -coverprofile=coverage.out ./...`）→ exit 0，无 `FAIL`。
+- `git status --short` → 提交后工作区干净。
+- `git diff --check HEAD^ HEAD` → 无空白错误。
+
+**验收标准状态：** 全部 8 项以合成 `httptest` fixture 通过——（1）异常 fixture 输出有界结构且无内容标记；（2）恢复前已记录任务 0 证据与 GO 决策；（3）智谱 1210 fixture 归类为工具清理候选；（4）WebFetch/WebSearch 在删除 `$schema`/`additionalProperties` 后重试一次；（5）`format`/`minLength`/`properties`/`required` 保留；（6）无可清理字段的 1210 fixture 不重试原样转发；（7）现有 Kimi/thinking/未知 content/大型 400/SSE 状态/心跳/usage 测试通过；（8）`make test` 通过。
+
+**真实供应商验证：** 按设计未执行（未获明确批准；消耗额度且向外发送请求）。合成 fixture 确定性地复现了 1210 错误形态与清理/重试语义。
+
+**剩余限制：** 真实 589-603 字节 HTTP-200 SSE 前置响应结构仍未捕获；若后续批准真实运行，任务 0 诊断将以安全方式记录它。这不影响 1210 恢复——恢复目标针对的是已记录的 400 响应。
