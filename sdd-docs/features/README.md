@@ -144,6 +144,7 @@ Local page / proxy entry / reference sources / stack / last updated / progress
 | Fish Profile Dedup Scanner | `2026-06-21-fish-profile-dedup-scanner/spec.md` | `2026-06-21-fish-profile-dedup-scanner/spec_ZH.md` |
 | Provider Quota Query | `2026-06-27-provider-quota-query/spec.md` | `2026-06-27-provider-quota-query/spec_ZH.md` |
 | SSE-Labeled HTTP Error Handling | `2026-06-30-non-2xx-sse-error-handling/spec.md` | `2026-06-30-non-2xx-sse-error-handling/spec_ZH.md` |
+| Zhipu Web Tool Compatibility Recovery | `2026-07-01-zhipu-web-tools-compat/spec.md` | `2026-07-01-zhipu-web-tools-compat/spec_ZH.md` |
 
 ## 状态生命周期
 
