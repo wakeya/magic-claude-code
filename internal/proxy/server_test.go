@@ -571,7 +571,7 @@ func TestProxyRecordsSSELabeledHTTPError(t *testing.T) {
 				"unknown_extension":{"value":"secret-extension-value"},
 				"messages":[{"role":"user","content":"secret-message-content"}]
 			}`, tt.stream)
-			req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body))
+			req := httptest.NewRequest("POST", "/v1/messages?beta=true&token=secret-query-value", strings.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
 
@@ -606,10 +606,16 @@ func TestProxyRecordsSSELabeledHTTPError(t *testing.T) {
 
 			logs := logBuf.String()
 			if !strings.Contains(logs, fmt.Sprintf("[Proxy] Error %d", tt.status)) ||
+				!strings.Contains(logs, `upstream_query="beta=true,other_count=1"`) ||
+				!strings.Contains(logs, `query: beta=true,other_count=1`) ||
+				!strings.Contains(logs, `"body_bytes":`) ||
 				!strings.Contains(logs, `"max_tokens":64`) ||
-				!strings.Contains(logs, `"messages":"[1 items]"`) ||
+				!strings.Contains(logs, `"messages":{"content_types":{"text":1},"count":1,"roles":{"user":1}}`) ||
 				!strings.Contains(logs, `"model":"mapped-sonnet"`) ||
-				!strings.Contains(logs, fmt.Sprintf(`"stream":%t`, tt.stream)) ||
+				!strings.Contains(logs, fmt.Sprintf(`"stream":{"present":true,"value":%t}`, tt.stream)) ||
+				!strings.Contains(logs, `"system":{"chars":20,"type":"string"}`) ||
+				!strings.Contains(logs, `"metadata":{"keys":1,"type":"object"}`) ||
+				!strings.Contains(logs, `"unknown_top_level_fields":2`) ||
 				!strings.Contains(logs, "resp: "+errorBody) {
 				t.Fatalf("missing detailed HTTP error log:\n%s", logs)
 			}
@@ -622,6 +628,9 @@ func TestProxyRecordsSSELabeledHTTPError(t *testing.T) {
 				"secret-top-level-key",
 				"secret-extension-value",
 				"secret-message-content",
+				"secret-query-value",
+				"?beta=true",
+				"token=",
 			} {
 				if strings.Contains(logs, secret) {
 					t.Fatalf("sensitive request field %q leaked into logs:\n%s", secret, logs)
@@ -632,14 +641,8 @@ func TestProxyRecordsSSELabeledHTTPError(t *testing.T) {
 }
 
 func TestSummarizeRequestParamsAllowsOnlySafeDiagnostics(t *testing.T) {
-	tests := []struct {
-		name string
-		body string
-		want string
-	}{
-		{
-			name: "keeps typed safe fields and collection counts",
-			body: `{
+	t.Run("keeps safe structure without content", func(t *testing.T) {
+		body := `{
 				"model":"claude-sonnet",
 				"stream":true,
 				"max_tokens":64,
@@ -654,28 +657,59 @@ func TestSummarizeRequestParamsAllowsOnlySafeDiagnostics(t *testing.T) {
 				"metadata":{"user_id":"secret-user"},
 				"api_key":"secret-key",
 				"unknown_extension":{"value":"secret-extension"}
-			}`,
-			want: `{"input":"[1 items]","max_output_tokens":128,"max_tokens":64,"messages":"[1 items]","model":"claude-sonnet","stream":true,"temperature":0.2,"tools":"[1 items]","top_k":5,"top_p":0.9}`,
-		},
-		{
-			name: "drops allowlisted names with unsafe value types",
-			body: `{
+			}`
+		raw := summarizeRequestParams([]byte(body))
+		for _, want := range []string{
+			`"model":"claude-sonnet"`,
+			`"stream":{"present":true,"value":true}`,
+			`"max_tokens":64`,
+			`"max_output_tokens":128`,
+			`"temperature":0.2`,
+			`"top_p":0.9`,
+			`"top_k":5`,
+			`"messages":{"content_types":{"text":1},"count":1,"roles":{"other":1}}`,
+			`"tools":{"count":1`,
+			`"input":{"items":1,"type":"array"}`,
+			`"system":{"chars":13,"type":"string"}`,
+			`"metadata":{"keys":1,"type":"object"}`,
+			`"unknown_top_level_fields":2`,
+		} {
+			if !strings.Contains(raw, want) {
+				t.Fatalf("summary missing %s: %s", want, raw)
+			}
+		}
+		for _, secret := range []string{
+			"secret-message", "secret-tool", "secret-input", "secret-system",
+			"user_id", "secret-user", "api_key", "secret-key", "unknown_extension", "secret-extension",
+		} {
+			if strings.Contains(raw, secret) {
+				t.Fatalf("summary leaked %q: %s", secret, raw)
+			}
+		}
+	})
+
+	t.Run("wrong types reveal type only", func(t *testing.T) {
+		body := `{
 				"model":{"value":"secret-model"},
 				"stream":"secret-stream",
 				"max_tokens":{"value":"secret-max-tokens"},
 				"messages":"secret-messages"
-			}`,
-			want: `{}`,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := summarizeRequestParams([]byte(tt.body)); got != tt.want {
-				t.Fatalf("summarizeRequestParams() = %s, want %s", got, tt.want)
+			}`
+		raw := summarizeRequestParams([]byte(body))
+		for _, want := range []string{
+			`"stream":{"present":true,"type":"string"}`,
+			`"messages":{"chars":15,"type":"string"}`,
+		} {
+			if !strings.Contains(raw, want) {
+				t.Fatalf("summary missing %s: %s", want, raw)
 			}
-		})
-	}
+		}
+		for _, secret := range []string{"secret-model", "secret-stream", "secret-max-tokens", "secret-messages"} {
+			if strings.Contains(raw, secret) {
+				t.Fatalf("summary leaked %q: %s", secret, raw)
+			}
+		}
+	})
 }
 
 func TestProxyForwardsLargeNonRecoverable400Body(t *testing.T) {
@@ -1809,6 +1843,7 @@ func TestRedactUpstreamURL(t *testing.T) {
 		{"https://host.example/v1/messages", "https://host.example/v1/messages"},
 		{"", ""},
 		{"not-a-url", "not-a-url"},
+		{"https://host.example/%zz?token=secret-query-value", "<invalid-url>"},
 	}
 	for _, c := range cases {
 		if got := redactUpstreamURL(c.in); got != c.want {
@@ -1896,5 +1931,47 @@ func TestProxyLogsRedactQuery(t *testing.T) {
 	logs := buf.String()
 	if strings.Contains(logs, "sign=SECRET-TOKEN") {
 		t.Errorf("sensitive query leaked into logs:\n%s", logs)
+	}
+}
+
+func TestProxyStreamLogsRedactQueryAndSummarizeBeta(t *testing.T) {
+	var buf bytes.Buffer
+	oldOutput := log.Writer()
+	oldFlags := log.Flags()
+	oldPrefix := log.Prefix()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	t.Cleanup(func() {
+		log.SetOutput(oldOutput)
+		log.SetFlags(oldFlags)
+		log.SetPrefix(oldPrefix)
+	})
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1}}}\n\n"))
+		_, _ = w.Write([]byte("event: message_stop\ndata: {\"type\":\"message_stop\",\"usage\":{\"output_tokens\":1}}\n\n"))
+	}))
+	defer backend.Close()
+
+	handler := NewHandler(config.NewMockStore(testProxyConfig(testProxyProvider(backend.URL))), http.DefaultTransport.(*http.Transport))
+	req := httptest.NewRequest("POST", "/v1/messages?beta=true&token=secret-query-value", strings.NewReader(`{
+		"model":"claude-sonnet","stream":true,
+		"messages":[{"role":"user","content":"hi"}]
+	}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	logs := buf.String()
+	if !strings.Contains(logs, "[Stream] SSE stream detected") ||
+		!strings.Contains(logs, `upstream_query="beta=true,other_count=1"`) ||
+		!strings.Contains(logs, `query: beta=true,other_count=1`) {
+		t.Fatalf("missing safe stream query diagnostics:\n%s", logs)
+	}
+	for _, secret := range []string{"secret-query-value", "token=", "?beta=true"} {
+		if strings.Contains(logs, secret) {
+			t.Fatalf("stream log leaked %q:\n%s", secret, logs)
+		}
 	}
 }

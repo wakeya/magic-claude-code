@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -260,7 +261,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// 检查是否为 SSE 流式响应，如果是则注入心跳
 	if resp.StatusCode < 400 && isSSEStream(resp) {
-		log.Printf("[Stream] SSE stream detected for %s, enabling heartbeat injection", backendURL)
+		log.Printf("[Stream] SSE stream detected for %s, enabling heartbeat injection", formatUpstreamLogTarget(backendURL))
 		hw := newHeartbeatWriter(w)
 		var observer ChunkObserver
 		var streamObserver *streamUsageObserver
@@ -273,7 +274,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			streamBody = streamOpenAIStreamingResponse(resp.Body, providerAPIFormat(activeProvider))
 		}
 		if err := copyWithHeartbeatAndObserver(hw, streamBody, observer); err != nil {
-			log.Printf("Stream interrupted for %s: %v (this is normal if client disconnected)", backendURL, err)
+			log.Printf("Stream interrupted for %s: %v (this is normal if client disconnected)", formatUpstreamLogTarget(backendURL), err)
 			usageReq.ErrorType = usage.ErrorClientAborted
 			usageReq.ErrorMessage = usage.SanitizeErrorMessage(err.Error())
 		}
@@ -300,7 +301,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		_, err = io.Copy(io.MultiWriter(w, observer), responseBody)
 		if err != nil {
-			log.Printf("Stream interrupted for %s: %v (this is normal if client disconnected)", backendURL, err)
+			log.Printf("Stream interrupted for %s: %v (this is normal if client disconnected)", formatUpstreamLogTarget(backendURL), err)
 			usageReq.ErrorType = usage.ErrorClientAborted
 			usageReq.ErrorMessage = usage.SanitizeErrorMessage(err.Error())
 		}
@@ -314,7 +315,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				tok.UsageSource = usage.UsageSourceNone
 				tok.UsageParseStatus = usage.ParseStatusSkippedNon2xx
 				log.Printf("[Proxy] Error %d %s | headers: %s | params: %s | resp: %s",
-					resp.StatusCode, backendURL, summarizeCompatHeaders(r.Header), summarizeRequestParams(modifiedBody), usageReq.ErrorMessage)
+					resp.StatusCode, formatUpstreamLogTarget(backendURL), summarizeCompatHeaders(r.Header), summarizeRequestParams(modifiedBody), usageReq.ErrorMessage)
 			} else {
 				values, source, status := usage.ExtractUsageFromJSON(observer.Body())
 				tok = tokenRecordFromUsage(values, source, status)
@@ -339,6 +340,9 @@ func providerAPIFormat(provider *config.Provider) config.APIFormat {
 // 只保留 scheme://host/path。防止 provider URL 中的凭证、签名等敏感信息泄露到日志。
 // 逻辑共享自 config.RedactURL，确保日志/管理 API/配置校验三处口径一致。
 func redactUpstreamURL(rawURL string) string {
+	if _, err := url.Parse(rawURL); err != nil {
+		return "<invalid-url>"
+	}
 	return config.RedactURL(rawURL)
 }
 
@@ -347,7 +351,7 @@ func providerLogFields(provider *config.Provider, upstreamURL string) string {
 		if upstreamURL == "" {
 			upstreamURL = "-"
 		}
-		return fmt.Sprintf(` provider_name=- upstream_url=%q`, redactUpstreamURL(upstreamURL))
+		return fmt.Sprintf(` provider_name=- upstream_url=%q upstream_query=%q`, redactUpstreamURL(upstreamURL), summarizeUpstreamQuery(upstreamURL))
 	}
 
 	providerName := provider.Name
@@ -361,7 +365,7 @@ func providerLogFields(provider *config.Provider, upstreamURL string) string {
 	if apiURL == "" {
 		apiURL = "-"
 	}
-	return fmt.Sprintf(` provider_name=%q upstream_url=%q`, providerName, redactUpstreamURL(apiURL))
+	return fmt.Sprintf(` provider_name=%q upstream_url=%q upstream_query=%q`, providerName, redactUpstreamURL(apiURL), summarizeUpstreamQuery(apiURL))
 }
 
 func buildUpstreamURL(baseURL, requestPath string, apiFormat config.APIFormat) string {
@@ -738,41 +742,6 @@ func copyUpstreamHeaders(dst *http.Request, src http.Header, apiToken string, ap
 	}
 }
 
-// summarizeRequestParams 生成请求参数摘要（用于错误日志）
-func summarizeRequestParams(body []byte) string {
-	var req map[string]any
-	if json.Unmarshal(body, &req) != nil {
-		return fmt.Sprintf("<%d bytes, not JSON>", len(body))
-	}
-
-	summary := make(map[string]any)
-	if model, ok := req["model"].(string); ok {
-		summary["model"] = model
-	}
-	if stream, ok := req["stream"].(bool); ok {
-		summary["stream"] = stream
-	}
-	for _, key := range []string{
-		"max_tokens",
-		"max_output_tokens",
-		"temperature",
-		"top_p",
-		"top_k",
-	} {
-		if value, ok := req[key].(float64); ok {
-			summary[key] = value
-		}
-	}
-	for _, key := range []string{"messages", "tools", "input"} {
-		if items, ok := req[key].([]any); ok {
-			summary[key] = fmt.Sprintf("[%d items]", len(items))
-		}
-	}
-
-	out, _ := json.Marshal(summary)
-	return string(out)
-}
-
 // summarizeCompatHeaders 提取对兼容性排查有用的请求头（用于错误日志）
 func summarizeCompatHeaders(header http.Header) string {
 	keys := []string{"Anthropic-Version", "Anthropic-Beta", "Content-Type"}
@@ -855,7 +824,7 @@ func (h *Handler) tryRectify(
 		return nil, restoredBody()
 	}
 
-	log.Printf("[Rectifier] Cleanup applied, retrying request to %s", backendURL)
+	log.Printf("[Rectifier] Cleanup applied, retrying request to %s", formatUpstreamLogTarget(backendURL))
 
 	// 重建重试请求
 	retryReq, err := http.NewRequest(origReq.Method, backendURL, bytes.NewReader(cleanedBody))
