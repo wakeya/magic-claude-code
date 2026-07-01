@@ -472,6 +472,16 @@ func TestMatchErrorPattern_Zhipu1210(t *testing.T) {
 			body: `{"error":{"code":"1210","message":"unsupported content type: tool_reference"}}`,
 			want: PatternGenericBadRequest,
 		},
+		{
+			name: "structured code wins over generic invalid request phrase",
+			body: `{"error":{"code":"1210","message":"Invalid request: [1210][API 调用参数有误，请检查文档。][synthetic-id]"}}`,
+			want: PatternToolValidation,
+		},
+		{
+			name: "structured code wins over chinese illegal-request phrase",
+			body: `{"error":{"code":"1210","message":"非法请求：[1210][API 调用参数有误][synthetic-id]"}}`,
+			want: PatternToolValidation,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

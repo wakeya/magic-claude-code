@@ -68,15 +68,22 @@ func matchErrorPattern(errorBody []byte) ErrorPattern {
 		return PatternThinkingSignature
 	}
 
-	// 模式 3：通用 400 错误（如 kimi "Invalid request Error"）
-	if hasGenericInvalidRequestPhrase(lower) {
+	// 模式 3：unsupported/unknown content type ——优先级高于 1210（spec 分类顺序），
+	// 仍归 PatternGenericBadRequest，由 cleanUnknownContentTypes 处理。
+	if isUnsupportedContentTypePhrase(lower) {
 		return PatternGenericBadRequest
 	}
 
-	// 模式 4：不透明供应商参数错误（智谱 1210）——仅在更高优先级短语均未命中时兜底，
-	// 复用 cleanTools；只有 RectifyRequest 报告实际变更时 tryRectify 才会重试。
+	// 模式 4：不透明供应商参数错误（智谱 1210）——结构化 error.code 或精确消息兜底，
+	// 优先于其余通用 invalid request 短语（code=="1210" 是主信号）。复用 cleanTools；
+	// 只有 RectifyRequest 报告实际变更时 tryRectify 才会重试。
 	if isOpaqueToolCompatibilityError(errorBody, lower) {
 		return PatternToolValidation
+	}
+
+	// 模式 5：其余通用 400 错误（如 kimi "Invalid request Error"）
+	if hasGenericInvalidRequestPhrase(lower) {
+		return PatternGenericBadRequest
 	}
 
 	return PatternNone
@@ -207,9 +214,17 @@ func hasToolErrorContext(lower string) bool {
 	return false
 }
 
+// isUnsupportedContentTypePhrase 检测 unsupported/unknown content type 短语。
+// 这类错误优先级高于 1210 兜底，仍归 PatternGenericBadRequest（由 cleanUnknownContentTypes 处理）。
+func isUnsupportedContentTypePhrase(lower string) bool {
+	return strings.Contains(lower, "unsupported content type") ||
+		strings.Contains(lower, "unknown content type")
+}
+
 // isOpaqueToolCompatibilityError 识别智谱等供应商不透明的参数错误：结构化 error.code == "1210"，
 // 或同时包含 [1210] 与 "api 调用参数有误" 的精确消息兜底。仅在更高优先级（工具/thinking/
-// content-type/通用 invalid request）均未命中时调用，避免匹配任意出现的数字 1210。
+// content-type）均未命中时调用，避免匹配任意出现的数字 1210。它优先于"其余通用 invalid request"
+// 短语，因为结构化 code=="1210" 是主信号。
 func isOpaqueToolCompatibilityError(errorBody []byte, lowerMessage string) bool {
 	var wrapper struct {
 		Error struct {
