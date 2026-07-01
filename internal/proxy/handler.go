@@ -744,21 +744,31 @@ func summarizeRequestParams(body []byte) string {
 	if json.Unmarshal(body, &req) != nil {
 		return fmt.Sprintf("<%d bytes, not JSON>", len(body))
 	}
+
 	summary := make(map[string]any)
-	for k, v := range req {
-		switch k {
-		case "messages":
-			if arr, ok := v.([]any); ok {
-				summary[k] = fmt.Sprintf("[%d items]", len(arr))
-			}
-		case "tools":
-			if arr, ok := v.([]any); ok {
-				summary[k] = fmt.Sprintf("[%d items]", len(arr))
-			}
-		default:
-			summary[k] = v
+	if model, ok := req["model"].(string); ok {
+		summary["model"] = model
+	}
+	if stream, ok := req["stream"].(bool); ok {
+		summary["stream"] = stream
+	}
+	for _, key := range []string{
+		"max_tokens",
+		"max_output_tokens",
+		"temperature",
+		"top_p",
+		"top_k",
+	} {
+		if value, ok := req[key].(float64); ok {
+			summary[key] = value
 		}
 	}
+	for _, key := range []string{"messages", "tools", "input"} {
+		if items, ok := req[key].([]any); ok {
+			summary[key] = fmt.Sprintf("[%d items]", len(items))
+		}
+	}
+
 	out, _ := json.Marshal(summary)
 	return string(out)
 }
