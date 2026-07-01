@@ -73,6 +73,12 @@ func matchErrorPattern(errorBody []byte) ErrorPattern {
 		return PatternGenericBadRequest
 	}
 
+	// 模式 4：不透明供应商参数错误（智谱 1210）——仅在更高优先级短语均未命中时兜底，
+	// 复用 cleanTools；只有 RectifyRequest 报告实际变更时 tryRectify 才会重试。
+	if isOpaqueToolCompatibilityError(errorBody, lower) {
+		return PatternToolValidation
+	}
+
 	return PatternNone
 }
 
@@ -199,6 +205,22 @@ func hasToolErrorContext(lower string) bool {
 		}
 	}
 	return false
+}
+
+// isOpaqueToolCompatibilityError 识别智谱等供应商不透明的参数错误：结构化 error.code == "1210"，
+// 或同时包含 [1210] 与 "api 调用参数有误" 的精确消息兜底。仅在更高优先级（工具/thinking/
+// content-type/通用 invalid request）均未命中时调用，避免匹配任意出现的数字 1210。
+func isOpaqueToolCompatibilityError(errorBody []byte, lowerMessage string) bool {
+	var wrapper struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(errorBody, &wrapper) == nil && wrapper.Error.Code == "1210" {
+		return true
+	}
+	return strings.Contains(lowerMessage, "[1210]") &&
+		strings.Contains(lowerMessage, "api 调用参数有误")
 }
 
 // cleanTools 清理 tool 定义中的不兼容字段，返回清理后的请求体和是否修改

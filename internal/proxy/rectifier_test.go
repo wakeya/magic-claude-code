@@ -445,3 +445,39 @@ func TestMatchErrorPattern_UnknownContentType(t *testing.T) {
 		t.Errorf("expected PatternGenericBadRequest for unknown content type error, got %v", got)
 	}
 }
+
+func TestMatchErrorPattern_Zhipu1210(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want ErrorPattern
+	}{
+		{
+			name: "structured code",
+			body: `{"type":"error","error":{"type":"invalid_request_error","code":"1210","message":"[1210][API 调用参数有误，请检查文档。][synthetic-id]"}}`,
+			want: PatternToolValidation,
+		},
+		{
+			name: "exact message fallback",
+			body: `{"error":{"message":"[1210][API 调用参数有误，请检查文档。][synthetic-id]"}}`,
+			want: PatternToolValidation,
+		},
+		{
+			name: "unrelated digits",
+			body: `{"error":{"message":"request 1210 could not be found"}}`,
+			want: PatternNone,
+		},
+		{
+			name: "content block remains higher priority",
+			body: `{"error":{"code":"1210","message":"unsupported content type: tool_reference"}}`,
+			want: PatternGenericBadRequest,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := matchErrorPattern([]byte(tt.body)); got != tt.want {
+				t.Fatalf("matchErrorPattern() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

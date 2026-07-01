@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2220,5 +2221,199 @@ func TestProxyLogsAnomalyAndRetainsClientAbortOnDisconnect(t *testing.T) {
 	// 安全红线：客户端中断场景下仍不得泄露 SECRET 内容
 	if strings.Contains(jsonStr, "ABORT-SECRET-CONTENT") {
 		t.Fatalf("anomaly payload leaked secret content on client abort: %s", jsonStr)
+	}
+}
+
+// zhipu1210ErrorBody 是合成的智谱 1210 错误响应体（synthetic-id，无真实凭据/会话信息）。
+const zhipu1210ErrorBody = `{"type":"error","error":{"type":"invalid_request_error","code":"1210","message":"[1210][API 调用参数有误，请检查文档。][synthetic-id]"}}`
+
+// TestProxyRetriesZhipu1210WebTools 验证代理对智谱 1210 错误触发 tryRectify 重试，
+// 且重试请求中工具定义的可清理字段（$schema、additionalProperties、cache_control）已被删除，
+// 同时核心字段（properties、required、format、minLength）保持不变。
+//
+// 表驱动覆盖 WebFetch、WebSearch 两个工具。
+func TestProxyRetriesZhipu1210WebTools(t *testing.T) {
+	cases := []struct {
+		name        string
+		requestBody string
+		// checkCleanedBody 断言第二次（重试）请求 body 的清理结果。
+		checkCleanedBody func(t *testing.T, body string)
+	}{
+		{
+			name: "WebFetch",
+			requestBody: `{
+				"model":"claude-sonnet",
+				"messages":[{"role":"user","content":"fetch example"}],
+				"tools":[{
+					"name":"WebFetch",
+					"description":"Fetch content from a URL (synthetic)",
+					"cache_control":{"type":"ephemeral"},
+					"input_schema":{
+						"$schema":"https://json-schema.org/draft/2020-12/schema",
+						"type":"object",
+						"properties":{
+							"url":{"type":"string","format":"uri"},
+							"prompt":{"type":"string"}
+						},
+						"required":["url"],
+						"additionalProperties":false
+					}
+				}]
+			}`,
+			checkCleanedBody: func(t *testing.T, body string) {
+				// 可清理字段已删除
+				if strings.Contains(body, "$schema") {
+					t.Errorf("retry body still contains $schema: %s", body)
+				}
+				if strings.Contains(body, "additionalProperties") {
+					t.Errorf("retry body still contains additionalProperties: %s", body)
+				}
+				if strings.Contains(body, "cache_control") {
+					t.Errorf("retry body still contains cache_control: %s", body)
+				}
+				// 核心字段保留
+				if !strings.Contains(body, `"name":"WebFetch"`) {
+					t.Errorf("retry body missing tool name: %s", body)
+				}
+				if !strings.Contains(body, `"properties"`) {
+					t.Errorf("retry body missing properties: %s", body)
+				}
+				if !strings.Contains(body, `"required":["url"]`) {
+					t.Errorf("retry body missing required: %s", body)
+				}
+				if !strings.Contains(body, `"format":"uri"`) {
+					t.Errorf("retry body missing format:uri: %s", body)
+				}
+			},
+		},
+		{
+			name: "WebSearch",
+			requestBody: `{
+				"model":"claude-sonnet",
+				"messages":[{"role":"user","content":"search example"}],
+				"tools":[{
+					"name":"WebSearch",
+					"description":"Search the web (synthetic)",
+					"cache_control":{"type":"ephemeral"},
+					"input_schema":{
+						"$schema":"https://json-schema.org/draft/2020-12/schema",
+						"type":"object",
+						"properties":{
+							"query":{"type":"string","minLength":1}
+						},
+						"required":["query"],
+						"additionalProperties":false
+					}
+				}]
+			}`,
+			checkCleanedBody: func(t *testing.T, body string) {
+				// 可清理字段已删除
+				if strings.Contains(body, "$schema") {
+					t.Errorf("retry body still contains $schema: %s", body)
+				}
+				if strings.Contains(body, "additionalProperties") {
+					t.Errorf("retry body still contains additionalProperties: %s", body)
+				}
+				if strings.Contains(body, "cache_control") {
+					t.Errorf("retry body still contains cache_control: %s", body)
+				}
+				// 核心字段保留
+				if !strings.Contains(body, `"name":"WebSearch"`) {
+					t.Errorf("retry body missing tool name: %s", body)
+				}
+				if !strings.Contains(body, `"properties"`) {
+					t.Errorf("retry body missing properties: %s", body)
+				}
+				if !strings.Contains(body, `"required":["query"]`) {
+					t.Errorf("retry body missing required: %s", body)
+				}
+				if !strings.Contains(body, `"minLength":1`) {
+					t.Errorf("retry body missing minLength: %s", body)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := &fakeUsageRecorder{}
+			var reqCount int32
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				n := atomic.AddInt32(&reqCount, 1)
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("read backend request: %v", err)
+				}
+
+				if n == 1 {
+					// 第一次：返回智谱 1210 错误
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write([]byte(zhipu1210ErrorBody))
+					return
+				}
+
+				// 第二次（重试）：断言清理结果后返回 200
+				tc.checkCleanedBody(t, string(body))
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"usage":{"input_tokens":3,"output_tokens":2}}`))
+			}))
+			defer backend.Close()
+
+			handler := NewHandler(config.NewMockStore(testProxyConfig(testProxyProvider(backend.URL))), http.DefaultTransport.(*http.Transport), recorder)
+			req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(tc.requestBody))
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+			}
+			if reqCount != 2 {
+				t.Fatalf("backend request count = %d, want 2 (1210 should trigger retry)", reqCount)
+			}
+		})
+	}
+}
+
+// TestProxyDoesNotRetryZhipu1210WhenToolCleanupMakesNoChanges 验证：
+// 当 1210 错误的工具定义无可清理字段（仅 type:object + properties:{}）时，
+// 代理不触发重试（cleanTools 无变更 → RectifyRequest 返回 false），
+// 客户端原样收到 400 与原始 1210 body。
+func TestProxyDoesNotRetryZhipu1210WhenToolCleanupMakesNoChanges(t *testing.T) {
+	recorder := &fakeUsageRecorder{}
+	var reqCount int32
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&reqCount, 1)
+		// 所有请求统一返回 1210 错误
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(zhipu1210ErrorBody))
+	}))
+	defer backend.Close()
+
+	handler := NewHandler(config.NewMockStore(testProxyConfig(testProxyProvider(backend.URL))), http.DefaultTransport.(*http.Transport), recorder)
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{
+		"model":"claude-sonnet",
+		"messages":[{"role":"user","content":"hello"}],
+		"tools":[{
+			"name":"NoOpTool",
+			"description":"A tool with nothing to clean (synthetic)",
+			"input_schema":{
+				"type":"object",
+				"properties":{}
+			}
+		}]
+	}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if reqCount != 1 {
+		t.Fatalf("backend request count = %d, want 1 (no retry when cleanup makes no changes)", reqCount)
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "1210") {
+		t.Fatalf("response body should contain original 1210 error: %s", rec.Body.String())
 	}
 }
