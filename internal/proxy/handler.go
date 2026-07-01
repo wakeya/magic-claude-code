@@ -273,16 +273,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if resp.StatusCode < 400 && providerAPIFormat(activeProvider) != config.APIFormatAnthropic {
 			streamBody = streamOpenAIStreamingResponse(resp.Body, providerAPIFormat(activeProvider))
 		}
-		if err := copyWithHeartbeatAndObserver(hw, streamBody, observer); err != nil {
-			log.Printf("Stream interrupted for %s: %v (this is normal if client disconnected)", formatUpstreamLogTarget(backendURL), err)
+		streamErr := copyWithHeartbeatAndObserver(hw, streamBody, observer)
+		if streamErr != nil {
+			log.Printf("Stream interrupted for %s: %v (this is normal if client disconnected)", formatUpstreamLogTarget(backendURL), streamErr)
 			usageReq.ErrorType = usage.ErrorClientAborted
-			usageReq.ErrorMessage = usage.SanitizeErrorMessage(err.Error())
+			usageReq.ErrorMessage = usage.SanitizeErrorMessage(streamErr.Error())
 		}
 		if shouldRecordUsage {
 			values, source, status, firstByte := streamObserver.Result()
 			usageReq.ResponseBytes = streamObserver.Bytes()
 			usageReq.TimeToFirstByteMS = firstByte
 			h.finishUsageRecord(usageReq, tokenRecordFromUsage(values, source, status))
+			if diag := streamObserver.Diagnostics(); streamErr != nil || !streamObserver.IsComplete() || diag.ParseErrors > 0 || diag.ErrorEvents > 0 {
+				log.Printf("[Stream] anomaly %s", streamAnomalyPayload(reqID, streamObserver.Bytes(), diag, modifiedBody, backendURL))
+			}
 		}
 	} else {
 		// 非 SSE 响应，直接复制
@@ -581,6 +585,40 @@ func (o *streamUsageObserver) Bytes() int64 {
 
 func (o *streamUsageObserver) IsComplete() bool {
 	return o.usage.IsComplete()
+}
+
+// Diagnostics 透传 SSE 诊断信息，供异常日志使用。
+func (o *streamUsageObserver) Diagnostics() usage.SSEDiagnostics {
+	return o.usage.Diagnostics()
+}
+
+// streamAnomalyPayload 构建单行可解析 JSON 的 SSE 异常日志负载。
+// 安全红线：只 marshal SSEDiagnostics + response_bytes + summarizeRequestParams 的安全输出 + redacted upstream。
+// 绝不包含 raw body、text/thinking/error.message 内容或原始 SSE payload。
+func streamAnomalyPayload(reqID string, responseBytes int64, diag usage.SSEDiagnostics, requestBody []byte, backendURL string) string {
+	// summarizeRequestParams 返回有界 JSON 字符串（不含 prompt/text/schema 值）
+	safeParams := json.RawMessage(summarizeRequestParams(requestBody))
+
+	payload := struct {
+		RequestID     string                 `json:"request_id"`
+		ResponseBytes int64                  `json:"response_bytes"`
+		Upstream      string                 `json:"upstream"`
+		RequestParams json.RawMessage        `json:"request_params"`
+		Diagnostics   usage.SSEDiagnostics   `json:"diagnostics"`
+	}{
+		RequestID:     reqID,
+		ResponseBytes: responseBytes,
+		Upstream:      formatUpstreamLogTarget(backendURL),
+		RequestParams: safeParams,
+		Diagnostics:   diag,
+	}
+
+	out, err := json.Marshal(payload)
+	if err != nil {
+		// 万一 marshal 失败，返回最小安全占位
+		return fmt.Sprintf(`{"request_id":%q,"error":"payload_marshal_failed","complete":%v,"error_events":%d}`, reqID, diag.Complete, diag.ErrorEvents)
+	}
+	return string(out)
 }
 
 // transformRequest 转换请求体（模型映射 + 按供应商能力剥离 thinking）
