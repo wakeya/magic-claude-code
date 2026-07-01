@@ -48,6 +48,17 @@ resp: {"type":"error","error":{"type":"invalid_request_error","code":"1210","mes
 
 同一份运行证据排除了 cc-switch #3090 所述“缺少 `beta=true`”是本次 MCC 请求失败原因。03:40:55 的流式 URL 与 03:40:57 的最终 400 URL 都包含 `?beta=true`。普通 `>>>`/`<<<` 行之所以不显示，是因为 `providerLogFields` 按设计调用 `config.RedactURL` 删除所有 query 后再展示。详细错误行当前直接打印原始 `backendURL`，虽然能看到 beta，也可能泄露其他 query secret。因此任务 4 将增加只允许 beta 状态/数量的摘要，同时让所有 URL 本身都保持 query 脱敏。
 
+Claude Code 会话 `202606302035` 提供了会话级关联证据，其最后三次失败轮次为：
+
+```text
+04:50:02 ToolSearch -> matches [WebSearch, WebFetch]
+04:50:04 API 400 / 1210
+04:58:13 API 400 / 1210
+08:50:58 API 400 / 1210
+```
+
+最后一次失败在 SQLite 中形成一对请求：`stream=true`、请求 859619 字节、HTTP 200、响应 589 字节、`client_aborted`；随后 stream 缺失、请求 859605 字节、HTTP 400、响应 213 字节。14 字节请求差与移除 `"stream":true,` 一致。这确认了失败与动态加载 Web 工具、stream 到非 stream 重试之间存在持续强关联；但尚未证明供应商拒绝哪个工具 schema 字段，也未确认前置 589 字节 HTTP-200 SSE 响应中的哪个结构事件导致 Claude Code 中断并重试。
+
 ### 根因
 
 `isSSEStream` 只检查响应 `Content-Type` 是否包含 `text/event-stream`。`Handler.ServeHTTP` 随后让这一媒体类型判断优先于 `resp.StatusCode`。该分派错误地把 SSE 当成完整响应结果，而不是传输表示形式。
@@ -159,6 +170,7 @@ internal/proxy/
 5. 重新设计用量数据库 schema 或管理端用量界面。
 6. 修改 HTTP 状态低于 400、但 SSE 事件负载表达应用级错误时的行为。
 7. 增加管理后台控制的完整请求/响应捕获、持久化、导出、保留或删除功能。
+8. 诊断状态低于 400 的 SSE 响应事件结构。200/589 字节 `client_aborted` 前置响应交由 `2026-07-01-zhipu-web-tools-compat` 的任务 0 处理，使本分支继续只负责最终 HTTP 错误和安全请求诊断。
 
 ## 任务详情
 
