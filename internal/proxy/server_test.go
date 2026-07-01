@@ -1975,3 +1975,250 @@ func TestProxyStreamLogsRedactQueryAndSummarizeBeta(t *testing.T) {
 		}
 	}
 }
+
+func TestProxyLogsAnomalousSSEStructure(t *testing.T) {
+	var logBuf bytes.Buffer
+	oldOutput := log.Writer()
+	oldFlags := log.Flags()
+	oldPrefix := log.Prefix()
+	log.SetOutput(&logBuf)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	t.Cleanup(func() {
+		log.SetOutput(oldOutput)
+		log.SetFlags(oldFlags)
+		log.SetPrefix(oldPrefix)
+	})
+
+	recorder := &fakeUsageRecorder{}
+	// SSE 流：message_start + content_block_start(text) + content_block_delta(含 SECRET 文本)
+	// + 显式 event: error(含 error.code="1210" 和 SECRET error message)
+	// 不发 message_stop，直接关闭连接。
+	sse := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10}}}\n\n" +
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"TOP-SECRET-CONTENT\"}}\n\n" +
+		"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"code\":\"1210\",\"message\":\"TOP-SECRET-ERROR-MESSAGE\"}}\n\n"
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(sse))
+	}))
+	defer backend.Close()
+
+	handler := NewHandler(
+		config.NewMockStore(testProxyConfig(testProxyProvider(backend.URL))),
+		http.DefaultTransport.(*http.Transport),
+		recorder,
+	)
+	body := `{"model":"claude-sonnet","stream":true,"max_tokens":64,"tools":[{"name":"ToolSearch","description":"safe-desc"}],"messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	logs := logBuf.String()
+
+	// 提取 [Stream] anomaly 行
+	anomalyLines := []string{}
+	for _, line := range strings.Split(logs, "\n") {
+		if strings.Contains(line, "[Stream] anomaly") {
+			anomalyLines = append(anomalyLines, line)
+		}
+	}
+	if len(anomalyLines) != 1 {
+		t.Fatalf("expected exactly 1 anomaly log line, got %d:\n%s", len(anomalyLines), logs)
+	}
+
+	anomalyLine := anomalyLines[0]
+	// 前缀后必须是合法 JSON
+	jsonStart := strings.Index(anomalyLine, "[Stream] anomaly ")
+	if jsonStart < 0 {
+		t.Fatalf("missing prefix in anomaly line: %s", anomalyLine)
+	}
+	jsonStr := strings.TrimSpace(anomalyLine[jsonStart+len("[Stream] anomaly "):])
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(jsonStr), &parsed); err != nil {
+		t.Fatalf("anomaly payload is not valid JSON: %v\nraw: %s", err, jsonStr)
+	}
+
+	// 必须包含的诊断字段
+	if _, ok := parsed["request_id"]; !ok {
+		t.Fatalf("anomaly payload missing request_id: %s", jsonStr)
+	}
+	if _, ok := parsed["response_bytes"]; !ok {
+		t.Fatalf("anomaly payload missing response_bytes: %s", jsonStr)
+	}
+	// diagnostics 子对象
+	diagRaw, ok := parsed["diagnostics"]
+	if !ok {
+		t.Fatalf("anomaly payload missing diagnostics: %s", jsonStr)
+	}
+	diag, ok := diagRaw.(map[string]any)
+	if !ok {
+		t.Fatalf("diagnostics is not an object: %v: %s", diagRaw, jsonStr)
+	}
+	if complete, ok := diag["complete"].(bool); !ok || complete {
+		t.Fatalf("expected diagnostics.complete=false, got %v: %s", diag["complete"], jsonStr)
+	}
+	if errorEvents, ok := diag["error_events"].(float64); !ok || errorEvents != 1 {
+		t.Fatalf("expected diagnostics.error_events=1, got %v: %s", diag["error_events"], jsonStr)
+	}
+	if !strings.Contains(jsonStr, `"1210"`) {
+		t.Fatalf("expected numeric error code 1210 in payload: %s", jsonStr)
+	}
+
+	// 安全请求摘要：必须包含安全诊断标记（tool known_names 或 body_bytes），但不能含原始内容
+	if _, ok := parsed["request_params"]; !ok {
+		t.Fatalf("anomaly payload missing request_params: %s", jsonStr)
+	}
+
+	// 安全红线：不含 SECRET 内容
+	for _, secret := range []string{"TOP-SECRET-CONTENT", "TOP-SECRET-ERROR-MESSAGE"} {
+		if strings.Contains(jsonStr, secret) {
+			t.Fatalf("anomaly payload leaked secret %q: %s", secret, jsonStr)
+		}
+	}
+
+	// 不含原始 SSE payload 片段
+	if strings.Contains(jsonStr, "text_delta") {
+		t.Fatalf("anomaly payload leaked raw SSE field 'text_delta': %s", jsonStr)
+	}
+}
+
+func TestProxyDoesNotLogCompletedSSEAsAnomaly(t *testing.T) {
+	var logBuf bytes.Buffer
+	oldOutput := log.Writer()
+	oldFlags := log.Flags()
+	oldPrefix := log.Prefix()
+	log.SetOutput(&logBuf)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	t.Cleanup(func() {
+		log.SetOutput(oldOutput)
+		log.SetFlags(oldFlags)
+		log.SetPrefix(oldPrefix)
+	})
+
+	recorder := &fakeUsageRecorder{}
+	sse := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":8,\"cache_read_input_tokens\":4}}}\n\n" +
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":6}}\n\n" +
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n" +
+		"data: [DONE]\n\n"
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(sse))
+	}))
+	defer backend.Close()
+
+	handler := NewHandler(
+		config.NewMockStore(testProxyConfig(testProxyProvider(backend.URL))),
+		http.DefaultTransport.(*http.Transport),
+		recorder,
+	)
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"claude-sonnet","stream":true,"messages":[]}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	logs := logBuf.String()
+	if strings.Contains(logs, "[Stream] anomaly") {
+		t.Fatalf("normal completed SSE stream should not produce anomaly log:\n%s", logs)
+	}
+}
+
+// failingClientWriter 模拟客户端在流式响应中途断连：每次 Write 立即返回错误。
+type failingClientWriter struct {
+	header http.Header
+	status int
+}
+
+func (f *failingClientWriter) Header() http.Header {
+	if f.header == nil {
+		f.header = http.Header{}
+	}
+	return f.header
+}
+func (f *failingClientWriter) WriteHeader(status int) { f.status = status }
+func (f *failingClientWriter) Write(p []byte) (int, error) {
+	return 0, fmt.Errorf("simulated client disconnect: broken pipe")
+}
+
+// TestProxyLogsAnomalyAndRetainsClientAbortOnDisconnect 验证客户端中断时：
+//  - client_aborted 使用分类保留（未被异常流诊断改动）
+//  - 仍发射恰好一条 [Stream] anomaly（由 streamErr != nil 触发）
+//  - anomaly payload complete=false，且不泄露 SECRET 内容
+func TestProxyLogsAnomalyAndRetainsClientAbortOnDisconnect(t *testing.T) {
+	var logBuf bytes.Buffer
+	oldOutput := log.Writer()
+	oldFlags := log.Flags()
+	oldPrefix := log.Prefix()
+	log.SetOutput(&logBuf)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	t.Cleanup(func() {
+		log.SetOutput(oldOutput)
+		log.SetFlags(oldFlags)
+		log.SetPrefix(oldPrefix)
+	})
+
+	recorder := &fakeUsageRecorder{}
+	// SSE 流含敏感文本，但无 message_stop；客户端在首个响应写入即断连。
+	sse := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10}}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"ABORT-SECRET-CONTENT\"}}\n\n"
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(sse))
+	}))
+	defer backend.Close()
+
+	handler := NewHandler(
+		config.NewMockStore(testProxyConfig(testProxyProvider(backend.URL))),
+		http.DefaultTransport.(*http.Transport),
+		recorder,
+	)
+	body := `{"model":"claude-sonnet","stream":true,"messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := &failingClientWriter{}
+
+	handler.ServeHTTP(w, req)
+
+	// 客户端中断分类必须保留
+	record := recorder.onlyRecord(t)
+	if record.req.ErrorType != usage.ErrorClientAborted {
+		t.Fatalf("expected ErrorClientAborted, got %q", record.req.ErrorType)
+	}
+
+	logs := logBuf.String()
+	if got := strings.Count(logs, "[Stream] anomaly"); got != 1 {
+		t.Fatalf("expected exactly 1 anomaly log on client abort, got %d:\n%s", got, logs)
+	}
+
+	// 提取 anomaly 行并解析 JSON
+	var anomalyLine string
+	for _, line := range strings.Split(logs, "\n") {
+		if strings.Contains(line, "[Stream] anomaly") {
+			anomalyLine = line
+			break
+		}
+	}
+	idx := strings.Index(anomalyLine, "[Stream] anomaly ")
+	jsonStr := strings.TrimSpace(anomalyLine[idx+len("[Stream] anomaly "):])
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(jsonStr), &parsed); err != nil {
+		t.Fatalf("anomaly payload not valid JSON: %v\nraw: %s", err, jsonStr)
+	}
+	diag, ok := parsed["diagnostics"].(map[string]any)
+	if !ok {
+		t.Fatalf("anomaly payload missing diagnostics object: %s", jsonStr)
+	}
+	if complete, _ := diag["complete"].(bool); complete {
+		t.Fatalf("expected diagnostics.complete=false on abort: %s", jsonStr)
+	}
+	// 安全红线：客户端中断场景下仍不得泄露 SECRET 内容
+	if strings.Contains(jsonStr, "ABORT-SECRET-CONTENT") {
+		t.Fatalf("anomaly payload leaked secret content on client abort: %s", jsonStr)
+	}
+}
