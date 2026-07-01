@@ -48,6 +48,17 @@ The summary proves collection sizes but cannot distinguish whether `stream` is a
 
 The same runtime evidence excludes the cc-switch #3090 “missing `beta=true`” failure mode for this MCC request. Both the 03:40:55 streaming URL and the 03:40:57 final 400 URL contained `?beta=true`. The ordinary `>>>`/`<<<` line omits it only because `providerLogFields` intentionally calls `config.RedactURL`, which removes every query parameter from display. The detailed error line currently prints the raw `backendURL`; that makes beta visible but can also expose unrelated query secrets. Task 4 therefore adds an allowlisted beta-state/count summary while keeping the URL itself query-redacted everywhere.
 
+Claude Code session `202606302035` adds session-level correlation evidence. Its final three failed turns were:
+
+```text
+04:50:02 ToolSearch -> matches [WebSearch, WebFetch]
+04:50:04 API 400 / 1210
+04:58:13 API 400 / 1210
+08:50:58 API 400 / 1210
+```
+
+For the last failure, SQLite recorded a paired request sequence: `stream=true`, 859619 request bytes, HTTP 200, 589 response bytes, `client_aborted`; then stream absent, 859605 request bytes, HTTP 400, 213 response bytes. The 14-byte request delta matches removal of `"stream":true,`. This confirms persistent correlation with the dynamically loaded Web tools and the stream-to-non-stream retry. It does not prove which tool schema field is rejected, nor what structural event in the preceding 589-byte HTTP-200 SSE response causes Claude Code to abort and retry.
+
 ### Root Cause
 
 `isSSEStream` only checks whether the response `Content-Type` contains `text/event-stream`. `Handler.ServeHTTP` then gives this media-type result priority over `resp.StatusCode`. The routing decision incorrectly treats SSE as a complete response outcome instead of a transport representation.
@@ -159,6 +170,7 @@ internal/proxy/
 5. Redesigning the usage database schema or admin usage UI.
 6. Changing behavior for successful SSE event payloads that encode application-level errors under HTTP status below 400.
 7. Adding the admin-controlled full request/response capture, persistence, export, retention, or deletion feature.
+8. Diagnosing the event structure of status-below-400 SSE responses. The 200/589-byte `client_aborted` precursor is assigned to Task 0 of `2026-07-01-zhipu-web-tools-compat` so this branch remains limited to final HTTP errors and safe request diagnostics.
 
 ## Task Details
 
