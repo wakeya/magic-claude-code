@@ -631,6 +631,53 @@ func TestProxyRecordsSSELabeledHTTPError(t *testing.T) {
 	}
 }
 
+func TestSummarizeRequestParamsAllowsOnlySafeDiagnostics(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "keeps typed safe fields and collection counts",
+			body: `{
+				"model":"claude-sonnet",
+				"stream":true,
+				"max_tokens":64,
+				"max_output_tokens":128,
+				"temperature":0.2,
+				"top_p":0.9,
+				"top_k":5,
+				"messages":[{"content":"secret-message"}],
+				"tools":[{"description":"secret-tool"}],
+				"input":[{"content":"secret-input"}],
+				"system":"secret-system",
+				"metadata":{"user_id":"secret-user"},
+				"api_key":"secret-key",
+				"unknown_extension":{"value":"secret-extension"}
+			}`,
+			want: `{"input":"[1 items]","max_output_tokens":128,"max_tokens":64,"messages":"[1 items]","model":"claude-sonnet","stream":true,"temperature":0.2,"tools":"[1 items]","top_k":5,"top_p":0.9}`,
+		},
+		{
+			name: "drops allowlisted names with unsafe value types",
+			body: `{
+				"model":{"value":"secret-model"},
+				"stream":"secret-stream",
+				"max_tokens":{"value":"secret-max-tokens"},
+				"messages":"secret-messages"
+			}`,
+			want: `{}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := summarizeRequestParams([]byte(tt.body)); got != tt.want {
+				t.Fatalf("summarizeRequestParams() = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestProxyForwardsLargeNonRecoverable400Body(t *testing.T) {
 	errorBody := strings.Repeat("provider-error-", 12000)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
