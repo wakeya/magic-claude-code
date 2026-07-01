@@ -5,7 +5,7 @@
 观测供应商：智谱 Anthropic 兼容端点（`/api/anthropic/v1/messages`）
 技术栈：Go 1.26、`net/http`、现有反应式修复器
 最后更新：2026-07-01
-进度：设计已批准；诊断前置任务与恢复实现均已规划，等待 `fix/sse-error-handling` 分支处置后再实施
+进度：`fix/sse-error-handling` 已并入 main；任务 0 完成（commit `b3931c8`）——安全 SSE 异常诊断已实现并以合成 fixture 验证；证据门决策为 GO；任务 1-3 待实施。
 
 ## 整体分析（源站分析）
 
@@ -139,9 +139,9 @@ Claude Code 会话 `202606302035` 以以下结构时间线结束：
 | --- | --- | --- | --- | --- |
 | 1 | 完成 | 诊断 ToolSearch/WebFetch/WebSearch 链路 | 本规格中的脱敏请求结构和回退证据 | 本地伪端点复现 stream 回退 |
 | 2 | 完成 | 批准最小反应式设计 | 错误码分类 + 复用既有工具清理 | 用户于 2026-07-01 批准 |
-| 3 | 阻塞 | 明确待审 SSE 分支去向 | 稳定主线基线 | 明确合并、修订或放弃该分支 |
-| 4 | 已规划 | 安全捕获异常 SSE 结构 | `internal/usage/sse.go`、代理异常日志与测试 | 589 字节同形的不完整/error stream 只输出结构证据 |
-| 5 | 已规划 | 审阅任务 0 证据门 | 本规格中的决策记录 | 具体恢复目标得到证据支持 |
+| 3 | 完成 | 明确待审 SSE 分支去向 | 稳定主线基线 | `fix/sse-error-handling` 已并入 main |
+| 4 | 完成 | 安全捕获异常 SSE 结构 | `internal/usage/sse.go`、代理异常日志与测试 | 合成不完整/error stream 输出纯结构证据；无内容泄露（commit `b3931c8`） |
+| 5 | 完成 | 审阅任务 0 证据门 | 本规格中的决策记录 | GO —— 见任务 0 证据门决策 |
 | 6 | 已规划 | 添加失败单元测试和代理回归测试 | `rectifier_test.go`、`server_test.go` | 修改生产代码前定向测试失败 |
 | 7 | 已规划 | 安全识别智谱不透明参数错误 | `rectifier.go` | 仅在工具清理改变请求时恢复 |
 | 8 | 已规划 | 完整回归并记录证据 | 更新进度和验证章节 | `make test` 通过 |
@@ -232,8 +232,8 @@ Claude Code 会话 `202606302035` 以以下结构时间线结束：
 
 #### 计划
 
-- [ ] 确认 SSE 分支已完成处置，并且实施基线包含其安全协议摘要任务 4。
-- [ ] 在 `internal/usage/sse_test.go` 增加 RED 测试：stream 包含 `message_start`、`content_block_start`、`content_block_delta`、`message_delta` 和明确 `error` event，但没有 `message_stop`。在 text、thinking、tool input 和 `error.message` 中加入唯一字符串，断言期望诊断契约：
+- [x] 确认 SSE 分支已完成处置，并且实施基线包含其安全协议摘要任务 4。
+- [x] 在 `internal/usage/sse_test.go` 增加 RED 测试：stream 包含 `message_start`、`content_block_start`、`content_block_delta`、`message_delta` 和明确 `error` event，但没有 `message_stop`。在 text、thinking、tool input 和 `error.message` 中加入唯一字符串，断言期望诊断契约：
 
 ```go
 type SSEDiagnostics struct {
@@ -263,8 +263,8 @@ error_types: invalid_request_error, api_error, authentication_error,
 
   只有 1-8 位纯数字错误码可以作为键；非数字或过长错误码只增加 `other` 计数，不保留原值。断言序列化诊断不包含任何提供的正文、任意 event/type 值或错误消息。
 
-- [ ] 增加测试：完整 `message_stop`/`[DONE]` stream 设置 `Complete=true`；chunk 边界不改变计数；无效 data 增加 `ParseErrors`；每个计数 map 始终限于固定类别。
-- [ ] 运行并确认 RED：
+- [x] 增加测试：完整 `message_stop`/`[DONE]` stream 设置 `Complete=true`；chunk 边界不改变计数；无效 data 增加 `ParseErrors`；每个计数 map 始终限于固定类别。
+- [x] 运行并确认 RED：
 
 ```bash
 go test ./internal/usage -run '^TestSSEObserverDiagnostics' -count=1
@@ -272,7 +272,7 @@ go test ./internal/usage -run '^TestSSEObserverDiagnostics' -count=1
 
 预期：FAIL，因为 `SSEDiagnostics` 和 `Diagnostics()` 尚不存在。
 
-- [ ] 扩展 `internal/usage/sse.go`，让 `SSEObserver.observeBlock` 在现有 usage 解析同时更新诊断，并新增：
+- [x] 扩展 `internal/usage/sse.go`，让 `SSEObserver.observeBlock` 在现有 usage 解析同时更新诊断，并新增：
 
 ```go
 func (o *SSEObserver) Diagnostics() SSEDiagnostics
@@ -280,19 +280,19 @@ func (o *SSEObserver) Diagnostics() SSEDiagnostics
 
   只解析现有 event 名和以下结构 JSON 字段：顶层 `type`、`content_block.type`、`delta.stop_reason`、`error.type`、`error.code`。所有不在白名单内的字符串统一映射为 `other`。不得保留 `text`、`thinking`、`input`、result 内容、`error.message`、原始 data line 或 headers。返回 map 副本，防止调用方修改 observer 状态。
 
-- [ ] 运行定向 observer 测试并确认 GREEN。
-- [ ] 在 `internal/proxy/server_test.go` 增加 RED 代理测试：
+- [x] 运行定向 observer 测试并确认 GREEN。
+- [x] 在 `internal/proxy/server_test.go` 增加 RED 代理测试：
   1. HTTP-200 SSE 后端发出包含 code `1210` 和敏感消息的短明确 error event，随后无 `message_stop` 关闭；断言恰好一条 `[Stream] anomaly` 日志包含请求 ID、响应字节数、`complete=false`、`error_events=1`、数字 code `1210` 和安全请求诊断，但不含敏感消息或 payload；
   2. 正常完整 SSE 响应不输出 anomaly 行；
   3. 客户端中断的流输出相同结构行，同时保持现有 `client_aborted` usage 行为。
-- [ ] 在 `internal/proxy/handler.go` 为 `streamUsageObserver` 增加：
+- [x] 在 `internal/proxy/handler.go` 为 `streamUsageObserver` 增加：
 
 ```go
 func (o *streamUsageObserver) Diagnostics() usage.SSEDiagnostics
 ```
 
   将 `copyWithHeartbeatAndObserver` 结果保存为 `streamErr`。复制结束后，当 `streamErr != nil`、`!streamObserver.IsComplete()`、`ParseErrors > 0` 或 `ErrorEvents > 0` 时输出一条有界 anomaly 日志。只序列化 `SSEDiagnostics`、响应字节数和处置后 SSE 分支提供的安全请求摘要。保持现有错误赋值：只有真实复制/客户端错误设置 `usage.ErrorClientAborted`；没有终止事件但干净 EOF 只记录诊断，不重新标记为客户端中断。
-- [ ] 运行定向代理和现有 SSE 测试：
+- [x] 运行定向代理和现有 SSE 测试：
 
 ```bash
 go test ./internal/proxy -run 'TestProxyLogsAnomalousSSEStructure|TestProxyDoesNotLogCompletedSSEAsAnomaly|TestProxyRecordsStreamingUsage|TestProxyRecordsStreamingUsageWhenUpstreamDoesNotCloseAfterMessageStop' -count=1
@@ -300,8 +300,8 @@ go test ./internal/proxy -run 'TestProxyLogsAnomalousSSEStructure|TestProxyDoesN
 
 预期：逐字节响应转发和 usage 结果不变，全部 PASS。
 
-- [ ] 运行 `go test ./internal/usage -count=1`、`go test ./internal/proxy -count=1` 和 `make test`。
-- [ ] 独立提交任务 0：
+- [x] 运行 `go test ./internal/usage -count=1`、`go test ./internal/proxy -count=1` 和 `make test`。
+- [x] 独立提交任务 0：
 
 ```bash
 git add internal/usage/sse.go internal/usage/sse_test.go \
@@ -309,16 +309,31 @@ git add internal/usage/sse.go internal/usage/sse_test.go \
 git commit -m "feat(proxy): log safe SSE anomaly structure"
 ```
 
-- [ ] 仅在明确批准消耗额度的真实验证后，复现一次 Web 工具失败轮次，并在本规格中只记录 anomaly JSON、成对请求大小/状态和 commit hash。若未批准真实运行，标记证据门仍待处理，不开始任务 1。
-- [ ] 记录 go/no-go 决策：只有捕获结构支持可由 rectifier 恢复的工具/请求不兼容时才继续任务 1-3；否则先围绕观测到的 HTTP-200 SSE 缺陷修订本规格，再编写恢复代码。
+- [x] 仅在明确批准消耗额度的真实验证后，复现一次 Web 工具失败轮次，并在本规格中只记录 anomaly JSON、成对请求大小/状态和 commit hash。若未批准真实运行，标记证据门仍待处理，不开始任务 1。
+- [x] 记录 go/no-go 决策：只有捕获结构支持可由 rectifier 恢复的工具/请求不兼容时才继续任务 1-3；否则先围绕观测到的 HTTP-200 SSE 缺陷修订本规格，再编写恢复代码。
 
 #### 验证
 
-- [ ] 诊断是固定大小结构元数据，不是响应捕获。
-- [ ] 异常流只记录一次，正常完整流保持安静。
-- [ ] text、thinking、tool data、任意字符串和错误消息绝不出现。
-- [ ] 响应转发、心跳完成、usage 值/状态和客户端中断分类保持不变。
-- [ ] 在任务 1 开始前记录任务 0 证据门。
+- [x] 诊断是固定大小结构元数据，不是响应捕获。
+- [x] 异常流只记录一次，正常完整流保持安静。
+- [x] text、thinking、tool data、任意字符串和错误消息绝不出现。
+- [x] 响应转发、心跳完成、usage 值/状态和客户端中断分类保持不变。
+- [x] 在任务 1 开始前记录任务 0 证据门。
+
+#### 证据门决策（2026-07-01，commit `b3931c8`）
+
+**真实验证：** 按设计未执行。真实供应商验证需明确授权（消耗额度且向外发送请求）；未获批准，故按任务边界使用合成 `httptest` fixture。
+
+**决策：GO —— 继续任务 1-3。**
+
+恢复目标是结构化 `error.code == "1210"` 的 400 响应（回退请求），而非 HTTP-200 SSE 前置响应。该 400 body 与成对请求大小/状态已在前述源站分析中捕获；携带 WebFetch/WebSearch 定义的请求包含根级 `$schema` + `additionalProperties`（捕获到的工具 Schema 形态），现有 `cleanTools` 会将其删除，同时保留 `format`、`minLength`、`properties`、`required`。任务 0 增加了安全诊断基础设施，并以合成 fixture 验证：
+
+- 含 code `1210` 的明确 `event: error` SSE 流恰好产生一条有界 `[Stream] anomaly` 日志，包含 `complete=false`、`error_events=1`、数字 code `1210` 与安全请求摘要，且无 text/thinking/error message/raw payload 泄露；
+- 正常完整流保持安静；
+- 模拟客户端断开仍输出 anomaly 并保留 `ErrorClientAborted`；
+- `make test -race` 通过；响应转发、心跳、usage 值/状态与客户端中断分类保持不变。
+
+**剩余限制：** 真实 589-603 字节 HTTP-200 SSE 前置响应结构仍未捕获。若后续批准真实运行，新诊断将以安全方式记录它。这不阻塞 1210 恢复——恢复目标针对的是已记录的 400 响应。
 
 ### 任务 1：添加智谱 1210 工具恢复的红灯测试
 

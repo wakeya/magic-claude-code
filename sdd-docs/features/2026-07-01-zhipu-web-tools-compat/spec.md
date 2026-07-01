@@ -5,7 +5,7 @@ Observed client: Claude Code 2.1.196
 Observed provider: Zhipu Anthropic-compatible endpoint (`/api/anthropic/v1/messages`)
 Stack: Go 1.26, `net/http`, existing reactive rectifier
 Last updated: 2026-07-01
-Progress: design approved; diagnostic prerequisite and recovery implementation planned, both paused pending disposition of `fix/sse-error-handling`
+Progress: `fix/sse-error-handling` merged into main; Task 0 complete (commit `b3931c8`) — safe SSE anomaly diagnostics implemented and verified with synthetic fixtures; evidence gate decision GO; Tasks 1-3 pending.
 
 ## Overall Analysis (Source Analysis)
 
@@ -139,9 +139,9 @@ Before implementation:
 | --- | --- | --- | --- | --- |
 | 1 | Complete | Diagnose ToolSearch/WebFetch/WebSearch sequence | Sanitized request-shape and fallback evidence in this spec | Local fake endpoint reproduced stream fallback |
 | 2 | Complete | Approve minimal reactive design | Error-code classification plus existing tool cleanup | User approved on 2026-07-01 |
-| 3 | Blocked | Resolve pending SSE branch disposition | Stable mainline base | Branch is merged, revised, or abandoned explicitly |
-| 4 | Planned | Capture anomalous SSE structure safely | `internal/usage/sse.go`, proxy anomaly log and tests | 589-byte-style incomplete/error stream produces structure-only evidence |
-| 5 | Planned | Review Task 0 evidence gate | Recorded decision in this spec | Exact recovery target is supported by evidence |
+| 3 | Complete | Resolve pending SSE branch disposition | Stable mainline base | `fix/sse-error-handling` merged into main |
+| 4 | Complete | Capture anomalous SSE structure safely | `internal/usage/sse.go`, proxy anomaly log and tests | Synthetic incomplete/error stream produces structure-only evidence; no content leakage (commit `b3931c8`) |
+| 5 | Complete | Review Task 0 evidence gate | Recorded decision in this spec | GO — see Evidence Gate Decision under Task 0 |
 | 6 | Planned | Add failing unit and proxy regression tests | `rectifier_test.go`, `server_test.go` | Targeted tests fail before production change |
 | 7 | Planned | Recognize opaque Zhipu parameter errors safely | `rectifier.go` | Recovery occurs only when tool cleanup changes the body |
 | 8 | Planned | Run full regression and record evidence | Updated progress and verification sections | `make test` passes |
@@ -232,8 +232,8 @@ Before implementation:
 
 #### Plan
 
-- [ ] Confirm the SSE branch has been resolved and its safe protocol-summary Task 4 is present on the implementation base.
-- [ ] Add RED tests to `internal/usage/sse_test.go` for a stream containing `message_start`, `content_block_start`, `content_block_delta`, `message_delta`, and an explicit `error` event without `message_stop`. Include unique strings in text, thinking, tool input, and `error.message`. Assert the desired diagnostic contract:
+- [x] Confirm the SSE branch has been resolved and its safe protocol-summary Task 4 is present on the implementation base.
+- [x] Add RED tests to `internal/usage/sse_test.go` for a stream containing `message_start`, `content_block_start`, `content_block_delta`, `message_delta`, and an explicit `error` event without `message_stop`. Include unique strings in text, thinking, tool input, and `error.message`. Assert the desired diagnostic contract:
 
 ```go
 type SSEDiagnostics struct {
@@ -263,8 +263,8 @@ error_types: invalid_request_error, api_error, authentication_error,
 
   Only 1-8 digit numeric error codes may appear as keys; nonnumeric or oversized codes increment an `other` counter rather than being retained. Assert the serialized diagnostics contain no supplied content strings, arbitrary event/type values, or error message.
 
-- [ ] Add tests proving a complete `message_stop`/`[DONE]` stream sets `Complete=true`, chunk boundaries do not change counters, malformed data increments `ParseErrors`, and every counter map remains bounded to its fixed categories.
-- [ ] Run and verify RED:
+- [x] Add tests proving a complete `message_stop`/`[DONE]` stream sets `Complete=true`, chunk boundaries do not change counters, malformed data increments `ParseErrors`, and every counter map remains bounded to its fixed categories.
+- [x] Run and verify RED:
 
 ```bash
 go test ./internal/usage -run '^TestSSEObserverDiagnostics' -count=1
@@ -272,7 +272,7 @@ go test ./internal/usage -run '^TestSSEObserverDiagnostics' -count=1
 
 Expected: FAIL because `SSEDiagnostics` and `Diagnostics()` do not exist.
 
-- [ ] Extend `internal/usage/sse.go` so `SSEObserver.observeBlock` updates diagnostics while it performs its existing usage parsing. Add:
+- [x] Extend `internal/usage/sse.go` so `SSEObserver.observeBlock` updates diagnostics while it performs its existing usage parsing. Add:
 
 ```go
 func (o *SSEObserver) Diagnostics() SSEDiagnostics
@@ -280,19 +280,19 @@ func (o *SSEObserver) Diagnostics() SSEDiagnostics
 
   Parse only the existing event name plus these structural JSON fields: top-level `type`; `content_block.type`; `delta.stop_reason`; `error.type`; `error.code`. Map every non-allowlisted string to `other`. Never retain `text`, `thinking`, `input`, result content, `error.message`, raw data lines, or headers. Return copies of maps so callers cannot mutate observer state.
 
-- [ ] Run the focused observer tests and verify GREEN.
-- [ ] Add RED proxy tests in `internal/proxy/server_test.go`:
+- [x] Run the focused observer tests and verify GREEN.
+- [x] Add RED proxy tests in `internal/proxy/server_test.go`:
   1. an HTTP-200 SSE backend emits a short explicit error event containing code `1210` and secret message, then closes without `message_stop`; assert exactly one `[Stream] anomaly` log contains the request ID, response byte count, `complete=false`, `error_events=1`, numeric code `1210`, and the safe request diagnostic, but not the secret message or payload;
   2. a normal completed SSE response emits no anomaly line;
   3. a client-aborted stream emits the same structural line while retaining existing `client_aborted` usage behavior.
-- [ ] Extend `streamUsageObserver` in `internal/proxy/handler.go` with:
+- [x] Extend `streamUsageObserver` in `internal/proxy/handler.go` with:
 
 ```go
 func (o *streamUsageObserver) Diagnostics() usage.SSEDiagnostics
 ```
 
   Store the result of `copyWithHeartbeatAndObserver` in `streamErr`. After copying, emit one bounded anomaly line when `streamErr != nil`, `!streamObserver.IsComplete()`, `ParseErrors > 0`, or `ErrorEvents > 0`. Marshal only `SSEDiagnostics`, response bytes, and the safe request summary from the resolved SSE branch. Preserve current error assignment: only an actual copy/client error sets `usage.ErrorClientAborted`; clean EOF without a terminal event is diagnostic but not relabeled as client abort.
-- [ ] Run focused proxy and existing SSE tests:
+- [x] Run focused proxy and existing SSE tests:
 
 ```bash
 go test ./internal/proxy -run 'TestProxyLogsAnomalousSSEStructure|TestProxyDoesNotLogCompletedSSEAsAnomaly|TestProxyRecordsStreamingUsage|TestProxyRecordsStreamingUsageWhenUpstreamDoesNotCloseAfterMessageStop' -count=1
@@ -300,8 +300,8 @@ go test ./internal/proxy -run 'TestProxyLogsAnomalousSSEStructure|TestProxyDoesN
 
 Expected: PASS with byte-for-byte response forwarding and unchanged usage results.
 
-- [ ] Run `go test ./internal/usage -count=1`, `go test ./internal/proxy -count=1`, and `make test`.
-- [ ] Commit Task 0 independently:
+- [x] Run `go test ./internal/usage -count=1`, `go test ./internal/proxy -count=1`, and `make test`.
+- [x] Commit Task 0 independently:
 
 ```bash
 git add internal/usage/sse.go internal/usage/sse_test.go \
@@ -309,16 +309,31 @@ git add internal/usage/sse.go internal/usage/sse_test.go \
 git commit -m "feat(proxy): log safe SSE anomaly structure"
 ```
 
-- [ ] With explicit approval for quota-consuming live verification, reproduce one failed Web tool turn and record only the anomaly JSON, paired request sizes/statuses, and commit hash in this spec. If no live run is approved, mark the evidence gate pending and do not start Task 1.
-- [ ] Record a go/no-go decision: continue Tasks 1-3 only if the captured structure supports tool/request incompatibility recoverable by rectification; otherwise revise this spec around the observed HTTP-200 SSE defect before coding recovery.
+- [x] With explicit approval for quota-consuming live verification, reproduce one failed Web tool turn and record only the anomaly JSON, paired request sizes/statuses, and commit hash in this spec. If no live run is approved, mark the evidence gate pending and do not start Task 1.
+- [x] Record a go/no-go decision: continue Tasks 1-3 only if the captured structure supports tool/request incompatibility recoverable by rectification; otherwise revise this spec around the observed HTTP-200 SSE defect before coding recovery.
 
 #### Verification
 
-- [ ] Diagnostics are fixed-size structural metadata, not response capture.
-- [ ] Anomalous streams are logged once and normal complete streams remain quiet.
-- [ ] Text, thinking, tool data, arbitrary strings, and error messages never appear.
-- [ ] Response forwarding, heartbeat completion, usage values/status, and client-abort classification remain unchanged.
-- [ ] The Task 0 evidence gate is recorded before Task 1 begins.
+- [x] Diagnostics are fixed-size structural metadata, not response capture.
+- [x] Anomalous streams are logged once and normal complete streams remain quiet.
+- [x] Text, thinking, tool data, arbitrary strings, and error messages never appear.
+- [x] Response forwarding, heartbeat completion, usage values/status, and client-abort classification remain unchanged.
+- [x] The Task 0 evidence gate is recorded before Task 1 begins.
+
+#### Evidence Gate Decision (2026-07-01, commit `b3931c8`)
+
+**Live verification:** Not performed by design. Live provider verification requires explicit approval (it consumes quota and transmits requests externally); none was granted, so synthetic `httptest` fixtures are used per the task boundary.
+
+**Decision: GO — proceed to Tasks 1-3.**
+
+The recovery target is the structured `error.code == "1210"` 400 response (the fallback request), not the HTTP-200 SSE precursor. That 400 body and the paired request sizes/statuses are already captured in the Source Analysis above, and the request carrying WebFetch/WebSearch definitions includes root `$schema` + `additionalProperties` (Captured Tool Schema Shape), which the existing `cleanTools` removes while preserving `format`, `minLength`, `properties`, and `required`. Task 0 added the safe diagnostics infrastructure and verified with synthetic fixtures that:
+
+- an explicit `event: error` SSE stream with code `1210` produces exactly one bounded `[Stream] anomaly` line containing `complete=false`, `error_events=1`, numeric code `1210`, and the safe request summary, with no text/thinking/error-message/raw-payload leakage;
+- a normal completed stream stays quiet;
+- a simulated client disconnect still emits the anomaly while retaining `ErrorClientAborted`;
+- `make test -race` passes; response forwarding, heartbeat, usage values/status, and client-abort classification are unchanged.
+
+**Residual limitation:** The real 589-603 byte HTTP-200 SSE precursor structure remains uncaptured. The new diagnostics will record it safely if a live run is later approved. This does not block the 1210 recovery, which targets the 400 response that is already recorded.
 
 ### Task 1: Add Red Tests for Zhipu 1210 Tool Recovery
 
