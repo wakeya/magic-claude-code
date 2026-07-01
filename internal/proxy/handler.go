@@ -259,7 +259,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 
 	// 检查是否为 SSE 流式响应，如果是则注入心跳
-	if isSSEStream(resp) {
+	if resp.StatusCode < 400 && isSSEStream(resp) {
 		log.Printf("[Stream] SSE stream detected for %s, enabling heartbeat injection", backendURL)
 		hw := newHeartbeatWriter(w)
 		var observer ChunkObserver

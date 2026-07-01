@@ -519,6 +519,83 @@ func TestProxyRecordsHTTPErrorAndForwardsFullBody(t *testing.T) {
 	}
 }
 
+func TestProxyRecordsSSELabeledHTTPError(t *testing.T) {
+	var logBuf bytes.Buffer
+	oldOutput := log.Writer()
+	oldFlags := log.Flags()
+	oldPrefix := log.Prefix()
+	log.SetOutput(&logBuf)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	t.Cleanup(func() {
+		log.SetOutput(oldOutput)
+		log.SetFlags(oldFlags)
+		log.SetPrefix(oldPrefix)
+	})
+
+	recorder := &fakeUsageRecorder{}
+	errorBody := `{"type":"error","error":{"type":"provider_error","message":"request rejected"}}`
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(errorBody))
+	}))
+	defer backend.Close()
+
+	handler := NewHandler(
+		config.NewMockStore(testProxyConfig(testProxyProvider(backend.URL))),
+		http.DefaultTransport.(*http.Transport),
+		recorder,
+	)
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{
+		"model":"claude-sonnet",
+		"stream":false,
+		"max_tokens":64,
+		"messages":[{"role":"user","content":"hello"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if rec.Body.String() != errorBody {
+		t.Fatalf("body = %q, want %q", rec.Body.String(), errorBody)
+	}
+
+	record := recorder.onlyRecord(t)
+	if record.req.StatusCode == nil || *record.req.StatusCode != http.StatusBadRequest {
+		t.Fatalf("StatusCode = %v", record.req.StatusCode)
+	}
+	if record.req.ErrorType != usage.ErrorHTTP {
+		t.Fatalf("ErrorType = %q", record.req.ErrorType)
+	}
+	if record.req.ErrorMessage != errorBody {
+		t.Fatalf("ErrorMessage = %q, want %q", record.req.ErrorMessage, errorBody)
+	}
+	if record.req.ResponseBytes != int64(len(errorBody)) {
+		t.Fatalf("ResponseBytes = %d, want %d", record.req.ResponseBytes, len(errorBody))
+	}
+	if record.tok.UsageSource != usage.UsageSourceNone {
+		t.Fatalf("UsageSource = %q", record.tok.UsageSource)
+	}
+	if record.tok.UsageParseStatus != usage.ParseStatusSkippedNon2xx {
+		t.Fatalf("UsageParseStatus = %q", record.tok.UsageParseStatus)
+	}
+
+	logs := logBuf.String()
+	if !strings.Contains(logs, "[Proxy] Error 400") ||
+		!strings.Contains(logs, `"max_tokens":64`) ||
+		!strings.Contains(logs, "resp: "+errorBody) {
+		t.Fatalf("missing detailed HTTP error log:\n%s", logs)
+	}
+	if strings.Contains(logs, "[Stream] SSE stream detected") {
+		t.Fatalf("HTTP error incorrectly entered SSE path:\n%s", logs)
+	}
+}
+
 func TestProxyForwardsLargeNonRecoverable400Body(t *testing.T) {
 	errorBody := strings.Repeat("provider-error-", 12000)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
