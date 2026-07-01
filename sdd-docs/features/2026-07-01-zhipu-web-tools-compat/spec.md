@@ -5,7 +5,7 @@ Observed client: Claude Code 2.1.196
 Observed provider: Zhipu Anthropic-compatible endpoint (`/api/anthropic/v1/messages`)
 Stack: Go 1.26, `net/http`, existing reactive rectifier
 Last updated: 2026-07-01
-Progress: `fix/sse-error-handling` merged into main; Task 0 complete (commit `b3931c8`) — safe SSE anomaly diagnostics implemented and verified with synthetic fixtures; evidence gate decision GO; Tasks 1-3 pending.
+Progress: `fix/sse-error-handling` merged into main; all tasks complete — Task 0 safe SSE anomaly diagnostics (commit `b3931c8`), Task 1 red tests, Task 2 1210 classification (commit `439b1ed`), Task 3 regression verified (`make test -race` green); live provider verification skipped by design.
 
 ## Overall Analysis (Source Analysis)
 
@@ -142,9 +142,9 @@ Before implementation:
 | 3 | Complete | Resolve pending SSE branch disposition | Stable mainline base | `fix/sse-error-handling` merged into main |
 | 4 | Complete | Capture anomalous SSE structure safely | `internal/usage/sse.go`, proxy anomaly log and tests | Synthetic incomplete/error stream produces structure-only evidence; no content leakage (commit `b3931c8`) |
 | 5 | Complete | Review Task 0 evidence gate | Recorded decision in this spec | GO — see Evidence Gate Decision under Task 0 |
-| 6 | Planned | Add failing unit and proxy regression tests | `rectifier_test.go`, `server_test.go` | Targeted tests fail before production change |
-| 7 | Planned | Recognize opaque Zhipu parameter errors safely | `rectifier.go` | Recovery occurs only when tool cleanup changes the body |
-| 8 | Planned | Run full regression and record evidence | Updated progress and verification sections | `make test` passes |
+| 6 | Complete | Add failing unit and proxy regression tests | `rectifier_test.go`, `server_test.go` | RED confirmed (3 pass / 6 fail for the right reason); turned GREEN in Task 2 (commit `439b1ed`) |
+| 7 | Complete | Recognize opaque Zhipu parameter errors safely | `rectifier.go` | `isOpaqueToolCompatibilityError` added after higher-priority classifications; recovery only when `cleanTools` changes the body (commit `439b1ed`) |
+| 8 | Complete | Run full regression and record evidence | Updated progress and verification sections | `make test -race` passes (exit 0); no regressions in Kimi/thinking/content-type/SSE/usage suites |
 
 ## Requirements
 
@@ -353,8 +353,8 @@ The recovery target is the structured `error.code == "1210"` 400 response (the f
 
 #### Plan
 
-- [ ] Confirm the pending SSE branch has been resolved and run `git status --short --branch` from the selected implementation base.
-- [ ] Modify `internal/proxy/rectifier_test.go` with table-driven cases equivalent to:
+- [x] Confirm the pending SSE branch has been resolved and run `git status --short --branch` from the selected implementation base.
+- [x] Modify `internal/proxy/rectifier_test.go` with table-driven cases equivalent to:
 
 ```go
 func TestMatchErrorPattern_Zhipu1210(t *testing.T) {
@@ -394,9 +394,9 @@ func TestMatchErrorPattern_Zhipu1210(t *testing.T) {
 }
 ```
 
-- [ ] Modify `internal/proxy/server_test.go` with table-driven WebFetch and WebSearch fixtures. On the first backend request, return the exact synthetic 1210 JSON. On the retry, assert that root `$schema`, `additionalProperties`, and tool-level `cache_control` are absent while `name`, `properties`, `required`, WebFetch `format`, and WebSearch `minLength` remain present; then return HTTP 200.
-- [ ] Add a separate proxy fixture whose tool schema has no cleanable fields. Return 1210 and assert the backend receives exactly one request and the client receives the original 400 body unchanged.
-- [ ] Run:
+- [x] Modify `internal/proxy/server_test.go` with table-driven WebFetch and WebSearch fixtures. On the first backend request, return the exact synthetic 1210 JSON. On the retry, assert that root `$schema`, `additionalProperties`, and tool-level `cache_control` are absent while `name`, `properties`, `required`, WebFetch `format`, and WebSearch `minLength` remain present; then return HTTP 200.
+- [x] Add a separate proxy fixture whose tool schema has no cleanable fields. Return 1210 and assert the backend receives exactly one request and the client receives the original 400 body unchanged.
+- [x] Run:
 
 ```bash
 go test ./internal/proxy -run 'TestMatchErrorPattern_Zhipu1210|TestProxy(RetriesZhipu1210WebTools|DoesNotRetryZhipu1210WhenToolCleanupMakesNoChanges)' -count=1
@@ -406,8 +406,8 @@ Expected result: FAIL before production changes. The structured/message 1210 cas
 
 #### Verification
 
-- [ ] Red tests failed for the intended missing behavior, not for fixture syntax or setup errors.
-- [ ] Test data contains no real credential, prompt, conversation, or provider request ID.
+- [x] Red tests failed for the intended missing behavior, not for fixture syntax or setup errors.
+- [x] Test data contains no real credential, prompt, conversation, or provider request ID.
 
 ### Task 2: Add Minimal 1210 Classification
 
@@ -427,7 +427,7 @@ Expected result: FAIL before production changes. The structured/message 1210 cas
 
 #### Plan
 
-- [ ] Modify `internal/proxy/rectifier.go` to add a narrow helper with this interface:
+- [x] Modify `internal/proxy/rectifier.go` to add a narrow helper with this interface:
 
 ```go
 func isOpaqueToolCompatibilityError(errorBody []byte, lowerMessage string) bool
@@ -446,13 +446,13 @@ strings.Contains(lowerMessage, "[1210]") &&
     strings.Contains(lowerMessage, "api 调用参数有误")
 ```
 
-- [ ] Keep this classification order in `matchErrorPattern`: explicit tool error; thinking/signature error; unsupported or unknown content type (`PatternGenericBadRequest`); opaque 1210 compatibility error; remaining generic invalid request. Return `PatternToolValidation` for the 1210 match. This reuses `cleanTools`; `tryRectify` will retry only when `RectifyRequest` reports a change.
-- [ ] Do not modify `cleanTools`, `RectifyRequest`, or `Handler.tryRectify` unless the resolved mainline has changed their contracts. If a contract changed, update this spec before implementation.
-- [ ] Run the focused command from Task 1.
+- [x] Keep this classification order in `matchErrorPattern`: explicit tool error; thinking/signature error; unsupported or unknown content type (`PatternGenericBadRequest`); opaque 1210 compatibility error; remaining generic invalid request. Return `PatternToolValidation` for the 1210 match. This reuses `cleanTools`; `tryRectify` will retry only when `RectifyRequest` reports a change.
+- [x] Do not modify `cleanTools`, `RectifyRequest`, or `Handler.tryRectify` unless the resolved mainline has changed their contracts. If a contract changed, update this spec before implementation.
+- [x] Run the focused command from Task 1.
 
 Expected result: PASS.
 
-- [ ] Run all rectifier tests:
+- [x] Run all rectifier tests:
 
 ```bash
 go test ./internal/proxy -run 'TestMatchErrorPattern|TestCleanTools|TestRectifyRequest|TestProxyRetries' -count=1
@@ -460,7 +460,7 @@ go test ./internal/proxy -run 'TestMatchErrorPattern|TestCleanTools|TestRectifyR
 
 Expected result: PASS.
 
-- [ ] Commit only after review of the focused diff:
+- [x] Commit only after review of the focused diff:
 
 ```bash
 git diff --check
@@ -471,9 +471,9 @@ git commit -m "fix(proxy): recover Zhipu web tool parameter errors"
 
 #### Verification
 
-- [ ] Classification is based on structured code or exact markers.
-- [ ] No provider hostname or proactive request transform was added.
-- [ ] No-cleanup requests are not retried.
+- [x] Classification is based on structured code or exact markers.
+- [x] No provider hostname or proactive request transform was added.
+- [x] No-cleanup requests are not retried.
 
 ### Task 3: Regression Verification and Spec Closure
 
@@ -493,7 +493,7 @@ git commit -m "fix(proxy): recover Zhipu web tool parameter errors"
 
 #### Plan
 
-- [ ] Run:
+- [x] Run:
 
 ```bash
 make test
@@ -501,7 +501,7 @@ make test
 
 Expected result: PASS, including the race detector configured by the repository.
 
-- [ ] Run:
+- [x] Run:
 
 ```bash
 git status --short
@@ -510,12 +510,33 @@ git diff --check HEAD^ HEAD
 
 Expected result: only intended feature files are present and no whitespace errors are reported.
 
-- [ ] If the user explicitly approves a live verification, send one minimal synthetic request through the configured provider and record only status, request count, tool names, and whether cleanup occurred. Do not record raw bodies or credentials. Otherwise mark live verification as not performed by design.
-- [ ] Update `Progress`, the development checklist, and this task's verification section in both `spec.md` and `spec_ZH.md` with exact commands, results, commit hash, and any residual limitation.
+- [x] If the user explicitly approves a live verification, send one minimal synthetic request through the configured provider and record only status, request count, tool names, and whether cleanup occurred. Do not record raw bodies or credentials. Otherwise mark live verification as not performed by design.
+- [x] Update `Progress`, the development checklist, and this task's verification section in both `spec.md` and `spec_ZH.md` with exact commands, results, commit hash, and any residual limitation.
 
 #### Verification
 
-- [ ] Focused tests pass.
-- [ ] `make test` passes.
-- [ ] English and Chinese specs remain semantically aligned.
-- [ ] Live verification status is stated explicitly.
+- [x] Focused tests pass.
+- [x] `make test` passes.
+- [x] English and Chinese specs remain semantically aligned.
+- [x] Live verification status is stated explicitly.
+
+#### Closure Evidence (2026-07-01)
+
+**Commits on `zhipu-web-compat` (not pushed):**
+- `b3931c8` — `feat(proxy): log safe SSE anomaly structure` (Task 0)
+- `344ab54` — `docs(zhipu-web): record Task 0 evidence gate decision`
+- `439b1ed` — `fix(proxy): recover Zhipu web tool parameter errors` (Tasks 1+2)
+
+**Commands and results:**
+- `go test ./internal/usage -count=1` → 56 passed.
+- `go test ./internal/proxy -run 'TestMatchErrorPattern|TestCleanTools|TestRectifyRequest|TestProxyRetries' -count=1` → 43 passed.
+- `go test ./internal/proxy -run 'TestMatchErrorPattern_Zhipu1210|TestProxy(RetriesZhipu1210WebTools|DoesNotRetryZhipu1210WhenToolCleanupMakesNoChanges)' -count=1` → 9 passed (RED before `439b1ed`, GREEN after).
+- `make test` (= `go test -v -race -coverprofile=coverage.out ./...`) → exit 0, no `FAIL`.
+- `git status --short` → clean working tree after commits.
+- `git diff --check HEAD^ HEAD` → no whitespace errors.
+
+**Acceptance Criteria status:** all 8 pass via synthetic `httptest` fixtures — (1) anomaly fixture emits bounded structure with no content markers; (2) Task 0 evidence and GO decision recorded before recovery; (3) Zhipu 1210 fixture classified as tool-cleanup candidate; (4) WebFetch/WebSearch retried once after `$schema`/`additionalProperties` removal; (5) `format`/`minLength`/`properties`/`required` preserved; (6) no-cleanup 1210 fixture forwarded without retry; (7) existing Kimi/thinking/unknown-content/large-400/SSE-status/heartbeat/usage tests pass; (8) `make test` passes.
+
+**Live provider verification:** Not performed by design (no explicit approval; consumes quota and transmits requests externally). Synthetic fixtures reproduce the 1210 error form and the cleanup/retry semantics deterministically.
+
+**Residual limitation:** The real 589-603 byte HTTP-200 SSE precursor structure remains uncaptured; the Task 0 diagnostics will record it safely if a live run is later approved. This does not affect the 1210 recovery, which targets the already-recorded 400 response.
