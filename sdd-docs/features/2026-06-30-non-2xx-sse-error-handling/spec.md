@@ -5,7 +5,7 @@ Proxy entry: `POST /v1/messages`, `POST /anthropic/v1/messages`
 Reference sources: Runtime Docker logs, `data/proxy.db`, `internal/proxy/handler.go`, `internal/proxy/heartbeat.go`
 Stack: Go 1.26 standard library (`net/http`, `io`, `log`) + SQLite usage recorder
 Last updated: 2026-06-30
-Progress: planned, 0 / 2 complete
+Progress: validated, 2 / 2 complete
 
 ## Overall Analysis (Source Analysis)
 
@@ -62,8 +62,8 @@ This approach is preferred over duplicating error capture inside the SSE branch 
 
 | Order | Status | Task | Output | Verification |
 | --- | --- | --- | --- | --- |
-| 1 | Planned | Make HTTP error status take precedence over SSE media type | `internal/proxy/handler.go` | Regression tests prove error body forwarding, diagnostic logging, and usage persistence |
-| 2 | Planned | Verify streaming and rectifier regressions | `internal/proxy/server_test.go` and existing proxy tests | Targeted proxy tests and full Go test suite pass |
+| 1 | Completed | Make HTTP error status take precedence over SSE media type | `internal/proxy/handler.go` | Regression tests prove error body forwarding, diagnostic logging, and usage persistence |
+| 2 | Completed | Verify streaming and rectifier regressions | `internal/proxy/server_test.go` and existing proxy tests | Targeted proxy tests and full Go test suite pass |
 
 ## Requirements
 
@@ -166,7 +166,7 @@ internal/proxy/
 - Modify: `internal/proxy/handler.go:262`
 - Test: `internal/proxy/server_test.go:492`
 
-- [ ] **Step 1: Add the failing regression test**
+- [x] **Step 1: Add the failing regression test**
 
   Add this test next to `TestProxyRecordsHTTPErrorAndForwardsFullBody` in `internal/proxy/server_test.go`:
 
@@ -249,7 +249,7 @@ internal/proxy/
   }
   ```
 
-- [ ] **Step 2: Run the regression test and confirm the current failure**
+- [x] **Step 2: Run the regression test and confirm the current failure**
 
   Run:
 
@@ -259,7 +259,7 @@ internal/proxy/
 
   Expected before the fix: `FAIL`; the recorded `ErrorType` is empty, `UsageParseStatus` is `missing`, and logs contain `[Stream] SSE stream detected` instead of the detailed HTTP error line.
 
-- [ ] **Step 3: Implement the minimal status-first routing change**
+- [x] **Step 3: Implement the minimal status-first routing change**
 
   In `internal/proxy/handler.go`, replace the SSE branch predicate with:
 
@@ -269,7 +269,7 @@ internal/proxy/
 
   Do not move or duplicate the existing response observer, error assignments, or `[Proxy] Error` logging block.
 
-- [ ] **Step 4: Format the touched Go files**
+- [x] **Step 4: Format the touched Go files**
 
   Run:
 
@@ -279,7 +279,7 @@ internal/proxy/
 
   Expected: both files are formatted with no unrelated content changes.
 
-- [ ] **Step 5: Run the regression test and confirm it passes**
+- [x] **Step 5: Run the regression test and confirm it passes**
 
   Run:
 
@@ -289,7 +289,7 @@ internal/proxy/
 
   Expected after the fix: `ok magic-claude-code/internal/proxy`; the exact error body is forwarded and all log and usage assertions pass.
 
-- [ ] **Step 6: Run focused SSE and rectifier regressions**
+- [x] **Step 6: Run focused SSE and rectifier regressions**
 
   Run:
 
@@ -299,7 +299,7 @@ internal/proxy/
 
   Expected: `ok magic-claude-code/internal/proxy`; successful SSE usage, terminal-event handling, 400 rectification, and full large-body forwarding remain unchanged.
 
-- [ ] **Step 7: Commit the implementation and regression test**
+- [x] **Step 7: Commit the implementation and regression test**
 
   ```bash
   git add internal/proxy/handler.go internal/proxy/server_test.go
@@ -308,11 +308,11 @@ internal/proxy/
 
 #### Verification
 
-- [ ] A 400 response with `Content-Type: text/event-stream` is forwarded byte-for-byte.
-- [ ] The response does not produce the SSE detection log or heartbeat behavior.
-- [ ] The detailed error log contains `headers`, `params`, and sanitized `resp` fields.
-- [ ] The usage request records `http_error`, the sanitized error message, final status, and full response byte count.
-- [ ] The usage token record uses `none` and `skipped_non_2xx`.
+- [x] A 400 response with `Content-Type: text/event-stream` is forwarded byte-for-byte.
+- [x] The response does not produce the SSE detection log or heartbeat behavior.
+- [x] The detailed error log contains `headers`, `params`, and sanitized `resp` fields.
+- [x] The usage request records `http_error`, the sanitized error message, final status, and full response byte count.
+- [x] The usage token record uses `none` and `skipped_non_2xx`.
 
 ### Task 2: Add Regression Coverage and Run Verification
 
@@ -339,7 +339,7 @@ internal/proxy/
 - Update after successful verification: `sdd-docs/features/2026-06-30-non-2xx-sse-error-handling/spec.md`
 - Update after successful verification: `sdd-docs/features/2026-06-30-non-2xx-sse-error-handling/spec_ZH.md`
 
-- [ ] **Step 1: Run the complete proxy package tests without cache**
+- [x] **Step 1: Run the complete proxy package tests without cache**
 
   Run:
 
@@ -349,7 +349,7 @@ internal/proxy/
 
   Expected: `ok magic-claude-code/internal/proxy`.
 
-- [ ] **Step 2: Run the complete Go test suite**
+- [x] **Step 2: Run the complete Go test suite**
 
   Run:
 
@@ -359,7 +359,7 @@ internal/proxy/
 
   Expected: all Go packages pass with no failures.
 
-- [ ] **Step 3: Validate whitespace**
+- [x] **Step 3: Validate whitespace**
 
   Run:
 
@@ -369,7 +369,7 @@ internal/proxy/
 
   Expected: `git diff --check` produces no output.
 
-- [ ] **Step 4: Inspect the scoped code diff**
+- [x] **Step 4: Inspect the scoped code diff**
 
   Run:
 
@@ -379,7 +379,7 @@ internal/proxy/
 
   Expected: the implementation commit contains one handler predicate change and one focused regression test, with no unrelated edits.
 
-- [ ] **Step 5: Record verification in this single-file spec pair**
+- [x] **Step 5: Record verification in this single-file spec pair**
 
   After all commands pass, update both specs in the same commit:
 
@@ -388,7 +388,7 @@ internal/proxy/
   - mark completed plan and verification checkboxes;
   - add the actual command outcomes and implementation commit hash without creating a separate validation or plan file.
 
-- [ ] **Step 6: Commit the verification record**
+- [x] **Step 6: Commit the verification record**
 
   ```bash
   git add \
@@ -399,6 +399,18 @@ internal/proxy/
 
 #### Verification
 
-- [ ] `go test ./internal/proxy -run 'Test.*SSE.*Error|TestProxyRecordsStreamingUsage|TestProxyRetries.*400' -count=1`
-- [ ] `go test ./...`
-- [ ] `git diff --check`
+- [x] `go test ./internal/proxy -run 'Test.*SSE.*Error|TestProxyRecordsStreamingUsage|TestProxyRetries.*400' -count=1`
+- [x] `go test ./...`
+- [x] `git diff --check`
+
+### Actual Verification Evidence
+
+Date: 2026-06-30
+Implementation commit: `43dd1f0` (`fix(proxy): record SSE-labeled HTTP errors`)
+
+- RED: `go test ./internal/proxy -run '^TestProxyRecordsSSELabeledHTTPError$' -count=1` failed before the implementation with `ErrorType = ""`, confirming the regression test exercised the missing HTTP error path.
+- GREEN: the same focused regression command passed after the status-first predicate change.
+- Focused SSE and rectifier regressions passed.
+- `go test ./internal/proxy -count=1` passed in 4.515 seconds.
+- `go test ./...` passed for all Go packages; packages without tests reported `[no test files]`.
+- `git diff --check` produced no output, and inspection of `43dd1f0` confirmed one handler predicate change plus one focused regression test.
