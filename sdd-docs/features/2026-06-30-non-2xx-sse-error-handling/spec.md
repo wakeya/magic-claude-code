@@ -5,7 +5,7 @@ Proxy entry: `POST /v1/messages`, `POST /anthropic/v1/messages`
 Reference sources: Runtime Docker logs, `data/proxy.db`, `internal/proxy/handler.go`, `internal/proxy/heartbeat.go`
 Stack: Go 1.26 standard library (`net/http`, `io`, `log`) + SQLite usage recorder
 Last updated: 2026-07-01
-Progress: validated, 3 / 3 complete
+Progress: follow-up planned, 3 / 4 complete; Task 4 awaits spec review
 
 ## Overall Analysis (Source Analysis)
 
@@ -37,6 +37,17 @@ Both responses forwarded 213 bytes, but the corresponding SQLite rows had empty 
 
 This proves that the upstream body was present. The body and request summary were not logged because an HTTP error carrying an SSE media type was routed through the success-oriented streaming branch.
 
+After the safe request-field allowlist was deployed, another Zhipu 1210 failure at 2026-07-01 03:40:57 showed the remaining operability gap:
+
+```text
+params: {"max_tokens":64000,"messages":"[82 items]","model":"glm-5.2","tools":"[11 items]"}
+resp: {"type":"error","error":{"type":"invalid_request_error","code":"1210","message":"[1210][API 调用参数有误，请检查文档。][...]"}}
+```
+
+The summary proves collection sizes but cannot distinguish whether `stream` is absent or false, which tools are present, or whether tool schemas contain compatibility-relevant JSON Schema keywords. Subsequent diagnosis established that the failure followed `ToolSearch` loading `WebFetch`/`WebSearch`, and that Claude Code removed the 14-byte `"stream":true,` member during JSON fallback. Full prompt or message content was not needed; protocol structure was.
+
+The same runtime evidence excludes the cc-switch #3090 “missing `beta=true`” failure mode for this MCC request. Both the 03:40:55 streaming URL and the 03:40:57 final 400 URL contained `?beta=true`. The ordinary `>>>`/`<<<` line omits it only because `providerLogFields` intentionally calls `config.RedactURL`, which removes every query parameter from display. The detailed error line currently prints the raw `backendURL`; that makes beta visible but can also expose unrelated query secrets. Task 4 therefore adds an allowlisted beta-state/count summary while keeping the URL itself query-redacted everywhere.
+
 ### Root Cause
 
 `isSSEStream` only checks whether the response `Content-Type` contains `text/event-stream`. `Handler.ServeHTTP` then gives this media-type result priority over `resp.StatusCode`. The routing decision incorrectly treats SSE as a complete response outcome instead of a transport representation.
@@ -58,6 +69,10 @@ Use status-first routing in `Handler.ServeHTTP`: enter the SSE branch only when 
 
 This approach is preferred over duplicating error capture inside the SSE branch because it keeps one canonical HTTP error path. A broader response-pipeline refactor is not required for this defect.
 
+For error-log request diagnostics, retain secure-by-default content redaction but replace collection-only summaries with a bounded protocol-structure summary. It records field presence, safe scalar controls, collection counts, message role/content-block histograms, a one-way tool-name-set fingerprint, explicit recognition of `ToolSearch`/`WebFetch`/`WebSearch`, and aggregate schema-keyword counts. It never records prompts, message text, metadata values or keys, arbitrary tool names, tool descriptions, schema property names/descriptions, credentials, or unknown extension values. The fingerprint supports equality comparison; it is not treated as encryption or a confidentiality boundary.
+
+The existing compatibility-header allowlist remains unchanged in this task: Anthropic version/beta and content type are retained; credentials stay masked. URL query diagnostics report only whether `beta` is absent, true, false, or another value plus the count of other parameters; no other query names or values are logged. A future authenticated, TTL-bound full-capture facility is a separate feature and cannot replace safe console diagnostics.
+
 ## Development Checklist
 
 | Order | Status | Task | Output | Verification |
@@ -65,6 +80,7 @@ This approach is preferred over duplicating error capture inside the SSE branch 
 | 1 | Completed | Make HTTP error status take precedence over SSE media type | `internal/proxy/handler.go` | Regression tests prove error body forwarding, diagnostic logging, and usage persistence |
 | 2 | Completed | Verify streaming and rectifier regressions | `internal/proxy/server_test.go` and existing proxy tests | Targeted proxy tests and full Go test suite pass |
 | 3 | Completed | Restrict request summaries to safe diagnostic fields | `internal/proxy/handler.go`, `internal/proxy/server_test.go` | Security reproduction fails before the fix; allowlist, negative leak checks, status matrix, and race suite pass afterward |
+| 4 | Planned | Add bounded protocol-structure diagnostics | `internal/proxy/request_diagnostics.go`, focused tests, Handler log assertions | RED proves current summary lacks stream presence/tool/schema structure; GREEN retains zero secret markers and bounded output |
 
 ## Requirements
 
@@ -91,13 +107,23 @@ This approach is preferred over duplicating error capture inside the SSE branch 
 8. Reactive 400 rectification behavior remains unchanged:
    - a successful retry follows the response path appropriate to the retry response;
    - an unsuccessful or inapplicable rectification forwards and records the restored final error once.
-9. Detailed error logs include only typed safe request fields: `model`, `stream`, numeric generation controls, and counts for `messages`, `tools`, or `input`. Prompt-bearing, identifying, credential, and unknown fields are omitted.
+9. Detailed error logs contain a bounded, type-checked protocol-structure summary:
+   - `model`, numeric generation controls, request byte length, and explicit `stream.present` plus a boolean value only when correctly typed;
+   - counts and allowlisted role/content-block histograms for `messages`;
+   - tool count, stable SHA-256 digest of the sorted tool-name set, exact names only for `ToolSearch`, `WebFetch`, and `WebSearch`, and aggregate counts for compatibility-relevant schema keywords;
+   - type/size shapes for `system`, `metadata`, `thinking`, and `input`, without values or object keys;
+   - a count of unrecognized top-level fields, without their names or values.
+10. The request summary must never contain prompt/message/input text, metadata keys or values, arbitrary tool names, tool descriptions, schema property names/descriptions, credentials, authorization values, or unknown extension names/values.
+11. Request diagnostic output must remain bounded independently of message/tool collection size; aggregate maps use fixed allowlists and exact known web-tool names are de-duplicated.
+12. Every logged upstream URL must remain query-redacted. Separate query diagnostics may report only the normalized beta state (`absent`, `true`, `false`, or `other`) and the count of non-beta parameters.
 
 ### Files in Scope
 
 ```text
 internal/proxy/
   handler.go          (modify: status-aware response routing)
+  request_diagnostics.go (create in Task 4: bounded safe protocol summary)
+  request_diagnostics_test.go (create in Task 4: focused redaction and structure tests)
   server_test.go      (modify: regression coverage for SSE-labeled errors)
 ```
 
@@ -109,7 +135,7 @@ internal/proxy/
 2. Do not change the response body delivered to the client, including SSE-labeled JSON error bodies.
 3. Do not parse an HTTP error body as token usage.
 4. Preserve existing error sanitization and size limits: the client receives the complete body while persisted/logged error text remains bounded and secret-sanitized.
-5. Preserve existing compatibility header summarization. Request parameters must use an explicit typed allowlist; do not log raw system prompts, metadata, message/input content, tool schemas, credentials, authorization values, or unknown extensions.
+5. Preserve existing compatibility header summarization. Request diagnostics may record only the structural aggregates defined above; do not log raw system prompts, metadata keys/values, message/input content, arbitrary tool names, tool/schema content, credentials, authorization values, unknown extensions, or raw URL query names/values other than normalized beta state.
 6. Do not add a configuration switch. Correct routing is protocol behavior, not a user preference.
 7. Keep the change localized; do not refactor unrelated streaming or usage-recording code.
 
@@ -132,6 +158,7 @@ internal/proxy/
 4. Persisting full request or response payloads beyond current bounded diagnostics.
 5. Redesigning the usage database schema or admin usage UI.
 6. Changing behavior for successful SSE event payloads that encode application-level errors under HTTP status below 400.
+7. Adding the admin-controlled full request/response capture, persistence, export, retention, or deletion feature.
 
 ## Task Details
 
@@ -139,9 +166,9 @@ internal/proxy/
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to execute this plan task-by-task. Track progress by updating the checkboxes in this spec.
 
-**Goal:** Preserve and diagnose every final upstream HTTP error even when the upstream incorrectly labels the response as SSE.
+**Goal:** Preserve every final upstream HTTP error and emit enough bounded protocol structure to diagnose compatibility failures without logging request content.
 
-**Architecture:** Keep the existing response pipeline and make its branch predicate status-aware. A final status below 400 may use SSE heartbeat handling; every final 4xx or 5xx response uses the existing non-streaming observer, which already owns error logging and usage persistence.
+**Architecture:** Keep the status-aware response pipeline. Every final 4xx or 5xx response uses the existing non-streaming observer; its request summary is produced by a separate bounded structural summarizer that aggregates only allowlisted protocol facts and never copies content-bearing values.
 
 **Tech Stack:** Go 1.26, `net/http`, `httptest`, standard `log`, existing `fakeUsageRecorder` test helper.
 
@@ -466,3 +493,192 @@ Implementation commit: `43dd1f0` (`fix(proxy): record SSE-labeled HTTP errors`)
 - GREEN focused tests passed after `dcdc3c4`; direct allowlist coverage passed in `b37030b`.
 - `go test ./internal/proxy -count=1` passed.
 - `make test` passed with `-race` and coverage enabled.
+
+### Task 4: Add Bounded Protocol-Structure Diagnostics
+
+#### Requirements
+
+**Objective** - Make compatibility errors diagnosable from the default console log without restoring raw request logging.
+
+**Outcomes** - `summarizeRequestParams` reports whether `stream` is absent, safe message/tool structure, known Web tool presence, schema compatibility features, and fixed-size shapes for sensitive fields. URL logs expose normalized beta state without raw query data. Content-bearing values remain unavailable.
+
+**Evidence** - A fixture shaped like the observed 1210 request produces `stream.present=false`, recognizes `WebFetch`, and reports `$schema`, `additionalProperties=false`, and nested `format` counts while every secret marker is absent.
+
+**Constraints** - The summary is derived from the transformed upstream body already held in memory. No raw payload is persisted, no header policy changes, no configuration is added, and no rectifier behavior changes.
+
+**Edge Cases** - Missing versus wrongly typed `stream`; string versus array message content; unknown roles/block types; duplicate known Web tools; arbitrary or secret-bearing custom tool names; deeply nested schemas; large message/tool arrays; malformed JSON; absent/repeated/non-boolean beta query values; secret-bearing non-beta query parameters.
+
+**Verification** - RED/GREEN focused tests, Handler-level log tests, full proxy tests, and `make test` pass. The final summary remains below 4096 bytes for a synthetic large request.
+
+#### Plan
+
+**Files:**
+
+- Create: `internal/proxy/request_diagnostics.go`
+- Create: `internal/proxy/request_diagnostics_test.go`
+- Modify: `internal/proxy/handler.go` (remove the old collection-only `summarizeRequestParams`; keep its call site)
+- Modify: `internal/proxy/server_test.go` (assert structural output on the real error path)
+- Update after verification: `sdd-docs/features/2026-06-30-non-2xx-sse-error-handling/spec.md`
+- Update after verification: `sdd-docs/features/2026-06-30-non-2xx-sse-error-handling/spec_ZH.md`
+
+- [ ] **Step 1: Write the failing focused tests**
+
+  Create `internal/proxy/request_diagnostics_test.go` with a request containing:
+
+  ```json
+  {
+    "model": "glm-5.2",
+    "max_tokens": 64000,
+    "messages": [
+      {"role":"user","content":"secret-user-text"},
+      {"role":"assistant","content":[{"type":"tool_use","name":"secret-call-name","input":{"secret":"value"}}]},
+      {"role":"user","content":[{"type":"tool_result","content":"secret-result"},{"type":"tool_reference","tool_name":"WebFetch"}]}
+    ],
+    "tools": [
+      {
+        "name":"WebFetch",
+        "description":"secret-web-description",
+        "input_schema":{
+          "$schema":"https://json-schema.org/draft/2020-12/schema",
+          "type":"object",
+          "properties":{"url":{"type":"string","format":"uri"}},
+          "required":["url"],
+          "additionalProperties":false
+        }
+      },
+      {
+        "name":"secret-custom-tool",
+        "description":"secret-custom-description",
+        "input_schema":{"type":"object","properties":{"secret-property":{"type":"string","description":"secret-schema-description"}}}
+      }
+    ],
+    "system":"secret-system-prompt",
+    "metadata":{"secret-user-id":"secret-metadata-value"},
+    "unknown_secret_extension":{"secret":"secret-extension-value"}
+  }
+  ```
+
+  Parse the returned JSON and assert this exact contract:
+
+  - `body_bytes` equals the input byte length;
+  - `model` and `max_tokens` are retained;
+  - `stream` equals `{"present":false}`;
+  - message count is 3, roles are `user=2` and `assistant=1`, and known block types count `tool_use=1`, `tool_result=1`, `tool_reference=1`;
+  - tool count is 2, `known_names` is exactly `["WebFetch"]`, and `names_sha256` is a 64-character lowercase hex digest;
+  - schema aggregates report one draft-2020-12 marker, one `additionalProperties=false`, one `format`, two root property entries, and one required entry;
+  - `system` is `{"type":"string","chars":20}`, `metadata` is `{"type":"object","keys":1}`, and `unknown_top_level_fields=1`;
+  - none of the ten `secret-*` markers appears in the serialized summary.
+
+  Add cases proving `stream=true`, `stream=false`, and a wrong-type stream produce respectively `{present:true,value:true}`, `{present:true,value:false}`, and `{present:true,type:"string"}` without copying the wrong value.
+
+  Add a stable-digest test that reverses tool order and expects the same `names_sha256`. Add a large synthetic fixture with at least 500 messages and 500 tools and assert the summary is shorter than 4096 bytes and contains no generated secret marker.
+
+  Add focused query-summary cases for no query, `beta=true`, `beta=false`, `beta=unexpected`, repeated beta values, and `beta=true&token=secret-query-value&signature=secret-signature`. Assert the output contains only normalized beta state and `other_count=2`, and never contains `token`, `signature`, or either secret value.
+
+- [ ] **Step 2: Run the focused tests and verify RED**
+
+  ```bash
+  go test ./internal/proxy -run '^TestSummarizeRequestParams(ProtocolStructure|StreamPresence|StableToolDigest|BoundsLargeCollections)$' -count=1
+  ```
+
+  Expected before implementation: FAIL because the current summary has no `body_bytes`, explicit stream presence, role/block histograms, tool digest, known Web names, schema aggregates, or sensitive-field shapes.
+
+- [ ] **Step 3: Implement the bounded structural summarizer**
+
+  Create `internal/proxy/request_diagnostics.go` with these private responsibilities:
+
+  ```go
+  func summarizeRequestParams(body []byte) string
+  func summarizeValueShape(value any) map[string]any
+  func summarizeMessages(value any) map[string]any
+  func summarizeTools(value any) map[string]any
+  func collectSchemaDiagnostics(value any, depth int, stats map[string]int)
+  func digestToolNames(names []string) string
+  func summarizeUpstreamQuery(rawURL string) string
+  ```
+
+  Use fixed allowlists:
+
+  ```go
+  knownToolNames := {"ToolSearch", "WebFetch", "WebSearch"}
+  knownRoles := {"user", "assistant", "system", "tool"}
+  knownContentTypes := {
+      "text", "image", "document", "tool_use", "tool_result",
+      "thinking", "redacted_thinking", "server_tool_use", "tool_reference",
+  }
+  schemaKeywords := {"$schema", "additionalProperties", "format", "minLength", "maxLength", "oneOf", "anyOf", "allOf", "$ref"}
+  ```
+
+  Implementation rules:
+
+  1. Preserve the current malformed-JSON fallback `<N bytes, not JSON>`.
+  2. Retain only correctly typed `model` and numeric generation controls.
+  3. Always emit `stream.present`; emit `value` only for a bool, otherwise only a JSON type label.
+  4. Count only allowlisted roles and content-block types; aggregate every other string as `other` without retaining it.
+  5. Hash the sorted complete tool-name list with SHA-256 using length-prefixed entries. Emit exact names only when present in `knownToolNames`, sorted and de-duplicated.
+  6. Traverse schema maps/arrays to a maximum depth of 32. Count only fixed keyword categories and root `properties`/`required` sizes; never retain property names, descriptions, enum values, defaults, examples, regex patterns, or arbitrary strings.
+  7. Summarize `system`, `metadata`, `thinking`, and `input` only as JSON type plus string character count, array item count, or object key count.
+  8. Count all top-level keys outside the safe scalar/collection/shape allowlists as `unknown_top_level_fields`; do not retain their names.
+  9. Use only fixed-size maps, counters, one digest, and the three-name known-tool set so output size is independent of input collection cardinality.
+  10. Parse the upstream URL and summarize query state as `beta=absent|true|false|other` plus `other_count=N`. Count but never retain non-beta parameter names/values. Treat repeated or mixed beta values as `other`.
+
+  Remove the old `summarizeRequestParams` definition from `handler.go`. Change the detailed error log to use `redactUpstreamURL(backendURL)` plus `summarizeUpstreamQuery(backendURL)` rather than printing raw `backendURL`. Append the same normalized beta/other-count fields to `providerLogFields` so ordinary `>>>`/`<<<` lines distinguish query redaction from query absence.
+
+- [ ] **Step 4: Format and verify GREEN**
+
+  ```bash
+  gofmt -w internal/proxy/request_diagnostics.go internal/proxy/request_diagnostics_test.go internal/proxy/handler.go
+  go test ./internal/proxy -run '^TestSummarizeRequestParams(ProtocolStructure|StreamPresence|StableToolDigest|BoundsLargeCollections)$' -count=1
+  ```
+
+  Expected: `ok magic-claude-code/internal/proxy`.
+
+- [ ] **Step 5: Update Handler-level security assertions**
+
+  Extend `TestProxyRecordsSSELabeledHTTPError` and `TestSummarizeRequestParamsAllowsOnlySafeDiagnostics` in `internal/proxy/server_test.go` to assert the new structural fields appear on 400, 429, and 500 error logs while all existing secret markers, custom tool names, descriptions, schema property names, metadata keys, and unknown extension names remain absent.
+
+  Make the test request URL include `?beta=true&token=secret-query-value`. Assert ordinary and detailed error logs contain the redacted upstream URL, `beta=true`, and `other_count=1`, while neither the raw query nor the `token` name/value appears.
+
+  Run:
+
+  ```bash
+  go test ./internal/proxy -run 'TestProxyRecordsSSELabeledHTTPError|TestSummarizeRequestParamsAllowsOnlySafeDiagnostics' -count=1
+  ```
+
+  Expected: PASS with unchanged response status/body, usage persistence, and no-heartbeat behavior.
+
+- [ ] **Step 6: Run regression verification**
+
+  ```bash
+  go test ./internal/proxy -count=1
+  make test
+  git diff --check
+  ```
+
+  Expected: all commands pass; `make test` includes the race detector and coverage.
+
+- [ ] **Step 7: Record evidence and commit**
+
+  Update both specs to 4 / 4 complete, check every Task 4 item, record RED/GREEN command evidence and the implementation commit, and request a fresh security review of the expanded diagnostic surface.
+
+  ```bash
+  git add internal/proxy/request_diagnostics.go \
+    internal/proxy/request_diagnostics_test.go \
+    internal/proxy/handler.go \
+    internal/proxy/server_test.go \
+    sdd-docs/features/2026-06-30-non-2xx-sse-error-handling/spec.md \
+    sdd-docs/features/2026-06-30-non-2xx-sse-error-handling/spec_ZH.md
+  git commit -m "fix(proxy): add safe protocol diagnostics"
+  ```
+
+#### Verification
+
+- [ ] Missing, false, true, and wrongly typed `stream` states are distinguishable.
+- [ ] Tool composition changes are comparable by digest and known Web tools are visible.
+- [ ] Compatibility-relevant schema features are counted without retaining schema content.
+- [ ] Message structure is visible without message text, tool input, or tool result content.
+- [ ] System, metadata, thinking, input, and unknown fields reveal shape/count only.
+- [ ] Summary size remains bounded for large collections.
+- [ ] Existing response, usage, heartbeat, rectifier, and security behavior remains unchanged.
+- [ ] Logs distinguish beta presence from URL redaction without exposing other query parameters.
+- [ ] Focused tests, full proxy tests, `make test`, and fresh security review pass.
