@@ -104,6 +104,20 @@ Local page / proxy entry / reference sources / stack / last updated / progress
 #### 验证
 ```
 
+### 单文件计划规则
+
+新功能的实现计划必须直接维护在对应 `spec.md` / `spec_ZH.md` 的 `Task Details` / `任务详情` 中，不再为新功能创建独立的 `plan.md` 或跨目录计划文件。这样需求、设计、执行步骤和验证证据始终通过同一个 feature 目录关联。
+
+每个任务的 `Plan` / `计划` 必须包含：
+
+1. 精确的修改、创建和测试文件路径。
+2. 按 TDD 顺序拆分的可追踪复选步骤：失败测试、失败确认、最小实现、通过确认、回归验证和提交。
+3. 代码修改步骤所需的具体代码或接口形态，不使用 `TBD`、`TODO` 或“稍后实现”等占位描述。
+4. 精确的验证命令和预期结果。
+5. 实现完成后回写同一规格中的进度、检查清单和实际验证证据。
+
+英文与中文规格中的实现计划必须保持语义一致。历史目录中的独立 `plan.md` 和 `sdd-docs/superpowers/plans/` 文件继续保留，但不作为新功能规格的默认格式。
+
 ## 审查归档
 
 部分功能会在 `spec.md` / `spec_ZH.md` 之外附带审查归档文件：
@@ -129,6 +143,7 @@ Local page / proxy entry / reference sources / stack / last updated / progress
 | Transparent Mode Bootstrap and Fallback | `2026-06-20-transparent-mode-bootstrap-and-fallback/spec.md` | `2026-06-20-transparent-mode-bootstrap-and-fallback/spec_ZH.md` |
 | Fish Profile Dedup Scanner | `2026-06-21-fish-profile-dedup-scanner/spec.md` | `2026-06-21-fish-profile-dedup-scanner/spec_ZH.md` |
 | Provider Quota Query | `2026-06-27-provider-quota-query/spec.md` | `2026-06-27-provider-quota-query/spec_ZH.md` |
+| SSE-Labeled HTTP Error Handling | `2026-06-30-non-2xx-sse-error-handling/spec.md` | `2026-06-30-non-2xx-sse-error-handling/spec_ZH.md` |
 
 ## 状态生命周期
 
