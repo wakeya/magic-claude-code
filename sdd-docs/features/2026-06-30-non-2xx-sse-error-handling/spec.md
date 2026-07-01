@@ -5,7 +5,7 @@ Proxy entry: `POST /v1/messages`, `POST /anthropic/v1/messages`
 Reference sources: Runtime Docker logs, `data/proxy.db`, `internal/proxy/handler.go`, `internal/proxy/heartbeat.go`
 Stack: Go 1.26 standard library (`net/http`, `io`, `log`) + SQLite usage recorder
 Last updated: 2026-06-30
-Progress: draft, 0 / 2 planned
+Progress: planned, 0 / 2 complete
 
 ## Overall Analysis (Source Analysis)
 
@@ -133,6 +133,16 @@ internal/proxy/
 
 ## Task Details
 
+### Embedded Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to execute this plan task-by-task. Track progress by updating the checkboxes in this spec.
+
+**Goal:** Preserve and diagnose every final upstream HTTP error even when the upstream incorrectly labels the response as SSE.
+
+**Architecture:** Keep the existing response pipeline and make its branch predicate status-aware. A final status below 400 may use SSE heartbeat handling; every final 4xx or 5xx response uses the existing non-streaming observer, which already owns error logging and usage persistence.
+
+**Tech Stack:** Go 1.26, `net/http`, `httptest`, standard `log`, existing `fakeUsageRecorder` test helper.
+
 ### Task 1: Route Final HTTP Errors Through the Error Observer
 
 #### Requirements
@@ -141,7 +151,7 @@ internal/proxy/
 
 **Outcomes** - `Handler.ServeHTTP` gives status `>= 400` precedence over SSE media type; the existing non-SSE error path forwards the response and records complete error metadata.
 
-**Evidence** - A test backend returns status 400, `Content-Type: text/event-stream`, and a known 213-byte error body. The client receives the exact body, the fake usage recorder contains `http_error` and `skipped_non_2xx`, and captured logs contain the request parameter summary and sanitized response.
+**Evidence** - A test backend returns status 400, `Content-Type: text/event-stream`, and a known error body. The client receives the exact body, the fake usage recorder contains `http_error` and `skipped_non_2xx`, and captured logs contain the request parameter summary and sanitized response.
 
 **Constraints** - Use the existing observer, sanitizer, log formatter, and recorder. Do not duplicate HTTP error handling inside the SSE branch.
 
@@ -151,10 +161,150 @@ internal/proxy/
 
 #### Plan
 
-1. Change the SSE branch predicate so it requires both a non-error final status and an SSE media type.
-2. Leave response header forwarding and status writing unchanged.
-3. Reuse the existing non-SSE `responseObserver` path for every final status `>= 400`.
-4. Confirm the existing error log and usage-recording assignments execute for an SSE-labeled 400.
+**Files:**
+
+- Modify: `internal/proxy/handler.go:262`
+- Test: `internal/proxy/server_test.go:492`
+
+- [ ] **Step 1: Add the failing regression test**
+
+  Add this test next to `TestProxyRecordsHTTPErrorAndForwardsFullBody` in `internal/proxy/server_test.go`:
+
+  ```go
+  func TestProxyRecordsSSELabeledHTTPError(t *testing.T) {
+      var logBuf bytes.Buffer
+      oldOutput := log.Writer()
+      oldFlags := log.Flags()
+      oldPrefix := log.Prefix()
+      log.SetOutput(&logBuf)
+      log.SetFlags(0)
+      log.SetPrefix("")
+      t.Cleanup(func() {
+          log.SetOutput(oldOutput)
+          log.SetFlags(oldFlags)
+          log.SetPrefix(oldPrefix)
+      })
+
+      recorder := &fakeUsageRecorder{}
+      errorBody := `{"type":"error","error":{"type":"provider_error","message":"request rejected"}}`
+      backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+          w.Header().Set("Content-Type", "text/event-stream")
+          w.WriteHeader(http.StatusBadRequest)
+          _, _ = w.Write([]byte(errorBody))
+      }))
+      defer backend.Close()
+
+      handler := NewHandler(
+          config.NewMockStore(testProxyConfig(testProxyProvider(backend.URL))),
+          http.DefaultTransport.(*http.Transport),
+          recorder,
+      )
+      req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{
+          "model":"claude-sonnet",
+          "stream":false,
+          "max_tokens":64,
+          "messages":[{"role":"user","content":"hello"}]
+      }`))
+      req.Header.Set("Content-Type", "application/json")
+      rec := httptest.NewRecorder()
+
+      handler.ServeHTTP(rec, req)
+
+      if rec.Code != http.StatusBadRequest {
+          t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+      }
+      if rec.Body.String() != errorBody {
+          t.Fatalf("body = %q, want %q", rec.Body.String(), errorBody)
+      }
+
+      record := recorder.onlyRecord(t)
+      if record.req.StatusCode == nil || *record.req.StatusCode != http.StatusBadRequest {
+          t.Fatalf("StatusCode = %v", record.req.StatusCode)
+      }
+      if record.req.ErrorType != usage.ErrorHTTP {
+          t.Fatalf("ErrorType = %q", record.req.ErrorType)
+      }
+      if record.req.ErrorMessage != errorBody {
+          t.Fatalf("ErrorMessage = %q, want %q", record.req.ErrorMessage, errorBody)
+      }
+      if record.req.ResponseBytes != int64(len(errorBody)) {
+          t.Fatalf("ResponseBytes = %d, want %d", record.req.ResponseBytes, len(errorBody))
+      }
+      if record.tok.UsageSource != usage.UsageSourceNone {
+          t.Fatalf("UsageSource = %q", record.tok.UsageSource)
+      }
+      if record.tok.UsageParseStatus != usage.ParseStatusSkippedNon2xx {
+          t.Fatalf("UsageParseStatus = %q", record.tok.UsageParseStatus)
+      }
+
+      logs := logBuf.String()
+      if !strings.Contains(logs, "[Proxy] Error 400") ||
+          !strings.Contains(logs, `"max_tokens":64`) ||
+          !strings.Contains(logs, "resp: "+errorBody) {
+          t.Fatalf("missing detailed HTTP error log:\n%s", logs)
+      }
+      if strings.Contains(logs, "[Stream] SSE stream detected") {
+          t.Fatalf("HTTP error incorrectly entered SSE path:\n%s", logs)
+      }
+  }
+  ```
+
+- [ ] **Step 2: Run the regression test and confirm the current failure**
+
+  Run:
+
+  ```bash
+  go test ./internal/proxy -run '^TestProxyRecordsSSELabeledHTTPError$' -count=1
+  ```
+
+  Expected before the fix: `FAIL`; the recorded `ErrorType` is empty, `UsageParseStatus` is `missing`, and logs contain `[Stream] SSE stream detected` instead of the detailed HTTP error line.
+
+- [ ] **Step 3: Implement the minimal status-first routing change**
+
+  In `internal/proxy/handler.go`, replace the SSE branch predicate with:
+
+  ```go
+  if resp.StatusCode < 400 && isSSEStream(resp) {
+  ```
+
+  Do not move or duplicate the existing response observer, error assignments, or `[Proxy] Error` logging block.
+
+- [ ] **Step 4: Format the touched Go files**
+
+  Run:
+
+  ```bash
+  gofmt -w internal/proxy/handler.go internal/proxy/server_test.go
+  ```
+
+  Expected: both files are formatted with no unrelated content changes.
+
+- [ ] **Step 5: Run the regression test and confirm it passes**
+
+  Run:
+
+  ```bash
+  go test ./internal/proxy -run '^TestProxyRecordsSSELabeledHTTPError$' -count=1
+  ```
+
+  Expected after the fix: `ok magic-claude-code/internal/proxy`; the exact error body is forwarded and all log and usage assertions pass.
+
+- [ ] **Step 6: Run focused SSE and rectifier regressions**
+
+  Run:
+
+  ```bash
+  go test ./internal/proxy -run 'TestProxyRecordsStreamingUsage|TestProxyRecordsStreamingUsageWhenUpstreamDoesNotCloseAfterMessageStop|TestProxyRetriesKimiTool400WithCleanedRequestBody|TestProxyForwardsLargeNonRecoverable400Body' -count=1
+  ```
+
+  Expected: `ok magic-claude-code/internal/proxy`; successful SSE usage, terminal-event handling, 400 rectification, and full large-body forwarding remain unchanged.
+
+- [ ] **Step 7: Commit the implementation and regression test**
+
+  ```bash
+  git add internal/proxy/handler.go internal/proxy/server_test.go
+  git commit -m "fix(proxy): record SSE-labeled HTTP errors"
+  ```
 
 #### Verification
 
@@ -182,12 +332,70 @@ internal/proxy/
 
 #### Plan
 
-1. Add a regression test that returns an SSE-labeled 400 body and invokes the proxy with a Messages request.
-2. Assert exact status and body forwarding.
-3. Assert usage request and token error fields.
-4. Capture logs and assert the detailed error line is present while the SSE detection line is absent.
-5. Run existing successful SSE and rectifier tests.
-6. Run the full Go test suite and whitespace validation.
+**Files:**
+
+- Verify: `internal/proxy/handler.go`
+- Verify: `internal/proxy/server_test.go`
+- Update after successful verification: `sdd-docs/features/2026-06-30-non-2xx-sse-error-handling/spec.md`
+- Update after successful verification: `sdd-docs/features/2026-06-30-non-2xx-sse-error-handling/spec_ZH.md`
+
+- [ ] **Step 1: Run the complete proxy package tests without cache**
+
+  Run:
+
+  ```bash
+  go test ./internal/proxy -count=1
+  ```
+
+  Expected: `ok magic-claude-code/internal/proxy`.
+
+- [ ] **Step 2: Run the complete Go test suite**
+
+  Run:
+
+  ```bash
+  go test ./...
+  ```
+
+  Expected: all Go packages pass with no failures.
+
+- [ ] **Step 3: Validate whitespace**
+
+  Run:
+
+  ```bash
+  git diff --check
+  ```
+
+  Expected: `git diff --check` produces no output.
+
+- [ ] **Step 4: Inspect the scoped code diff**
+
+  Run:
+
+  ```bash
+  git show --format= HEAD -- internal/proxy/handler.go internal/proxy/server_test.go
+  ```
+
+  Expected: the implementation commit contains one handler predicate change and one focused regression test, with no unrelated edits.
+
+- [ ] **Step 5: Record verification in this single-file spec pair**
+
+  After all commands pass, update both specs in the same commit:
+
+  - change progress to `validated, 2 / 2 complete` / `已验证，2 / 2 已完成`;
+  - change both Development Checklist rows to `Completed` / `已完成`;
+  - mark completed plan and verification checkboxes;
+  - add the actual command outcomes and implementation commit hash without creating a separate validation or plan file.
+
+- [ ] **Step 6: Commit the verification record**
+
+  ```bash
+  git add \
+    sdd-docs/features/2026-06-30-non-2xx-sse-error-handling/spec.md \
+    sdd-docs/features/2026-06-30-non-2xx-sse-error-handling/spec_ZH.md
+  git commit -m "docs: record SSE error handling verification"
+  ```
 
 #### Verification
 

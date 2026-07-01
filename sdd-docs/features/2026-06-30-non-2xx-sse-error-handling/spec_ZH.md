@@ -5,7 +5,7 @@
 参考来源：Docker 运行日志、`data/proxy.db`、`internal/proxy/handler.go`、`internal/proxy/heartbeat.go`
 技术栈：Go 1.26 标准库（`net/http`、`io`、`log`）+ SQLite 用量记录器
 最后更新：2026-06-30
-进度：草稿，0 / 2 已规划
+进度：已规划，0 / 2 已完成
 
 ## 整体分析（源站分析）
 
@@ -133,6 +133,16 @@ internal/proxy/
 
 ## 任务详情
 
+### 内嵌实现计划
+
+> **供代理执行者使用：** 必须使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans`，按任务逐项执行本计划。通过更新本规格中的复选框跟踪进度。
+
+**Goal（目标）：** 即使上游错误地把响应标记为 SSE，也要保留并诊断每个最终上游 HTTP 错误。
+
+**Architecture（架构）：** 保持现有响应管线，只让分支条件感知状态码。最终状态低于 400 时可以使用 SSE 心跳处理；所有最终 4xx 或 5xx 响应使用现有非流式观察器，该观察器已经负责错误日志和用量持久化。
+
+**Tech Stack（技术栈）：** Go 1.26、`net/http`、`httptest`、标准 `log`、现有 `fakeUsageRecorder` 测试辅助器。
+
 ### 任务 1：将最终 HTTP 错误送入错误观察器
 
 #### 需求
@@ -141,7 +151,7 @@ internal/proxy/
 
 **Outcomes（成果）** — `Handler.ServeHTTP` 让 `>= 400` 状态优先于 SSE 媒体类型；现有非 SSE 错误路径转发响应并记录完整错误元数据。
 
-**Evidence（证据）** — 测试后端返回状态 400、`Content-Type: text/event-stream` 和已知的 213 字节错误体。客户端收到完全一致的响应体，伪用量记录器包含 `http_error` 和 `skipped_non_2xx`，捕获的日志包含请求参数摘要和清洗后的响应。
+**Evidence（证据）** — 测试后端返回状态 400、`Content-Type: text/event-stream` 和已知错误体。客户端收到完全一致的响应体，伪用量记录器包含 `http_error` 和 `skipped_non_2xx`，捕获的日志包含请求参数摘要和清洗后的响应。
 
 **Constraints（约束）** — 使用现有观察器、清洗器、日志格式化和记录器。不得在 SSE 分支内复制 HTTP 错误处理逻辑。
 
@@ -151,10 +161,150 @@ internal/proxy/
 
 #### 计划
 
-1. 修改 SSE 分支条件，使其同时要求最终响应为非错误状态且媒体类型为 SSE。
-2. 保持响应头转发和状态码写入行为不变。
-3. 对所有最终状态 `>= 400` 复用现有非 SSE `responseObserver` 路径。
-4. 确认 SSE 标记的 400 会执行现有错误日志和用量记录赋值。
+**文件：**
+
+- 修改：`internal/proxy/handler.go:262`
+- 测试：`internal/proxy/server_test.go:492`
+
+- [ ] **步骤 1：增加失败回归测试**
+
+  在 `internal/proxy/server_test.go` 的 `TestProxyRecordsHTTPErrorAndForwardsFullBody` 附近增加以下测试：
+
+  ```go
+  func TestProxyRecordsSSELabeledHTTPError(t *testing.T) {
+      var logBuf bytes.Buffer
+      oldOutput := log.Writer()
+      oldFlags := log.Flags()
+      oldPrefix := log.Prefix()
+      log.SetOutput(&logBuf)
+      log.SetFlags(0)
+      log.SetPrefix("")
+      t.Cleanup(func() {
+          log.SetOutput(oldOutput)
+          log.SetFlags(oldFlags)
+          log.SetPrefix(oldPrefix)
+      })
+
+      recorder := &fakeUsageRecorder{}
+      errorBody := `{"type":"error","error":{"type":"provider_error","message":"request rejected"}}`
+      backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+          w.Header().Set("Content-Type", "text/event-stream")
+          w.WriteHeader(http.StatusBadRequest)
+          _, _ = w.Write([]byte(errorBody))
+      }))
+      defer backend.Close()
+
+      handler := NewHandler(
+          config.NewMockStore(testProxyConfig(testProxyProvider(backend.URL))),
+          http.DefaultTransport.(*http.Transport),
+          recorder,
+      )
+      req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{
+          "model":"claude-sonnet",
+          "stream":false,
+          "max_tokens":64,
+          "messages":[{"role":"user","content":"hello"}]
+      }`))
+      req.Header.Set("Content-Type", "application/json")
+      rec := httptest.NewRecorder()
+
+      handler.ServeHTTP(rec, req)
+
+      if rec.Code != http.StatusBadRequest {
+          t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+      }
+      if rec.Body.String() != errorBody {
+          t.Fatalf("body = %q, want %q", rec.Body.String(), errorBody)
+      }
+
+      record := recorder.onlyRecord(t)
+      if record.req.StatusCode == nil || *record.req.StatusCode != http.StatusBadRequest {
+          t.Fatalf("StatusCode = %v", record.req.StatusCode)
+      }
+      if record.req.ErrorType != usage.ErrorHTTP {
+          t.Fatalf("ErrorType = %q", record.req.ErrorType)
+      }
+      if record.req.ErrorMessage != errorBody {
+          t.Fatalf("ErrorMessage = %q, want %q", record.req.ErrorMessage, errorBody)
+      }
+      if record.req.ResponseBytes != int64(len(errorBody)) {
+          t.Fatalf("ResponseBytes = %d, want %d", record.req.ResponseBytes, len(errorBody))
+      }
+      if record.tok.UsageSource != usage.UsageSourceNone {
+          t.Fatalf("UsageSource = %q", record.tok.UsageSource)
+      }
+      if record.tok.UsageParseStatus != usage.ParseStatusSkippedNon2xx {
+          t.Fatalf("UsageParseStatus = %q", record.tok.UsageParseStatus)
+      }
+
+      logs := logBuf.String()
+      if !strings.Contains(logs, "[Proxy] Error 400") ||
+          !strings.Contains(logs, `"max_tokens":64`) ||
+          !strings.Contains(logs, "resp: "+errorBody) {
+          t.Fatalf("missing detailed HTTP error log:\n%s", logs)
+      }
+      if strings.Contains(logs, "[Stream] SSE stream detected") {
+          t.Fatalf("HTTP error incorrectly entered SSE path:\n%s", logs)
+      }
+  }
+  ```
+
+- [ ] **步骤 2：运行回归测试并确认当前失败**
+
+  执行：
+
+  ```bash
+  go test ./internal/proxy -run '^TestProxyRecordsSSELabeledHTTPError$' -count=1
+  ```
+
+  修复前预期：`FAIL`；记录的 `ErrorType` 为空，`UsageParseStatus` 为 `missing`，日志包含 `[Stream] SSE stream detected`，而不是详细 HTTP 错误行。
+
+- [ ] **步骤 3：实现最小的状态优先分派修改**
+
+  在 `internal/proxy/handler.go` 中将 SSE 分支条件替换为：
+
+  ```go
+  if resp.StatusCode < 400 && isSSEStream(resp) {
+  ```
+
+  不移动或复制现有响应观察器、错误字段赋值或 `[Proxy] Error` 日志块。
+
+- [ ] **步骤 4：格式化涉及的 Go 文件**
+
+  执行：
+
+  ```bash
+  gofmt -w internal/proxy/handler.go internal/proxy/server_test.go
+  ```
+
+  预期：两个文件均完成格式化，没有无关内容变化。
+
+- [ ] **步骤 5：运行回归测试并确认通过**
+
+  执行：
+
+  ```bash
+  go test ./internal/proxy -run '^TestProxyRecordsSSELabeledHTTPError$' -count=1
+  ```
+
+  修复后预期：`ok magic-claude-code/internal/proxy`；精确转发错误体，日志和用量断言全部通过。
+
+- [ ] **步骤 6：执行 SSE 和修复器定向回归**
+
+  执行：
+
+  ```bash
+  go test ./internal/proxy -run 'TestProxyRecordsStreamingUsage|TestProxyRecordsStreamingUsageWhenUpstreamDoesNotCloseAfterMessageStop|TestProxyRetriesKimiTool400WithCleanedRequestBody|TestProxyForwardsLargeNonRecoverable400Body' -count=1
+  ```
+
+  预期：`ok magic-claude-code/internal/proxy`；成功 SSE 用量、终止事件处理、400 修复和大响应体完整转发保持不变。
+
+- [ ] **步骤 7：提交实现和回归测试**
+
+  ```bash
+  git add internal/proxy/handler.go internal/proxy/server_test.go
+  git commit -m "fix(proxy): record SSE-labeled HTTP errors"
+  ```
 
 #### 验证
 
@@ -182,12 +332,70 @@ internal/proxy/
 
 #### 计划
 
-1. 增加回归测试：后端返回 SSE 标记的 400 响应体，并使用 Messages 请求调用代理。
-2. 断言状态码和响应体精确转发。
-3. 断言用量请求和 token 错误字段。
-4. 捕获日志，断言详细错误行存在且 SSE 检测行不存在。
-5. 执行现有成功 SSE 和修复器测试。
-6. 执行完整 Go 测试套件和空白校验。
+**文件：**
+
+- 验证：`internal/proxy/handler.go`
+- 验证：`internal/proxy/server_test.go`
+- 验证成功后更新：`sdd-docs/features/2026-06-30-non-2xx-sse-error-handling/spec.md`
+- 验证成功后更新：`sdd-docs/features/2026-06-30-non-2xx-sse-error-handling/spec_ZH.md`
+
+- [ ] **步骤 1：禁用缓存执行完整代理包测试**
+
+  执行：
+
+  ```bash
+  go test ./internal/proxy -count=1
+  ```
+
+  预期：`ok magic-claude-code/internal/proxy`。
+
+- [ ] **步骤 2：执行完整 Go 测试套件**
+
+  执行：
+
+  ```bash
+  go test ./...
+  ```
+
+  预期：所有 Go 包通过，无失败。
+
+- [ ] **步骤 3：检查空白错误**
+
+  执行：
+
+  ```bash
+  git diff --check
+  ```
+
+  预期：`git diff --check` 无输出。
+
+- [ ] **步骤 4：检查范围内代码差异**
+
+  执行：
+
+  ```bash
+  git show --format= HEAD -- internal/proxy/handler.go internal/proxy/server_test.go
+  ```
+
+  预期：实现提交只包含一个 handler 条件修改和一个聚焦回归测试，没有无关修改。
+
+- [ ] **步骤 5：在本单文件规格对中记录验证结果**
+
+  所有命令通过后，在同一次提交中更新两份规格：
+
+  - 将进度改为 `validated, 2 / 2 complete` / `已验证，2 / 2 已完成`；
+  - 将开发检查清单两行改为 `Completed` / `已完成`；
+  - 勾选已完成的计划与验证复选框；
+  - 添加实际命令结果和实现提交哈希，不创建独立 validation 或 plan 文件。
+
+- [ ] **步骤 6：提交验证记录**
+
+  ```bash
+  git add \
+    sdd-docs/features/2026-06-30-non-2xx-sse-error-handling/spec.md \
+    sdd-docs/features/2026-06-30-non-2xx-sse-error-handling/spec_ZH.md
+  git commit -m "docs: record SSE error handling verification"
+  ```
 
 #### 验证
 
