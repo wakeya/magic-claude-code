@@ -5,7 +5,7 @@ Proxy entry: `POST /v1/messages`, `POST /anthropic/v1/messages`
 Reference sources: Runtime Docker logs, `data/proxy.db`, `internal/proxy/handler.go`, `internal/proxy/heartbeat.go`
 Stack: Go 1.26 standard library (`net/http`, `io`, `log`) + SQLite usage recorder
 Last updated: 2026-07-01
-Progress: follow-up planned, 3 / 4 complete; Task 4 awaits spec review
+Progress: validated, 4 / 4 complete
 
 ## Overall Analysis (Source Analysis)
 
@@ -91,7 +91,7 @@ The existing compatibility-header allowlist remains unchanged in this task: Anth
 | 1 | Completed | Make HTTP error status take precedence over SSE media type | `internal/proxy/handler.go` | Regression tests prove error body forwarding, diagnostic logging, and usage persistence |
 | 2 | Completed | Verify streaming and rectifier regressions | `internal/proxy/server_test.go` and existing proxy tests | Targeted proxy tests and full Go test suite pass |
 | 3 | Completed | Restrict request summaries to safe diagnostic fields | `internal/proxy/handler.go`, `internal/proxy/server_test.go` | Security reproduction fails before the fix; allowlist, negative leak checks, status matrix, and race suite pass afterward |
-| 4 | Planned | Add bounded protocol-structure diagnostics | `internal/proxy/request_diagnostics.go`, focused tests, Handler log assertions | RED proves current summary lacks stream presence/tool/schema structure; GREEN retains zero secret markers and bounded output |
+| 4 | Completed | Add bounded protocol-structure diagnostics | `internal/proxy/request_diagnostics.go`, focused tests, Handler log assertions | RED proves current summary lacks stream presence/tool/schema structure; GREEN retains zero secret markers and bounded output |
 
 ## Requirements
 
@@ -533,7 +533,7 @@ Implementation commit: `43dd1f0` (`fix(proxy): record SSE-labeled HTTP errors`)
 - Update after verification: `sdd-docs/features/2026-06-30-non-2xx-sse-error-handling/spec.md`
 - Update after verification: `sdd-docs/features/2026-06-30-non-2xx-sse-error-handling/spec_ZH.md`
 
-- [ ] **Step 1: Write the failing focused tests**
+- [x] **Step 1: Write the failing focused tests**
 
   Create `internal/proxy/request_diagnostics_test.go` with a request containing:
 
@@ -587,7 +587,7 @@ Implementation commit: `43dd1f0` (`fix(proxy): record SSE-labeled HTTP errors`)
 
   Add focused query-summary cases for no query, `beta=true`, `beta=false`, `beta=unexpected`, repeated beta values, and `beta=true&token=secret-query-value&signature=secret-signature`. Assert the output contains only normalized beta state and `other_count=2`, and never contains `token`, `signature`, or either secret value.
 
-- [ ] **Step 2: Run the focused tests and verify RED**
+- [x] **Step 2: Run the focused tests and verify RED**
 
   ```bash
   go test ./internal/proxy -run '^TestSummarizeRequestParams(ProtocolStructure|StreamPresence|StableToolDigest|BoundsLargeCollections)$' -count=1
@@ -595,7 +595,7 @@ Implementation commit: `43dd1f0` (`fix(proxy): record SSE-labeled HTTP errors`)
 
   Expected before implementation: FAIL because the current summary has no `body_bytes`, explicit stream presence, role/block histograms, tool digest, known Web names, schema aggregates, or sensitive-field shapes.
 
-- [ ] **Step 3: Implement the bounded structural summarizer**
+- [x] **Step 3: Implement the bounded structural summarizer**
 
   Create `internal/proxy/request_diagnostics.go` with these private responsibilities:
 
@@ -636,7 +636,7 @@ Implementation commit: `43dd1f0` (`fix(proxy): record SSE-labeled HTTP errors`)
 
   Remove the old `summarizeRequestParams` definition from `handler.go`. Change the detailed error log to use `redactUpstreamURL(backendURL)` plus `summarizeUpstreamQuery(backendURL)` rather than printing raw `backendURL`. Append the same normalized beta/other-count fields to `providerLogFields` so ordinary `>>>`/`<<<` lines distinguish query redaction from query absence.
 
-- [ ] **Step 4: Format and verify GREEN**
+- [x] **Step 4: Format and verify GREEN**
 
   ```bash
   gofmt -w internal/proxy/request_diagnostics.go internal/proxy/request_diagnostics_test.go internal/proxy/handler.go
@@ -645,7 +645,7 @@ Implementation commit: `43dd1f0` (`fix(proxy): record SSE-labeled HTTP errors`)
 
   Expected: `ok magic-claude-code/internal/proxy`.
 
-- [ ] **Step 5: Update Handler-level security assertions**
+- [x] **Step 5: Update Handler-level security assertions**
 
   Extend `TestProxyRecordsSSELabeledHTTPError` and `TestSummarizeRequestParamsAllowsOnlySafeDiagnostics` in `internal/proxy/server_test.go` to assert the new structural fields appear on 400, 429, and 500 error logs while all existing secret markers, custom tool names, descriptions, schema property names, metadata keys, and unknown extension names remain absent.
 
@@ -659,7 +659,7 @@ Implementation commit: `43dd1f0` (`fix(proxy): record SSE-labeled HTTP errors`)
 
   Expected: PASS with unchanged response status/body, usage persistence, and no-heartbeat behavior.
 
-- [ ] **Step 6: Run regression verification**
+- [x] **Step 6: Run regression verification**
 
   ```bash
   go test ./internal/proxy -count=1
@@ -669,7 +669,7 @@ Implementation commit: `43dd1f0` (`fix(proxy): record SSE-labeled HTTP errors`)
 
   Expected: all commands pass; `make test` includes the race detector and coverage.
 
-- [ ] **Step 7: Record evidence and commit**
+- [x] **Step 7: Record evidence and commit**
 
   Update both specs to 4 / 4 complete, check every Task 4 item, record RED/GREEN command evidence and the implementation commit, and request a fresh security review of the expanded diagnostic surface.
 
@@ -685,12 +685,23 @@ Implementation commit: `43dd1f0` (`fix(proxy): record SSE-labeled HTTP errors`)
 
 #### Verification
 
-- [ ] Missing, false, true, and wrongly typed `stream` states are distinguishable.
-- [ ] Tool composition changes are comparable by digest and known Web tools are visible.
-- [ ] Compatibility-relevant schema features are counted without retaining schema content.
-- [ ] Message structure is visible without message text, tool input, or tool result content.
-- [ ] System, metadata, thinking, input, and unknown fields reveal shape/count only.
-- [ ] Summary size remains bounded for large collections.
-- [ ] Existing response, usage, heartbeat, rectifier, and security behavior remains unchanged.
-- [ ] Logs distinguish beta presence from URL redaction without exposing other query parameters.
-- [ ] Focused tests, full proxy tests, `make test`, and fresh security review pass.
+- [x] Missing, false, true, and wrongly typed `stream` states are distinguishable.
+- [x] Tool composition changes are comparable by digest and known Web tools are visible.
+- [x] Compatibility-relevant schema features are counted without retaining schema content.
+- [x] Message structure is visible without message text, tool input, or tool result content.
+- [x] System, metadata, thinking, input, and unknown fields reveal shape/count only.
+- [x] Summary size remains bounded for large collections.
+- [x] Existing response, usage, heartbeat, rectifier, and security behavior remains unchanged.
+- [x] Logs distinguish beta presence from URL redaction without exposing other query parameters.
+- [x] Focused tests, full proxy tests, `make test`, and fresh security review pass.
+
+#### Actual Verification Evidence
+
+- RED: `go test ./internal/proxy -run '^TestSummarizeRequestParams(ProtocolStructure|StreamPresence|StableToolDigest|BoundsLargeCollections)$' -count=1` failed, proving the old summary lacked `body_bytes`, stream presence, tool fingerprints, and schema structure.
+- Query RED: `go test ./internal/proxy -run '^TestSummarizeUpstreamQuery$' -count=1` failed because the query summarizer did not exist.
+- Handler RED: focused tests reproduced raw query exposure and missing structural fields in ordinary, SSE, and detailed error logs.
+- GREEN: the focused structural-summary, query-summary, and Handler security assertions all passed.
+- The security review additionally found that a malformed URL could be returned verbatim by the shared redaction helper after parse failure. `TestRedactUpstreamURL` reproduced it first; the proxy log fallback now emits the fixed `<invalid-url>` placeholder and the test passes.
+- `go test ./internal/proxy -count=1`, `go vet ./internal/proxy`, `make test`, and `git diff --check` all passed. `make test` enabled the race detector and coverage.
+- Implementation commit: `bc28637` (`fix(proxy): add safe protocol diagnostics`).
+- The fresh focused security conclusion is archived in `review-notes_ZH.md` and `review-notes.md`; no reproducible logic or security defect remains.
