@@ -58,4 +58,5 @@ coverage.out
 # --- Claude Code 临时文件 ---
 tmpclaude-*-cwd
 
-data/
+# --- 运行时数据（目录或符号链接）---
+data
