@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -2147,9 +2148,9 @@ func (f *failingClientWriter) Write(p []byte) (int, error) {
 }
 
 // TestProxyLogsAnomalyAndRetainsClientAbortOnDisconnect 验证客户端中断时：
-//  - client_aborted 使用分类保留（未被异常流诊断改动）
-//  - 仍发射恰好一条 [Stream] anomaly（由 streamErr != nil 触发）
-//  - anomaly payload complete=false，且不泄露 SECRET 内容
+//   - client_aborted 使用分类保留（未被异常流诊断改动）
+//   - 仍发射恰好一条 [Stream] anomaly（由 streamErr != nil 触发）
+//   - anomaly payload complete=false，且不泄露 SECRET 内容
 func TestProxyLogsAnomalyAndRetainsClientAbortOnDisconnect(t *testing.T) {
 	var logBuf bytes.Buffer
 	oldOutput := log.Writer()
@@ -2372,6 +2373,102 @@ func TestProxyRetriesZhipu1210WebTools(t *testing.T) {
 				t.Fatalf("backend request count = %d, want 2 (1210 should trigger retry)", reqCount)
 			}
 		})
+	}
+}
+
+// TestProxyRectifierRetryRespectsClientCancel 验证：清理重试使用客户端请求的 context，
+// 客户端断开后重试不再继续占用供应商资源（CWE-400 防护）。
+//
+// 时序：
+//  1. 第一次上游请求立即返回 HTTP 400 + zhipu1210ErrorBody，触发 tryRectify。
+//  2. 第二次上游请求（重试）到达后原子递增 reqCount，通过 retryStarted 通知测试，
+//     然后阻塞等待 done channel，不主动完成。
+//  3. handler.ServeHTTP 在 goroutine 中执行。
+//  4. 测试等待 retryStarted，确认重试路径确实已进入。
+//  5. 调用 cancel() 取消原始请求 context。
+//  6. 断言 handler 在 300ms 内结束（NewRequestWithContext 使 client.Do 立即返回）。
+//  7. 断言上游请求总数恰好为 2。
+//  8. 通过 done channel 安全释放阻塞的后端 handler。
+//
+// 负向对照：临时改回 http.NewRequest 后，client.Do 无 context 取消信号，
+// 重试请求会等待后端完成（done channel 永不关闭），handler 超时，测试失败。
+func TestProxyRectifierRetryRespectsClientCancel(t *testing.T) {
+	retryStarted := make(chan struct{})
+	done := make(chan struct{})
+
+	var reqCount int32
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&reqCount, 1)
+		switch n {
+		case 1:
+			// 第一次请求：立即返回 1210，触发 tryRectify 重试路径。
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(zhipu1210ErrorBody))
+		default:
+			// 第二次请求（重试）：通知测试"重试已开始"，然后阻塞。
+			close(retryStarted)
+			<-done // 阻塞直到 done 关闭
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"usage":{"input_tokens":1,"output_tokens":1}}`))
+		}
+	}))
+	t.Cleanup(func() {
+		close(done)
+		backend.Close()
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	handler := NewHandler(
+		config.NewMockStore(testProxyConfig(testProxyProvider(backend.URL))),
+		http.DefaultTransport.(*http.Transport),
+		&fakeUsageRecorder{},
+	)
+
+	requestBody := `{
+		"model":"claude-sonnet",
+		"messages":[{"role":"user","content":"test"}],
+		"tools":[{
+			"name":"WebFetch",
+			"description":"Fetch (synthetic)",
+			"input_schema":{
+				"$schema":"https://json-schema.org/draft/2020-12/schema",
+				"type":"object",
+				"properties":{"url":{"type":"string"}},
+				"required":["url"],
+				"additionalProperties":false
+			}
+		}]
+	}`
+	req := httptest.NewRequestWithContext(ctx, "POST", "/v1/messages", strings.NewReader(requestBody))
+	rec := httptest.NewRecorder()
+
+	handlerDone := make(chan struct{})
+	go func() {
+		defer close(handlerDone)
+		handler.ServeHTTP(rec, req)
+	}()
+
+	// 等待重试请求到达后端——证明 tryRectify 路径已进入。
+	select {
+	case <-retryStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("retry request did not reach backend within 5s; tryRectify path not entered")
+	}
+
+	// 重试已开始，此时取消 context。
+	cancel()
+
+	// handler 应在 context 取消后快速返回。
+	select {
+	case <-handlerDone:
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("handler did not return within 300ms after context cancel; retry not respecting client context")
+	}
+
+	if n := atomic.LoadInt32(&reqCount); n != 2 {
+		t.Errorf("backend request count = %d, want 2", n)
 	}
 }
 

@@ -600,11 +600,11 @@ func streamAnomalyPayload(reqID string, responseBytes int64, diag usage.SSEDiagn
 	safeParams := json.RawMessage(summarizeRequestParams(requestBody))
 
 	payload := struct {
-		RequestID     string                 `json:"request_id"`
-		ResponseBytes int64                  `json:"response_bytes"`
-		Upstream      string                 `json:"upstream"`
-		RequestParams json.RawMessage        `json:"request_params"`
-		Diagnostics   usage.SSEDiagnostics   `json:"diagnostics"`
+		RequestID     string               `json:"request_id"`
+		ResponseBytes int64                `json:"response_bytes"`
+		Upstream      string               `json:"upstream"`
+		RequestParams json.RawMessage      `json:"request_params"`
+		Diagnostics   usage.SSEDiagnostics `json:"diagnostics"`
 	}{
 		RequestID:     reqID,
 		ResponseBytes: responseBytes,
@@ -864,8 +864,8 @@ func (h *Handler) tryRectify(
 
 	log.Printf("[Rectifier] Cleanup applied, retrying request to %s", formatUpstreamLogTarget(backendURL))
 
-	// 重建重试请求
-	retryReq, err := http.NewRequest(origReq.Method, backendURL, bytes.NewReader(cleanedBody))
+	// 重建重试请求（继承客户端 context，客户端断开时快速取消重试，避免无限占用供应商资源）。
+	retryReq, err := http.NewRequestWithContext(origReq.Context(), origReq.Method, backendURL, bytes.NewReader(cleanedBody))
 	if err != nil {
 		log.Printf("[Rectifier] Failed to create retry request: %v", err)
 		return nil, restoredBody()

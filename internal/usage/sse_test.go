@@ -2,6 +2,7 @@ package usage
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -337,7 +338,73 @@ func TestSSEObserverDiagnosticsReturnsCopy(t *testing.T) {
 	}
 }
 
-// --- helpers ---
+// TestSSEObserverDiagnosticsNumericErrorCodeCardinalityBound 验证：
+// - 不同数字错误码 map 大小有界（≤ cap + 1，含 "other"）
+// - 已存在的码继续正常累加
+// - 超过上限的新码累计到 "other"
+// - 总计数未丢失
+func TestSSEObserverDiagnosticsNumericErrorCodeCardinalityBound(t *testing.T) {
+	observer := NewSSEObserver(time.Now())
+
+	// 发送 100 个不同的 4 位数字码，每个出现 1 次。
+	// 前 16 个应各自成为独立 key；第 17-100 个应累计到 "other"。
+	for i := 0; i < 100; i++ {
+		code := fmt.Sprintf("%04d", 1000+i) // 1000..1099
+		event := fmt.Sprintf(
+			"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"code\":\"%s\"}}\n\n",
+			code,
+		)
+		observer.Observe([]byte(event))
+	}
+
+	diag := observer.Diagnostics()
+
+	if len(diag.NumericErrorCodes) > maxDistinctNumericErrorCodes+1 {
+		t.Errorf("NumericErrorCodes map size = %d, want ≤ %d (cap + other)",
+			len(diag.NumericErrorCodes), maxDistinctNumericErrorCodes+1)
+	}
+
+	// "other" 应包含第 17-100 个码的计数（共 84 个溢出码）。
+	expectedOther := 100 - maxDistinctNumericErrorCodes
+	if diag.NumericErrorCodes["other"] != expectedOther {
+		t.Errorf("NumericErrorCodes[other] = %d, want %d", diag.NumericErrorCodes["other"], expectedOther)
+	}
+
+	// 总计数应为 100（无丢失）。
+	total := 0
+	for _, v := range diag.NumericErrorCodes {
+		total += v
+	}
+	if total != 100 {
+		t.Errorf("NumericErrorCodes total = %d, want 100", total)
+	}
+
+	// 重放前 16 个码，验证已存在码正常累加，map 大小不变。
+	for i := 0; i < maxDistinctNumericErrorCodes; i++ {
+		code := fmt.Sprintf("%04d", 1000+i)
+		event := fmt.Sprintf(
+			"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"code\":\"%s\"}}\n\n",
+			code,
+		)
+		observer.Observe([]byte(event))
+	}
+
+	diag2 := observer.Diagnostics()
+
+	if len(diag2.NumericErrorCodes) > maxDistinctNumericErrorCodes+1 {
+		t.Errorf("NumericErrorCodes map size = %d after replay, want ≤ %d",
+			len(diag2.NumericErrorCodes), maxDistinctNumericErrorCodes+1)
+	}
+
+	total2 := 0
+	for _, v := range diag2.NumericErrorCodes {
+		total2 += v
+	}
+	// 总计数 = 初始 100 + 重放 16 = 116
+	if total2 != 116 {
+		t.Errorf("NumericErrorCodes total = %d after replay, want 116", total2)
+	}
+}
 
 func mapsEqual(a, b map[string]int) bool {
 	if len(a) != len(b) {
