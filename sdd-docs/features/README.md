@@ -145,6 +145,7 @@ Local page / proxy entry / reference sources / stack / last updated / progress
 | Provider Quota Query | `2026-06-27-provider-quota-query/spec.md` | `2026-06-27-provider-quota-query/spec_ZH.md` |
 | SSE-Labeled HTTP Error Handling | `2026-06-30-non-2xx-sse-error-handling/spec.md` | `2026-06-30-non-2xx-sse-error-handling/spec_ZH.md` |
 | Zhipu Web Tool Compatibility Recovery | `2026-07-01-zhipu-web-tools-compat/spec.md` | `2026-07-01-zhipu-web-tools-compat/spec_ZH.md` |
+| Node.js Client CA Trust Auto-Setup | `2026-07-04-node-extra-ca-certs-auto-setup/spec.md` | `2026-07-04-node-extra-ca-certs-auto-setup/spec_ZH.md` |
 
 ## 状态生命周期
 
