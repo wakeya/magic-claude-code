@@ -4,8 +4,8 @@
 观测客户端：Claude Code 2.1.196
 观测供应商：智谱 Anthropic 兼容端点（`/api/anthropic/v1/messages`）
 技术栈：Go 1.26、`net/http`、现有反应式修复器
-最后更新：2026-07-01
-进度：`fix/sse-error-handling` 已并入 main；全部任务完成——任务 0 安全 SSE 异常诊断（commit `b3931c8`）、任务 1 红灯测试、任务 2 1210 分类（commit `439b1ed`）、任务 3 回归验证通过（`make test -race` 绿）；真实供应商验证按设计未执行。
+最后更新：2026-07-04
+进度：`fix/sse-error-handling` 已并入 main；全部任务完成——任务 0 安全 SSE 异常诊断（commit `b3931c8`）、任务 1 红灯测试、任务 2 1210 分类（commit `439b1ed`）、任务 3 回归验证通过（`make test -race` 绿）；后续修复 `cb1dd2f` 在评审后将 1210 分类提到通用 invalid-request 兜底之前（见任务 2 后续修复）；真实供应商验证按设计未执行。
 
 ## 整体分析（源站分析）
 
@@ -145,6 +145,7 @@ Claude Code 会话 `202606302035` 以以下结构时间线结束：
 | 6 | 完成 | 添加失败单元测试和代理回归测试 | `rectifier_test.go`、`server_test.go` | RED 已确认（3 通过 / 6 因正确原因失败）；任务 2 转绿（commit `439b1ed`） |
 | 7 | 完成 | 安全识别智谱不透明参数错误 | `rectifier.go` | 新增 `isOpaqueToolCompatibilityError`，位于更高优先级分类之后；仅 `cleanTools` 改变请求时恢复（commit `439b1ed`） |
 | 8 | 完成 | 完整回归并记录证据 | 更新进度和验证章节 | `make test -race` 通过（exit 0）；Kimi/thinking/content-type/SSE/usage 套件无回归 |
+| 9 | 完成 | 修复 1210 分类与通用 invalid-request 短语的顺序 | `rectifier.go`、`rectifier_test.go` | 拆出 `isUnsupportedContentTypePhrase` 前置于 1210；1210 现优先于通用 invalid-request 兜底（commit `cb1dd2f`） |
 
 ## 需求
 
@@ -475,6 +476,14 @@ git commit -m "fix(proxy): recover Zhipu web tool parameter errors"
 - [x] 未增加供应商主机名判断或主动请求转换。
 - [x] 不可清理的请求不会重试。
 
+#### 后续修复（commit `cb1dd2f`）
+
+评审发现 `439b1ed` 的初始实现把 `isOpaqueToolCompatibilityError` 放在合并后的 `hasGenericInvalidRequestPhrase` 之后，而后者同时匹配 content-type 短语和通用 invalid-request 短语（`invalid request`、`invalid_request_error`、`invalid params`、`非法请求`、`illegal request`）。因此，一个结构化 `error.code == "1210"` 但 message 又含通用 invalid-request 短语的 400 body 会被误判为 `PatternGenericBadRequest`，路由到 `cleanUnknownContentTypes` 而非 `cleanTools`，很可能完全跳过重试。
+
+真实智谱 message（`[1210][API 调用参数有误…]`）不含通用短语，故原测试保持绿；这是一个潜在的鲁棒性缺口而非已观测的回归。
+
+修复将 content-type 检查（`isUnsupportedContentTypePhrase`）拆为独立的高优先级分支，1210 检查紧随其后，`hasGenericInvalidRequestPhrase` 作为最终通用兜底——与本任务计划中已声明的顺序一致。`TestMatchErrorPattern_Zhipu1210` 新增两个回归 case：`error.code == "1210"` 分别与 `Invalid request`、`非法请求` 共存，均断言 `PatternToolValidation`。
+
 ### 任务 3：回归验证并关闭规格
 
 #### 需求
@@ -526,11 +535,13 @@ git diff --check HEAD^ HEAD
 - `b3931c8` —— `feat(proxy): log safe SSE anomaly structure`（任务 0）
 - `344ab54` —— `docs(zhipu-web): record Task 0 evidence gate decision`
 - `439b1ed` —— `fix(proxy): recover Zhipu web tool parameter errors`（任务 1+2）
+- `510143a` —— `docs(zhipu-web): close out Tasks 1-3 and record regression evidence`
+- `cb1dd2f` —— `fix(proxy): classify Zhipu 1210 before generic invalid-request phrases`（任务 2 后续修复）
 
 **命令与结果：**
 - `go test ./internal/usage -count=1` → 56 通过。
 - `go test ./internal/proxy -run 'TestMatchErrorPattern|TestCleanTools|TestRectifyRequest|TestProxyRetries' -count=1` → 43 通过。
-- `go test ./internal/proxy -run 'TestMatchErrorPattern_Zhipu1210|TestProxy(RetriesZhipu1210WebTools|DoesNotRetryZhipu1210WhenToolCleanupMakesNoChanges)' -count=1` → 9 通过（`439b1ed` 前 RED，之后 GREEN）。
+- `go test ./internal/proxy -run 'TestMatchErrorPattern_Zhipu1210|TestProxy(RetriesZhipu1210WebTools|DoesNotRetryZhipu1210WhenToolCleanupMakesNoChanges)' -count=1` → 9 通过（`439b1ed` 前 RED，之后 GREEN）；`cb1dd2f` 为 `TestMatchErrorPattern_Zhipu1210` 新增 2 个 case（共 11 个），覆盖 1210 分别与 `Invalid request`、`非法请求` 共存。
 - `make test`（= `go test -v -race -coverprofile=coverage.out ./...`）→ exit 0，无 `FAIL`。
 - `git status --short` → 提交后工作区干净。
 - `git diff --check HEAD^ HEAD` → 无空白错误。
