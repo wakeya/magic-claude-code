@@ -482,6 +482,16 @@ func TestMatchErrorPattern_Zhipu1210(t *testing.T) {
 			body: `{"error":{"code":"1210","message":"非法请求：[1210][API 调用参数有误][synthetic-id]"}}`,
 			want: PatternToolValidation,
 		},
+		{
+			name: "structured code with empty message",
+			body: `{"error":{"code":"1210","message":""}}`,
+			want: PatternToolValidation,
+		},
+		{
+			name: "structured code with missing message",
+			body: `{"error":{"code":"1210"}}`,
+			want: PatternToolValidation,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

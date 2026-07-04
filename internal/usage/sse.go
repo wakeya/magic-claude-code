@@ -40,8 +40,8 @@ type SSEDiagnostics struct {
 
 // 事件白名单
 var sseValidEvents = map[string]bool{
-	"message_start":      true,
-	"content_block_start":  true,
+	"message_start":       true,
+	"content_block_start": true,
 	"content_block_delta": true,
 	"content_block_stop":  true,
 	"message_delta":       true,
@@ -62,12 +62,12 @@ var sseValidContentBlockTypes = map[string]bool{
 
 // stop reason 白名单
 var sseValidStopReasons = map[string]bool{
-	"end_turn":                     true,
-	"max_tokens":                   true,
-	"tool_use":                     true,
-	"stop_sequence":                true,
-	"pause_turn":                   true,
-	"refusal":                      true,
+	"end_turn":                      true,
+	"max_tokens":                    true,
+	"tool_use":                      true,
+	"stop_sequence":                 true,
+	"pause_turn":                    true,
+	"refusal":                       true,
 	"model_context_window_exceeded": true,
 }
 
@@ -160,8 +160,8 @@ func (o *SSEObserver) observeBlock(block string) {
 	}
 
 	var payload struct {
-		Type  string `json:"type"`
-		Usage usageJSON `json:"usage"`
+		Type    string    `json:"type"`
+		Usage   usageJSON `json:"usage"`
 		Message struct {
 			Usage usageJSON `json:"usage"`
 		} `json:"message"`
@@ -286,10 +286,15 @@ func (o *SSEObserver) countErrorType(typ string) {
 	}
 }
 
+// maxDistinctNumericErrorCodes 限制 NumericErrorCodes map 中不同数字码的最大数量。
+// 超过上限的新数字码累计到 "other" key；已存在的码不受影响。
+// 防止恶意/被攻陷供应商通过大量不同错误码消耗内存（CWE-400 硬化）。
+const maxDistinctNumericErrorCodes = 16
+
 // classifyErrorCode 将 error.code (JSON RawMessage) 分类为数字错误码。
 // code 可能是 JSON 字符串 ("1210") 或 JSON 数字 (1210)。
 // 只有 1-8 位纯数字码作为原值 key；非数字或超过 8 位 → "other"。
-// 空/缺失 → 不动这个 map。
+// 空/缺失 → 不动这个 map。不同 key 总数上限为 maxDistinctNumericErrorCodes。
 func (o *SSEObserver) classifyErrorCode(code json.RawMessage) {
 	if len(code) == 0 {
 		return
@@ -300,6 +305,10 @@ func (o *SSEObserver) classifyErrorCode(code json.RawMessage) {
 	var s string
 	if err := json.Unmarshal(code, &s); err == nil {
 		if isAllDigits(s) && len(s) >= 1 && len(s) <= 8 {
+			if _, exists := o.diagNumericErrorCodes[s]; !exists && len(o.diagNumericErrorCodes) >= maxDistinctNumericErrorCodes {
+				o.diagNumericErrorCodes["other"]++
+				return
+			}
 			o.diagNumericErrorCodes[s]++
 			return
 		}
@@ -312,6 +321,10 @@ func (o *SSEObserver) classifyErrorCode(code json.RawMessage) {
 	if err := json.Unmarshal(code, &n); err == nil {
 		s := string(n)
 		if isAllDigits(s) && len(s) >= 1 && len(s) <= 8 {
+			if _, exists := o.diagNumericErrorCodes[s]; !exists && len(o.diagNumericErrorCodes) >= maxDistinctNumericErrorCodes {
+				o.diagNumericErrorCodes["other"]++
+				return
+			}
 			o.diagNumericErrorCodes[s]++
 			return
 		}
