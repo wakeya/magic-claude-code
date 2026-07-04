@@ -4,8 +4,8 @@ Proxy entry: `POST /v1/messages`, `POST /anthropic/v1/messages`
 Observed client: Claude Code 2.1.196
 Observed provider: Zhipu Anthropic-compatible endpoint (`/api/anthropic/v1/messages`)
 Stack: Go 1.26, `net/http`, existing reactive rectifier
-Last updated: 2026-07-01
-Progress: `fix/sse-error-handling` merged into main; all tasks complete — Task 0 safe SSE anomaly diagnostics (commit `b3931c8`), Task 1 red tests, Task 2 1210 classification (commit `439b1ed`), Task 3 regression verified (`make test -race` green); live provider verification skipped by design.
+Last updated: 2026-07-04
+Progress: `fix/sse-error-handling` merged into main; all tasks complete — Task 0 safe SSE anomaly diagnostics (commit `b3931c8`), Task 1 red tests, Task 2 1210 classification (commit `439b1ed`), Task 3 regression verified (`make test -race` green); follow-up fix `cb1dd2f` reordered the 1210 classification ahead of the generic invalid-request fallback after review (see Task 2 follow-up); live provider verification skipped by design.
 
 ## Overall Analysis (Source Analysis)
 
@@ -145,6 +145,7 @@ Before implementation:
 | 6 | Complete | Add failing unit and proxy regression tests | `rectifier_test.go`, `server_test.go` | RED confirmed (3 pass / 6 fail for the right reason); turned GREEN in Task 2 (commit `439b1ed`) |
 | 7 | Complete | Recognize opaque Zhipu parameter errors safely | `rectifier.go` | `isOpaqueToolCompatibilityError` added after higher-priority classifications; recovery only when `cleanTools` changes the body (commit `439b1ed`) |
 | 8 | Complete | Run full regression and record evidence | Updated progress and verification sections | `make test -race` passes (exit 0); no regressions in Kimi/thinking/content-type/SSE/usage suites |
+| 9 | Complete | Fix 1210 classification ordering vs generic invalid-request phrases | `rectifier.go`, `rectifier_test.go` | Split `isUnsupportedContentTypePhrase` ahead of 1210; 1210 now precedes the generic invalid-request fallback (commit `cb1dd2f`) |
 
 ## Requirements
 
@@ -475,6 +476,14 @@ git commit -m "fix(proxy): recover Zhipu web tool parameter errors"
 - [x] No provider hostname or proactive request transform was added.
 - [x] No-cleanup requests are not retried.
 
+#### Follow-up Fix (commit `cb1dd2f`)
+
+Review found that the initial `439b1ed` implementation checked `isOpaqueToolCompatibilityError` *after* the combined `hasGenericInvalidRequestPhrase`, which matches both content-type phrases and generic invalid-request phrases (`invalid request`, `invalid_request_error`, `invalid params`, `非法请求`, `illegal request`). A 400 body whose structured `error.code == "1210"` also carried a generic invalid-request phrase in its message was therefore misclassified as `PatternGenericBadRequest`, routing it to `cleanUnknownContentTypes` instead of `cleanTools` and likely skipping the retry.
+
+The real Zhipu message (`[1210][API 调用参数有误…]`) contains no generic phrase, so the original tests stayed green; this was a latent robustness gap rather than an observed regression.
+
+The fix splits the content-type check (`isUnsupportedContentTypePhrase`) out as its own higher-priority branch, keeps the 1210 check next, and leaves `hasGenericInvalidRequestPhrase` as the final generic fallback — matching the ordering this task's plan already specified. Two regression cases were added to `TestMatchErrorPattern_Zhipu1210`: `error.code == "1210"` co-occurring with `Invalid request` and with `非法请求`, both asserting `PatternToolValidation`.
+
 ### Task 3: Regression Verification and Spec Closure
 
 #### Requirements
@@ -526,11 +535,13 @@ Expected result: only intended feature files are present and no whitespace error
 - `b3931c8` — `feat(proxy): log safe SSE anomaly structure` (Task 0)
 - `344ab54` — `docs(zhipu-web): record Task 0 evidence gate decision`
 - `439b1ed` — `fix(proxy): recover Zhipu web tool parameter errors` (Tasks 1+2)
+- `510143a` — `docs(zhipu-web): close out Tasks 1-3 and record regression evidence`
+- `cb1dd2f` — `fix(proxy): classify Zhipu 1210 before generic invalid-request phrases` (Task 2 follow-up)
 
 **Commands and results:**
 - `go test ./internal/usage -count=1` → 56 passed.
 - `go test ./internal/proxy -run 'TestMatchErrorPattern|TestCleanTools|TestRectifyRequest|TestProxyRetries' -count=1` → 43 passed.
-- `go test ./internal/proxy -run 'TestMatchErrorPattern_Zhipu1210|TestProxy(RetriesZhipu1210WebTools|DoesNotRetryZhipu1210WhenToolCleanupMakesNoChanges)' -count=1` → 9 passed (RED before `439b1ed`, GREEN after).
+- `go test ./internal/proxy -run 'TestMatchErrorPattern_Zhipu1210|TestProxy(RetriesZhipu1210WebTools|DoesNotRetryZhipu1210WhenToolCleanupMakesNoChanges)' -count=1` → 9 passed (RED before `439b1ed`, GREEN after); `cb1dd2f` added 2 more `TestMatchErrorPattern_Zhipu1210` cases (11 total) covering 1210 co-occurring with `Invalid request` and `非法请求`.
 - `make test` (= `go test -v -race -coverprofile=coverage.out ./...`) → exit 0, no `FAIL`.
 - `git status --short` → clean working tree after commits.
 - `git diff --check HEAD^ HEAD` → no whitespace errors.
