@@ -540,8 +540,8 @@ Expected result: only intended feature files are present and no whitespace error
 
 **Commands and results:**
 - `go test ./internal/usage -count=1` → 56 passed.
-- `go test ./internal/proxy -run 'TestMatchErrorPattern|TestCleanTools|TestRectifyRequest|TestProxyRetries' -count=1` → 43 passed.
-- `go test ./internal/proxy -run 'TestMatchErrorPattern_Zhipu1210|TestProxy(RetriesZhipu1210WebTools|DoesNotRetryZhipu1210WhenToolCleanupMakesNoChanges)' -count=1` → 9 passed (RED before `439b1ed`, GREEN after); `cb1dd2f` added 2 more `TestMatchErrorPattern_Zhipu1210` cases (11 total) covering 1210 co-occurring with `Invalid request` and `非法请求`.
+- `go test ./internal/proxy -run 'TestMatchErrorPattern|TestCleanTools|TestRectifyRequest|TestProxyRetries' -count=1` → 43 passed (45 after `cb1dd2f`).
+- `go test ./internal/proxy -run 'TestMatchErrorPattern_Zhipu1210|TestProxy(RetriesZhipu1210WebTools|DoesNotRetryZhipu1210WhenToolCleanupMakesNoChanges)' -count=1` → 9 passed (RED before `439b1ed`, GREEN after); 11 passed after `cb1dd2f` (2 new `TestMatchErrorPattern_Zhipu1210` sub-tests covering 1210 co-occurring with `Invalid request` and `非法请求`).
 - `make test` (= `go test -v -race -coverprofile=coverage.out ./...`) → exit 0, no `FAIL`.
 - `git status --short` → clean working tree after commits.
 - `git diff --check HEAD^ HEAD` → no whitespace errors.
