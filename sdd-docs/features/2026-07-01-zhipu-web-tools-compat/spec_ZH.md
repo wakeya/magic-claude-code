@@ -540,8 +540,8 @@ git diff --check HEAD^ HEAD
 
 **命令与结果：**
 - `go test ./internal/usage -count=1` → 56 通过。
-- `go test ./internal/proxy -run 'TestMatchErrorPattern|TestCleanTools|TestRectifyRequest|TestProxyRetries' -count=1` → 43 通过。
-- `go test ./internal/proxy -run 'TestMatchErrorPattern_Zhipu1210|TestProxy(RetriesZhipu1210WebTools|DoesNotRetryZhipu1210WhenToolCleanupMakesNoChanges)' -count=1` → 9 通过（`439b1ed` 前 RED，之后 GREEN）；`cb1dd2f` 为 `TestMatchErrorPattern_Zhipu1210` 新增 2 个 case（共 11 个），覆盖 1210 分别与 `Invalid request`、`非法请求` 共存。
+- `go test ./internal/proxy -run 'TestMatchErrorPattern|TestCleanTools|TestRectifyRequest|TestProxyRetries' -count=1` → 43 通过（`cb1dd2f` 后为 45）。
+- `go test ./internal/proxy -run 'TestMatchErrorPattern_Zhipu1210|TestProxy(RetriesZhipu1210WebTools|DoesNotRetryZhipu1210WhenToolCleanupMakesNoChanges)' -count=1` → 9 通过（`439b1ed` 前 RED，之后 GREEN）；`cb1dd2f` 后为 11 通过（为 `TestMatchErrorPattern_Zhipu1210` 新增 2 个子测试，覆盖 1210 分别与 `Invalid request`、`非法请求` 共存）。
 - `make test`（= `go test -v -race -coverprofile=coverage.out ./...`）→ exit 0，无 `FAIL`。
 - `git status --short` → 提交后工作区干净。
 - `git diff --check HEAD^ HEAD` → 无空白错误。
