@@ -54,6 +54,12 @@ func matchErrorPattern(errorBody []byte) ErrorPattern {
 
 	msg := extractErrorMessage(errorBody)
 	if msg == "" {
+		// 空消息时仍检查结构化 error.code（如 code=="1210"）。
+		// 按分类优先级顺序：explicit tool > thinking > content-type > 1210 > generic。
+		// content-type 和 thinking/tool 需要非空消息，1210 可直接检查原始 body。
+		if isOpaqueToolCompatibilityError(errorBody, "") {
+			return PatternToolValidation
+		}
 		return PatternNone
 	}
 	lower := strings.ToLower(msg)
@@ -186,14 +192,15 @@ func isToolValidationError(lower string) bool {
 	return hasToolErrorContext(lower)
 }
 
+// hasGenericInvalidRequestPhrase 检测通用 invalid request 短语。
+// content-type 短语由 isUnsupportedContentTypePhrase 在更高优先级处理，
+// 不会到达此处，故不再重复列出。
 func hasGenericInvalidRequestPhrase(lower string) bool {
 	return strings.Contains(lower, "invalid request") ||
 		strings.Contains(lower, "invalid_request_error") ||
 		strings.Contains(lower, "invalid params") ||
 		strings.Contains(lower, "非法请求") ||
-		strings.Contains(lower, "illegal request") ||
-		strings.Contains(lower, "unsupported content type") ||
-		strings.Contains(lower, "unknown content type")
+		strings.Contains(lower, "illegal request")
 }
 
 func hasToolErrorContext(lower string) bool {
