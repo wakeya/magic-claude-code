@@ -1528,6 +1528,85 @@ func TestTryPersistNodeCA_MarkerStaleCertChanged_Repersists(t *testing.T) {
 	}
 }
 
+// F-3: marker 记录证书路径；路径变化（指纹相同）应重新持久化，不能仅凭指纹跳过。
+func TestHasNodeCAMarker_PathChanged_Repersists(t *testing.T) {
+	dir := t.TempDir()
+	caPath1 := writeFile(t, filepath.Join(dir, "ca1.crt"), "same-cert-content")
+	caPath2 := writeFile(t, filepath.Join(dir, "ca2.crt"), "same-cert-content") // 同内容不同路径
+
+	writeNodeCAMarker(dir, caPath1)
+	if hasNodeCAMarker(dir, caPath2) {
+		t.Error("expected hasNodeCAMarker=false when cert path changed (same content), got true")
+	}
+}
+
+// F-4: marker 记录 HOME；HOME 变化（如 sudo→普通用户）应重新持久化。
+func TestHasNodeCAMarker_HomeChanged_Repersists(t *testing.T) {
+	dir := t.TempDir()
+	caPath := writeFile(t, filepath.Join(dir, "ca.crt"), "cert-content")
+
+	home1 := t.TempDir()
+	t.Setenv("HOME", home1)
+	t.Setenv("USERPROFILE", home1)
+	writeNodeCAMarker(dir, caPath) // marker 记录 home1
+
+	home2 := t.TempDir()
+	t.Setenv("HOME", home2)
+	t.Setenv("USERPROFILE", home2)
+
+	if hasNodeCAMarker(dir, caPath) {
+		t.Error("expected hasNodeCAMarker=false when HOME changed, got true")
+	}
+}
+
+// 旧纯文本 marker（修复前格式）应视为 stale，触发重新持久化。
+func TestHasNodeCAMarker_LegacyTextMarker_Repersists(t *testing.T) {
+	dir := t.TempDir()
+	caPath := writeFile(t, filepath.Join(dir, "ca.crt"), "cert-content")
+	fp, err := caFingerprint(caPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, nodeCAMarkerName), []byte(fp+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if hasNodeCAMarker(dir, caPath) {
+		t.Error("expected hasNodeCAMarker=false for legacy plain-text marker, got true")
+	}
+}
+
+// F-4 (UID): marker 记录的 UID 与当前不同 → 重新持久化（unix 普通用户；root 跳过）。
+func TestHasNodeCAMarker_UIDChanged_Repersists(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("requires non-root uid to exercise UID matching")
+	}
+	dir := t.TempDir()
+	caPath := writeFile(t, filepath.Join(dir, "ca.crt"), "cert-content")
+
+	fp, err := caFingerprint(caPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, _ := os.UserHomeDir()
+	m := nodeCAMarker{
+		Fingerprint: fp,
+		CertPath:    caPath,
+		Home:        home,
+		UID:         os.Getuid() + 999, // 不同于当前 UID
+	}
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, nodeCAMarkerName), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if hasNodeCAMarker(dir, caPath) {
+		t.Error("expected hasNodeCAMarker=false when UID differs, got true")
+	}
+}
+
 // writeFile is a helper that writes content to path and returns the path.
 func writeFile(t *testing.T, path, content string) string {
 	t.Helper()

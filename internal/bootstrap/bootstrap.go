@@ -3,6 +3,7 @@
 package bootstrap
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -10,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 
 	"magic-claude-code/internal/i18n"
 )
@@ -287,26 +287,68 @@ func (e *Executor) tryPersistNodeCA() StepResult {
 
 const nodeCAMarkerName = ".node-ca-persisted"
 
-// hasNodeCAMarker reports whether the NodeCA marker in dataDir records the same
-// fingerprint as the current CA cert file. Fingerprint mismatch (cert regenerated)
-// yields false so the caller re-persists.
+// nodeCAMarker 是 .node-ca-persisted 的 JSON 格式。除指纹外还记录证书路径和用户标识
+// (HOME/UID)，避免"证书内容没变但路径/用户变了"时错误跳过重新持久化（F-3/F-4）。
+type nodeCAMarker struct {
+	Fingerprint string `json:"fp"`
+	CertPath    string `json:"cert_path"`
+	Home        string `json:"home"`
+	UID         int    `json:"uid,omitempty"` // unix 普通用户；root/windows 不写
+}
+
+// hasNodeCAMarker reports whether the NodeCA marker matches the current cert AND
+// user identity. Returns false (triggering re-persistence) when the marker is
+// missing/corrupt/legacy-plain-text, the cert fingerprint changed, the cert path
+// changed (F-3), or the HOME/UID changed across users (F-4).
 func hasNodeCAMarker(dataDir, caCertPath string) bool {
 	if dataDir == "" {
-		return false
-	}
-	fp, err := caFingerprint(caCertPath)
-	if err != nil {
 		return false
 	}
 	raw, err := os.ReadFile(filepath.Join(dataDir, nodeCAMarkerName))
 	if err != nil {
 		return false
 	}
-	return strings.TrimSpace(string(raw)) == fp
+	var m nodeCAMarker
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return false // 旧纯文本格式或损坏 → stale
+	}
+	if m.Fingerprint == "" {
+		return false
+	}
+	current, err := caFingerprint(caCertPath)
+	if err != nil {
+		return false
+	}
+	if m.Fingerprint != current {
+		return false // 证书重新生成
+	}
+	if m.CertPath != caCertPath {
+		return false // F-3: 路径变化
+	}
+	if !nodeCAMarkerUserMatches(m) {
+		return false // F-4: 跨用户
+	}
+	return true
 }
 
-// writeNodeCAMarker records the current CA cert fingerprint in dataDir so
-// subsequent runs can skip re-persistence. Best-effort — failure is silent.
+// nodeCAMarkerUserMatches 检查 marker 记录的 HOME/UID 是否与当前进程一致。
+// HOME 是主标识（跨平台）；UID 在 unix 普通用户额外校验（root/windows 不记 UID）。
+func nodeCAMarkerUserMatches(m nodeCAMarker) bool {
+	if m.Home != "" {
+		home, err := os.UserHomeDir()
+		if err != nil || home != m.Home {
+			return false
+		}
+	}
+	if m.UID != 0 && os.Getuid() != m.UID {
+		return false
+	}
+	return true
+}
+
+// writeNodeCAMarker records the cert fingerprint, path, and current user identity
+// (HOME/UID) so future launches can detect staleness from cert regen, path change,
+// or cross-user launch. Best-effort — failure is silent.
 func writeNodeCAMarker(dataDir, caCertPath string) {
 	if dataDir == "" {
 		return
@@ -315,10 +357,23 @@ func writeNodeCAMarker(dataDir, caCertPath string) {
 	if err != nil {
 		return
 	}
+	home, _ := os.UserHomeDir()
+	m := nodeCAMarker{
+		Fingerprint: fp,
+		CertPath:    caCertPath,
+		Home:        home,
+	}
+	if uid := os.Getuid(); uid > 0 {
+		m.UID = uid // unix 普通用户；root(0)/windows(-1) 不写
+	}
+	data, err := json.Marshal(m)
+	if err != nil {
+		return
+	}
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		return
 	}
-	_ = os.WriteFile(filepath.Join(dataDir, nodeCAMarkerName), []byte(fp+"\n"), 0644)
+	_ = os.WriteFile(filepath.Join(dataDir, nodeCAMarkerName), data, 0644)
 }
 
 func (e *Executor) logDockerBoundary(result *Result) {
