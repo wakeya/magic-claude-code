@@ -1632,7 +1632,9 @@ func TestWritePOSIXProfileNodeCA_SymlinkTargetNotFollowed(t *testing.T) {
 }
 
 // P2-2 (Pwsh): profile 是符号链接时，写入不能跟随链接修改目标文件（CWE-59）。
-func TestWritePwshProfileNodeCA_SymlinkTargetNotFollowed(t *testing.T) {
+// 1b: 高权限运行时 symlink profile 的 target 不被 WriteFile 跟随修改（fail-closed）。
+// 非特权运行时会跟随 symlink 写入（dotfiles 兼容），不适用此断言——由 scan 层测试覆盖。
+func TestWritePwshProfileNodeCA_Privileged_SymlinkTargetNotFollowed(t *testing.T) {
 	home := t.TempDir()
 	caPath := writeFile(t, filepath.Join(home, "ca.crt"), "cert-content")
 
@@ -1643,16 +1645,19 @@ func TestWritePwshProfileNodeCA_SymlinkTargetNotFollowed(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(target, profile); err != nil {
-		t.Fatal(err)
+		t.Skipf("symlink not supported on this platform: %v", err)
 	}
 	withPwshHooks(t, home)
+	setPrivileged(t, true)
 
 	a := &osEnvAdapter{}
-	_ = a.writePwshProfileNodeCA(caPath)
+	if err := a.writePwshProfileNodeCA(caPath); !errors.Is(err, ErrUnsafeProfile) {
+		t.Errorf("expected ErrUnsafeProfile under privileged run, got %v", err)
+	}
 
 	got, _ := os.ReadFile(target)
 	if string(got) != "original-target" {
-		t.Errorf("symlink target modified via WriteFile follow: got %q, want %q", got, "original-target")
+		t.Errorf("privileged: symlink target must not be modified via WriteFile follow, got %q", got)
 	}
 }
 
@@ -1715,22 +1720,151 @@ func TestNodeCAMarker_Symlink_NotFollowed(t *testing.T) {
 	}
 }
 
-// P2-2 (F-1 预检查): pwshProfileHasUserCustomValue 遇符号链接 profile 跳过，不跟随读。
-func TestPwshProfileHasUserCustomValue_SymlinkSkipped(t *testing.T) {
-	home := t.TempDir()
-	profile := filepath.Join(home, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")
-	target := filepath.Join(home, "target")
-	writeFile(t, target, "$env:NODE_EXTRA_CA_CERTS = 'C:\\user\\custom\\ca.crt'\n")
+// setPrivileged 注入 isPrivilegedRun 的 mock 值，测试结束自动还原。
+// 测试默认串行（无 t.Parallel），包级 var 覆盖安全。
+func setPrivileged(t *testing.T, priv bool) {
+	t.Helper()
+	prev := isPrivilegedRun
+	isPrivilegedRun = func() bool { return priv }
+	t.Cleanup(func() { isPrivilegedRun = prev })
+}
+
+// makeSymlinkProfile 创建一个指向 target 内容的 symlink profile，用于 scan/写入
+// 的 symlink 场景测试。平台不支持创建 symlink 时 t.Skip（Windows 需开发者模式/admin）。
+func makeSymlinkProfile(t *testing.T, profile, content string) {
+	t.Helper()
+	target := profile + ".target"
+	writeFile(t, target, content)
 	if err := os.MkdirAll(filepath.Dir(profile), 0755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(target, profile); err != nil {
-		t.Fatal(err)
+		t.Skipf("symlink not supported on this platform: %v", err)
 	}
-	withPwshHooks(t, home)
+}
 
-	if pwshProfileHasUserCustomValue(home) {
-		t.Error("expected false: symlink profile should be skipped, not followed")
+// P2-2/F-1 (1b): 高权限运行遇 symlink pwsh profile → scan 返回 ErrUnsafeProfile，
+// 不跟随读。Fail-closed 保证 setx 不会在 profile 未读时被执行。
+func TestScanPwshProfilesForCustomValue_Privileged_SymlinkFailsClosed(t *testing.T) {
+	home := t.TempDir()
+	withPwshHooks(t, home)
+	setPrivileged(t, true)
+	profile := filepath.Join(home, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")
+	makeSymlinkProfile(t, profile, "$env:NODE_EXTRA_CA_CERTS = 'C:\\user\\custom\\ca.crt'\n")
+
+	custom, err := scanPwshProfilesForCustomValue(home, isPrivilegedRun())
+	if custom {
+		t.Error("expected custom=false: privileged scan must not follow symlink")
+	}
+	if !errors.Is(err, ErrUnsafeProfile) {
+		t.Errorf("expected ErrUnsafeProfile under privileged run, got %v", err)
+	}
+}
+
+// P2-2/F-1 (1b): 非特权运行跟随 symlink pwsh profile，能读到自定义值（dotfiles 兼容）。
+func TestScanPwshProfilesForCustomValue_Unprivileged_FollowsSymlink(t *testing.T) {
+	home := t.TempDir()
+	withPwshHooks(t, home)
+	setPrivileged(t, false)
+	profile := filepath.Join(home, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")
+	makeSymlinkProfile(t, profile, "$env:NODE_EXTRA_CA_CERTS = 'C:\\user\\custom\\ca.crt'\n")
+
+	custom, err := scanPwshProfilesForCustomValue(home, isPrivilegedRun())
+	if err != nil {
+		t.Fatalf("expected nil err under unprivileged run, got %v", err)
+	}
+	if !custom {
+		t.Error("expected custom=true: unprivileged scan should follow symlink and detect custom value")
+	}
+}
+
+// P2-2/F-1 (1b): 高权限运行遇 symlink POSIX profile → scan 返回 ErrUnsafeProfile。
+func TestScanPOSIXProfilesForCustomValue_Privileged_SymlinkFailsClosed(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SHELL", "/bin/bash")
+	setPrivileged(t, true)
+	profile := filepath.Join(home, ".bashrc")
+	makeSymlinkProfile(t, profile, "export NODE_EXTRA_CA_CERTS=/custom/ca.crt\n")
+
+	custom, err := scanPOSIXProfilesForCustomValue("/bin/bash", home, isPrivilegedRun())
+	if custom {
+		t.Error("expected custom=false: privileged scan must not follow symlink")
+	}
+	if !errors.Is(err, ErrUnsafeProfile) {
+		t.Errorf("expected ErrUnsafeProfile under privileged run, got %v", err)
+	}
+}
+
+// P2-2/F-1 (1b): 非特权运行跟随 symlink POSIX profile，能读到自定义值。
+func TestScanPOSIXProfilesForCustomValue_Unprivileged_FollowsSymlink(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SHELL", "/bin/bash")
+	setPrivileged(t, false)
+	profile := filepath.Join(home, ".bashrc")
+	makeSymlinkProfile(t, profile, "export NODE_EXTRA_CA_CERTS=/custom/ca.crt\n")
+
+	custom, err := scanPOSIXProfilesForCustomValue("/bin/bash", home, isPrivilegedRun())
+	if err != nil {
+		t.Fatalf("expected nil err, got %v", err)
+	}
+	if !custom {
+		t.Error("expected custom=true: unprivileged scan should follow symlink")
+	}
+}
+
+// P2-2/F-1 集成: 高权限运行遇 symlink pwsh profile → persistNodeCACertWindows 不调用 setx。
+// 这关闭了原 F-1 fail-open："profile 未改但环境已被覆盖"。
+func TestPersistNodeCACert_Windows_Privileged_SymlinkProfile_NoSetx(t *testing.T) {
+	home := t.TempDir()
+	withPwshHooks(t, home)
+	setPrivileged(t, true)
+	profile := filepath.Join(home, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")
+	makeSymlinkProfile(t, profile, "# clean profile\n")
+
+	calls := 0
+	prev := setxEnvVar
+	setxEnvVar = func(k, v string) error { calls++; return nil }
+	t.Cleanup(func() { setxEnvVar = prev })
+
+	a := &osEnvAdapter{}
+	err := a.persistNodeCACertWindows(`C:\fake\ca.crt`)
+	if !errors.Is(err, ErrUnsafeProfile) {
+		t.Errorf("expected ErrUnsafeProfile, got %v", err)
+	}
+	if calls != 0 {
+		t.Errorf("expected setx 0 calls (privileged+symlink), got %d", calls)
+	}
+}
+
+// P2-2/F-1 集成: 高权限运行遇 symlink POSIX profile → persistNodeCACertDarwin 不调用 launchctl。
+func TestPersistNodeCACert_Darwin_Privileged_SymlinkProfile_NoLaunchctl(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // Windows: os.UserHomeDir 读 USERPROFILE
+	t.Setenv("SHELL", "/bin/zsh")
+	setPrivileged(t, true)
+	profile := filepath.Join(home, ".zshrc")
+	makeSymlinkProfile(t, profile, "# clean profile\n")
+
+	launchctlCalls := 0
+	prevHas := hasLaunchctl
+	prevSet := launchctlSetenv
+	hasLaunchctl = func() bool { return true }
+	launchctlSetenv = func(k, v string) error { launchctlCalls++; return nil }
+	t.Cleanup(func() {
+		hasLaunchctl = prevHas
+		launchctlSetenv = prevSet
+	})
+
+	a := &osEnvAdapter{}
+	err := a.persistNodeCACertDarwin("/fake/ca.crt")
+	if !errors.Is(err, ErrUnsafeProfile) {
+		t.Errorf("expected ErrUnsafeProfile, got %v", err)
+	}
+	if launchctlCalls != 0 {
+		t.Errorf("expected launchctl 0 calls (privileged+symlink), got %d", launchctlCalls)
 	}
 }
 

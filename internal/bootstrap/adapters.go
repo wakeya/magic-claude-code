@@ -427,8 +427,13 @@ func (a *osEnvAdapter) persistNodeCACertWindows(caCertPath string) error {
 	if err != nil {
 		return fmt.Errorf("user home dir: %w", err)
 	}
-	// F-1: 先检查 pwsh profile 自定义值，有则不 setx，避免覆盖用户配置。
-	if pwshProfileHasUserCustomValue(home) {
+	// F-1 fail-closed: setx 前预检查所有 profile。高权限运行遇 symlink/非常规
+	// profile 时返回 ErrUnsafeProfile（不 setx）；非特权运行跟随 symlink 读取。
+	custom, scanErr := scanPwshProfilesForCustomValue(home, isPrivilegedRun())
+	if scanErr != nil {
+		return scanErr
+	}
+	if custom {
 		return ErrUserCustomValue
 	}
 	var setxErr error
@@ -474,34 +479,42 @@ func pwshSingleQuote(s string) (string, error) {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'", nil
 }
 
-// pwshProfileHasUserCustomValue 扫描所有 pwsh profile，任一存在非 mcc 管理的
-// NODE_EXTRA_CA_CERTS 赋值则返回 true。用于 setx 覆盖前的预检查（F-1）。
-func pwshProfileHasUserCustomValue(home string) bool {
+// scanPwshProfilesForCustomValue 扫描所有 pwsh profile，返回是否含用户自定义值。
+// 高权限运行时 symlink/非常规 profile 视为不安全（fail-closed），返回包装了
+// ErrUnsafeProfile 的错误；非特权运行时跟随 symlink 读取（用户自己 home 自己负责）。
+// 用于 setx 覆盖前的预检查（F-1）：扫描完全成功前不得调用 setx，避免环境被改而
+// profile 未改。
+func scanPwshProfilesForCustomValue(home string, privileged bool) (custom bool, err error) {
 	for _, profile := range pwshProfileCandidates(home) {
-		if err := isSafeForWrite(profile); err != nil {
-			continue // 符号链接/非常规 profile 不读，避免跟随链接（P2-2）
+		if privileged {
+			if e := isSafeForWrite(profile); e != nil {
+				return false, fmt.Errorf("%w: %s", ErrUnsafeProfile, profile)
+			}
 		}
-		existing, _ := os.ReadFile(profile)
+		existing, _ := os.ReadFile(profile) // 非特权跟随 symlink
 		if pwshProfileHasNodeCAVarOutsideMCCBlock(string(existing)) {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
-// posixProfileHasUserCustomValue 扫描所有 POSIX profile，任一存在非 mcc 管理的
-// NODE_EXTRA_CA_CERTS 赋值则返回 true。用于 launchctl 覆盖前的预检查（F-1）。
-func posixProfileHasUserCustomValue(shell, home string) bool {
+// scanPOSIXProfilesForCustomValue 扫描所有 POSIX profile，返回是否含用户自定义值。
+// 语义同 scanPwshProfilesForCustomValue：高权限 fail-closed，非特权跟随 symlink。
+// 用于 launchctl setenv 覆盖前的预检查（F-1）。
+func scanPOSIXProfilesForCustomValue(shell, home string, privileged bool) (custom bool, err error) {
 	for _, profile := range resolveShellProfiles(shell, home) {
-		if err := isSafeForWrite(profile); err != nil {
-			continue // 符号链接/非常规 profile 不读，避免跟随链接（P2-2）
+		if privileged {
+			if e := isSafeForWrite(profile); e != nil {
+				return false, fmt.Errorf("%w: %s", ErrUnsafeProfile, profile)
+			}
 		}
 		existing, _ := os.ReadFile(profile)
 		if profileHasNodeCAKeyOutsideMCCBlock(shell, string(existing)) {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // isSafeForWrite 检查路径可安全写入：拒绝符号链接和非常规文件（CWE-59）。
@@ -558,10 +571,14 @@ func (a *osEnvAdapter) writePwshProfileNodeCA(caCertPath string) error {
 		"if (Test-Path $mccCa) { $env:NODE_EXTRA_CA_CERTS = $mccCa }\n"+
 		"%s\n", pwshProfileMarkerBegin, caRef, pwshProfileMarkerEnd)
 
+	// 1b 策略：高权限严格（symlink fail-closed），非特权跟随 symlink（dotfiles 兼容）
+	privileged := isPrivilegedRun()
 	// 阶段 1：扫描所有候选，任一有用户自定义值则全部放弃
 	for _, profile := range candidates {
-		if err := isSafeForWrite(profile); err != nil {
-			continue // 符号链接/非常规 profile 不读，避免跟随链接（P2-2）
+		if privileged {
+			if e := isSafeForWrite(profile); e != nil {
+				return fmt.Errorf("%w: %s", ErrUnsafeProfile, profile)
+			}
 		}
 		existing, _ := os.ReadFile(profile)
 		if pwshProfileHasNodeCAVarOutsideMCCBlock(string(existing)) {
@@ -573,9 +590,11 @@ func (a *osEnvAdapter) writePwshProfileNodeCA(caCertPath string) error {
 	var lastErr error
 	wrote := false
 	for _, profile := range candidates {
-		if err := isSafeForWrite(profile); err != nil {
-			lastErr = err
-			continue // 符号链接/非常规 profile 不写，避免跟随链接（P2-2）
+		if privileged {
+			if e := isSafeForWrite(profile); e != nil {
+				lastErr = fmt.Errorf("%w: %s", ErrUnsafeProfile, profile)
+				continue
+			}
 		}
 		existing, _ := os.ReadFile(profile)
 		updated, changed := replaceMarkedBlock(string(existing), pwshProfileMarkerBegin, pwshProfileMarkerEnd, block)
@@ -655,13 +674,17 @@ func replaceMarkedBlock(content, begin, end, newBlock string) (string, bool) {
 // --- macOS implementation ---
 
 func (a *osEnvAdapter) persistNodeCACertDarwin(caCertPath string) error {
-	// F-1: 先检查 POSIX profile 自定义值，有则不 launchctl，避免覆盖用户配置。
+	// F-1 fail-closed: launchctl 前预检查所有 profile（同 Windows scan 语义）。
 	shell := os.Getenv("SHELL")
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("user home dir: %w", err)
 	}
-	if posixProfileHasUserCustomValue(shell, home) {
+	custom, scanErr := scanPOSIXProfilesForCustomValue(shell, home, isPrivilegedRun())
+	if scanErr != nil {
+		return scanErr
+	}
+	if custom {
 		return ErrUserCustomValue
 	}
 	// ① launchctl setenv 注入当前 GUI 会话
@@ -718,10 +741,14 @@ func (a *osEnvAdapter) writePOSIXProfileNodeCA(caCertPath string) error {
 
 	profiles := resolveShellProfiles(shell, home)
 
+	// 1b 策略：高权限严格（symlink fail-closed），非特权跟随 symlink（dotfiles 兼容）
+	privileged := isPrivilegedRun()
 	// 阶段 1：扫描所有候选，任一有用户自定义值则全部放弃
 	for _, profile := range profiles {
-		if err := isSafeForWrite(profile); err != nil {
-			continue // 符号链接/非常规 profile 不读，避免跟随链接（P2-2）
+		if privileged {
+			if e := isSafeForWrite(profile); e != nil {
+				return fmt.Errorf("%w: %s", ErrUnsafeProfile, profile)
+			}
 		}
 		existing, _ := os.ReadFile(profile)
 		if profileHasNodeCAKeyOutsideMCCBlock(shell, string(existing)) {
@@ -732,9 +759,11 @@ func (a *osEnvAdapter) writePOSIXProfileNodeCA(caCertPath string) error {
 	// 阶段 2：全部无自定义，逐个写入
 	var lastErr error
 	for _, profile := range profiles {
-		if err := isSafeForWrite(profile); err != nil {
-			lastErr = err
-			continue // 符号链接/非常规 profile 不写，避免跟随链接（P2-2）
+		if privileged {
+			if e := isSafeForWrite(profile); e != nil {
+				lastErr = fmt.Errorf("%w: %s", ErrUnsafeProfile, profile)
+				continue
+			}
 		}
 		existing, _ := os.ReadFile(profile)
 		updated, changed := replaceMarkedBlock(string(existing), posixCABlockBegin, posixCABlockEnd, block)
