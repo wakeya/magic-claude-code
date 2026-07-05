@@ -1608,27 +1608,55 @@ func TestHasNodeCAMarker_UIDChanged_Repersists(t *testing.T) {
 	}
 }
 
-// P2-2 (POSIX): profile 是符号链接时，写入不能跟随链接修改目标文件（CWE-59）。
-func TestWritePOSIXProfileNodeCA_SymlinkTargetNotFollowed(t *testing.T) {
+// P2-2 (POSIX): 1b 特权运行时 symlink profile 的 target 不被跟随修改（fail-closed）。
+func TestWritePOSIXProfileNodeCA_Privileged_SymlinkTargetNotFollowed(t *testing.T) {
 	home := t.TempDir()
 	caPath := writeFile(t, filepath.Join(home, "ca.crt"), "cert-content")
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SHELL", "/bin/bash")
+	setPrivileged(t, true)
 
 	target := filepath.Join(home, ".bashrc.real")
 	writeFile(t, target, "original-target")
 	bashrc := filepath.Join(home, ".bashrc")
 	if err := os.Symlink(target, bashrc); err != nil {
-		t.Fatal(err)
+		t.Skipf("symlink not supported on this platform: %v", err)
 	}
 
-	t.Setenv("HOME", home)
-	t.Setenv("SHELL", "/bin/bash")
-
 	a := &osEnvAdapter{}
-	_ = a.writePOSIXProfileNodeCA(caPath) // 不管返回；关键是 target 不被改
-
+	if err := a.writePOSIXProfileNodeCA(caPath); !errors.Is(err, ErrUnsafeProfile) {
+		t.Errorf("expected ErrUnsafeProfile under privileged run, got %v", err)
+	}
 	got, _ := os.ReadFile(target)
 	if string(got) != "original-target" {
-		t.Errorf("symlink target modified via WriteFile follow: got %q, want %q", got, "original-target")
+		t.Errorf("privileged: symlink target must not be modified, got %q", got)
+	}
+}
+
+// P2-2 (POSIX): 1b 非特权运行跟随 symlink，mcc block 写入 target（dotfiles 兼容）。
+func TestWritePOSIXProfileNodeCA_Unprivileged_FollowsSymlink(t *testing.T) {
+	home := t.TempDir()
+	caPath := writeFile(t, filepath.Join(home, "ca.crt"), "cert-content")
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SHELL", "/bin/bash")
+	setPrivileged(t, false)
+
+	target := filepath.Join(home, ".bashrc.real")
+	writeFile(t, target, "original-target")
+	bashrc := filepath.Join(home, ".bashrc")
+	if err := os.Symlink(target, bashrc); err != nil {
+		t.Skipf("symlink not supported on this platform: %v", err)
+	}
+
+	a := &osEnvAdapter{}
+	if err := a.writePOSIXProfileNodeCA(caPath); err != nil {
+		t.Fatalf("writePOSIXProfileNodeCA: %v", err)
+	}
+	got, _ := os.ReadFile(target)
+	if !strings.Contains(string(got), "NODE_EXTRA_CA_CERTS") {
+		t.Errorf("unprivileged: mcc block should be written via symlink, got %q", got)
 	}
 }
 
@@ -2054,6 +2082,138 @@ func TestGenerateInstructions_TransparentSuccess_PrivilegedRun_PrintsHint(t *tes
 		if !found {
 			t.Errorf("[%s] expected privileged-run hint, got %v", locale, lines)
 		}
+	}
+}
+
+// F-1: scanPwshProfilesForCustomValue 遇非 NotExist 读取错误（profile 是目录）→ 返回 error。
+// 用目录作为 profile，os.ReadFile 必失败且非 NotExist，跨平台稳定（不依赖 chmod）。
+func TestScanPwshProfilesForCustomValue_ProfileUnreadable_ReturnsError(t *testing.T) {
+	home := t.TempDir()
+	withPwshHooks(t, home)
+	setPrivileged(t, false) // 非特权跳过 isSafeForWrite，直接 readProfile
+	profile := filepath.Join(home, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")
+	if err := os.MkdirAll(profile, 0755); err != nil {
+		t.Fatal(err)
+	}
+	custom, err := scanPwshProfilesForCustomValue(home, false)
+	if err == nil {
+		t.Error("expected error when profile is a directory (unreadable)")
+	}
+	if custom {
+		t.Error("expected custom=false when scan fails")
+	}
+}
+
+// F-1: scanPOSIXProfilesForCustomValue 遇非 NotExist 读取错误 → 返回 error。
+func TestScanPOSIXProfilesForCustomValue_ProfileUnreadable_ReturnsError(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SHELL", "/bin/bash")
+	setPrivileged(t, false)
+	profile := filepath.Join(home, ".bashrc")
+	if err := os.MkdirAll(profile, 0755); err != nil {
+		t.Fatal(err)
+	}
+	custom, err := scanPOSIXProfilesForCustomValue("/bin/bash", home, false)
+	if err == nil {
+		t.Error("expected error when profile is a directory (unreadable)")
+	}
+	if custom {
+		t.Error("expected custom=false when scan fails")
+	}
+}
+
+// F-1: scanPwshProfilesForCustomValue profile 不存在 → 无错误，走正常创建路径。
+func TestScanPwshProfilesForCustomValue_ProfileAbsent_NoError(t *testing.T) {
+	home := t.TempDir()
+	withPwshHooks(t, home)
+	custom, err := scanPwshProfilesForCustomValue(home, false)
+	if err != nil {
+		t.Errorf("absent profile should not error (treated as empty), got %v", err)
+	}
+	if custom {
+		t.Error("absent profile → custom=false")
+	}
+}
+
+// F-1: scan 读取失败时 persistNodeCACertWindows 不调用 setx。
+func TestPersistNodeCACert_Windows_ProfileUnreadable_NoSetx(t *testing.T) {
+	home := t.TempDir()
+	withPwshHooks(t, home)
+	setPrivileged(t, false)
+	profile := filepath.Join(home, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")
+	if err := os.MkdirAll(profile, 0755); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	prev := setxEnvVar
+	setxEnvVar = func(k, v string) error { calls++; return nil }
+	t.Cleanup(func() { setxEnvVar = prev })
+
+	a := &osEnvAdapter{}
+	err := a.persistNodeCACertWindows(`C:\fake\ca.crt`)
+	if err == nil {
+		t.Error("expected error from scan when profile is a directory")
+	}
+	if calls != 0 {
+		t.Errorf("expected setx 0 calls when scan fails, got %d", calls)
+	}
+}
+
+// F-1: scan 读取失败时 persistNodeCACertDarwin 不调用 launchctl。
+func TestPersistNodeCACert_Darwin_ProfileUnreadable_NoLaunchctl(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SHELL", "/bin/zsh")
+	setPrivileged(t, false)
+	profile := filepath.Join(home, ".zshrc")
+	if err := os.MkdirAll(profile, 0755); err != nil {
+		t.Fatal(err)
+	}
+	launchctlCalls := 0
+	prevHas := hasLaunchctl
+	prevSet := launchctlSetenv
+	hasLaunchctl = func() bool { return true }
+	launchctlSetenv = func(k, v string) error { launchctlCalls++; return nil }
+	t.Cleanup(func() {
+		hasLaunchctl = prevHas
+		launchctlSetenv = prevSet
+	})
+
+	a := &osEnvAdapter{}
+	err := a.persistNodeCACertDarwin("/fake/ca.crt")
+	if err == nil {
+		t.Error("expected error from scan when profile is a directory")
+	}
+	if launchctlCalls != 0 {
+		t.Errorf("expected launchctl 0 calls when scan fails, got %d", launchctlCalls)
+	}
+}
+
+// P3: decidePrivileged 是 fail-closed 决策的纯函数，覆盖 Windows token 探测的
+// 所有错误路径（无需真实 Windows token，跨平台可测）。
+// err != nil（无法确定权限）→ 视为特权 → 拒绝 profile 修改。
+func TestDecidePrivileged(t *testing.T) {
+	cases := []struct {
+		name     string
+		elevated bool
+		err      error
+		want     bool // true = 拒绝（特权或未知权限）
+	}{
+		{"elevated → reject", true, nil, true},
+		{"non-elevated → allow", false, nil, false},
+		{"token open error → fail-closed", false, errors.New("open process token: access denied"), true},
+		{"elevation query error → fail-closed", false, errors.New("get token elevation: failed"), true},
+		{"elevation returned short → fail-closed", false, errors.New("token elevation returned 0 bytes, want 4"), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := decidePrivileged(tc.elevated, tc.err); got != tc.want {
+				t.Errorf("decidePrivileged(elevated=%v, err=%v) = %v, want %v", tc.elevated, tc.err, got, tc.want)
+			}
+		})
 	}
 }
 

@@ -491,7 +491,10 @@ func scanPwshProfilesForCustomValue(home string, privileged bool) (custom bool, 
 				return false, fmt.Errorf("%w: %s", ErrUnsafeProfile, profile)
 			}
 		}
-		existing, _ := os.ReadFile(profile) // 非特权跟随 symlink
+		existing, err := readProfile(profile) // 非特权跟随 symlink；非 NotExist 错误上抛
+		if err != nil {
+			return false, err
+		}
 		if pwshProfileHasNodeCAVarOutsideMCCBlock(string(existing)) {
 			return true, nil
 		}
@@ -509,12 +512,30 @@ func scanPOSIXProfilesForCustomValue(shell, home string, privileged bool) (custo
 				return false, fmt.Errorf("%w: %s", ErrUnsafeProfile, profile)
 			}
 		}
-		existing, _ := os.ReadFile(profile)
+		existing, err := readProfile(profile)
+		if err != nil {
+			return false, err
+		}
 		if profileHasNodeCAKeyOutsideMCCBlock(shell, string(existing)) {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+// readProfile 读取 profile 内容用于扫描/写入决策。
+// 不存在视为空 profile（将创建），返回空内容 + nil。其他读取错误（权限、I/O、
+// 路径是目录等）原样返回，调用方必须上抛——否则会在 setx/launchctl 之前误判
+// "无用户自定义值"，导致环境被改而 profile 未改（F-1 fail-open）。
+func readProfile(profile string) ([]byte, error) {
+	b, err := os.ReadFile(profile)
+	if err == nil {
+		return b, nil
+	}
+	if os.IsNotExist(err) {
+		return nil, nil // 空 profile，将继续创建
+	}
+	return nil, fmt.Errorf("read profile %s: %w", profile, err)
 }
 
 // isSafeForWrite 检查路径可安全写入：拒绝符号链接和非常规文件（CWE-59）。
@@ -580,7 +601,10 @@ func (a *osEnvAdapter) writePwshProfileNodeCA(caCertPath string) error {
 				return fmt.Errorf("%w: %s", ErrUnsafeProfile, profile)
 			}
 		}
-		existing, _ := os.ReadFile(profile)
+		existing, err := readProfile(profile)
+		if err != nil {
+			return err
+		}
 		if pwshProfileHasNodeCAVarOutsideMCCBlock(string(existing)) {
 			return ErrUserCustomValue
 		}
@@ -596,7 +620,11 @@ func (a *osEnvAdapter) writePwshProfileNodeCA(caCertPath string) error {
 				continue
 			}
 		}
-		existing, _ := os.ReadFile(profile)
+		existing, err := readProfile(profile)
+		if err != nil {
+			lastErr = err
+			continue
+		}
 		updated, changed := replaceMarkedBlock(string(existing), pwshProfileMarkerBegin, pwshProfileMarkerEnd, block)
 		if !changed {
 			wrote = true
@@ -750,7 +778,10 @@ func (a *osEnvAdapter) writePOSIXProfileNodeCA(caCertPath string) error {
 				return fmt.Errorf("%w: %s", ErrUnsafeProfile, profile)
 			}
 		}
-		existing, _ := os.ReadFile(profile)
+		existing, err := readProfile(profile)
+		if err != nil {
+			return err
+		}
 		if profileHasNodeCAKeyOutsideMCCBlock(shell, string(existing)) {
 			return ErrUserCustomValue
 		}
@@ -765,7 +796,11 @@ func (a *osEnvAdapter) writePOSIXProfileNodeCA(caCertPath string) error {
 				continue
 			}
 		}
-		existing, _ := os.ReadFile(profile)
+		existing, err := readProfile(profile)
+		if err != nil {
+			lastErr = err
+			continue
+		}
 		updated, changed := replaceMarkedBlock(string(existing), posixCABlockBegin, posixCABlockEnd, block)
 		if !changed {
 			return nil // 已含相同块

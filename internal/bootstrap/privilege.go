@@ -22,7 +22,18 @@ var (
 	ErrUnsafeProfile = errors.New("unsafe profile path under privileged run (symlink or non-regular)")
 )
 
-// isPrivilegedRun 报告当前进程是否以高权限运行。
+// isPrivilegedRun 报告当前进程是否应以高权限对待（拒绝 profile/HKCU 修改）。
 // Unix: euid==0（root）。Windows: elevated token（administrator）。
+// 任何无法确定权限状态的错误都 fail-closed 为"视为特权"（见 decidePrivileged）。
 // 测试通过覆盖此变量模拟特权/非特权场景。
-var isPrivilegedRun = privilegedByOS
+var isPrivilegedRun = func() bool {
+	return decidePrivileged(privilegedByOS())
+}
+
+// decidePrivileged 把 (elevated, err) 翻译为 fail-closed 布尔。
+// err != nil（无法确定权限状态）时视为特权 → 拒绝 profile/HKCU 修改，避免在
+// 未知权限下放行越权写。明确 elevated → 拒绝；明确 non-elevated → 允许。
+// 抽为纯函数便于跨平台单测所有错误路径（无需真实 Windows token）。
+func decidePrivileged(elevated bool, err error) bool {
+	return err != nil || elevated
+}
