@@ -304,7 +304,11 @@ func hasNodeCAMarker(dataDir, caCertPath string) bool {
 	if dataDir == "" {
 		return false
 	}
-	raw, err := os.ReadFile(filepath.Join(dataDir, nodeCAMarkerName))
+	markerPath := filepath.Join(dataDir, nodeCAMarkerName)
+	if err := isSafeForWrite(markerPath); err != nil {
+		return false // marker 是符号链接/非常规 → 视为 stale（CWE-59）
+	}
+	raw, err := os.ReadFile(markerPath)
 	if err != nil {
 		return false
 	}
@@ -373,7 +377,11 @@ func writeNodeCAMarker(dataDir, caCertPath string) {
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		return
 	}
-	_ = os.WriteFile(filepath.Join(dataDir, nodeCAMarkerName), data, 0644)
+	markerPath := filepath.Join(dataDir, nodeCAMarkerName)
+	if err := isSafeForWrite(markerPath); err != nil {
+		return // marker 是符号链接 → 拒绝写，避免越权（CWE-59）
+	}
+	_ = os.WriteFile(markerPath, data, 0644)
 }
 
 func (e *Executor) logDockerBoundary(result *Result) {

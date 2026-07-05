@@ -478,6 +478,9 @@ func pwshSingleQuote(s string) (string, error) {
 // NODE_EXTRA_CA_CERTS 赋值则返回 true。用于 setx 覆盖前的预检查（F-1）。
 func pwshProfileHasUserCustomValue(home string) bool {
 	for _, profile := range pwshProfileCandidates(home) {
+		if err := isSafeForWrite(profile); err != nil {
+			continue // 符号链接/非常规 profile 不读，避免跟随链接（P2-2）
+		}
 		existing, _ := os.ReadFile(profile)
 		if pwshProfileHasNodeCAVarOutsideMCCBlock(string(existing)) {
 			return true
@@ -490,12 +493,36 @@ func pwshProfileHasUserCustomValue(home string) bool {
 // NODE_EXTRA_CA_CERTS 赋值则返回 true。用于 launchctl 覆盖前的预检查（F-1）。
 func posixProfileHasUserCustomValue(shell, home string) bool {
 	for _, profile := range resolveShellProfiles(shell, home) {
+		if err := isSafeForWrite(profile); err != nil {
+			continue // 符号链接/非常规 profile 不读，避免跟随链接（P2-2）
+		}
 		existing, _ := os.ReadFile(profile)
 		if profileHasNodeCAKeyOutsideMCCBlock(shell, string(existing)) {
 			return true
 		}
 	}
 	return false
+}
+
+// isSafeForWrite 检查路径可安全写入：拒绝符号链接和非常规文件（CWE-59）。
+// 不存在视为安全（将创建）。高权限启动 + 用户可控路径（HOME/dataDir）时，符号链接
+// 可能指向高权限文件，os.ReadFile/WriteFile 会跟随链接越权读写，故读/写前都需先过此检查。
+// 用于 shell profile 和 bootstrap marker（.node-ca-persisted）。
+func isSafeForWrite(path string) error {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // 不存在 → 安全，将创建
+		}
+		return err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refuse symlink path (CWE-59): %s", path)
+	}
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("refuse non-regular path: %s", path)
+	}
+	return nil
 }
 
 func (a *osEnvAdapter) writePwshProfileNodeCA(caCertPath string) error {
@@ -533,6 +560,9 @@ func (a *osEnvAdapter) writePwshProfileNodeCA(caCertPath string) error {
 
 	// 阶段 1：扫描所有候选，任一有用户自定义值则全部放弃
 	for _, profile := range candidates {
+		if err := isSafeForWrite(profile); err != nil {
+			continue // 符号链接/非常规 profile 不读，避免跟随链接（P2-2）
+		}
 		existing, _ := os.ReadFile(profile)
 		if pwshProfileHasNodeCAVarOutsideMCCBlock(string(existing)) {
 			return ErrUserCustomValue
@@ -543,6 +573,10 @@ func (a *osEnvAdapter) writePwshProfileNodeCA(caCertPath string) error {
 	var lastErr error
 	wrote := false
 	for _, profile := range candidates {
+		if err := isSafeForWrite(profile); err != nil {
+			lastErr = err
+			continue // 符号链接/非常规 profile 不写，避免跟随链接（P2-2）
+		}
 		existing, _ := os.ReadFile(profile)
 		updated, changed := replaceMarkedBlock(string(existing), pwshProfileMarkerBegin, pwshProfileMarkerEnd, block)
 		if !changed {
@@ -686,6 +720,9 @@ func (a *osEnvAdapter) writePOSIXProfileNodeCA(caCertPath string) error {
 
 	// 阶段 1：扫描所有候选，任一有用户自定义值则全部放弃
 	for _, profile := range profiles {
+		if err := isSafeForWrite(profile); err != nil {
+			continue // 符号链接/非常规 profile 不读，避免跟随链接（P2-2）
+		}
 		existing, _ := os.ReadFile(profile)
 		if profileHasNodeCAKeyOutsideMCCBlock(shell, string(existing)) {
 			return ErrUserCustomValue
@@ -695,6 +732,10 @@ func (a *osEnvAdapter) writePOSIXProfileNodeCA(caCertPath string) error {
 	// 阶段 2：全部无自定义，逐个写入
 	var lastErr error
 	for _, profile := range profiles {
+		if err := isSafeForWrite(profile); err != nil {
+			lastErr = err
+			continue // 符号链接/非常规 profile 不写，避免跟随链接（P2-2）
+		}
 		existing, _ := os.ReadFile(profile)
 		updated, changed := replaceMarkedBlock(string(existing), posixCABlockBegin, posixCABlockEnd, block)
 		if !changed {

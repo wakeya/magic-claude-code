@@ -1607,6 +1607,133 @@ func TestHasNodeCAMarker_UIDChanged_Repersists(t *testing.T) {
 	}
 }
 
+// P2-2 (POSIX): profile 是符号链接时，写入不能跟随链接修改目标文件（CWE-59）。
+func TestWritePOSIXProfileNodeCA_SymlinkTargetNotFollowed(t *testing.T) {
+	home := t.TempDir()
+	caPath := writeFile(t, filepath.Join(home, "ca.crt"), "cert-content")
+
+	target := filepath.Join(home, ".bashrc.real")
+	writeFile(t, target, "original-target")
+	bashrc := filepath.Join(home, ".bashrc")
+	if err := os.Symlink(target, bashrc); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("HOME", home)
+	t.Setenv("SHELL", "/bin/bash")
+
+	a := &osEnvAdapter{}
+	_ = a.writePOSIXProfileNodeCA(caPath) // 不管返回；关键是 target 不被改
+
+	got, _ := os.ReadFile(target)
+	if string(got) != "original-target" {
+		t.Errorf("symlink target modified via WriteFile follow: got %q, want %q", got, "original-target")
+	}
+}
+
+// P2-2 (Pwsh): profile 是符号链接时，写入不能跟随链接修改目标文件（CWE-59）。
+func TestWritePwshProfileNodeCA_SymlinkTargetNotFollowed(t *testing.T) {
+	home := t.TempDir()
+	caPath := writeFile(t, filepath.Join(home, "ca.crt"), "cert-content")
+
+	profile := filepath.Join(home, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")
+	target := filepath.Join(home, "profile.real")
+	writeFile(t, target, "original-target")
+	if err := os.MkdirAll(filepath.Dir(profile), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, profile); err != nil {
+		t.Fatal(err)
+	}
+	withPwshHooks(t, home)
+
+	a := &osEnvAdapter{}
+	_ = a.writePwshProfileNodeCA(caPath)
+
+	got, _ := os.ReadFile(target)
+	if string(got) != "original-target" {
+		t.Errorf("symlink target modified via WriteFile follow: got %q, want %q", got, "original-target")
+	}
+}
+
+// isSafeForWrite 单元测试：覆盖不存在/常规/符号链接/非常规（目录）四个分支。
+func TestIsSafeForWrite(t *testing.T) {
+	dir := t.TempDir()
+
+	// 不存在 → 安全（将创建）
+	if err := isSafeForWrite(filepath.Join(dir, "absent")); err != nil {
+		t.Errorf("absent profile should be safe: %v", err)
+	}
+
+	// 常规文件 → 安全
+	regular := filepath.Join(dir, "regular")
+	writeFile(t, regular, "x")
+	if err := isSafeForWrite(regular); err != nil {
+		t.Errorf("regular profile should be safe: %v", err)
+	}
+
+	// 符号链接 → 拒绝
+	target := filepath.Join(dir, "target")
+	writeFile(t, target, "x")
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := isSafeForWrite(link); err == nil {
+		t.Error("symlink profile should be rejected, got nil")
+	}
+
+	// 非常规（目录）→ 拒绝
+	subdir := filepath.Join(dir, "subdir")
+	if err := os.MkdirAll(subdir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := isSafeForWrite(subdir); err == nil {
+		t.Error("non-regular profile (directory) should be rejected, got nil")
+	}
+}
+
+// P2-2 (marker): .node-ca-persisted 是符号链接时，hasNodeCAMarker 返回 false（stale），
+// writeNodeCAMarker 拒绝写（链接目标不变）。
+func TestNodeCAMarker_Symlink_NotFollowed(t *testing.T) {
+	dir := t.TempDir()
+	caPath := writeFile(t, filepath.Join(dir, "ca.crt"), "cert-content")
+	target := filepath.Join(dir, "marker.real")
+	writeFile(t, target, "original-target")
+	markerPath := filepath.Join(dir, nodeCAMarkerName)
+	if err := os.Symlink(target, markerPath); err != nil {
+		t.Fatal(err)
+	}
+
+	if hasNodeCAMarker(dir, caPath) {
+		t.Error("expected hasNodeCAMarker=false for symlink marker, got true")
+	}
+	writeNodeCAMarker(dir, caPath)
+	got, _ := os.ReadFile(target)
+	if string(got) != "original-target" {
+		t.Errorf("symlink marker target modified: got %q, want %q", got, "original-target")
+	}
+}
+
+// P2-2 (F-1 预检查): pwshProfileHasUserCustomValue 遇符号链接 profile 跳过，不跟随读。
+func TestPwshProfileHasUserCustomValue_SymlinkSkipped(t *testing.T) {
+	home := t.TempDir()
+	profile := filepath.Join(home, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")
+	target := filepath.Join(home, "target")
+	writeFile(t, target, "$env:NODE_EXTRA_CA_CERTS = 'C:\\user\\custom\\ca.crt'\n")
+	if err := os.MkdirAll(filepath.Dir(profile), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, profile); err != nil {
+		t.Fatal(err)
+	}
+	withPwshHooks(t, home)
+
+	if pwshProfileHasUserCustomValue(home) {
+		t.Error("expected false: symlink profile should be skipped, not followed")
+	}
+}
+
 // writeFile is a helper that writes content to path and returns the path.
 func writeFile(t *testing.T, path, content string) string {
 	t.Helper()
