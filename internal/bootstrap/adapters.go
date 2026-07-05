@@ -39,6 +39,13 @@ var setxEnvVar = func(key, value string) error {
 	return nil
 }
 
+// writeFileSync writes profile content (injectable wrapper around os.WriteFile).
+// Tests use it to simulate write failures without relying on chmod semantics
+// that are unreliable on Windows.
+var writeFileSync = func(path string, data []byte, perm os.FileMode) error {
+	return os.WriteFile(path, data, perm)
+}
+
 // pwshDetected reports whether any PowerShell is installed.
 // Overridable in tests to skip/exec-path probing.
 var pwshDetected = func() bool {
@@ -532,10 +539,44 @@ func readProfile(profile string) ([]byte, error) {
 	if err == nil {
 		return b, nil
 	}
-	if os.IsNotExist(err) {
-		return nil, nil // 空 profile，将继续创建
+	if !os.IsNotExist(err) {
+		// 非 NotExist 错误（权限、是目录、Linux ENOTDIR 等）原样上抛。
+		return nil, fmt.Errorf("read profile %s: %w", profile, err)
 	}
-	return nil, fmt.Errorf("read profile %s: %w", profile, err)
+	// NotExist：必须区分"叶子缺失（可创建）"和"祖先路径无效"。Windows 的
+	// ERROR_PATH_NOT_FOUND（祖先是文件/路径断裂）也被 os.IsNotExist 视为 true，
+	// 若直接当空 profile 会让 setx/launchctl 先执行，之后 MkdirAll 才失败（F-1）。
+	// validateParentChain 校验父链：叶子缺失才视为空，祖先无效则上抛。
+	if err := validateParentChain(profile); err != nil {
+		return nil, fmt.Errorf("read profile %s: %w", profile, err)
+	}
+	return nil, nil
+}
+
+// validateParentChain 确认 profile 的父目录链可被 MkdirAll 创建，关闭
+// Windows ERROR_PATH_NOT_FOUND / Linux 中间组件无效的 F-1 缺口。从直接父目录
+// 逐级向上 Stat（跟随 symlink，匹配 MkdirAll 语义），第一个存在的祖先必须是目录；
+// 若它是文件，MkdirAll 必失败 → 返回错误。全新路径（所有祖先都不存在）视为可创建。
+// TOCTOU（校验与 MkdirAll 之间父链被替换）仍为残余风险。
+func validateParentChain(profile string) error {
+	dir := filepath.Dir(profile)
+	for {
+		fi, err := os.Stat(dir)
+		if err == nil {
+			if !fi.IsDir() {
+				return fmt.Errorf("parent %s is not a directory", dir)
+			}
+			return nil // 最近现存祖先是目录，叶子缺失可创建
+		}
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("stat parent %s: %w", dir, err)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return nil // 根：全新路径，MkdirAll 可创建整条链
+		}
+		dir = parent
+	}
 }
 
 // isSafeForWrite 检查路径可安全写入：拒绝符号链接和非常规文件（CWE-59）。
@@ -634,7 +675,7 @@ func (a *osEnvAdapter) writePwshProfileNodeCA(caCertPath string) error {
 			lastErr = err
 			continue
 		}
-		if err := os.WriteFile(profile, []byte(updated), 0644); err != nil {
+		if err := writeFileSync(profile, []byte(updated), 0644); err != nil {
 			lastErr = err
 			continue
 		}
@@ -809,7 +850,7 @@ func (a *osEnvAdapter) writePOSIXProfileNodeCA(caCertPath string) error {
 			lastErr = err
 			continue
 		}
-		if err := os.WriteFile(profile, []byte(updated), 0644); err != nil {
+		if err := writeFileSync(profile, []byte(updated), 0644); err != nil {
 			lastErr = err
 			continue
 		}

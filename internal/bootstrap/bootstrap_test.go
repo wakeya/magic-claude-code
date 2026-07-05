@@ -2940,25 +2940,57 @@ func TestPersistNodeCACert_Windows_SetxSuccess_ProfileUserCustom_ReturnsUserCust
 }
 
 func TestPersistNodeCACert_Windows_SetxSuccess_ProfileFails_ReturnsPartial(t *testing.T) {
-	caPath := writeFile(t, filepath.Join(t.TempDir(), "ca.crt"), "cert")
+	home := t.TempDir()
+	caPath := writeFile(t, filepath.Join(home, "ca.crt"), "cert")
 
 	// setx succeeds
 	origSetx := setxEnvVar
 	setxEnvVar = func(key, value string) error { return nil }
 	t.Cleanup(func() { setxEnvVar = origSetx })
 
-	// Profile write fails: block the home directory path
-	blocked := filepath.Join(t.TempDir(), "file-as-dir")
-	if err := os.WriteFile(blocked, []byte("x"), 0644); err != nil {
-		t.Fatal(err)
+	// 注入 WriteFile 故障：readProfile 通过（profile 不存在、父链有效），setx 成功，
+	// 但 writeFileSync 失败 → partial。用 hook 而非 file-as-parent，因为后者现在
+	// 会被 validateParentChain 在 scan 阶段挡住（见 FileAsParent_NoSetx）。
+	origWrite := writeFileSync
+	writeFileSync = func(path string, data []byte, perm os.FileMode) error {
+		return errors.New("simulated write failure")
 	}
-	fakeHome := filepath.Join(blocked, "home")
-	withPwshHooks(t, fakeHome)
+	t.Cleanup(func() { writeFileSync = origWrite })
+
+	withPwshHooks(t, home)
 
 	a := &osEnvAdapter{}
 	err := a.persistNodeCACertWindows(caPath)
 	if !errors.Is(err, ErrPartialSuccess) {
 		t.Fatalf("expected ErrPartialSuccess when profile write fails, got: %v", err)
+	}
+}
+
+// F-1: 父路径是文件（Windows ERROR_PATH_NOT_FOUND / Linux ENOTDIR）时，readProfile
+// 的 validateParentChain 必须在 setx 前挡住，不调用 setx。跨平台覆盖两条路径：
+// Linux 上 ReadFile 返 ENOTDIR（非 NotExist 直接上抛）；Windows 上 ReadFile 返
+// ERROR_PATH_NOT_FOUND（IsNotExist=true，validateParentChain 检测到祖先是文件挡住）。
+func TestPersistNodeCACert_Windows_FileAsParent_NoSetx(t *testing.T) {
+	caPath := writeFile(t, filepath.Join(t.TempDir(), "ca.crt"), "cert")
+
+	// fakeHome 的父路径是文件 → profile 父链无效
+	blocked := filepath.Join(t.TempDir(), "file-as-dir")
+	writeFile(t, blocked, "x")
+	fakeHome := filepath.Join(blocked, "home")
+	withPwshHooks(t, fakeHome)
+
+	calls := 0
+	origSetx := setxEnvVar
+	setxEnvVar = func(k, v string) error { calls++; return nil }
+	t.Cleanup(func() { setxEnvVar = origSetx })
+
+	a := &osEnvAdapter{}
+	err := a.persistNodeCACertWindows(caPath)
+	if err == nil {
+		t.Error("expected error from scan (file-as-parent)")
+	}
+	if calls != 0 {
+		t.Errorf("expected setx 0 calls (file-as-parent blocks scan), got %d", calls)
 	}
 }
 
@@ -2980,7 +3012,8 @@ func TestPersistNodeCACert_Windows_BothSucceed_ReturnsNil(t *testing.T) {
 }
 
 func TestPersistNodeCACert_Darwin_LaunchctlSuccess_ProfileFails_ReturnsPartial(t *testing.T) {
-	caPath := writeFile(t, filepath.Join(t.TempDir(), "ca.crt"), "cert")
+	home := t.TempDir()
+	caPath := writeFile(t, filepath.Join(home, "ca.crt"), "cert")
 
 	// launchctl succeeds
 	origLaunchctl := launchctlSetenv
@@ -2992,15 +3025,16 @@ func TestPersistNodeCACert_Darwin_LaunchctlSuccess_ProfileFails_ReturnsPartial(t
 		hasLaunchctl = origHas
 	})
 
-	// Profile write fails: create a file where the home directory should be,
-	// so MkdirAll fails when trying to create the profile's parent dir.
-	blocked := filepath.Join(t.TempDir(), "file-as-dir")
-	if err := os.WriteFile(blocked, []byte("x"), 0644); err != nil {
-		t.Fatal(err)
+	// 注入 WriteFile 故障：readProfile 通过（profile 不存在、父链有效），
+	// launchctl 成功，writeFileSync 失败 → partial。
+	origWrite := writeFileSync
+	writeFileSync = func(path string, data []byte, perm os.FileMode) error {
+		return errors.New("simulated write failure")
 	}
-	fakeHome := filepath.Join(blocked, "home")
-	t.Setenv("HOME", fakeHome)
-	t.Setenv("USERPROFILE", fakeHome)
+	t.Cleanup(func() { writeFileSync = origWrite })
+
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("SHELL", "/bin/bash")
 
 	a := &osEnvAdapter{}
@@ -3015,13 +3049,20 @@ func TestWritePwshProfileNodeCA_PartialFailure_ReturnsPartial(t *testing.T) {
 	home := t.TempDir()
 	caPath := writeFile(t, filepath.Join(home, "ca.crt"), "cert")
 
-	// 额外 candidate 的父目录是一个已存在的文件 → MkdirAll 失败。
-	blocked := filepath.Join(t.TempDir(), "file-as-dir")
-	if err := os.WriteFile(blocked, []byte("x"), 0644); err != nil {
-		t.Fatal(err)
+	// withPwshHooks 默认两个候选：pwsh 7 + Windows PowerShell 5.1
+	profile2 := filepath.Join(home, "Documents", "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1")
+	withPwshHooks(t, home)
+
+	// 注入：profile1（pwsh 7）写成功，profile2（5.1）写失败 → partial。
+	// 用 hook 精确控制，避免 file-as-parent 被 validateParentChain 在 scan 挡住。
+	origWrite := writeFileSync
+	writeFileSync = func(path string, data []byte, perm os.FileMode) error {
+		if path == profile2 {
+			return errors.New("simulated write failure for profile2")
+		}
+		return os.WriteFile(path, data, perm)
 	}
-	badProfile := filepath.Join(blocked, "profile.ps1")
-	withPwshHooks(t, home, badProfile)
+	t.Cleanup(func() { writeFileSync = origWrite })
 
 	a := &osEnvAdapter{}
 	err := a.writePwshProfileNodeCA(caPath)
