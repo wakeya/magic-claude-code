@@ -1848,8 +1848,13 @@ func TestWritePwshProfileNodeCA_CertInsideHome_UsesUserProfileRef(t *testing.T) 
 		t.Fatalf("read profile: %v", err)
 	}
 	s := string(content)
-	if !contains(s, "$env:USERPROFILE\\") {
-		t.Errorf("profile should use $env:USERPROFILE for cert inside home, got: %s", s)
+	// home 内仍引用 $env:USERPROFILE（保留可移植性），且不写死 home 绝对路径。
+	// P2-1 后渲染为 Join-Path $env:USERPROFILE '<single-quoted-rel>'。
+	if !contains(s, "$env:USERPROFILE") {
+		t.Errorf("profile should reference $env:USERPROFILE for cert inside home, got: %s", s)
+	}
+	if strings.Contains(s, home) {
+		t.Errorf("profile should NOT contain literal home path %q, got: %s", home, s)
 	}
 }
 
@@ -2313,6 +2318,151 @@ func TestPersistNodeCACert_Darwin_LaunchctlSuccess_ProfileFails_ReturnsPartial(t
 	err := a.persistNodeCACertDarwin(caPath)
 	if !errors.Is(err, ErrPartialSuccess) {
 		t.Fatalf("expected ErrPartialSuccess when profile fails, got: %v", err)
+	}
+}
+
+// F-2: 多 profile 部分写入失败必须返回 ErrPartialSuccess，不能被首个成功掩盖。
+func TestWritePwshProfileNodeCA_PartialFailure_ReturnsPartial(t *testing.T) {
+	home := t.TempDir()
+	caPath := writeFile(t, filepath.Join(home, "ca.crt"), "cert")
+
+	// 额外 candidate 的父目录是一个已存在的文件 → MkdirAll 失败。
+	blocked := filepath.Join(t.TempDir(), "file-as-dir")
+	if err := os.WriteFile(blocked, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	badProfile := filepath.Join(blocked, "profile.ps1")
+	withPwshHooks(t, home, badProfile)
+
+	a := &osEnvAdapter{}
+	err := a.writePwshProfileNodeCA(caPath)
+	if !errors.Is(err, ErrPartialSuccess) {
+		t.Fatalf("expected ErrPartialSuccess when some profiles fail, got: %v", err)
+	}
+}
+
+// F-1: profile 存在用户自定义值时，setx 不应被调用（先检查再覆盖）。
+func TestPersistNodeCACert_Windows_ProfileUserCustom_SkipsSetx(t *testing.T) {
+	home := t.TempDir()
+	caPath := writeFile(t, filepath.Join(home, "ca.crt"), "cert")
+
+	profile := filepath.Join(home, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")
+	writeFile(t, profile, "$env:NODE_EXTRA_CA_CERTS = 'C:\\user\\custom\\ca.crt'\n")
+	withPwshHooks(t, home)
+
+	setxCalled := false
+	origSetx := setxEnvVar
+	setxEnvVar = func(key, value string) error {
+		setxCalled = true
+		return nil
+	}
+	t.Cleanup(func() { setxEnvVar = origSetx })
+
+	a := &osEnvAdapter{}
+	err := a.persistNodeCACertWindows(caPath)
+	if !errors.Is(err, ErrUserCustomValue) {
+		t.Fatalf("expected ErrUserCustomValue, got: %v", err)
+	}
+	if setxCalled {
+		t.Error("setx must NOT be called when pwsh profile has user custom value")
+	}
+}
+
+// F-1 (Darwin): POSIX profile 存在用户自定义值时，launchctl 不应被调用。
+func TestPersistNodeCACert_Darwin_ProfileUserCustom_SkipsLaunchctl(t *testing.T) {
+	home := t.TempDir()
+	caPath := writeFile(t, filepath.Join(home, "ca.crt"), "cert")
+
+	bashrc := filepath.Join(home, ".bashrc")
+	writeFile(t, bashrc, "export NODE_EXTRA_CA_CERTS='/user/custom/ca.crt'\n")
+
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SHELL", "/bin/bash")
+
+	launchctlCalled := false
+	origLaunchctl := launchctlSetenv
+	origHas := hasLaunchctl
+	launchctlSetenv = func(key, value string) error {
+		launchctlCalled = true
+		return nil
+	}
+	hasLaunchctl = func() bool { return true }
+	t.Cleanup(func() {
+		launchctlSetenv = origLaunchctl
+		hasLaunchctl = origHas
+	})
+
+	a := &osEnvAdapter{}
+	err := a.persistNodeCACertDarwin(caPath)
+	if !errors.Is(err, ErrUserCustomValue) {
+		t.Fatalf("expected ErrUserCustomValue, got: %v", err)
+	}
+	if launchctlCalled {
+		t.Error("launchctl must NOT be called when POSIX profile has user custom value")
+	}
+}
+
+// P2-1: 路径含 PowerShell 注入字符（$()、反引号、撇号）必须渲染为单引号字面量，
+// 不能放进双引号（双引号会展开 $() 和反引号）。
+func TestWritePwshProfileNodeCA_PathInjection_IsSingleQuoteLiteral(t *testing.T) {
+	tests := []struct {
+		name      string
+		insideHome bool
+		component string
+	}{
+		{"home内含子表达式", true, "data$(Write-Output PWNED)"},
+		{"home外含子表达式", false, "data$(Write-Output PWNED)"},
+		{"home内含反引号", true, "dir`whoami"},
+		{"home内含撇号", true, "dir'name"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			var caPath string
+			if tt.insideHome {
+				caPath = filepath.Join(home, tt.component, "ca.crt")
+			} else {
+				caPath = filepath.Join(t.TempDir(), tt.component, "ca.crt")
+			}
+			withPwshHooks(t, home)
+
+			a := &osEnvAdapter{}
+			if err := a.writePwshProfileNodeCA(caPath); err != nil {
+				t.Fatalf("writePwshProfileNodeCA: %v", err)
+			}
+			profile := filepath.Join(home, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")
+			content, _ := os.ReadFile(profile)
+			body := string(content)
+
+			found := false
+			for _, line := range strings.Split(body, "\n") {
+				ts := strings.TrimSpace(line)
+				if !strings.HasPrefix(ts, "$mccCa = ") {
+					continue
+				}
+				found = true
+				if strings.HasPrefix(ts, "$mccCa = \"") {
+					t.Errorf("$mccCa uses double quotes (injectable): %s", ts)
+				}
+			}
+			if !found {
+				t.Fatalf("missing $mccCa assignment in profile:\n%s", body)
+			}
+		})
+	}
+}
+
+// P2-1: 路径含 CR/LF 应被拒绝（防止换行断开字面量注入新命令）。
+func TestWritePwshProfileNodeCA_NewlineRejected(t *testing.T) {
+	home := t.TempDir()
+	withPwshHooks(t, home)
+
+	badPath := filepath.Join(home, "dir\nmalicious", "ca.crt")
+	a := &osEnvAdapter{}
+	err := a.writePwshProfileNodeCA(badPath)
+	if err == nil {
+		t.Fatal("expected error for path containing newline, got nil")
 	}
 }
 

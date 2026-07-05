@@ -423,6 +423,14 @@ const (
 )
 
 func (a *osEnvAdapter) persistNodeCACertWindows(caCertPath string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("user home dir: %w", err)
+	}
+	// F-1: 先检查 pwsh profile 自定义值，有则不 setx，避免覆盖用户配置。
+	if pwshProfileHasUserCustomValue(home) {
+		return ErrUserCustomValue
+	}
 	var setxErr error
 	// ① setx 写用户级注册表（影响未来新进程）
 	if err := setxEnvVar("NODE_EXTRA_CA_CERTS", caCertPath); err != nil {
@@ -447,10 +455,47 @@ func (a *osEnvAdapter) persistNodeCACertWindows(caCertPath string) error {
 	}
 	// 4. setx 成功 + profile 失败：partial（pwsh 兜底缺失）
 	if profileErr != nil {
+		if errors.Is(profileErr, ErrPartialSuccess) {
+			return profileErr // writePwshProfileNodeCA 已包装为 partial，避免双重包装
+		}
 		return fmt.Errorf("%w: profile: %w", ErrPartialSuccess, profileErr)
 	}
 	// 5. 全成功
 	return nil
+}
+
+// pwshSingleQuote 把字符串编码为 PowerShell 单引号字面量：单引号包裹、内部单引号双写。
+// 单引号字符串里 $、反引号、\ 都是字面量，杜绝 $()/反引号注入（P2-1）。CR/LF 被拒绝，
+// 防止换行断开字面量后注入新命令。
+func pwshSingleQuote(s string) (string, error) {
+	if strings.ContainsAny(s, "\r\n") {
+		return "", fmt.Errorf("reject newline in pwsh literal: %q", s)
+	}
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'", nil
+}
+
+// pwshProfileHasUserCustomValue 扫描所有 pwsh profile，任一存在非 mcc 管理的
+// NODE_EXTRA_CA_CERTS 赋值则返回 true。用于 setx 覆盖前的预检查（F-1）。
+func pwshProfileHasUserCustomValue(home string) bool {
+	for _, profile := range pwshProfileCandidates(home) {
+		existing, _ := os.ReadFile(profile)
+		if pwshProfileHasNodeCAVarOutsideMCCBlock(string(existing)) {
+			return true
+		}
+	}
+	return false
+}
+
+// posixProfileHasUserCustomValue 扫描所有 POSIX profile，任一存在非 mcc 管理的
+// NODE_EXTRA_CA_CERTS 赋值则返回 true。用于 launchctl 覆盖前的预检查（F-1）。
+func posixProfileHasUserCustomValue(shell, home string) bool {
+	for _, profile := range resolveShellProfiles(shell, home) {
+		existing, _ := os.ReadFile(profile)
+		if profileHasNodeCAKeyOutsideMCCBlock(shell, string(existing)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *osEnvAdapter) writePwshProfileNodeCA(caCertPath string) error {
@@ -463,16 +508,26 @@ func (a *osEnvAdapter) writePwshProfileNodeCA(caCertPath string) error {
 	}
 	candidates := pwshProfileCandidates(home)
 
-	// P0-1: CA 在 home 内用 $env:USERPROFILE 还原相对路径；不在 home 内用绝对路径
+	// P2-1: CA 路径必须渲染为 PowerShell 单引号字面量，杜绝 $() / 反引号注入。
+	// home 内用 Join-Path $env:USERPROFILE 保留可移植性；home 外用绝对路径单引号字面量。
 	var caRef string
 	sep := string(os.PathSeparator)
 	if strings.HasPrefix(caCertPath, home+sep) {
-		caRef = "$env:USERPROFILE\\" + strings.TrimPrefix(caCertPath, home+sep)
+		rel := strings.TrimPrefix(caCertPath, home+sep)
+		encoded, err := pwshSingleQuote(rel)
+		if err != nil {
+			return err
+		}
+		caRef = "Join-Path $env:USERPROFILE " + encoded
 	} else {
-		caRef = caCertPath // 直接用绝对路径，pwsh 双引号里 \ 不是转义符
+		encoded, err := pwshSingleQuote(caCertPath)
+		if err != nil {
+			return err
+		}
+		caRef = encoded
 	}
 	block := fmt.Sprintf("%s\n"+
-		"$mccCa = \"%s\"\n"+
+		"$mccCa = %s\n"+
 		"if (Test-Path $mccCa) { $env:NODE_EXTRA_CA_CERTS = $mccCa }\n"+
 		"%s\n", pwshProfileMarkerBegin, caRef, pwshProfileMarkerEnd)
 
@@ -503,6 +558,9 @@ func (a *osEnvAdapter) writePwshProfileNodeCA(caCertPath string) error {
 			continue
 		}
 		wrote = true
+	}
+	if wrote && lastErr != nil {
+		return fmt.Errorf("%w: some pwsh profiles failed: %w", ErrPartialSuccess, lastErr)
 	}
 	if !wrote && lastErr != nil {
 		return lastErr
@@ -563,6 +621,15 @@ func replaceMarkedBlock(content, begin, end, newBlock string) (string, bool) {
 // --- macOS implementation ---
 
 func (a *osEnvAdapter) persistNodeCACertDarwin(caCertPath string) error {
+	// F-1: 先检查 POSIX profile 自定义值，有则不 launchctl，避免覆盖用户配置。
+	shell := os.Getenv("SHELL")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("user home dir: %w", err)
+	}
+	if posixProfileHasUserCustomValue(shell, home) {
+		return ErrUserCustomValue
+	}
 	// ① launchctl setenv 注入当前 GUI 会话
 	var launchctlErr error
 	if hasLaunchctl() {
@@ -586,6 +653,9 @@ func (a *osEnvAdapter) persistNodeCACertDarwin(caCertPath string) error {
 		return fmt.Errorf("%w: launchctl: %v", ErrPartialSuccess, launchctlErr)
 	}
 	if profileErr != nil {
+		if errors.Is(profileErr, ErrPartialSuccess) {
+			return profileErr // writePOSIXProfileNodeCA 已包装为 partial，避免双重包装
+		}
 		return fmt.Errorf("%w: profile: %w", ErrPartialSuccess, profileErr)
 	}
 	return nil
