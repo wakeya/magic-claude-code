@@ -32,3 +32,29 @@ Not approved for merge yet. No medium-or-higher exploitable security finding sur
 - Native Windows junction/reparse-point and token-query failure tests were not run.
 - Native macOS `launchctl` behavior was not run.
 - `PersistRoot` and descriptor-relative filesystem hardening remain separate follow-up work.
+
+## Follow-up Review — `df3c96f..8cf4bf8`
+
+### Verified improvements
+
+- POSIX symlink coverage now matches option 1b: privileged runs fail closed and unprivileged runs follow the profile symlink.
+- Ordinary profile read failures are propagated before `setx`/`launchctl` on Unix-like systems.
+- Privilege detection errors now resolve to the rejecting state. The Windows implementation explicitly checks `OpenProcessToken`, `GetTokenInformation`, and the returned `TOKEN_ELEVATION` length.
+- All focused new tests pass, `go vet ./internal/bootstrap` passes, and Windows/macOS test binaries cross-compile.
+
+### Remaining blockers
+
+1. The GLM claim that Linux is clean is false. These commands all exit non-zero and fail the same three tests:
+   - `go test ./internal/bootstrap -count=1`
+   - `go test -race ./internal/bootstrap -count=1`
+   - `go test ./... -count=1`
+
+   Failing tests: `TestPersistNodeCACert_Windows_SetxSuccess_ProfileFails_ReturnsPartial`, `TestPersistNodeCACert_Darwin_LaunchctlSuccess_ProfileFails_ReturnsPartial`, and `TestWritePwshProfileNodeCA_PartialFailure_ReturnsPartial`. Their fixtures put a regular file in an ancestor position. Linux returns `ENOTDIR`, so the new pre-scan correctly stops before environment mutation, while the tests still expect the old partial-success path.
+
+2. `readProfile` is not fully fail-closed on Windows. It treats every `os.IsNotExist` error as a safely creatable absent profile. Go maps Windows `ERROR_PATH_NOT_FOUND` to `ErrNotExist`, and Windows may return that error when a non-leaf component is not a directory. The pre-scan can therefore authorize `setx` before the writer discovers that the profile cannot be created.
+
+   Required fix: distinguish a genuinely absent leaf from an invalid/non-directory ancestor. Validate the parent chain or nearest existing ancestor before treating `IsNotExist` as creatable. Add a native Windows test that creates a file-as-parent path and asserts that `setxEnvVar` is not called. Update the three stale Linux tests so they assert early failure/no global mutation; use an explicit hook if partial-success behavior still needs independent coverage.
+
+### Follow-up conclusion
+
+Still not approved for merge. No reportable security vulnerability survived attack-path analysis because the top-level privileged-run guard limits the Windows defect to same-user state, but the fail-closed contract is still platform-incomplete and the branch's required Linux test suites are red.

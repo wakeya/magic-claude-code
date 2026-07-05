@@ -32,3 +32,29 @@
 - 未执行 Windows 原生 junction/reparse point 与 token 查询失败测试。
 - 未执行 macOS 原生 `launchctl` 行为测试。
 - `PersistRoot` 和 descriptor-relative 文件系统加固仍是独立后续工作。
+
+## 后续复审 — `df3c96f..8cf4bf8`
+
+### 已确认改进
+
+- POSIX symlink 测试现已符合选项 1b：特权运行 fail-closed，非特权运行跟随 profile symlink。
+- 在类 Unix 系统上，普通 profile 读取错误会在 `setx`/`launchctl` 前向上传播。
+- 权限探测错误现统一进入拒绝状态；Windows 实现显式检查 `OpenProcessToken`、`GetTokenInformation` 和返回的 `TOKEN_ELEVATION` 长度。
+- 新增聚焦测试全部通过，`go vet ./internal/bootstrap` 通过，Windows/macOS 测试二进制交叉编译通过。
+
+### 尚存阻断项
+
+1. GLM 所称“Linux 全绿”不属实。以下命令均非零退出，并失败于相同的 3 个测试：
+   - `go test ./internal/bootstrap -count=1`
+   - `go test -race ./internal/bootstrap -count=1`
+   - `go test ./... -count=1`
+
+   失败测试为 `TestPersistNodeCACert_Windows_SetxSuccess_ProfileFails_ReturnsPartial`、`TestPersistNodeCACert_Darwin_LaunchctlSuccess_ProfileFails_ReturnsPartial` 和 `TestWritePwshProfileNodeCA_PartialFailure_ReturnsPartial`。它们的 fixture 把普通文件放在祖先目录位置。Linux 返回 `ENOTDIR`，因此新的预扫描会正确地在环境修改前终止，但测试仍期待旧的 partial-success 路径。
+
+2. `readProfile` 在 Windows 上仍未完全 fail-closed。它将所有满足 `os.IsNotExist` 的错误视为可安全创建的缺失 profile。Go 会把 Windows `ERROR_PATH_NOT_FOUND` 映射为 `ErrNotExist`；当非叶子路径组件不是目录时，Windows 也可能返回该错误。因此预扫描仍可能先允许 `setx`，随后 writer 才发现 profile 无法创建。
+
+   必须修复：在把 `IsNotExist` 视为可创建前，区分“仅叶子文件缺失”和“祖先组件无效/不是目录”。应校验父路径链或最近的现存祖先。补充 Windows 原生 file-as-parent 测试，断言不调用 `setxEnvVar`。同时更新 3 个过期的 Linux 测试，使其断言提前失败且不发生全局环境修改；如仍需独立覆盖 partial-success，应使用明确的故障注入 hook。
+
+### 后续结论
+
+仍不批准合并。攻击路径分析后没有可报告的安全漏洞，因为顶层特权运行拒绝把 Windows 缺陷限制在同一用户状态内；但 fail-closed 契约仍存在平台缺口，且分支要求的 Linux 测试套件仍为红色。
