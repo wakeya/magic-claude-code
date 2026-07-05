@@ -268,6 +268,12 @@ func (e *Executor) tryPersistNodeCA() StepResult {
 	if hasNodeCAMarker(e.dataDir, e.caCertPath) {
 		return StepResult{Success: true}
 	}
+	// P2-2: 高权限运行（root/administrator）时拒绝写用户 profile/HKCU/session。
+	// 真实用户的 Node 客户端读自己的 profile，root/admin 写的它读不到（功能无效）；
+	// 且 HOME 等用户可控路径在高权限下可能被重定向越权（CWE-59）。让用户非特权重启 mcc。
+	if isPrivilegedRun() {
+		return StepResult{Attempted: true, Success: false, Err: ErrPrivilegedRun}
+	}
 	err := e.env.PersistNodeCACert(e.caCertPath)
 	if err == nil {
 		writeNodeCAMarker(e.dataDir, e.caCertPath)

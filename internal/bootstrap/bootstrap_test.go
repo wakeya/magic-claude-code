@@ -2010,6 +2010,53 @@ func TestWriteNodeCAMarker_UserHomeDirFails_NoMarker(t *testing.T) {
 	}
 }
 
+// P2-2: 高权限运行时 tryPersistNodeCA 拒绝写 profile，不调用 PersistNodeCACert。
+// 这同时关闭"sudo mcc 写 root profile 对真实用户 Node 客户端无效"的功能 bug，
+// 和"高权限 + 用户可控 HOME 越权写"的安全风险。
+func TestTryPersistNodeCA_PrivilegedRun_Rejects(t *testing.T) {
+	dir := t.TempDir()
+	caPath := writeFile(t, filepath.Join(dir, "ca.crt"), "cert-content")
+	setPrivileged(t, true)
+
+	env := &mockEnv{nodeCAErr: errors.New("should not be called")}
+	e := New(dir, caPath, "en", WithEnvAdapter(env))
+
+	r := e.tryPersistNodeCA()
+	if !r.Attempted || r.Success {
+		t.Errorf("expected Attempted=true Success=false, got %+v", r)
+	}
+	if !errors.Is(r.Err, ErrPrivilegedRun) {
+		t.Errorf("expected ErrPrivilegedRun, got %v", r.Err)
+	}
+	if env.caCertArg != "" {
+		t.Errorf("PersistNodeCACert must NOT be called under privileged run, got arg %q", env.caCertArg)
+	}
+}
+
+// P2-2: instructions 在 ErrPrivilegedRun 时打印"非特权重启"提示（中英）。
+func TestGenerateInstructions_TransparentSuccess_PrivilegedRun_PrintsHint(t *testing.T) {
+	r := Result{
+		SelectedMode: ModeTransparent,
+		HostsResult:  StepResult{Success: true},
+		TrustResult:  StepResult{Success: true},
+		EnvResult:    StepResult{Attempted: true, Success: true},
+		NodeCAResult: StepResult{Attempted: true, Success: false, Err: ErrPrivilegedRun},
+	}
+	for _, locale := range []string{"zh", "en"} {
+		lines := generateInstructions(r, locale)
+		found := false
+		for _, l := range lines {
+			if strings.Contains(l, "非特权") || strings.Contains(l, "non-privileged") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("[%s] expected privileged-run hint, got %v", locale, lines)
+		}
+	}
+}
+
 // writeFile is a helper that writes content to path and returns the path.
 func writeFile(t *testing.T, path, content string) string {
 	t.Helper()

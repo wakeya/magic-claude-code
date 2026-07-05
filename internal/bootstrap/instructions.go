@@ -54,7 +54,9 @@ func transparentSuccessInstructions(r Result, locale string) []string {
 	if r.NodeCAResult.Attempted && (!r.NodeCAResult.Success || r.NodeCAResult.Partial) {
 		if locale == "zh" {
 			lines = append(lines, "")
-			if errors.Is(r.NodeCAResult.Err, ErrUserCustomValue) {
+			if errors.Is(r.NodeCAResult.Err, ErrPrivilegedRun) {
+				lines = append(lines, "⚠ 检测到以高权限（root/administrator）运行，已跳过 Node 客户端 CA 持久化。请以非特权身份重启 mcc 以自动配置 NODE_EXTRA_CA_CERTS。")
+			} else if errors.Is(r.NodeCAResult.Err, ErrUserCustomValue) {
 				lines = append(lines, "⚠ 检测到用户自定义 NODE_EXTRA_CA_CERTS，mcc 不覆盖，请确认其指向 mcc CA。")
 			} else if r.NodeCAResult.Partial {
 				lines = append(lines, "⚠ NODE_EXTRA_CA_CERTS 部分持久化（profile 已写，但 setx/launchctl 失败，非 pwsh 进程可能拿不到变量，将在下次启动重试）。")
@@ -63,7 +65,9 @@ func transparentSuccessInstructions(r Result, locale string) []string {
 			}
 		} else {
 			lines = append(lines, "")
-			if errors.Is(r.NodeCAResult.Err, ErrUserCustomValue) {
+			if errors.Is(r.NodeCAResult.Err, ErrPrivilegedRun) {
+				lines = append(lines, "⚠ Running with elevated privileges (root/administrator); skipped Node client CA persistence. Restart mcc as a non-privileged user to auto-configure NODE_EXTRA_CA_CERTS.")
+			} else if errors.Is(r.NodeCAResult.Err, ErrUserCustomValue) {
 				lines = append(lines, "⚠ User custom NODE_EXTRA_CA_CERTS detected; mcc will not overwrite. Please verify it points to the mcc CA.")
 			} else if r.NodeCAResult.Partial {
 				lines = append(lines, "⚠ NODE_EXTRA_CA_CERTS partially persisted (profile written but setx/launchctl failed; non-pwsh processes may lack the variable, will retry next launch).")
