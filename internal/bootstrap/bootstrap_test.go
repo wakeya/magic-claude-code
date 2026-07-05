@@ -1788,6 +1788,7 @@ func TestGenerateInstructions_TransparentSuccess_NodeCASuccess_NoWarning(t *test
 func withPwshHooks(t *testing.T, home string, extraCandidates ...string) {
 	t.Helper()
 	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOME", home) // Linux/Unix: os.UserHomeDir() reads $HOME, not %USERPROFILE%
 
 	origDetected := pwshDetected
 	origCandidates := pwshProfileCandidates
