@@ -27,10 +27,19 @@ type mockTrust struct {
 func (m *mockTrust) InstallCA(certPath string) error { return m.err }
 
 type mockEnv struct {
-	err error
+	err       error
+	nodeCAErr error  // PersistNodeCACert 错误，nil 时 fallback 到 err
+	caCertArg string // 记录 PersistNodeCACert 收到的参数
 }
 
 func (m *mockEnv) PersistRoot(rootDir string) error { return m.err }
+func (m *mockEnv) PersistNodeCACert(caCertPath string) error {
+	m.caCertArg = caCertPath
+	if m.nodeCAErr != nil {
+		return m.nodeCAErr
+	}
+	return m.err
+}
 
 // --- Resolver tests ---
 
@@ -790,7 +799,7 @@ func TestShellExportEntry(t *testing.T) {
 		wantFish bool
 		wantBash bool
 	}{
-		{name: "fish uses set -x", shell: "/usr/bin/fish", wantFish: true},
+		{name: "fish uses set -gx", shell: "/usr/bin/fish", wantFish: true},
 		{name: "bash uses export", shell: "/bin/bash", wantBash: true},
 		{name: "zsh uses export", shell: "/bin/zsh", wantBash: true},
 		{name: "unknown uses export", shell: "", wantBash: true},
@@ -798,8 +807,8 @@ func TestShellExportEntry(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			entry := shellExportEntry(tt.shell, "MCC_ROOT", "/opt/mcc")
-			if tt.wantFish && !contains(entry, "set -x") {
-				t.Errorf("expected fish set -x syntax, got: %s", entry)
+			if tt.wantFish && !contains(entry, "set -gx") {
+				t.Errorf("expected fish set -gx syntax, got: %s", entry)
 			}
 			if tt.wantBash && !contains(entry, "export") {
 				t.Errorf("expected export syntax, got: %s", entry)
@@ -999,8 +1008,8 @@ func TestPersistRoot_Fish_CreatesMissingParentDir(t *testing.T) {
 	if !contains(string(content), "MCC_ROOT") || !contains(string(content), "/test/mcc") {
 		t.Errorf("expected MCC_ROOT entry, got: %s", content)
 	}
-	if !contains(string(content), "set -x") {
-		t.Errorf("expected fish set -x syntax, got: %s", content)
+	if !contains(string(content), "set -gx") {
+		t.Errorf("expected fish set -gx syntax, got: %s", content)
 	}
 }
 
@@ -1405,5 +1414,993 @@ func TestExecWithTimeout_QuickCommand_ReturnsSuccessfully(t *testing.T) {
 	}
 	if len(out) != 0 {
 		t.Errorf("expected empty output, got %q", string(out))
+	}
+}
+
+// --- tryPersistNodeCA tests ---
+
+func TestTryPersistNodeCA_EmptyCertPath_Skips(t *testing.T) {
+	e := New("/tmp/test-mcc", "", "en",
+		WithEnvAdapter(&mockEnv{}),
+	)
+	r := e.tryPersistNodeCA()
+	if r.Attempted {
+		t.Errorf("expected Attempted=false for empty caCertPath, got %+v", r)
+	}
+}
+
+func TestTryPersistNodeCA_CertNotExists_ReportsError(t *testing.T) {
+	e := New(t.TempDir(), "/nonexistent/ca.crt", "en",
+		WithEnvAdapter(&mockEnv{}),
+	)
+	r := e.tryPersistNodeCA()
+	if !r.Attempted || r.Success {
+		t.Errorf("expected Attempted=true Success=false when cert file missing, got %+v", r)
+	}
+	if r.Err == nil {
+		t.Error("expected non-nil Err indicating stat failure")
+	}
+}
+
+func TestTryPersistNodeCA_CertExists_CallsPersistAndWritesMarker(t *testing.T) {
+	dir := t.TempDir()
+	caPath := writeFile(t, filepath.Join(dir, "ca.crt"), "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n")
+
+	env := &mockEnv{}
+	e := New(dir, caPath, "en", WithEnvAdapter(env))
+
+	r := e.tryPersistNodeCA()
+	if !r.Attempted || !r.Success {
+		t.Errorf("expected Attempted=true Success=true, got %+v", r)
+	}
+	if env.caCertArg != caPath {
+		t.Errorf("PersistNodeCACert called with %q, want %q", env.caCertArg, caPath)
+	}
+	if !hasNodeCAMarker(dir, caPath) {
+		t.Error("expected marker to be written after successful persist")
+	}
+}
+
+func TestTryPersistNodeCA_PersistFails_DoesNotWriteMarker(t *testing.T) {
+	dir := t.TempDir()
+	caPath := writeFile(t, filepath.Join(dir, "ca.crt"), "cert-content")
+	envErr := &testError{"setx failed"}
+
+	env := &mockEnv{nodeCAErr: envErr}
+	e := New(dir, caPath, "en", WithEnvAdapter(env))
+
+	r := e.tryPersistNodeCA()
+	if !r.Attempted || r.Success {
+		t.Errorf("expected Attempted=true Success=false, got %+v", r)
+	}
+	if r.Err == nil || r.Err.Error() != "setx failed" {
+		t.Errorf("expected error 'setx failed', got %v", r.Err)
+	}
+	if hasNodeCAMarker(dir, caPath) {
+		t.Error("marker should NOT be written when persist fails")
+	}
+}
+
+func TestTryPersistNodeCA_MarkerMatches_SkipsPersist(t *testing.T) {
+	dir := t.TempDir()
+	caPath := writeFile(t, filepath.Join(dir, "ca.crt"), "stable-cert-content")
+
+	// Pre-write the matching marker
+	writeNodeCAMarker(dir, caPath)
+
+	env := &mockEnv{nodeCAErr: &testError{"should not be called"}}
+	e := New(dir, caPath, "en", WithEnvAdapter(env))
+
+	r := e.tryPersistNodeCA()
+	if !r.Success || r.Attempted {
+		t.Errorf("expected Success=true Attempted=false (marker hit), got %+v", r)
+	}
+	if env.caCertArg != "" {
+		t.Errorf("PersistNodeCACert should NOT be called when marker matches, but got arg %q", env.caCertArg)
+	}
+}
+
+func TestTryPersistNodeCA_MarkerStaleCertChanged_Repersists(t *testing.T) {
+	dir := t.TempDir()
+	caPath := writeFile(t, filepath.Join(dir, "ca.crt"), "original-cert")
+
+	// Write marker for original cert
+	writeNodeCAMarker(dir, caPath)
+
+	// Change cert content (simulates CA regeneration)
+	if err := os.WriteFile(caPath, []byte("new-cert-content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	env := &mockEnv{}
+	e := New(dir, caPath, "en", WithEnvAdapter(env))
+
+	r := e.tryPersistNodeCA()
+	if !r.Attempted || !r.Success {
+		t.Errorf("expected re-persist on stale marker, got %+v", r)
+	}
+	if env.caCertArg != caPath {
+		t.Errorf("PersistNodeCACert should be called with %q, got %q", caPath, env.caCertArg)
+	}
+	// Marker should be refreshed
+	if !hasNodeCAMarker(dir, caPath) {
+		t.Error("expected marker to be refreshed with new cert fingerprint")
+	}
+}
+
+// writeFile is a helper that writes content to path and returns the path.
+func writeFile(t *testing.T, path, content string) string {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// --- replaceMarkedBlock tests ---
+
+func TestReplaceMarkedBlock_AppendWhenNoExistingBlock(t *testing.T) {
+	existing := "# user config\nexport FOO=bar\n"
+	begin := "# >>> mcc >>>"
+	end := "# <<< mcc <<<"
+	block := "# >>> mcc >>>\nnew content\n# <<< mcc <<<\n"
+
+	out, changed := replaceMarkedBlock(existing, begin, end, block)
+	if !changed {
+		t.Error("expected changed=true when no existing block")
+	}
+	if !contains(out, "# user config") {
+		t.Error("original content should be preserved")
+	}
+	if !contains(out, "new content") {
+		t.Error("new block should be appended")
+	}
+}
+
+func TestReplaceMarkedBlock_AppendWhenEmptyContent(t *testing.T) {
+	block := "# >>> mcc >>>\nnew content\n# <<< mcc <<<\n"
+	out, changed := replaceMarkedBlock("", "# >>> mcc >>>", "# <<< mcc <<<", block)
+	if !changed {
+		t.Error("expected changed=true for empty content")
+	}
+	if out != block {
+		t.Errorf("expected block as-is, got %q", out)
+	}
+}
+
+func TestReplaceMarkedBlock_NoChangeWhenIdentical(t *testing.T) {
+	block := "# >>> mcc >>>\nnew content\n# <<< mcc <<<"
+	existing := "header\n" + block + "\nfooter\n"
+
+	out, changed := replaceMarkedBlock(existing, "# >>> mcc >>>", "# <<< mcc <<<", block+"\n")
+	if changed {
+		t.Error("expected changed=false when block is identical")
+	}
+	if out != existing {
+		t.Errorf("content should not be modified")
+	}
+}
+
+func TestReplaceMarkedBlock_ReplaceWhenPathChanged(t *testing.T) {
+	oldBlock := "# >>> mcc >>>\nold content\n# <<< mcc <<<"
+	newBlock := "# >>> mcc >>>\nnew content\n# <<< mcc <<<\n"
+	existing := "header\n" + oldBlock + "\nfooter\n"
+
+	out, changed := replaceMarkedBlock(existing, "# >>> mcc >>>", "# <<< mcc <<<", newBlock)
+	if !changed {
+		t.Error("expected changed=true when block content differs")
+	}
+	if !contains(out, "new content") {
+		t.Error("new block should replace old")
+	}
+	if contains(out, "old content") {
+		t.Error("old content should be gone")
+	}
+	if !contains(out, "header") || !contains(out, "footer") {
+		t.Error("surrounding content should be preserved")
+	}
+}
+
+func TestReplaceMarkedBlock_EnsureTrailingNewlineBeforeAppend(t *testing.T) {
+	existing := "no-trailing-newline"
+	block := "# >>> mcc >>>\ncontent\n# <<< mcc <<<\n"
+	out, changed := replaceMarkedBlock(existing, "# >>> mcc >>>", "# <<< mcc <<<", block)
+	if !changed {
+		t.Error("expected changed=true")
+	}
+	if !strings.Contains(out, "no-trailing-newline\n# >>> mcc >>>") {
+		t.Errorf("expected newline inserted before block, got: %q", out)
+	}
+}
+
+// --- writePOSIXProfileNodeCA tests ---
+
+func TestWritePOSIXProfileNodeCA_Bash_WritesExport(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SHELL", "/bin/bash")
+
+	caPath := filepath.Join(home, "data", "ca.crt")
+	writeFile(t, caPath, "cert-content")
+
+	a := &osEnvAdapter{}
+	if err := a.writePOSIXProfileNodeCA(caPath); err != nil {
+		t.Fatalf("writePOSIXProfileNodeCA: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(home, ".bashrc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(content)
+	if !contains(s, "NODE_EXTRA_CA_CERTS") {
+		t.Errorf("expected NODE_EXTRA_CA_CERTS in .bashrc, got: %s", s)
+	}
+	if !contains(s, "export") {
+		t.Errorf("expected export syntax for bash, got: %s", s)
+	}
+	if !contains(s, caPath) {
+		t.Errorf("expected CA path %q in .bashrc, got: %s", caPath, s)
+	}
+}
+
+func TestWritePOSIXProfileNodeCA_Idempotent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SHELL", "/bin/bash")
+
+	caPath := filepath.Join(home, "ca.crt")
+	writeFile(t, caPath, "cert-content")
+
+	a := &osEnvAdapter{}
+	if err := a.writePOSIXProfileNodeCA(caPath); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if err := a.writePOSIXProfileNodeCA(caPath); err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(home, ".bashrc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(content), "NODE_EXTRA_CA_CERTS"); got != 1 {
+		t.Errorf("expected exactly 1 NODE_EXTRA_CA_CERTS, got %d in: %s", got, content)
+	}
+}
+
+func TestWritePOSIXProfileNodeCA_CAPathChanged_UpdatesProfile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SHELL", "/bin/bash")
+
+	oldPath := filepath.Join(home, "old-ca.crt")
+	writeFile(t, oldPath, "old-cert")
+	newPath := filepath.Join(home, "new-ca.crt")
+	writeFile(t, newPath, "new-cert")
+
+	a := &osEnvAdapter{}
+	if err := a.writePOSIXProfileNodeCA(oldPath); err != nil {
+		t.Fatalf("first call with old path: %v", err)
+	}
+	if err := a.writePOSIXProfileNodeCA(newPath); err != nil {
+		t.Fatalf("second call with new path: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(home, ".bashrc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(content)
+	if !contains(s, newPath) {
+		t.Errorf("expected new CA path in profile, got: %s", s)
+	}
+	// The profile should still have exactly 1 NODE_EXTRA_CA_CERTS line (replaced, not appended)
+	if got := strings.Count(s, "NODE_EXTRA_CA_CERTS"); got != 1 {
+		t.Errorf("expected exactly 1 NODE_EXTRA_CA_CERTS after update, got %d in: %s", got, s)
+	}
+}
+
+func TestWritePOSIXProfileNodeCA_Fish_UsesSetGx(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SHELL", "/usr/bin/fish")
+
+	caPath := filepath.Join(home, "ca.crt")
+	writeFile(t, caPath, "cert-content")
+
+	a := &osEnvAdapter{}
+	if err := a.writePOSIXProfileNodeCA(caPath); err != nil {
+		t.Fatalf("writePOSIXProfileNodeCA: %v", err)
+	}
+
+	fishDir := filepath.Join(home, ".config", "fish")
+	content, err := os.ReadFile(filepath.Join(fishDir, "config.fish"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(content)
+	if !contains(s, "set -gx") {
+		t.Errorf("expected fish set -gx syntax, got: %s", s)
+	}
+	// 确保不含裸 set -x（后跟空格）——防止 set -gx 被降级回归
+	if strings.Contains(s, "set -x ") {
+		t.Errorf("should use set -gx (global), not set -x: %s", s)
+	}
+	if !contains(s, "NODE_EXTRA_CA_CERTS") {
+		t.Errorf("expected NODE_EXTRA_CA_CERTS, got: %s", s)
+	}
+}
+
+// --- Integration: transparent ready + NodeCA failure prints warning ---
+
+func TestGenerateInstructions_TransparentSuccess_NodeCAFailure_PrintsWarning(t *testing.T) {
+	r := Result{
+		SelectedMode: ModeTransparent,
+		HostsResult:  StepResult{Attempted: true, Success: true},
+		TrustResult:  StepResult{Attempted: true, Success: true},
+		EnvResult:    StepResult{Attempted: true, Success: true},
+		NodeCAResult: StepResult{Attempted: true, Success: false, Err: &testError{"setx failed"}},
+	}
+	for _, locale := range []string{"zh", "en"} {
+		lines := generateInstructions(r, locale)
+		found := false
+		for _, l := range lines {
+			if contains(l, "NODE_EXTRA_CA_CERTS") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("[%s] expected NODE_EXTRA_CA_CERTS failure warning, got: %v", locale, lines)
+		}
+	}
+}
+
+func TestGenerateInstructions_TransparentSuccess_NodeCASuccess_NoWarning(t *testing.T) {
+	r := Result{
+		SelectedMode: ModeTransparent,
+		HostsResult:  StepResult{Attempted: true, Success: true},
+		TrustResult:  StepResult{Attempted: true, Success: true},
+		EnvResult:    StepResult{Attempted: true, Success: true},
+		NodeCAResult: StepResult{Attempted: true, Success: true},
+	}
+	lines := generateInstructions(r, "en")
+	for _, l := range lines {
+		if contains(l, "NODE_EXTRA_CA_CERTS") && contains(l, "failed") {
+			t.Errorf("should NOT have NodeCA failure warning when success, got: %v", lines)
+			break
+		}
+	}
+}
+
+// --- P0-1: writePwshProfileNodeCA path tests ---
+
+// withPwshHooks overrides pwshDetected and pwshProfileCandidates for testing,
+// and sets USERPROFILE to home so os.UserHomeDir() is redirected.
+func withPwshHooks(t *testing.T, home string, extraCandidates ...string) {
+	t.Helper()
+	t.Setenv("USERPROFILE", home)
+
+	origDetected := pwshDetected
+	origCandidates := pwshProfileCandidates
+	pwshDetected = func() bool { return true }
+	pwshProfileCandidates = func(h string) []string {
+		candidates := []string{
+			filepath.Join(h, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1"),
+			filepath.Join(h, "Documents", "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1"),
+		}
+		return append(candidates, extraCandidates...)
+	}
+	t.Cleanup(func() {
+		pwshDetected = origDetected
+		pwshProfileCandidates = origCandidates
+	})
+}
+
+func TestWritePwshProfileNodeCA_CertOutsideHome_UsesAbsolutePath(t *testing.T) {
+	home := t.TempDir()
+	otherDir := t.TempDir()
+	caPath := writeFile(t, filepath.Join(otherDir, "mcc", "ca.crt"), "cert")
+	withPwshHooks(t, home)
+
+	a := &osEnvAdapter{}
+	if err := a.writePwshProfileNodeCA(caPath); err != nil {
+		t.Fatalf("writePwshProfileNodeCA: %v", err)
+	}
+
+	profile := filepath.Join(home, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")
+	content, err := os.ReadFile(profile)
+	if err != nil {
+		t.Fatalf("read profile: %v", err)
+	}
+	s := string(content)
+	// 应含绝对路径原值，不含 $env:USERPROFILE\ + 绝对路径的拼接形态
+	if !contains(s, caPath) {
+		t.Errorf("profile should contain absolute caCertPath %q, got: %s", caPath, s)
+	}
+	if strings.Contains(s, "$env:USERPROFILE\\"+caPath) {
+		t.Errorf("profile should NOT have $env:USERPROFILE prepended to absolute path outside home, got: %s", s)
+	}
+}
+
+func TestWritePwshProfileNodeCA_CertInsideHome_UsesUserProfileRef(t *testing.T) {
+	home := t.TempDir()
+	caPath := writeFile(t, filepath.Join(home, "data", "ca.crt"), "cert")
+	withPwshHooks(t, home)
+
+	a := &osEnvAdapter{}
+	if err := a.writePwshProfileNodeCA(caPath); err != nil {
+		t.Fatalf("writePwshProfileNodeCA: %v", err)
+	}
+
+	profile := filepath.Join(home, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")
+	content, err := os.ReadFile(profile)
+	if err != nil {
+		t.Fatalf("read profile: %v", err)
+	}
+	s := string(content)
+	if !contains(s, "$env:USERPROFILE\\") {
+		t.Errorf("profile should use $env:USERPROFILE for cert inside home, got: %s", s)
+	}
+}
+
+// --- P0-2: pwsh profile idempotent and path-changed tests ---
+
+func TestWritePwshProfileNodeCA_Idempotent(t *testing.T) {
+	home := t.TempDir()
+	caPath := writeFile(t, filepath.Join(home, "ca.crt"), "cert")
+	withPwshHooks(t, home)
+
+	a := &osEnvAdapter{}
+	if err := a.writePwshProfileNodeCA(caPath); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if err := a.writePwshProfileNodeCA(caPath); err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+
+	profile := filepath.Join(home, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")
+	content, err := os.ReadFile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(content)
+	if got := strings.Count(s, pwshProfileMarkerBegin); got != 1 {
+		t.Errorf("expected 1 marker block, got %d in: %s", got, s)
+	}
+	if got := strings.Count(s, "NODE_EXTRA_CA_CERTS"); got != 1 {
+		t.Errorf("expected 1 NODE_EXTRA_CA_CERTS, got %d in: %s", got, s)
+	}
+}
+
+func TestWritePwshProfileNodeCA_CAPathChanged_UpdatesBlock(t *testing.T) {
+	home := t.TempDir()
+	oldPath := writeFile(t, filepath.Join(home, "old-ca.crt"), "old")
+	newPath := writeFile(t, filepath.Join(home, "new-ca.crt"), "new")
+	withPwshHooks(t, home)
+
+	a := &osEnvAdapter{}
+	if err := a.writePwshProfileNodeCA(oldPath); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if err := a.writePwshProfileNodeCA(newPath); err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+
+	profile := filepath.Join(home, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")
+	content, err := os.ReadFile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(content)
+	if got := strings.Count(s, pwshProfileMarkerBegin); got != 1 {
+		t.Errorf("expected 1 marker block after path change, got %d in: %s", got, s)
+	}
+	if !contains(s, "new-ca") {
+		t.Errorf("profile should contain new CA path, got: %s", s)
+	}
+	if contains(s, "old-ca") {
+		t.Errorf("profile should NOT contain old CA path, got: %s", s)
+	}
+}
+
+// --- P1-1: write to both pwsh 7 and 5.1 profiles ---
+
+func TestWritePwshProfileNodeCA_WritesBothPwsh7AndWindowsPsh5_IfApplicable(t *testing.T) {
+	home := t.TempDir()
+	caPath := writeFile(t, filepath.Join(home, "ca.crt"), "cert")
+	withPwshHooks(t, home)
+
+	a := &osEnvAdapter{}
+	if err := a.writePwshProfileNodeCA(caPath); err != nil {
+		t.Fatalf("writePwshProfileNodeCA: %v", err)
+	}
+
+	// Both candidate profiles should be written
+	pwsh7Profile := filepath.Join(home, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")
+	winPs5Profile := filepath.Join(home, "Documents", "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1")
+
+	for _, profile := range []string{pwsh7Profile, winPs5Profile} {
+		content, err := os.ReadFile(profile)
+		if err != nil {
+			t.Fatalf("read %s: %v", profile, err)
+		}
+		s := string(content)
+		if !contains(s, pwshProfileMarkerBegin) {
+			t.Errorf("%s should contain mcc marker block, got: %s", profile, s)
+		}
+		if !contains(s, "NODE_EXTRA_CA_CERTS") {
+			t.Errorf("%s should contain NODE_EXTRA_CA_CERTS, got: %s", profile, s)
+		}
+	}
+}
+
+// --- P0-2: persistNodeCACertWindows setx + profile ---
+
+func TestPersistNodeCACert_Windows_SetxAndProfile(t *testing.T) {
+	home := t.TempDir()
+	caPath := writeFile(t, filepath.Join(home, "ca.crt"), "cert")
+
+	// Capture setx call
+	var setxKey, setxValue string
+	origSetx := setxEnvVar
+	setxEnvVar = func(key, value string) error {
+		setxKey = key
+		setxValue = value
+		return nil
+	}
+	t.Cleanup(func() { setxEnvVar = origSetx })
+
+	withPwshHooks(t, home)
+
+	a := &osEnvAdapter{}
+	if err := a.persistNodeCACertWindows(caPath); err != nil {
+		t.Fatalf("persistNodeCACertWindows: %v", err)
+	}
+
+	if setxKey != "NODE_EXTRA_CA_CERTS" {
+		t.Errorf("setx key = %q, want NODE_EXTRA_CA_CERTS", setxKey)
+	}
+	if setxValue != caPath {
+		t.Errorf("setx value = %q, want %q", setxValue, caPath)
+	}
+
+	// Profile should also be written
+	profile := filepath.Join(home, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")
+	content, err := os.ReadFile(profile)
+	if err != nil {
+		t.Fatalf("read profile: %v", err)
+	}
+	if !contains(string(content), pwshProfileMarkerBegin) {
+		t.Error("profile should contain mcc marker block")
+	}
+}
+
+// --- P1-2: partial success ---
+
+func TestPersistNodeCACert_PartialSuccess_NoMarkerWritten(t *testing.T) {
+	dir := t.TempDir()
+	caPath := writeFile(t, filepath.Join(dir, "ca.crt"), "cert")
+
+	// mock 直接返回 ErrPartialSuccess（模拟 setx 失败 + profile 成功的场景）
+	env := &mockEnv{nodeCAErr: ErrPartialSuccess}
+	e := New(dir, caPath, "en", WithEnvAdapter(env))
+
+	r := e.tryPersistNodeCA()
+	if !r.Attempted {
+		t.Error("expected Attempted=true")
+	}
+	if r.Success {
+		t.Error("expected Success=false for partial success")
+	}
+	if !r.Partial {
+		t.Error("expected Partial=true when PersistNodeCACert returns ErrPartialSuccess")
+	}
+	if r.Err == nil {
+		t.Error("expected non-nil Err")
+	}
+	// Marker should NOT be written (need to retry failed part next launch)
+	if hasNodeCAMarker(dir, caPath) {
+		t.Error("marker should NOT be written on partial success")
+	}
+}
+
+func TestStateHash_NodeCAPartial_DiffersFromSuccess(t *testing.T) {
+	base := Result{
+		SelectedMode: ModeTransparent,
+		HostsResult:  StepResult{Success: true},
+		TrustResult:  StepResult{Success: true},
+		EnvResult:    StepResult{Attempted: true, Success: true},
+	}
+
+	rSuccess := base
+	rSuccess.NodeCAResult = StepResult{Attempted: true, Success: true}
+
+	rPartial := base
+	rPartial.NodeCAResult = StepResult{Attempted: true, Success: false, Partial: true, Err: &testError{"setx failed"}}
+
+	h1 := stateHash(rSuccess)
+	h2 := stateHash(rPartial)
+	if h1 == h2 {
+		t.Error("stateHash should differ between Success and Partial")
+	}
+
+	// Also verify partial differs from full failure
+	rFail := base
+	rFail.NodeCAResult = StepResult{Attempted: true, Success: false, Err: &testError{"total failure"}}
+	h3 := stateHash(rFail)
+	if h2 == h3 {
+		t.Error("stateHash should differ between Partial and full failure")
+	}
+}
+
+// --- P2-1: user custom value detection ---
+
+func TestProfileHasNodeCAKeyOutsideMCCBlock(t *testing.T) {
+	tests := []struct {
+		name    string
+		shell   string
+		content string
+		want    bool
+	}{
+		{
+			name:    "user hand-written export detected",
+			shell:   "/bin/bash",
+			content: "export NODE_EXTRA_CA_CERTS=/some/path\n",
+			want:    true,
+		},
+		{
+			name:    "mcc block not detected as user custom",
+			shell:   "/bin/bash",
+			content: "# >>> mcc: Node.js CA trust >>>\nexport NODE_EXTRA_CA_CERTS=/path\n# <<< mcc <<<\n",
+			want:    false,
+		},
+		{
+			name:    "user export outside mcc block detected",
+			shell:   "/bin/bash",
+			content: "export FOO=bar\n# >>> mcc: Node.js CA trust >>>\nexport NODE_EXTRA_CA_CERTS=/mcc/path\n# <<< mcc <<<\nexport NODE_EXTRA_CA_CERTS=/user/path\n",
+			want:    true,
+		},
+		{
+			name:    "no NODE_EXTRA_CA_CERTS at all",
+			shell:   "/bin/bash",
+			content: "export MCC_ROOT=/opt/mcc\n",
+			want:    false,
+		},
+		{
+			name:    "commented line not detected",
+			shell:   "/bin/bash",
+			content: "# export NODE_EXTRA_CA_CERTS=/old/path\n",
+			want:    false,
+		},
+		{
+			name:    "fish set -gx detected",
+			shell:   "/usr/bin/fish",
+			content: "set -gx NODE_EXTRA_CA_CERTS /some/path\n",
+			want:    true,
+		},
+		{
+			name:    "fish inside mcc block not detected",
+			shell:   "/usr/bin/fish",
+			content: "# >>> mcc: Node.js CA trust >>>\nset -gx NODE_EXTRA_CA_CERTS /path\n# <<< mcc <<<\n",
+			want:    false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := profileHasNodeCAKeyOutsideMCCBlock(tt.shell, tt.content)
+			if got != tt.want {
+				t.Errorf("profileHasNodeCAKeyOutsideMCCBlock(%q, %q) = %v, want %v",
+					tt.shell, tt.content, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPwshProfileHasNodeCAVarOutsideMCCBlock(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{
+			name:    "assignment with $env: detected",
+			content: "$env:NODE_EXTRA_CA_CERTS = 'C:\\ca.crt'\n",
+			want:    true,
+		},
+		{
+			name:    "assignment with $ syntax detected",
+			content: "$NODE_EXTRA_CA_CERTS = 'C:\\ca.crt'\n",
+			want:    true,
+		},
+		{
+			name:    "inside mcc block not detected",
+			content: "# >>> mcc: Node.js CA trust (auto-managed, do not edit) >>>\n$env:NODE_EXTRA_CA_CERTS = $mccCa\n# <<< mcc <<<\n",
+			want:    false,
+		},
+		{
+			name:    "no NODE_EXTRA_CA_CERTS",
+			content: "$env:PATH += ';C:\\tools'\n",
+			want:    false,
+		},
+		{
+			name:    "comment line not detected",
+			content: "# $env:NODE_EXTRA_CA_CERTS = 'old'\n",
+			want:    false,
+		},
+		// N4 负样本：读取/检查/后缀变量名不应误报为赋值
+		{
+			name:    "Write-Host read (not assignment)",
+			content: `Write-Host "$env:NODE_EXTRA_CA_CERTS"`,
+			want:    false,
+		},
+		{
+			name:    "if comparison (not assignment)",
+			content: "if ($null -eq $env:NODE_EXTRA_CA_CERTS) { Write-Host 'unset' }",
+			want:    false,
+		},
+		{
+			name:    "suffix variable name NODE_EXTRA_CA_CERTS_BACKUP",
+			content: "$env:NODE_EXTRA_CA_CERTS_BACKUP = 'backup'\n",
+			want:    false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := pwshProfileHasNodeCAVarOutsideMCCBlock(tt.content)
+			if got != tt.want {
+				t.Errorf("pwshProfileHasNodeCAVarOutsideMCCBlock(%q) = %v, want %v",
+					tt.content, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWritePwshProfileNodeCA_UserCustomValue_NotOverwritten(t *testing.T) {
+	home := t.TempDir()
+	caPath := writeFile(t, filepath.Join(home, "ca.crt"), "cert")
+	withPwshHooks(t, home)
+
+	// Pre-write a user-custom NODE_EXTRA_CA_CERTS in pwsh 7 profile
+	profile := filepath.Join(home, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")
+	writeFile(t, profile, "$env:NODE_EXTRA_CA_CERTS = 'C:\\user\\custom\\ca.crt'\n")
+
+	a := &osEnvAdapter{}
+	err := a.writePwshProfileNodeCA(caPath)
+	if !errors.Is(err, ErrUserCustomValue) {
+		t.Fatalf("expected ErrUserCustomValue, got: %v", err)
+	}
+
+	// Verify the user's custom value is untouched
+	content, _ := os.ReadFile(profile)
+	if !contains(string(content), "C:\\user\\custom\\ca.crt") {
+		t.Error("user custom value should be preserved")
+	}
+	if strings.Contains(string(content), pwshProfileMarkerBegin) {
+		t.Error("mcc block should NOT be added when user custom value exists")
+	}
+}
+
+func TestWritePOSIXProfileNodeCA_UserCustomValue_NotOverwritten(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SHELL", "/bin/bash")
+
+	caPath := writeFile(t, filepath.Join(home, "ca.crt"), "cert")
+
+	// Pre-write a user-custom NODE_EXTRA_CA_CERTS in .bashrc
+	bashrc := filepath.Join(home, ".bashrc")
+	writeFile(t, bashrc, "export NODE_EXTRA_CA_CERTS='/user/custom/ca.crt'\n")
+
+	a := &osEnvAdapter{}
+	err := a.writePOSIXProfileNodeCA(caPath)
+	if !errors.Is(err, ErrUserCustomValue) {
+		t.Fatalf("expected ErrUserCustomValue, got: %v", err)
+	}
+
+	// Verify the user's custom value is untouched
+	content, _ := os.ReadFile(bashrc)
+	if !contains(string(content), "/user/custom/ca.crt") {
+		t.Error("user custom value should be preserved")
+	}
+	if strings.Contains(string(content), posixCABlockBegin) {
+		t.Error("mcc block should NOT be added when user custom value exists")
+	}
+}
+
+// --- N1: Windows/macOS main path error handling ---
+
+func TestPersistNodeCACert_Windows_SetxSuccess_ProfileUserCustom_ReturnsUserCustom(t *testing.T) {
+	home := t.TempDir()
+	caPath := writeFile(t, filepath.Join(home, "ca.crt"), "cert")
+
+	// setx succeeds
+	origSetx := setxEnvVar
+	setxEnvVar = func(key, value string) error { return nil }
+	t.Cleanup(func() { setxEnvVar = origSetx })
+
+	// pwsh profile has user custom value
+	profile := filepath.Join(home, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")
+	writeFile(t, profile, "$env:NODE_EXTRA_CA_CERTS = 'C:\\user\\custom\\ca.crt'\n")
+	withPwshHooks(t, home)
+
+	a := &osEnvAdapter{}
+	err := a.persistNodeCACertWindows(caPath)
+	if !errors.Is(err, ErrUserCustomValue) {
+		t.Fatalf("expected errors.Is(err, ErrUserCustomValue), got: %v", err)
+	}
+	// 关键：ErrUserCustomValue 不应被包装为 ErrPartialSuccess
+	if errors.Is(err, ErrPartialSuccess) {
+		t.Error("ErrUserCustomValue must NOT be wrapped in ErrPartialSuccess")
+	}
+}
+
+func TestPersistNodeCACert_Windows_SetxSuccess_ProfileFails_ReturnsPartial(t *testing.T) {
+	caPath := writeFile(t, filepath.Join(t.TempDir(), "ca.crt"), "cert")
+
+	// setx succeeds
+	origSetx := setxEnvVar
+	setxEnvVar = func(key, value string) error { return nil }
+	t.Cleanup(func() { setxEnvVar = origSetx })
+
+	// Profile write fails: block the home directory path
+	blocked := filepath.Join(t.TempDir(), "file-as-dir")
+	if err := os.WriteFile(blocked, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	fakeHome := filepath.Join(blocked, "home")
+	withPwshHooks(t, fakeHome)
+
+	a := &osEnvAdapter{}
+	err := a.persistNodeCACertWindows(caPath)
+	if !errors.Is(err, ErrPartialSuccess) {
+		t.Fatalf("expected ErrPartialSuccess when profile write fails, got: %v", err)
+	}
+}
+
+func TestPersistNodeCACert_Windows_BothSucceed_ReturnsNil(t *testing.T) {
+	home := t.TempDir()
+	caPath := writeFile(t, filepath.Join(home, "ca.crt"), "cert")
+
+	origSetx := setxEnvVar
+	setxEnvVar = func(key, value string) error { return nil }
+	t.Cleanup(func() { setxEnvVar = origSetx })
+
+	withPwshHooks(t, home)
+
+	a := &osEnvAdapter{}
+	err := a.persistNodeCACertWindows(caPath)
+	if err != nil {
+		t.Fatalf("expected nil when both succeed, got: %v", err)
+	}
+}
+
+func TestPersistNodeCACert_Darwin_LaunchctlSuccess_ProfileFails_ReturnsPartial(t *testing.T) {
+	caPath := writeFile(t, filepath.Join(t.TempDir(), "ca.crt"), "cert")
+
+	// launchctl succeeds
+	origLaunchctl := launchctlSetenv
+	origHas := hasLaunchctl
+	launchctlSetenv = func(key, value string) error { return nil }
+	hasLaunchctl = func() bool { return true }
+	t.Cleanup(func() {
+		launchctlSetenv = origLaunchctl
+		hasLaunchctl = origHas
+	})
+
+	// Profile write fails: create a file where the home directory should be,
+	// so MkdirAll fails when trying to create the profile's parent dir.
+	blocked := filepath.Join(t.TempDir(), "file-as-dir")
+	if err := os.WriteFile(blocked, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	fakeHome := filepath.Join(blocked, "home")
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("USERPROFILE", fakeHome)
+	t.Setenv("SHELL", "/bin/bash")
+
+	a := &osEnvAdapter{}
+	err := a.persistNodeCACertDarwin(caPath)
+	if !errors.Is(err, ErrPartialSuccess) {
+		t.Fatalf("expected ErrPartialSuccess when profile fails, got: %v", err)
+	}
+}
+
+// --- N2: User custom value does not write marker ---
+
+func TestTryPersistNodeCA_UserCustomValue_DoesNotWriteMarker(t *testing.T) {
+	dir := t.TempDir()
+	caPath := writeFile(t, filepath.Join(dir, "ca.crt"), "cert")
+
+	env := &mockEnv{nodeCAErr: ErrUserCustomValue}
+	e := New(dir, caPath, "en", WithEnvAdapter(env))
+
+	r := e.tryPersistNodeCA()
+	if !r.Attempted || r.Success {
+		t.Errorf("expected Attempted=true Success=false, got %+v", r)
+	}
+	if !errors.Is(r.Err, ErrUserCustomValue) {
+		t.Errorf("expected ErrUserCustomValue, got: %v", r.Err)
+	}
+	if hasNodeCAMarker(dir, caPath) {
+		t.Error("marker should NOT be written for ErrUserCustomValue (user may clear custom value later)")
+	}
+}
+
+func TestTryPersistNodeCA_UserCustomValue_StateHashStable(t *testing.T) {
+	// Verify that consecutive ErrUserCustomValue results produce the same stateHash,
+	// so shouldSuppress works to avoid repeated warnings.
+	r := Result{
+		SelectedMode: ModeTransparent,
+		HostsResult:  StepResult{Success: true},
+		TrustResult:  StepResult{Success: true},
+		EnvResult:    StepResult{Attempted: true, Success: true},
+		NodeCAResult: StepResult{Attempted: true, Success: false, Err: ErrUserCustomValue},
+	}
+	h1 := stateHash(r)
+	h2 := stateHash(r)
+	if h1 != h2 {
+		t.Errorf("stateHash should be stable for same ErrUserCustomValue result: %s != %s", h1, h2)
+	}
+
+	// Also verify it differs from a different error
+	r2 := r
+	r2.NodeCAResult = StepResult{Attempted: true, Success: false, Err: &testError{"other error"}}
+	h3 := stateHash(r2)
+	if h1 == h3 {
+		t.Error("stateHash should differ between ErrUserCustomValue and other errors")
+	}
+}
+
+// --- N3: Two-phase atomicity ---
+
+func TestWritePwshProfileNodeCA_SecondCandidateUserCustom_NeitherWritten(t *testing.T) {
+	home := t.TempDir()
+	caPath := writeFile(t, filepath.Join(home, "ca.crt"), "cert")
+
+	// Inject two candidates; second has user custom value
+	pwsh7Profile := filepath.Join(home, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")
+	winPs5Profile := filepath.Join(home, "Documents", "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1")
+	writeFile(t, winPs5Profile, "$env:NODE_EXTRA_CA_CERTS = 'C:\\user\\custom\\ca.crt'\n")
+
+	origDetected := pwshDetected
+	origCandidates := pwshProfileCandidates
+	pwshDetected = func() bool { return true }
+	pwshProfileCandidates = func(h string) []string {
+		return []string{pwsh7Profile, winPs5Profile}
+	}
+	t.Cleanup(func() {
+		pwshDetected = origDetected
+		pwshProfileCandidates = origCandidates
+	})
+	t.Setenv("USERPROFILE", home)
+
+	a := &osEnvAdapter{}
+	err := a.writePwshProfileNodeCA(caPath)
+	if !errors.Is(err, ErrUserCustomValue) {
+		t.Fatalf("expected ErrUserCustomValue, got: %v", err)
+	}
+
+	// 关键：第一个候选也不应被写入 mcc 块
+	content7, _ := os.ReadFile(pwsh7Profile)
+	if strings.Contains(string(content7), pwshProfileMarkerBegin) {
+		t.Error("pwsh 7 profile should NOT have mcc block when second candidate has user custom value")
+	}
+	content5, _ := os.ReadFile(winPs5Profile)
+	if strings.Contains(string(content5), pwshProfileMarkerBegin) {
+		t.Error("Windows PowerShell 5.1 profile should NOT have mcc block")
+	}
+	// 用户自定义值应保持原样
+	if !contains(string(content5), "C:\\user\\custom\\ca.crt") {
+		t.Error("user custom value in 5.1 profile should be preserved")
 	}
 }

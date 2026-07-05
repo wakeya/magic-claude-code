@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"runtime"
@@ -24,8 +25,9 @@ func transparentSuccessInstructions(r Result, locale string) []string {
 	if r.EnvResult.Attempted && !r.EnvResult.Success {
 		return transparentEnvFailureInstructions(r, locale)
 	}
+	var lines []string
 	if locale == "zh" {
-		return []string{
+		lines = []string{
 			"✓ 透明模式已就绪。",
 			"  - hosts 已配置",
 			"  - CA 已信任",
@@ -36,18 +38,41 @@ func transparentSuccessInstructions(r Result, locale string) []string {
 			"      }",
 			"    }",
 		}
+	} else {
+		lines = []string{
+			"✓ Transparent mode is ready.",
+			"  - hosts configured",
+			"  - CA trusted",
+			"  - The client can keep the default Claude Code config, or explicitly set the official endpoint in ~/.claude/settings.json",
+			"    {",
+			"      \"env\": {",
+			"        \"ANTHROPIC_BASE_URL\": \"https://api.anthropic.com\"",
+			"      }",
+			"    }",
+		}
 	}
-	return []string{
-		"✓ Transparent mode is ready.",
-		"  - hosts configured",
-		"  - CA trusted",
-		"  - The client can keep the default Claude Code config, or explicitly set the official endpoint in ~/.claude/settings.json",
-		"    {",
-		"      \"env\": {",
-		"        \"ANTHROPIC_BASE_URL\": \"https://api.anthropic.com\"",
-		"      }",
-		"    }",
+	if r.NodeCAResult.Attempted && (!r.NodeCAResult.Success || r.NodeCAResult.Partial) {
+		if locale == "zh" {
+			lines = append(lines, "")
+			if errors.Is(r.NodeCAResult.Err, ErrUserCustomValue) {
+				lines = append(lines, "⚠ 检测到用户自定义 NODE_EXTRA_CA_CERTS，mcc 不覆盖，请确认其指向 mcc CA。")
+			} else if r.NodeCAResult.Partial {
+				lines = append(lines, "⚠ NODE_EXTRA_CA_CERTS 部分持久化（profile 已写，但 setx/launchctl 失败，非 pwsh 进程可能拿不到变量，将在下次启动重试）。")
+			} else {
+				lines = append(lines, "⚠ NODE_EXTRA_CA_CERTS 持久化失败，Node.js 客户端（如 Claude Code）可能无法信任 mcc CA。")
+			}
+		} else {
+			lines = append(lines, "")
+			if errors.Is(r.NodeCAResult.Err, ErrUserCustomValue) {
+				lines = append(lines, "⚠ User custom NODE_EXTRA_CA_CERTS detected; mcc will not overwrite. Please verify it points to the mcc CA.")
+			} else if r.NodeCAResult.Partial {
+				lines = append(lines, "⚠ NODE_EXTRA_CA_CERTS partially persisted (profile written but setx/launchctl failed; non-pwsh processes may lack the variable, will retry next launch).")
+			} else {
+				lines = append(lines, "⚠ NODE_EXTRA_CA_CERTS persistence failed; Node.js clients (e.g. Claude Code) may not trust mcc CA.")
+			}
+		}
 	}
+	return lines
 }
 
 func transparentEnvFailureInstructions(r Result, locale string) []string {
@@ -244,6 +269,13 @@ func stepFailuresZh(r Result) []string {
 	if r.EnvResult.Attempted && !r.EnvResult.Success {
 		lines = append(lines, fmt.Sprintf("  失败: 环境持久化 (%v)", r.EnvResult.Err))
 	}
+	if r.NodeCAResult.Attempted && (!r.NodeCAResult.Success || r.NodeCAResult.Partial) {
+		if errors.Is(r.NodeCAResult.Err, ErrUserCustomValue) {
+			lines = append(lines, "  警告: 检测到用户自定义 NODE_EXTRA_CA_CERTS，mcc 不覆盖")
+		} else {
+			lines = append(lines, fmt.Sprintf("  失败: NODE_EXTRA_CA_CERTS 持久化 (%v)", r.NodeCAResult.Err))
+		}
+	}
 	if r.Caps.IsDocker && !r.Caps.HasHostHelper {
 		lines = append(lines, "  限制: Docker 容器无法修改宿主机（未检测到 helper）")
 	}
@@ -263,6 +295,13 @@ func stepFailuresEn(r Result) []string {
 	}
 	if r.EnvResult.Attempted && !r.EnvResult.Success {
 		lines = append(lines, fmt.Sprintf("  Failed: environment persistence (%v)", r.EnvResult.Err))
+	}
+	if r.NodeCAResult.Attempted && (!r.NodeCAResult.Success || r.NodeCAResult.Partial) {
+		if errors.Is(r.NodeCAResult.Err, ErrUserCustomValue) {
+			lines = append(lines, "  Warning: user custom NODE_EXTRA_CA_CERTS detected, mcc will not overwrite")
+		} else {
+			lines = append(lines, fmt.Sprintf("  Failed: NODE_EXTRA_CA_CERTS persistence (%v)", r.NodeCAResult.Err))
+		}
 	}
 	if r.Caps.IsDocker && !r.Caps.HasHostHelper {
 		lines = append(lines, "  Limitation: Docker cannot modify host (no helper detected)")

@@ -3,14 +3,27 @@
 package bootstrap
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"magic-claude-code/internal/i18n"
+)
+
+// Sentinel errors for PersistNodeCACert outcomes.
+var (
+	// ErrPartialSuccess indicates some operations succeeded but others failed
+	// (e.g. setx failed but pwsh profile was written). The caller should NOT
+	// write the idempotency marker so the failed part is retried on next launch.
+	ErrPartialSuccess = errors.New("partial success: some operations succeeded but others failed")
+	// ErrUserCustomValue indicates the user has a hand-written NODE_EXTRA_CA_CERTS
+	// entry outside mcc-managed blocks. mcc will not overwrite it.
+	ErrUserCustomValue = errors.New("user custom NODE_EXTRA_CA_CERTS already exists")
 )
 
 // Mode represents a connection mode.
@@ -35,20 +48,22 @@ type Capabilities struct {
 type StepResult struct {
 	Attempted bool
 	Success   bool
+	Partial   bool   // 部分成功（如 setx 失败但 profile 成功）：需重试失败部分
 	Err       error
 }
 
 // Result records the full bootstrap outcome.
 type Result struct {
-	Caps             Capabilities
-	HostsResult      StepResult
-	TrustResult      StepResult
-	EnvResult        StepResult
-	PreferredMode    Mode
-	SelectedMode     Mode
-	Rationale        string
-	CACertPath       string
-	ExecRootDir      string
+	Caps              Capabilities
+	HostsResult       StepResult
+	TrustResult       StepResult
+	EnvResult         StepResult
+	NodeCAResult      StepResult // NODE_EXTRA_CA_CERTS 持久化结果
+	PreferredMode     Mode
+	SelectedMode      Mode
+	Rationale         string
+	CACertPath        string
+	ExecRootDir       string
 	GatewayListenAddr string
 	GatewayListenPort int
 }
@@ -71,6 +86,9 @@ type TrustAdapter interface {
 // EnvAdapter abstracts environment persistence.
 type EnvAdapter interface {
 	PersistRoot(rootDir string) error
+	// PersistNodeCACert 把指向 mcc CA 文件的 NODE_EXTRA_CA_CERTS 持久化到
+	// 当前用户的 shell/桌面会话环境，使未来启动的 Node.js 客户端能信任 mcc。
+	PersistNodeCACert(caCertPath string) error
 }
 
 // Executor runs the bootstrap sequence.
@@ -183,6 +201,11 @@ func (e *Executor) Run() Result {
 			// 也能正确识别透明模式，不因 CanEditHosts/CanTrustCA 为 false 而跳过检测。
 			result.HostsResult = e.tryHosts()
 			result.TrustResult = e.tryTrustCA()
+			// CA 已就绪后，持久化 Node 客户端 CA 信任
+			// Docker 内跳过：容器内 profile 改动对宿主无意义（spec 约束 10）
+			if result.TrustResult.Success && !caps.IsDocker {
+				result.NodeCAResult = e.tryPersistNodeCA()
+			}
 		}
 		result.SelectedMode, result.Rationale = resolveModeLocalized(result.PreferredMode, result.Caps, result.HostsResult, result.TrustResult, e.locale)
 	case ModeTunnel:
@@ -231,6 +254,73 @@ func (e *Executor) tryPersistEnv(rootDir string) StepResult {
 	return StepResult{Attempted: true, Success: err == nil, Err: err}
 }
 
+// tryPersistNodeCA 持久化 NODE_EXTRA_CA_CERTS，使未来启动的 Node.js 客户端
+// （如 Claude Code）能信任 mcc 的 CA。仅在透明模式、非 Docker、CA 已就绪时调用。
+func (e *Executor) tryPersistNodeCA() StepResult {
+	if e.caCertPath == "" {
+		return StepResult{Attempted: false}
+	}
+	if _, err := os.Stat(e.caCertPath); err != nil {
+		// CA 文件不存在，依赖未满足
+		return StepResult{Attempted: true, Success: false, Err: err}
+	}
+	// 先检查标记：CA fingerprint 未变则视为已持久化（幂等）
+	if hasNodeCAMarker(e.dataDir, e.caCertPath) {
+		return StepResult{Success: true}
+	}
+	err := e.env.PersistNodeCACert(e.caCertPath)
+	if err == nil {
+		writeNodeCAMarker(e.dataDir, e.caCertPath)
+		return StepResult{Attempted: true, Success: true}
+	}
+	if errors.Is(err, ErrPartialSuccess) {
+		// profile 已写但 setx/launchctl 失败：不写 marker，下次重试
+		return StepResult{Attempted: true, Success: false, Partial: true, Err: err}
+	}
+	if errors.Is(err, ErrUserCustomValue) {
+		// 不写 marker：用户清除自定义值后 mcc 应自动接管。
+		// 重复警告由 stateHash 抑制（NodeCAErr 已纳入 hash，状态不变会 suppress）。
+		return StepResult{Attempted: true, Success: false, Err: err}
+	}
+	return StepResult{Attempted: true, Success: false, Err: err}
+}
+
+const nodeCAMarkerName = ".node-ca-persisted"
+
+// hasNodeCAMarker reports whether the NodeCA marker in dataDir records the same
+// fingerprint as the current CA cert file. Fingerprint mismatch (cert regenerated)
+// yields false so the caller re-persists.
+func hasNodeCAMarker(dataDir, caCertPath string) bool {
+	if dataDir == "" {
+		return false
+	}
+	fp, err := caFingerprint(caCertPath)
+	if err != nil {
+		return false
+	}
+	raw, err := os.ReadFile(filepath.Join(dataDir, nodeCAMarkerName))
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(raw)) == fp
+}
+
+// writeNodeCAMarker records the current CA cert fingerprint in dataDir so
+// subsequent runs can skip re-persistence. Best-effort — failure is silent.
+func writeNodeCAMarker(dataDir, caCertPath string) {
+	if dataDir == "" {
+		return
+	}
+	fp, err := caFingerprint(caCertPath)
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(dataDir, nodeCAMarkerName), []byte(fp+"\n"), 0644)
+}
+
 func (e *Executor) logDockerBoundary(result *Result) {
 	if e.locale == "zh" {
 		log.Println("[Bootstrap] 运行在 Docker 容器中，无法修改宿主机 hosts 或 CA 信任库。")
@@ -252,7 +342,7 @@ func (e *Executor) LogResult(r Result) {
 	}
 	saveState(statePath, r)
 
-	if IsTransparentReady(r) {
+	if IsTransparentReady(r) && !(r.NodeCAResult.Attempted && (!r.NodeCAResult.Success || r.NodeCAResult.Partial)) {
 		if e.locale == "zh" {
 			log.Println("[Bootstrap] 透明模式配置完成：hosts 已更新，CA 已安装。")
 		} else {
@@ -271,6 +361,7 @@ func (e *Executor) LogResult(r Result) {
 	printStep(e.locale, "hosts", r.HostsResult)
 	printStep(e.locale, "CA", r.TrustResult)
 	printStep(e.locale, "ENV", r.EnvResult)
+	printStep(e.locale, "NODE_CA", r.NodeCAResult)
 
 	fmt.Println()
 	instr := generateInstructions(r, e.locale)
@@ -288,6 +379,14 @@ func printModeSummary(r Result, locale string) {
 			log.Printf("[Bootstrap] 透明模式就绪（hosts/CA 已配置，状态未变化，跳过详细输出）")
 		} else {
 			log.Printf("[Bootstrap] Transparent mode ready (hosts/CA configured; state unchanged, details suppressed)")
+		}
+		// NodeCA 持续异常时追加简短提示（不破坏 suppress 设计）
+		if r.NodeCAResult.Attempted && (!r.NodeCAResult.Success || r.NodeCAResult.Partial) {
+			if locale == "zh" {
+				log.Printf("[Bootstrap] ⚠ NODE_EXTRA_CA_CERTS 未完全就绪，详见上次启动输出（删除 .bootstrap-state 可重新查看）")
+			} else {
+				log.Printf("[Bootstrap] ⚠ NODE_EXTRA_CA_CERTS not fully ready; see previous launch output (delete .bootstrap-state to show again)")
+			}
 		}
 		return
 	}
@@ -328,6 +427,18 @@ func printStep(locale, name string, sr StepResult) {
 				fmt.Printf("  %s: skipped\n", name)
 			}
 		}
+		return
+	}
+	if sr.Partial {
+		if locale == "zh" {
+			fmt.Printf("  %s: 部分成功", name)
+		} else {
+			fmt.Printf("  %s: PARTIAL", name)
+		}
+		if sr.Err != nil {
+			fmt.Printf(" (%v)", sr.Err)
+		}
+		fmt.Println()
 		return
 	}
 	if locale == "zh" {
