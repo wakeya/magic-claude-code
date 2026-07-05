@@ -336,15 +336,26 @@ func hasNodeCAMarker(dataDir, caCertPath string) bool {
 }
 
 // nodeCAMarkerUserMatches 检查 marker 记录的 HOME/UID 是否与当前进程一致。
-// HOME 是主标识（跨平台）；UID 在 unix 普通用户额外校验（root/windows 不记 UID）。
+// HOME 是跨平台主标识：marker 必须记录非空 HOME 且与当前进程一致，缺 HOME 的
+// marker（旧格式或手构造）一律视为 stale，避免任意用户命中（F-4）。
+// UID 在 Unix 普通用户额外强制校验：marker 必须记录匹配的 UID，缺 UID 也视为
+// stale；root(uid=0)/Windows(uid=-1) 不持久化 UID，仅靠 HOME 绑定。
 func nodeCAMarkerUserMatches(m nodeCAMarker) bool {
-	if m.Home != "" {
-		home, err := os.UserHomeDir()
-		if err != nil || home != m.Home {
+	if m.Home == "" {
+		return false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" || home != m.Home {
+		return false
+	}
+	if uid := os.Getuid(); uid > 0 {
+		// Unix 普通用户：marker 必须记录匹配的 UID。
+		if m.UID != uid {
 			return false
 		}
-	}
-	if m.UID != 0 && os.Getuid() != m.UID {
+	} else if m.UID != 0 {
+		// root(uid=0)/Windows(uid=-1)：writeNodeCAMarker 不持久化 UID，marker
+		// 不应记录 UID；读到非 0 UID 说明被构造/篡改，一律视为 stale。
 		return false
 	}
 	return true
@@ -361,7 +372,10 @@ func writeNodeCAMarker(dataDir, caCertPath string) {
 	if err != nil {
 		return
 	}
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return // 无法确定用户身份 → 不写可跨用户命中的 marker（F-4）
+	}
 	m := nodeCAMarker{
 		Fingerprint: fp,
 		CertPath:    caCertPath,

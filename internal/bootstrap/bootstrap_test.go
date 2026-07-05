@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -1865,6 +1866,147 @@ func TestPersistNodeCACert_Darwin_Privileged_SymlinkProfile_NoLaunchctl(t *testi
 	}
 	if launchctlCalls != 0 {
 		t.Errorf("expected launchctl 0 calls (privileged+symlink), got %d", launchctlCalls)
+	}
+}
+
+// writeMarkerJSON 写一个 marker JSON 到 dir/.node-ca-persisted，用于 F-4 测试。
+func writeMarkerJSON(t *testing.T, dir string, m nodeCAMarker) {
+	t.Helper()
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, nodeCAMarkerName), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// F-4: marker 缺 HOME 字段 → stale（避免任意用户命中）
+func TestNodeCAMarker_MissingHome_Stale(t *testing.T) {
+	dir := t.TempDir()
+	caPath := writeFile(t, filepath.Join(dir, "ca.crt"), "cert-content")
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+	fp, err := caFingerprint(caPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeMarkerJSON(t, dir, nodeCAMarker{Fingerprint: fp, CertPath: caPath}) // 无 Home
+	if hasNodeCAMarker(dir, caPath) {
+		t.Error("marker without Home must be stale")
+	}
+}
+
+// F-4: marker Home 为空字符串 → stale
+func TestNodeCAMarker_EmptyHome_Stale(t *testing.T) {
+	dir := t.TempDir()
+	caPath := writeFile(t, filepath.Join(dir, "ca.crt"), "cert-content")
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+	fp, err := caFingerprint(caPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeMarkerJSON(t, dir, nodeCAMarker{Fingerprint: fp, CertPath: caPath, Home: ""})
+	if hasNodeCAMarker(dir, caPath) {
+		t.Error("marker with empty Home must be stale")
+	}
+}
+
+// F-4: marker Home 与当前进程不匹配 → stale
+func TestNodeCAMarker_HomeMismatch_Stale(t *testing.T) {
+	dir := t.TempDir()
+	caPath := writeFile(t, filepath.Join(dir, "ca.crt"), "cert-content")
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+	fp, err := caFingerprint(caPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeMarkerJSON(t, dir, nodeCAMarker{Fingerprint: fp, CertPath: caPath, Home: "/definitely/not/home"})
+	if hasNodeCAMarker(dir, caPath) {
+		t.Error("marker with mismatched Home must be stale")
+	}
+}
+
+// F-4: Unix 非根用户，marker UID 不匹配 → stale
+func TestNodeCAMarker_UIDMismatch_Stale(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("UID enforcement is Unix-only")
+	}
+	uid := os.Getuid()
+	if uid <= 0 {
+		t.Skip("test requires non-root unix uid")
+	}
+	dir := t.TempDir()
+	caPath := writeFile(t, filepath.Join(dir, "ca.crt"), "cert-content")
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+	fp, err := caFingerprint(caPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeMarkerJSON(t, dir, nodeCAMarker{Fingerprint: fp, CertPath: caPath, Home: dir, UID: uid + 9999})
+	if hasNodeCAMarker(dir, caPath) {
+		t.Error("marker with mismatched UID must be stale")
+	}
+}
+
+// F-4: Unix 非根用户，marker 缺 UID → stale（必须记录匹配 UID）
+func TestNodeCAMarker_MissingUID_UnprivilegedUnix_Stale(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("UID enforcement is Unix-only")
+	}
+	uid := os.Getuid()
+	if uid <= 0 {
+		t.Skip("test requires non-root unix uid")
+	}
+	dir := t.TempDir()
+	caPath := writeFile(t, filepath.Join(dir, "ca.crt"), "cert-content")
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+	fp, err := caFingerprint(caPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeMarkerJSON(t, dir, nodeCAMarker{Fingerprint: fp, CertPath: caPath, Home: dir}) // 无 UID
+	if hasNodeCAMarker(dir, caPath) {
+		t.Error("marker without UID must be stale for non-root unix user")
+	}
+}
+
+// F-4: HOME（+ Unix UID）完全匹配 → hasNodeCAMarker 命中
+func TestNodeCAMarker_MatchingMarker_Hit(t *testing.T) {
+	dir := t.TempDir()
+	caPath := writeFile(t, filepath.Join(dir, "ca.crt"), "cert-content")
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+	fp, err := caFingerprint(caPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := nodeCAMarker{Fingerprint: fp, CertPath: caPath, Home: dir}
+	if uid := os.Getuid(); uid > 0 {
+		m.UID = uid
+	}
+	writeMarkerJSON(t, dir, m)
+	if !hasNodeCAMarker(dir, caPath) {
+		t.Error("matching marker should hit")
+	}
+}
+
+// F-4: UserHomeDir 失败时 writeNodeCAMarker 不写出可跨用户命中的 marker。
+func TestWriteNodeCAMarker_UserHomeDirFails_NoMarker(t *testing.T) {
+	dir := t.TempDir()
+	caPath := writeFile(t, filepath.Join(dir, "ca.crt"), "cert-content")
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", "")
+	} else {
+		t.Setenv("HOME", "")
+	}
+	writeNodeCAMarker(dir, caPath)
+	if _, err := os.Stat(filepath.Join(dir, nodeCAMarkerName)); !os.IsNotExist(err) {
+		t.Errorf("marker must not be written when UserHomeDir fails: %v", err)
 	}
 }
 
