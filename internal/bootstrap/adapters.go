@@ -39,6 +39,10 @@ var setxEnvVar = func(key, value string) error {
 	return nil
 }
 
+// broadcastEnvironmentChange notifies the Windows shell after setx updates the
+// user environment. Tests replace it to avoid sending desktop messages.
+var broadcastEnvironmentChange = broadcastEnvironmentChangeOS
+
 // writeFileSync writes profile content (injectable wrapper around os.WriteFile).
 // Tests use it to simulate write failures without relying on chmod semantics
 // that are unreliable on Windows.
@@ -444,9 +448,14 @@ func (a *osEnvAdapter) persistNodeCACertWindows(caCertPath string) error {
 		return ErrUserCustomValue
 	}
 	var setxErr error
+	var refreshErr error
 	// ① setx 写用户级注册表（影响未来新进程）
 	if err := setxEnvVar("NODE_EXTRA_CA_CERTS", caCertPath); err != nil {
 		setxErr = err
+	} else if err := broadcastEnvironmentChange(); err != nil {
+		// 注册表值已经持久化，不回滚；profile 仍继续写入。调用方将刷新失败
+		// 视为 partial，并提示用户注销重登以重建 Explorer 的环境块。
+		refreshErr = err
 	}
 
 	// ② pwsh $PROFILE 兜底（覆盖 GUI 继承断链场景）
@@ -465,14 +474,21 @@ func (a *osEnvAdapter) persistNodeCACertWindows(caCertPath string) error {
 	if setxErr != nil {
 		return fmt.Errorf("%w: setx: %v", ErrPartialSuccess, setxErr)
 	}
-	// 4. setx 成功 + profile 失败：partial（pwsh 兜底缺失）
+	// 4. setx 成功但 Shell 刷新失败：注册表已可用，注销重登可恢复。
+	if refreshErr != nil {
+		if profileErr != nil {
+			return fmt.Errorf("%w: %w: %v; profile: %v", ErrPartialSuccess, ErrEnvironmentRefresh, refreshErr, profileErr)
+		}
+		return fmt.Errorf("%w: %w: %v", ErrPartialSuccess, ErrEnvironmentRefresh, refreshErr)
+	}
+	// 5. setx 成功 + profile 失败：partial（pwsh 兜底缺失）
 	if profileErr != nil {
 		if errors.Is(profileErr, ErrPartialSuccess) {
 			return profileErr // writePwshProfileNodeCA 已包装为 partial，避免双重包装
 		}
 		return fmt.Errorf("%w: profile: %w", ErrPartialSuccess, profileErr)
 	}
-	// 5. 全成功
+	// 6. 全成功
 	return nil
 }
 

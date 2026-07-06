@@ -1357,9 +1357,9 @@ func TestPersistRoot_DedupRecognizesFishVariant(t *testing.T) {
 
 func TestIsTransparentReady(t *testing.T) {
 	tests := []struct {
-		name    string
-		result  Result
-		ready   bool
+		name   string
+		result Result
+		ready  bool
 	}{
 		{
 			name: "all success",
@@ -2692,6 +2692,91 @@ func TestPersistNodeCACert_Windows_SetxAndProfile(t *testing.T) {
 	}
 }
 
+func TestPersistNodeCACert_Windows_SetxSuccess_BroadcastsEnvironmentChange(t *testing.T) {
+	home := t.TempDir()
+	caPath := writeFile(t, filepath.Join(home, "ca.crt"), "cert")
+	withPwshHooks(t, home)
+
+	origSetx := setxEnvVar
+	setxEnvVar = func(string, string) error { return nil }
+	t.Cleanup(func() { setxEnvVar = origSetx })
+
+	broadcastCalls := 0
+	origBroadcast := broadcastEnvironmentChange
+	broadcastEnvironmentChange = func() error {
+		broadcastCalls++
+		return nil
+	}
+	t.Cleanup(func() { broadcastEnvironmentChange = origBroadcast })
+
+	a := &osEnvAdapter{}
+	if err := a.persistNodeCACertWindows(caPath); err != nil {
+		t.Fatalf("persistNodeCACertWindows: %v", err)
+	}
+	if broadcastCalls != 1 {
+		t.Fatalf("broadcast calls = %d, want 1", broadcastCalls)
+	}
+}
+
+func TestPersistNodeCACert_Windows_SetxFailure_DoesNotBroadcast(t *testing.T) {
+	home := t.TempDir()
+	caPath := writeFile(t, filepath.Join(home, "ca.crt"), "cert")
+	withPwshHooks(t, home)
+
+	origSetx := setxEnvVar
+	setxEnvVar = func(string, string) error { return errors.New("setx denied") }
+	t.Cleanup(func() { setxEnvVar = origSetx })
+
+	broadcastCalls := 0
+	origBroadcast := broadcastEnvironmentChange
+	broadcastEnvironmentChange = func() error {
+		broadcastCalls++
+		return nil
+	}
+	t.Cleanup(func() { broadcastEnvironmentChange = origBroadcast })
+
+	a := &osEnvAdapter{}
+	err := a.persistNodeCACertWindows(caPath)
+	if !errors.Is(err, ErrPartialSuccess) {
+		t.Fatalf("expected ErrPartialSuccess, got %v", err)
+	}
+	if broadcastCalls != 0 {
+		t.Fatalf("broadcast calls = %d, want 0 after setx failure", broadcastCalls)
+	}
+}
+
+func TestPersistNodeCACert_Windows_BroadcastFailure_WritesProfileAndReturnsPartial(t *testing.T) {
+	home := t.TempDir()
+	caPath := writeFile(t, filepath.Join(home, "ca.crt"), "cert")
+	withPwshHooks(t, home)
+
+	origSetx := setxEnvVar
+	setxEnvVar = func(string, string) error { return nil }
+	t.Cleanup(func() { setxEnvVar = origSetx })
+
+	origBroadcast := broadcastEnvironmentChange
+	broadcastEnvironmentChange = func() error { return errors.New("send timeout") }
+	t.Cleanup(func() { broadcastEnvironmentChange = origBroadcast })
+
+	a := &osEnvAdapter{}
+	err := a.persistNodeCACertWindows(caPath)
+	if !errors.Is(err, ErrPartialSuccess) {
+		t.Fatalf("expected ErrPartialSuccess, got %v", err)
+	}
+	if !errors.Is(err, ErrEnvironmentRefresh) {
+		t.Fatalf("expected ErrEnvironmentRefresh, got %v", err)
+	}
+
+	profile := filepath.Join(home, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")
+	content, readErr := os.ReadFile(profile)
+	if readErr != nil {
+		t.Fatalf("read profile: %v", readErr)
+	}
+	if !contains(string(content), pwshProfileMarkerBegin) {
+		t.Fatal("profile should still be written after broadcast failure")
+	}
+}
+
 // --- P1-2: partial success ---
 
 func TestPersistNodeCACert_PartialSuccess_NoMarkerWritten(t *testing.T) {
@@ -3150,9 +3235,9 @@ func TestPersistNodeCACert_Darwin_ProfileUserCustom_SkipsLaunchctl(t *testing.T)
 // 不能放进双引号（双引号会展开 $() 和反引号）。
 func TestWritePwshProfileNodeCA_PathInjection_IsSingleQuoteLiteral(t *testing.T) {
 	tests := []struct {
-		name      string
+		name       string
 		insideHome bool
-		component string
+		component  string
 	}{
 		{"home内含子表达式", true, "data$(Write-Output PWNED)"},
 		{"home外含子表达式", false, "data$(Write-Output PWNED)"},

@@ -21,6 +21,10 @@ var (
 	// (e.g. setx failed but pwsh profile was written). The caller should NOT
 	// write the idempotency marker so the failed part is retried on next launch.
 	ErrPartialSuccess = errors.New("partial success: some operations succeeded but others failed")
+	// ErrEnvironmentRefresh indicates that the Windows user environment was
+	// persisted, but the desktop shell notification failed. Signing out and back
+	// in rebuilds the process environment from the persisted registry value.
+	ErrEnvironmentRefresh = errors.New("Windows environment refresh failed")
 	// ErrUserCustomValue indicates the user has a hand-written NODE_EXTRA_CA_CERTS
 	// entry outside mcc-managed blocks. mcc will not overwrite it.
 	ErrUserCustomValue = errors.New("user custom NODE_EXTRA_CA_CERTS already exists")
@@ -48,7 +52,7 @@ type Capabilities struct {
 type StepResult struct {
 	Attempted bool
 	Success   bool
-	Partial   bool   // 部分成功（如 setx 失败但 profile 成功）：需重试失败部分
+	Partial   bool // 部分成功（如 setx 失败但 profile 成功）：需重试失败部分
 	Err       error
 }
 
@@ -93,16 +97,16 @@ type EnvAdapter interface {
 
 // Executor runs the bootstrap sequence.
 type Executor struct {
-	dataDir            string
-	caCertPath         string
-	locale             string
-	preferredMode      Mode
-	gatewayListenAddr  string
-	gatewayListenPort  int
-	msg                i18n.Messages
-	hosts              HostsAdapter
-	trust              TrustAdapter
-	env                EnvAdapter
+	dataDir           string
+	caCertPath        string
+	locale            string
+	preferredMode     Mode
+	gatewayListenAddr string
+	gatewayListenPort int
+	msg               i18n.Messages
+	hosts             HostsAdapter
+	trust             TrustAdapter
+	env               EnvAdapter
 }
 
 // Option configures an Executor.
@@ -140,13 +144,13 @@ func WithEnvAdapter(a EnvAdapter) Option {
 func New(dataDir, caCertPath, locale string, opts ...Option) *Executor {
 	msg := i18n.Load(locale)
 	e := &Executor{
-		dataDir:            dataDir,
-		caCertPath:         caCertPath,
-		locale:             locale,
-		preferredMode:      ModeTransparent,
-		gatewayListenAddr:  "127.0.0.1",
-		gatewayListenPort:  17487,
-		msg:                msg,
+		dataDir:           dataDir,
+		caCertPath:        caCertPath,
+		locale:            locale,
+		preferredMode:     ModeTransparent,
+		gatewayListenAddr: "127.0.0.1",
+		gatewayListenPort: 17487,
+		msg:               msg,
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -179,11 +183,11 @@ func IsTransparentReady(r Result) bool {
 func (e *Executor) Run() Result {
 	caps := detectCapabilities()
 	result := Result{
-		Caps:               caps,
-		CACertPath:         e.caCertPath,
-		PreferredMode:      normalizeMode(e.preferredMode),
-		GatewayListenAddr:  e.gatewayListenAddr,
-		GatewayListenPort:  e.gatewayListenPort,
+		Caps:              caps,
+		CACertPath:        e.caCertPath,
+		PreferredMode:     normalizeMode(e.preferredMode),
+		GatewayListenAddr: e.gatewayListenAddr,
+		GatewayListenPort: e.gatewayListenPort,
 	}
 
 	exe, err := os.Executable()
