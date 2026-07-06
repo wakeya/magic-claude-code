@@ -3232,6 +3232,48 @@ func TestWritePwshProfileNodeCA_UserCustomValue_NotOverwritten(t *testing.T) {
 	}
 }
 
+func TestWritePwshProfileNodeCA_LegacyResidual_MigratesToBlock(t *testing.T) {
+	home := t.TempDir()
+	caPath := writeFile(t, filepath.Join(home, "ca.crt"), "cert")
+	withPwshHooks(t, home)
+
+	profile := filepath.Join(home, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")
+	// 预写旧版 mcc 残留：$mccCa 模式 + 中文注释，无 begin/end 标记
+	legacy := "# mcc 透明代理：兜底\n" +
+		"$mccCa = \"$env:USERPROFILE\\mcc-windows-amd64\\data\\ca.crt\"\n" +
+		"if (Test-Path $mccCa) { $env:NODE_EXTRA_CA_CERTS = $mccCa }\n"
+	writeFile(t, profile, legacy)
+
+	a := &osEnvAdapter{}
+	if err := a.writePwshProfileNodeCA(caPath); err != nil {
+		t.Fatalf("writePwshProfileNodeCA: %v", err)
+	}
+
+	content, _ := os.ReadFile(profile)
+	s := string(content)
+
+	// mcc 块已写入
+	if !strings.Contains(s, pwshProfileMarkerBegin) || !strings.Contains(s, pwshProfileMarkerEnd) {
+		t.Fatal("mcc block should be written")
+	}
+
+	// 块外不应再有 $mccCa（旧版残留已迁移）
+	begin := strings.Index(s, pwshProfileMarkerBegin)
+	end := strings.Index(s, pwshProfileMarkerEnd)
+	if begin < 0 || end <= begin {
+		t.Fatalf("cannot locate mcc block markers in %q", s)
+	}
+	outside := s[:begin] + s[end+len(pwshProfileMarkerEnd):]
+	if strings.Contains(outside, "$mccCa") {
+		t.Errorf("legacy $mccCa should be stripped outside mcc block; outside=%q", outside)
+	}
+
+	// 旧版中文注释保留（注释不被 strip）
+	if !strings.Contains(outside, "# mcc 透明代理") {
+		t.Errorf("legacy comment should be preserved; outside=%q", outside)
+	}
+}
+
 func TestWritePOSIXProfileNodeCA_UserCustomValue_NotOverwritten(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

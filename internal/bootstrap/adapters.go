@@ -697,8 +697,10 @@ func (a *osEnvAdapter) writePwshProfileNodeCA(caCertPath string) error {
 			lastErr = err
 			continue
 		}
-		updated, changed := replaceMarkedBlock(string(existing), pwshProfileMarkerBegin, pwshProfileMarkerEnd, block)
-		if !changed {
+		// 先清理旧版 mcc $mccCa 残留（升级迁移），再写入/更新 mcc 块
+		stripped, stripChanged := stripLegacyMCCNodeCALines(string(existing))
+		updated, blockChanged := replaceMarkedBlock(stripped, pwshProfileMarkerBegin, pwshProfileMarkerEnd, block)
+		if !stripChanged && !blockChanged {
 			wrote = true
 			continue
 		}
