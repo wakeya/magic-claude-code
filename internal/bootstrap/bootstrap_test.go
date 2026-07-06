@@ -3116,6 +3116,23 @@ func TestPwshProfileHasNodeCAVarOutsideMCCBlock(t *testing.T) {
 			content: "$env:NODE_EXTRA_CA_CERTS_BACKUP = 'backup'\n",
 			want:    false,
 		},
+		// 旧版 mcc 写入模式（块外无 begin/end 标记）：$mccCa 是 mcc 专用变量，
+		// 视为 mcc 管理，不报自定义（升级兼容，见 legacy-pwsh-profile-migration-design.md）。
+		{
+			name: "legacy mcc $mccCa pattern outside block not detected",
+			content: `$mccCa = "$env:USERPROFILE\mcc-windows-amd64\data\ca.crt"
+if (Test-Path $mccCa) { $env:NODE_EXTRA_CA_CERTS = $mccCa }
+`,
+			want: false,
+		},
+		// 同结构但变量名非 $mccCa：仍判为用户自定义，证明规则只认 $mccCa
+		{
+			name: "similar pattern with non-mcc variable still detected",
+			content: `$myCa = 'C:\ca.crt'
+if (Test-Path $myCa) { $env:NODE_EXTRA_CA_CERTS = $myCa }
+`,
+			want: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

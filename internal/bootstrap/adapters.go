@@ -744,6 +744,11 @@ func pwshProfileHasNodeCAVarOutsideMCCBlock(content string) bool {
 			continue
 		}
 		if pwshNodeCAAssignRe.MatchString(trimmed) {
+			// $mccCa 是 mcc 写入 profile 的专用变量名（新版块内也在用）。
+			// 块外出现引用 $mccCa 的旧版赋值，视为 mcc 旧版管理，不报自定义。
+			if strings.Contains(trimmed, "$mccCa") {
+				continue
+			}
 			return true
 		}
 	}
