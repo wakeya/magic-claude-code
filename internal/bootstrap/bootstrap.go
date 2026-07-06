@@ -264,12 +264,16 @@ func (e *Executor) tryPersistNodeCA() StepResult {
 	if e.caCertPath == "" {
 		return StepResult{Attempted: false}
 	}
-	if _, err := os.Stat(e.caCertPath); err != nil {
+	caCertPath, err := filepath.Abs(e.caCertPath)
+	if err != nil {
+		return StepResult{Attempted: true, Success: false, Err: fmt.Errorf("absolute CA cert path: %w", err)}
+	}
+	if _, err := os.Stat(caCertPath); err != nil {
 		// CA 文件不存在，依赖未满足
 		return StepResult{Attempted: true, Success: false, Err: err}
 	}
 	// 先检查标记：CA fingerprint 未变则视为已持久化（幂等）
-	if hasNodeCAMarker(e.dataDir, e.caCertPath) {
+	if hasNodeCAMarker(e.dataDir, caCertPath) {
 		return StepResult{Success: true}
 	}
 	// P2-2: 高权限运行（root/administrator）时拒绝写用户 profile/HKCU/session。
@@ -278,9 +282,9 @@ func (e *Executor) tryPersistNodeCA() StepResult {
 	if isPrivilegedRun() {
 		return StepResult{Attempted: true, Success: false, Err: ErrPrivilegedRun}
 	}
-	err := e.env.PersistNodeCACert(e.caCertPath)
+	err = e.env.PersistNodeCACert(caCertPath)
 	if err == nil {
-		writeNodeCAMarker(e.dataDir, e.caCertPath)
+		writeNodeCAMarker(e.dataDir, caCertPath)
 		return StepResult{Attempted: true, Success: true}
 	}
 	if errors.Is(err, ErrPartialSuccess) {

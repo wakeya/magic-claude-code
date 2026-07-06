@@ -1443,6 +1443,32 @@ func TestTryPersistNodeCA_CertNotExists_ReportsError(t *testing.T) {
 	}
 }
 
+func TestTryPersistNodeCA_RelativePath_UsesAbsolutePath(t *testing.T) {
+	dir := t.TempDir()
+	absCA := writeFile(t, filepath.Join(dir, "ca.crt"), "cert")
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relCA, err := filepath.Rel(cwd, absCA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setPrivileged(t, false)
+
+	env := &mockEnv{}
+	r := New(dir, relCA, "en", WithEnvAdapter(env)).tryPersistNodeCA()
+	if !r.Success {
+		t.Fatalf("expected success, got %+v", r)
+	}
+	if env.caCertArg != absCA {
+		t.Fatalf("PersistNodeCACert path = %q, want absolute %q", env.caCertArg, absCA)
+	}
+	if !hasNodeCAMarker(dir, absCA) {
+		t.Fatal("marker must record and match the absolute CA path")
+	}
+}
+
 func TestTryPersistNodeCA_CertExists_CallsPersistAndWritesMarker(t *testing.T) {
 	dir := t.TempDir()
 	caPath := writeFile(t, filepath.Join(dir, "ca.crt"), "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n")
