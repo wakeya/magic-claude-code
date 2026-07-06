@@ -755,6 +755,42 @@ func pwshProfileHasNodeCAVarOutsideMCCBlock(content string) bool {
 	return false
 }
 
+// stripLegacyMCCNodeCALines 删除 mcc 块外、匹配 $mccCa 的非注释行
+// （旧版 mcc 写入的 $mccCa = ... 和 if (Test-Path $mccCa) ... 残留）。
+// 保留 mcc 块内、注释行、用户其他内容。changed 表示是否实际改动。
+//
+// 升级场景：旧版 mcc 写入的 profile 没有新版 begin/end 标记，新版本
+// 检测会判为"块外自定义"。识别后由 writePwshProfileNodeCA 调用本函数
+// 清理旧版残留，再用 replaceMarkedBlock 写入新 mcc 块，完成一次性迁移。
+func stripLegacyMCCNodeCALines(content string) (string, bool) {
+	var kept []string
+	inBlock := false
+	changed := false
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, pwshProfileMarkerBegin) {
+			inBlock = true
+			kept = append(kept, line)
+			continue
+		}
+		if strings.Contains(trimmed, pwshProfileMarkerEnd) {
+			inBlock = false
+			kept = append(kept, line)
+			continue
+		}
+		// 块外、非注释、含 $mccCa（mcc 专用变量）→ 旧版残留，删除
+		if !inBlock && trimmed != "" && !strings.HasPrefix(trimmed, "#") && strings.Contains(trimmed, "$mccCa") {
+			changed = true
+			continue
+		}
+		kept = append(kept, line)
+	}
+	if !changed {
+		return content, false
+	}
+	return strings.Join(kept, "\n"), true
+}
+
 // replaceMarkedBlock 在 content 里替换 begin..end 标记之间的内容为 newBlock。
 // 若标记不存在则追加。changed 表示是否实际改动。
 func replaceMarkedBlock(content, begin, end, newBlock string) (string, bool) {

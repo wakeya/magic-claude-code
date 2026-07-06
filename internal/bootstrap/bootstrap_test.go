@@ -3145,6 +3145,68 @@ if (Test-Path $myCa) { $env:NODE_EXTRA_CA_CERTS = $myCa }
 	}
 }
 
+func TestStripLegacyMCCNodeCALines(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+		changed bool
+	}{
+		{
+			name:    "empty profile unchanged",
+			content: "",
+			want:    "",
+			changed: false,
+		},
+		{
+			name: "legacy $mccCa lines stripped, comment kept",
+			content: `# mcc 透明代理
+$mccCa = "$env:USERPROFILE\mcc-windows-amd64\data\ca.crt"
+if (Test-Path $mccCa) { $env:NODE_EXTRA_CA_CERTS = $mccCa }
+`,
+			want:    "# mcc 透明代理\n",
+			changed: true,
+		},
+		{
+			name: "block-internal $mccCa preserved, outside legacy stripped",
+			content: `$mccCa = "old"
+if (Test-Path $mccCa) { $env:NODE_EXTRA_CA_CERTS = $mccCa }
+# >>> mcc: Node.js CA trust (auto-managed, do not edit) >>>
+$mccCa = Join-Path $env:USERPROFILE 'ca.crt'
+if (Test-Path $mccCa) { $env:NODE_EXTRA_CA_CERTS = $mccCa }
+# <<< mcc <<<
+`,
+			want: `# >>> mcc: Node.js CA trust (auto-managed, do not edit) >>>
+$mccCa = Join-Path $env:USERPROFILE 'ca.crt'
+if (Test-Path $mccCa) { $env:NODE_EXTRA_CA_CERTS = $mccCa }
+# <<< mcc <<<
+`,
+			changed: true,
+		},
+		{
+			name:    "user export preserved (no $mccCa)",
+			content: "$env:OTHER = 'x'\n",
+			want:    "$env:OTHER = 'x'\n",
+			changed: false,
+		},
+		{
+			name:    "user custom NECC export preserved (no $mccCa)",
+			content: "$env:NODE_EXTRA_CA_CERTS = 'C:\\user\\custom\\ca.crt'\n",
+			want:    "$env:NODE_EXTRA_CA_CERTS = 'C:\\user\\custom\\ca.crt'\n",
+			changed: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, changed := stripLegacyMCCNodeCALines(tt.content)
+			if got != tt.want || changed != tt.changed {
+				t.Errorf("stripLegacyMCCNodeCALines(%q) = (%q, %v), want (%q, %v)",
+					tt.content, got, changed, tt.want, tt.changed)
+			}
+		})
+	}
+}
+
 func TestWritePwshProfileNodeCA_UserCustomValue_NotOverwritten(t *testing.T) {
 	home := t.TempDir()
 	caPath := writeFile(t, filepath.Join(home, "ca.crt"), "cert")
