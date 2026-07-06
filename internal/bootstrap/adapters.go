@@ -413,6 +413,11 @@ func (a *osEnvAdapter) PersistRoot(rootDir string) error {
 	}
 }
 
+func (a *osEnvAdapter) LookupNodeCACert() (string, bool, error) {
+	value, exists := os.LookupEnv("NODE_EXTRA_CA_CERTS")
+	return value, exists && value != "", nil
+}
+
 // PersistNodeCACert 把 NODE_EXTRA_CA_CERTS 持久化到当前用户的 shell/桌面会话环境。
 // 平台实现由 persistNodeCACertWindows / persistNodeCACertDarwin / persistNodeCACertPOSIX 提供。
 func (a *osEnvAdapter) PersistNodeCACert(caCertPath string) error {

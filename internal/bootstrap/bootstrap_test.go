@@ -28,12 +28,20 @@ type mockTrust struct {
 func (m *mockTrust) InstallCA(certPath string) error { return m.err }
 
 type mockEnv struct {
-	err       error
-	nodeCAErr error  // PersistNodeCACert 错误，nil 时 fallback 到 err
-	caCertArg string // 记录 PersistNodeCACert 收到的参数
+	err               error
+	nodeCAErr         error  // PersistNodeCACert 错误，nil 时 fallback 到 err
+	caCertArg         string // 记录 PersistNodeCACert 收到的参数
+	nodeCAValue       string
+	nodeCAValueSet    bool
+	nodeCALookupErr   error
+	nodeCALookupCalls int
 }
 
 func (m *mockEnv) PersistRoot(rootDir string) error { return m.err }
+func (m *mockEnv) LookupNodeCACert() (string, bool, error) {
+	m.nodeCALookupCalls++
+	return m.nodeCAValue, m.nodeCAValueSet, m.nodeCALookupErr
+}
 func (m *mockEnv) PersistNodeCACert(caCertPath string) error {
 	m.caCertArg = caCertPath
 	if m.nodeCAErr != nil {
@@ -1466,6 +1474,72 @@ func TestTryPersistNodeCA_RelativePath_UsesAbsolutePath(t *testing.T) {
 	}
 	if !hasNodeCAMarker(dir, absCA) {
 		t.Fatal("marker must record and match the absolute CA path")
+	}
+}
+
+func TestTryPersistNodeCA_CustomPersistedValue_IsPreserved(t *testing.T) {
+	dir := t.TempDir()
+	caPath := writeFile(t, filepath.Join(dir, "ca.crt"), "cert")
+	setPrivileged(t, false)
+	env := &mockEnv{nodeCAValue: filepath.Join(dir, "corporate-ca.pem"), nodeCAValueSet: true}
+
+	r := New(dir, caPath, "en", WithEnvAdapter(env)).tryPersistNodeCA()
+	if !errors.Is(r.Err, ErrUserCustomValue) || env.caCertArg != "" || env.nodeCALookupCalls != 1 {
+		t.Fatalf("custom value was not preserved: result=%+v arg=%q lookupCalls=%d", r, env.caCertArg, env.nodeCALookupCalls)
+	}
+	if _, err := os.Stat(filepath.Join(dir, nodeCAMarkerName)); !os.IsNotExist(err) {
+		t.Fatalf("custom value must not create marker: %v", err)
+	}
+}
+
+func TestTryPersistNodeCA_MatchingMarker_DoesNotHideCustomValue(t *testing.T) {
+	dir := t.TempDir()
+	caPath := writeFile(t, filepath.Join(dir, "ca.crt"), "cert")
+	setPrivileged(t, false)
+	writeNodeCAMarker(dir, caPath)
+	env := &mockEnv{nodeCAValue: filepath.Join(dir, "corporate-ca.pem"), nodeCAValueSet: true}
+
+	r := New(dir, caPath, "en", WithEnvAdapter(env)).tryPersistNodeCA()
+	if !errors.Is(r.Err, ErrUserCustomValue) || env.caCertArg != "" || env.nodeCALookupCalls != 1 {
+		t.Fatalf("marker hid custom value: result=%+v arg=%q lookupCalls=%d", r, env.caCertArg, env.nodeCALookupCalls)
+	}
+}
+
+func TestTryPersistNodeCA_ExistingDesiredValue_RepairsProfiles(t *testing.T) {
+	dir := t.TempDir()
+	caPath := writeFile(t, filepath.Join(dir, "ca.crt"), "cert")
+	setPrivileged(t, false)
+	env := &mockEnv{nodeCAValue: caPath, nodeCAValueSet: true}
+
+	r := New(dir, caPath, "en", WithEnvAdapter(env)).tryPersistNodeCA()
+	if !r.Success || env.caCertArg != caPath || env.nodeCALookupCalls != 1 {
+		t.Fatalf("existing value did not repair profiles: result=%+v arg=%q lookupCalls=%d", r, env.caCertArg, env.nodeCALookupCalls)
+	}
+}
+
+func TestTryPersistNodeCA_PreviousManagedValue_IsMigrated(t *testing.T) {
+	dir := t.TempDir()
+	oldPath := writeFile(t, filepath.Join(dir, "old-ca.crt"), "same-cert")
+	newPath := writeFile(t, filepath.Join(dir, "new-ca.crt"), "same-cert")
+	setPrivileged(t, false)
+	writeNodeCAMarker(dir, oldPath)
+	env := &mockEnv{nodeCAValue: oldPath, nodeCAValueSet: true}
+
+	r := New(dir, newPath, "en", WithEnvAdapter(env)).tryPersistNodeCA()
+	if !r.Success || env.caCertArg != newPath || env.nodeCALookupCalls != 1 || !hasNodeCAMarker(dir, newPath) {
+		t.Fatalf("managed value did not migrate: result=%+v arg=%q lookupCalls=%d", r, env.caCertArg, env.nodeCALookupCalls)
+	}
+}
+
+func TestTryPersistNodeCA_LookupFailure_FailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	caPath := writeFile(t, filepath.Join(dir, "ca.crt"), "cert")
+	setPrivileged(t, false)
+	env := &mockEnv{nodeCALookupErr: errors.New("lookup failed")}
+
+	r := New(dir, caPath, "en", WithEnvAdapter(env)).tryPersistNodeCA()
+	if r.Err == nil || !strings.Contains(r.Err.Error(), "lookup failed") || env.caCertArg != "" || env.nodeCALookupCalls != 1 {
+		t.Fatalf("lookup did not fail closed: result=%+v arg=%q lookupCalls=%d", r, env.caCertArg, env.nodeCALookupCalls)
 	}
 }
 

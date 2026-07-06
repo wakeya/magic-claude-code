@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"magic-claude-code/internal/i18n"
 )
@@ -90,6 +91,9 @@ type TrustAdapter interface {
 // EnvAdapter abstracts environment persistence.
 type EnvAdapter interface {
 	PersistRoot(rootDir string) error
+	// LookupNodeCACert reads the current platform's persisted/session value
+	// without mutating it, so user-managed CA configuration is not overwritten.
+	LookupNodeCACert() (value string, exists bool, err error)
 	// PersistNodeCACert 把指向 mcc CA 文件的 NODE_EXTRA_CA_CERTS 持久化到
 	// 当前用户的 shell/桌面会话环境，使未来启动的 Node.js 客户端能信任 mcc。
 	PersistNodeCACert(caCertPath string) error
@@ -272,15 +276,29 @@ func (e *Executor) tryPersistNodeCA() StepResult {
 		// CA 文件不存在，依赖未满足
 		return StepResult{Attempted: true, Success: false, Err: err}
 	}
-	// 先检查标记：CA fingerprint 未变则视为已持久化（幂等）
-	if hasNodeCAMarker(e.dataDir, caCertPath) {
-		return StepResult{Success: true}
-	}
+	markerMatches := hasNodeCAMarker(e.dataDir, caCertPath)
 	// P2-2: 高权限运行（root/administrator）时拒绝写用户 profile/HKCU/session。
 	// 真实用户的 Node 客户端读自己的 profile，root/admin 写的它读不到（功能无效）；
 	// 且 HOME 等用户可控路径在高权限下可能被重定向越权（CWE-59）。让用户非特权重启 mcc。
 	if isPrivilegedRun() {
+		if markerMatches {
+			return StepResult{Success: true}
+		}
 		return StepResult{Attempted: true, Success: false, Err: ErrPrivilegedRun}
+	}
+	existing, exists, err := e.env.LookupNodeCACert()
+	if err != nil {
+		return StepResult{Attempted: true, Success: false, Err: fmt.Errorf("lookup persisted NODE_EXTRA_CA_CERTS: %w", err)}
+	}
+	if exists && existing != "" && !nodeCAPathsEqual(existing, caCertPath) {
+		previous, managed := previousManagedNodeCAPath(e.dataDir)
+		if !managed || !nodeCAPathsEqual(existing, previous) {
+			return StepResult{Attempted: true, Success: false, Err: ErrUserCustomValue}
+		}
+	}
+	// Marker 命中仍需先检查真实环境值，避免用户后续设置的自定义值被误报为 MCC 就绪。
+	if markerMatches {
+		return StepResult{Success: true}
 	}
 	err = e.env.PersistNodeCACert(caCertPath)
 	if err == nil {
@@ -347,6 +365,38 @@ func hasNodeCAMarker(dataDir, caCertPath string) bool {
 		return false // F-4: 跨用户
 	}
 	return true
+}
+
+// previousManagedNodeCAPath returns the prior CA path only when the marker is a
+// safe MCC marker bound to the current user. Fingerprint equality is deliberately
+// not required: a moved or regenerated CA still needs permission to replace the
+// exact old path that MCC previously persisted.
+func previousManagedNodeCAPath(dataDir string) (string, bool) {
+	if dataDir == "" {
+		return "", false
+	}
+	markerPath := filepath.Join(dataDir, nodeCAMarkerName)
+	if err := isSafeForWrite(markerPath); err != nil {
+		return "", false
+	}
+	raw, err := os.ReadFile(markerPath)
+	if err != nil {
+		return "", false
+	}
+	var m nodeCAMarker
+	if json.Unmarshal(raw, &m) != nil || m.Fingerprint == "" || m.CertPath == "" || !nodeCAMarkerUserMatches(m) {
+		return "", false
+	}
+	return m.CertPath, true
+}
+
+func nodeCAPathsEqual(left, right string) bool {
+	left = filepath.Clean(left)
+	right = filepath.Clean(right)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
 }
 
 // nodeCAMarkerUserMatches 检查 marker 记录的 HOME/UID 是否与当前进程一致。
