@@ -2137,6 +2137,19 @@ func TestScanPwshProfilesForCustomValue_ProfileAbsent_NoError(t *testing.T) {
 	}
 }
 
+// F-1: 文件系统根本身不存在时不能把 profile 视为可创建。Windows 的未挂载
+// 盘符或不存在的 UNC share 无法由 MkdirAll 创建；这里注入 stat 结果，使该决策
+// 在 Linux 上也能确定性验证。
+func TestValidateParentChain_MissingRoot_ReturnsError(t *testing.T) {
+	statMissing := func(path string) (os.FileInfo, error) {
+		return nil, &os.PathError{Op: "stat", Path: path, Err: os.ErrNotExist}
+	}
+	profile := filepath.Join(string(filepath.Separator), "missing", "profile")
+	if err := validateParentChainWithStat(profile, statMissing); err == nil {
+		t.Fatal("expected missing filesystem root to fail closed")
+	}
+}
+
 // F-1: scan 读取失败时 persistNodeCACertWindows 不调用 setx。
 func TestPersistNodeCACert_Windows_ProfileUnreadable_NoSetx(t *testing.T) {
 	home := t.TempDir()

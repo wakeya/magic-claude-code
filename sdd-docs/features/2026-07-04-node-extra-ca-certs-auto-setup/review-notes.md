@@ -58,3 +58,22 @@ Not approved for merge yet. No medium-or-higher exploitable security finding sur
 ### Follow-up conclusion
 
 Still not approved for merge. No reportable security vulnerability survived attack-path analysis because the top-level privileged-run guard limits the Windows defect to same-user state, but the fail-closed contract is still platform-incomplete and the branch's required Linux test suites are red.
+
+## Follow-up Review — `fd388b7..7ec52de`
+
+### Verified resolutions
+
+- The three previously failing Linux tests now use deterministic `writeFileSync` fault injection and pass.
+- File-as-parent paths are rejected before `setx`; the new integration test passes.
+- `go test ./internal/bootstrap -count=1`, `go test -race ./internal/bootstrap -count=1`, and `go test ./... -count=1` all pass on Linux.
+- `go vet ./internal/bootstrap` and Windows/macOS test-binary cross-compilation pass.
+
+### Missing-root resolution
+
+`validateParentChain` now delegates to a testable `validateParentChainWithStat` traversal. When traversal reaches a root whose stat result is still `IsNotExist`, it returns an error instead of treating the root as creatable. This prevents an absent Windows drive or UNC root from authorizing `setx`.
+
+Coverage includes a platform-independent injected-stat regression test and a Windows-only integration test that selects an unused drive letter and asserts `setxEnvVar` is not called. The Windows test binary cross-compiles successfully; native execution remains the final platform check.
+
+### Follow-up conclusion
+
+Approved from the Linux review environment, pending the native Windows test run. The reported Linux regression, file-as-parent defect, and missing-root F-1 branch are closed; no reportable security vulnerability remains within this change scope.

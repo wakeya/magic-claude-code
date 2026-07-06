@@ -556,12 +556,19 @@ func readProfile(profile string) ([]byte, error) {
 // validateParentChain 确认 profile 的父目录链可被 MkdirAll 创建，关闭
 // Windows ERROR_PATH_NOT_FOUND / Linux 中间组件无效的 F-1 缺口。从直接父目录
 // 逐级向上 Stat（跟随 symlink，匹配 MkdirAll 语义），第一个存在的祖先必须是目录；
-// 若它是文件，MkdirAll 必失败 → 返回错误。全新路径（所有祖先都不存在）视为可创建。
+// 若它是文件，MkdirAll 必失败 → 返回错误。若回溯到仍不存在的文件系统根（Windows
+// 未挂载盘符或不存在的 UNC share），同样返回错误，因为 MkdirAll 无法创建该根。
 // TOCTOU（校验与 MkdirAll 之间父链被替换）仍为残余风险。
 func validateParentChain(profile string) error {
+	return validateParentChainWithStat(profile, os.Stat)
+}
+
+// validateParentChainWithStat 承载父链遍历；stat 参数让测试可在任意平台确定性模拟
+// Windows 缺失卷根/UNC 根，不引入可变的包级测试 hook。
+func validateParentChainWithStat(profile string, stat func(string) (os.FileInfo, error)) error {
 	dir := filepath.Dir(profile)
 	for {
-		fi, err := os.Stat(dir)
+		fi, err := stat(dir)
 		if err == nil {
 			if !fi.IsDir() {
 				return fmt.Errorf("parent %s is not a directory", dir)
@@ -573,7 +580,7 @@ func validateParentChain(profile string) error {
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return nil // 根：全新路径，MkdirAll 可创建整条链
+			return fmt.Errorf("filesystem root %s does not exist: %w", dir, err)
 		}
 		dir = parent
 	}

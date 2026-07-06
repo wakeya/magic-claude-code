@@ -58,3 +58,22 @@
 ### 后续结论
 
 仍不批准合并。攻击路径分析后没有可报告的安全漏洞，因为顶层特权运行拒绝把 Windows 缺陷限制在同一用户状态内；但 fail-closed 契约仍存在平台缺口，且分支要求的 Linux 测试套件仍为红色。
+
+## 后续复审 — `fd388b7..7ec52de`
+
+### 已确认解决
+
+- 之前失败的 3 个 Linux 测试现使用确定性的 `writeFileSync` 故障注入，并已通过。
+- file-as-parent 路径会在 `setx` 前被拒绝；新增集成测试通过。
+- `go test ./internal/bootstrap -count=1`、`go test -race ./internal/bootstrap -count=1` 和 `go test ./... -count=1` 在 Linux 上全部通过。
+- `go vet ./internal/bootstrap` 以及 Windows/macOS 测试二进制交叉编译通过。
+
+### 缺失根路径修复
+
+`validateParentChain` 现委托给可测试的 `validateParentChainWithStat` 遍历。当回溯到根且 stat 结果仍为 `IsNotExist` 时，函数返回错误，不再把根路径视为可创建。这会阻止不存在的 Windows 盘符根目录或 UNC 根目录先行授权 `setx`。
+
+覆盖包含一个跨平台的注入 stat 回归测试，以及一个 Windows 专用集成测试；后者选择未占用盘符并断言不调用 `setxEnvVar`。Windows 测试二进制已交叉编译成功，原生执行仍是最终平台检查。
+
+### 后续结论
+
+Linux 复审环境下批准，待 Windows 原生测试确认。此前报告的 Linux 回归、file-as-parent 缺陷和缺失根路径 F-1 分支均已关闭；本次变更范围内没有可报告的安全漏洞。
