@@ -51,6 +51,14 @@ func transparentSuccessInstructions(r Result, locale string) []string {
 			"    }",
 		}
 	}
+	if r.NodeCAResult.Attempted && r.NodeCAResult.Success {
+		lines = append(lines, "")
+		if locale == "zh" {
+			lines = append(lines, "ℹ NODE_EXTRA_CA_CERTS 已持久化；如果 Orca 已在运行，请完全退出并重新启动 Orca。")
+		} else {
+			lines = append(lines, "ℹ NODE_EXTRA_CA_CERTS persisted; if Orca is already running, fully quit and restart Orca.")
+		}
+	}
 	if r.NodeCAResult.Attempted && (!r.NodeCAResult.Success || r.NodeCAResult.Partial) {
 		if locale == "zh" {
 			lines = append(lines, "")
@@ -58,6 +66,8 @@ func transparentSuccessInstructions(r Result, locale string) []string {
 				lines = append(lines, "⚠ 检测到以高权限（root/administrator）运行，已跳过 Node 客户端 CA 持久化。请以非特权身份重启 mcc 以自动配置 NODE_EXTRA_CA_CERTS。")
 			} else if errors.Is(r.NodeCAResult.Err, ErrUserCustomValue) {
 				lines = append(lines, "⚠ 检测到用户自定义 NODE_EXTRA_CA_CERTS，mcc 不覆盖，请确认其指向 mcc CA。")
+			} else if errors.Is(r.NodeCAResult.Err, ErrEnvironmentRefresh) {
+				lines = append(lines, "⚠ NODE_EXTRA_CA_CERTS 已写入用户环境，但 Windows Shell 刷新失败。请注销并重新登录 Windows，然后启动 Orca。")
 			} else if r.NodeCAResult.Partial {
 				lines = append(lines, "⚠ NODE_EXTRA_CA_CERTS 部分持久化（profile 已写，但 setx/launchctl 失败，非 pwsh 进程可能拿不到变量，将在下次启动重试）。")
 			} else {
@@ -69,6 +79,8 @@ func transparentSuccessInstructions(r Result, locale string) []string {
 				lines = append(lines, "⚠ Running with elevated privileges (root/administrator); skipped Node client CA persistence. Restart mcc as a non-privileged user to auto-configure NODE_EXTRA_CA_CERTS.")
 			} else if errors.Is(r.NodeCAResult.Err, ErrUserCustomValue) {
 				lines = append(lines, "⚠ User custom NODE_EXTRA_CA_CERTS detected; mcc will not overwrite. Please verify it points to the mcc CA.")
+			} else if errors.Is(r.NodeCAResult.Err, ErrEnvironmentRefresh) {
+				lines = append(lines, "⚠ NODE_EXTRA_CA_CERTS was written to the user environment, but Windows Shell refresh failed. Please sign out and sign back in to Windows, then start Orca.")
 			} else if r.NodeCAResult.Partial {
 				lines = append(lines, "⚠ NODE_EXTRA_CA_CERTS partially persisted (profile written but setx/launchctl failed; non-pwsh processes may lack the variable, will retry next launch).")
 			} else {

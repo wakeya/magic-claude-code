@@ -2483,6 +2483,64 @@ func TestGenerateInstructions_TransparentSuccess_NodeCASuccess_NoWarning(t *test
 	}
 }
 
+func TestGenerateInstructions_TransparentEnvironmentRefreshGuidance(t *testing.T) {
+	tests := []struct {
+		name   string
+		locale string
+		nodeCA StepResult
+		want   string
+	}{
+		{
+			name:   "Chinese success asks for Orca restart",
+			locale: "zh",
+			nodeCA: StepResult{Attempted: true, Success: true},
+			want:   "完全退出并重新启动 Orca",
+		},
+		{
+			name:   "English success asks for Orca restart",
+			locale: "en",
+			nodeCA: StepResult{Attempted: true, Success: true},
+			want:   "fully quit and restart Orca",
+		},
+		{
+			name:   "Chinese refresh failure asks for sign in",
+			locale: "zh",
+			nodeCA: StepResult{
+				Attempted: true,
+				Partial:   true,
+				Err:       fmt.Errorf("%w: %w: timeout", ErrPartialSuccess, ErrEnvironmentRefresh),
+			},
+			want: "注销并重新登录",
+		},
+		{
+			name:   "English refresh failure asks for sign in",
+			locale: "en",
+			nodeCA: StepResult{
+				Attempted: true,
+				Partial:   true,
+				Err:       fmt.Errorf("%w: %w: timeout", ErrPartialSuccess, ErrEnvironmentRefresh),
+			},
+			want: "sign out and sign back in",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := Result{
+				SelectedMode: ModeTransparent,
+				HostsResult:  StepResult{Success: true},
+				TrustResult:  StepResult{Success: true},
+				EnvResult:    StepResult{Success: true},
+				NodeCAResult: tt.nodeCA,
+			}
+			lines := generateInstructions(r, tt.locale)
+			if !contains(strings.Join(lines, "\n"), tt.want) {
+				t.Fatalf("instructions missing %q: %v", tt.want, lines)
+			}
+		})
+	}
+}
+
 // --- P0-1: writePwshProfileNodeCA path tests ---
 
 // withPwshHooks overrides pwshDetected and pwshProfileCandidates for testing,
