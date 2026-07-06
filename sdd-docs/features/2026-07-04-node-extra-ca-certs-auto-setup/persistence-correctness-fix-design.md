@@ -17,7 +17,7 @@ Centralize policy in `Executor.tryPersistNodeCA` and keep platform-specific valu
 
 - Resolve `e.caCertPath` with `filepath.Abs` before certificate checks, marker checks, environment lookup, persistence, and marker writes.
 - Extend `EnvAdapter` with a read operation for the currently persisted Node CA value.
-- Windows reads `HKCU\Environment\NODE_EXTRA_CA_CERTS` directly.
+- Windows checks the inherited process environment first, then reads `HKCU\Environment\NODE_EXTRA_CA_CERTS` directly.
 - macOS first checks the process environment and then queries `launchctl getenv` when needed.
 - Linux and other POSIX systems check the process environment; profile scanning remains the persistent-file safeguard.
 - If the existing value is empty or already equals the desired absolute path, continue persistence so missing profiles can still be repaired.

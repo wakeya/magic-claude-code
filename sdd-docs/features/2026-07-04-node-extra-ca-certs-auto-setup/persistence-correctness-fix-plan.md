@@ -317,11 +317,15 @@ package bootstrap
 import (
 	"errors"
 	"fmt"
+	"os"
 
 	"golang.org/x/sys/windows/registry"
 )
 
 func lookupPersistedNodeCACertOS() (string, bool, error) {
+	if value, exists := os.LookupEnv("NODE_EXTRA_CA_CERTS"); exists && value != "" {
+		return value, true, nil
+	}
 	key, err := registry.OpenKey(registry.CURRENT_USER, `Environment`, registry.QUERY_VALUE)
 	if errors.Is(err, registry.ErrNotExist) {
 		return "", false, nil
