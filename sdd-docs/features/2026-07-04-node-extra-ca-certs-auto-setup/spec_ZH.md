@@ -1,5 +1,19 @@
 # Node.js 客户端 CA 信任自动配置规格
 
+## 补充设计：Windows 缺失卷根/UNC 根校验（2026-07-05）
+
+当父链回溯到文件系统根且该根仍不存在时，`validateParentChain` 必须 fail-closed。Windows 上不存在的盘符根目录或不可用/不存在的 UNC share 无法由 `os.MkdirAll` 创建；若将其视为可创建，会先执行 `setx`，随后 profile 持久化必然失败。
+
+设计：
+
+- 保留 `validateParentChain` 作为生产入口。
+- 抽取接受 stat 操作的 `validateParentChainWithStat` 小型辅助函数，使 Linux 测试能确定性模拟“根路径不存在”，且无需增加可变的包级测试 hook。
+- 当 `filepath.Dir(dir) == dir` 且当前根仍返回 `IsNotExist` 时，返回错误而不是成功。
+- 增加跨平台的缺失根决策单元测试，以及 Windows 专用集成测试：选择未占用盘符根目录，并断言不调用 `setxEnvVar`。
+- 保持“现存目录下 profile 叶子缺失”的正常创建行为，以及已明确接受的非特权 symlink 策略。
+
+验证：聚焦 red/green 测试、`go test ./internal/bootstrap -count=1`、race 测试、`go test ./... -count=1`、`go vet`，以及 Windows/macOS 测试二进制交叉编译。
+
 本地页面：无（mcc 二进制启动时由 bootstrap 自动执行）
 代理入口：`cmd/server/main.go` → `internal/bootstrap`
 参考源站：Node.js TLS 文档、Windows 注册表环境变量 API、macOS `launchctl`、POSIX shell profile 约定

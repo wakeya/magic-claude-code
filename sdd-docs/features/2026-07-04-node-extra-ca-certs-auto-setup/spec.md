@@ -1,5 +1,19 @@
 # Node.js Client CA Trust Auto-Setup Spec
 
+## Amendment: Missing Windows Volume/UNC Root Validation (2026-07-05)
+
+`validateParentChain` must fail closed when traversal reaches a filesystem root that still does not exist. On Windows, an absent drive root or unavailable/nonexistent UNC share cannot be created by `os.MkdirAll`; treating it as creatable permits `setx` to run before profile persistence inevitably fails.
+
+Design:
+
+- Keep `validateParentChain` as the production entry point.
+- Extract a small `validateParentChainWithStat` helper that accepts the stat operation, allowing Linux tests to deterministically simulate an absent root without adding mutable package-global hooks.
+- When `filepath.Dir(dir) == dir` and the current root still returns `IsNotExist`, return an error rather than success.
+- Add a platform-independent unit test for the missing-root decision and a Windows-only integration test that selects an unused drive root and asserts `setxEnvVar` is not called.
+- Preserve the existing behavior for a missing profile below an existing directory and for the explicitly accepted non-privileged symlink policy.
+
+Verification: focused red/green tests, `go test ./internal/bootstrap -count=1`, race tests, `go test ./... -count=1`, `go vet`, and Windows/macOS test-binary cross-compilation.
+
 Local page: none (executed automatically by bootstrap at mcc startup)
 Proxy entry: `cmd/server/main.go` → `internal/bootstrap`
 Reference sources: Node.js TLS docs, Windows registry environment-variable API, macOS `launchctl`, POSIX shell profile conventions
