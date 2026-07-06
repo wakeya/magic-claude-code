@@ -18,8 +18,8 @@ Local page: none (executed automatically by bootstrap at mcc startup)
 Proxy entry: `cmd/server/main.go` → `internal/bootstrap`
 Reference sources: Node.js TLS docs, Windows registry environment-variable API, macOS `launchctl`, POSIX shell profile conventions
 Stack: Go 1.26 stdlib (`os`, `os/exec`, `runtime`, `path/filepath`, `syscall`)
-Last updated: 2026-07-04
-Progress: 0 / 7 planned
+Last updated: 2026-07-06
+Progress: 6 / 7 implemented and automatically verified; native end-to-end verification remains
 
 ## Overall Analysis (Source Analysis)
 
@@ -106,13 +106,13 @@ Also verified: Orca launches pwsh without `-NoProfile` (`orca/src/main/providers
 
 | Order | Status | Task | Output | Verification |
 | --- | --- | --- | --- | --- |
-| 1 | Planned | Extend `EnvAdapter` interface + bootstrap integration | `bootstrap.go` (interface, `tryPersistNodeCA`, `Result` field) | Unit test with mock adapter verifying call and ready-check semantics |
-| 2 | Planned | Windows implementation (registry + pwsh `$PROFILE`) | `adapters.go` (`PersistNodeCACert` Windows branch + pwsh profile writer) | Unit tests + manual: new pwsh has the variable |
-| 3 | Planned | macOS implementation (launchctl + zsh/bash profile) | `adapters.go` (macOS branch) | Unit tests + manual verification |
-| 4 | Planned | Linux implementation (profile; `/etc/profile.d` is non-goal) | `adapters.go` (Linux branch) | Unit tests + manual verification |
-| 5 | Planned | Idempotent detection and staleness via fingerprint marker | `bootstrap.go` + `adapters.go` (marker read/write) | Unit tests: repeat-run skip, CA-change rewrite |
-| 6 | Planned | Unit tests covering all platforms + idempotency + staleness | `bootstrap_test.go`, `adapters_test.go` | `go test ./internal/bootstrap/ -v -race` |
-| 7 | Planned | End-to-end manual verification (all platforms) | Verification record | Run mcc on each platform; confirm Node client sees the variable |
+| 1 | Implemented | Extend `EnvAdapter` interface + bootstrap integration | `bootstrap.go` (interface, `tryPersistNodeCA`, `Result` field) | Unit tests with mock adapters pass |
+| 2 | Implemented | Windows implementation (registry + pwsh `$PROFILE`) | `adapters.go` + `node_ca_lookup_windows.go` | Unit tests and Windows cross-compilation pass; native verification remains in task 7 |
+| 3 | Implemented | macOS implementation (launchctl + zsh/bash profile) | `adapters.go` + `node_ca_lookup_darwin.go` | Unit tests and macOS cross-compilation pass; native verification remains in task 7 |
+| 4 | Implemented | Linux implementation (profile; `/etc/profile.d` is non-goal) | `adapters.go` + `node_ca_lookup_other.go` | Linux unit and race tests pass |
+| 5 | Implemented | Idempotent detection and staleness via fingerprint marker | `bootstrap.go` + `adapters.go` (marker read/write) | Repeat-run, CA-change, absolute-path, and prior-managed-path migration tests pass |
+| 6 | Implemented | Unit tests covering all platforms + idempotency + staleness | `bootstrap_test.go` | Focused, full, and race suites pass |
+| 7 | Pending | End-to-end manual verification (all platforms) | Verification record | Run mcc on each native platform; confirm Node client sees the variable |
 
 ## Requirements
 

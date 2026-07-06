@@ -1,6 +1,6 @@
 # Node Extra CA Certs 自动配置复审记录
 
-日期：2026-07-05
+日期：2026-07-06
 复审者：Codex 与 Claude Code
 
 ## 范围
@@ -77,3 +77,62 @@
 ### 后续结论
 
 Linux 复审环境下批准，待 Windows 原生测试确认。此前报告的 Linux 回归、file-as-parent 缺陷和缺失根路径 F-1 分支均已关闭；本次变更范围内没有可报告的安全漏洞。
+
+## 合并与发版就绪复审 — `main...2bb9d2c`
+
+### 范围
+
+复审从合并基点 `eb96f96` 到 `2bb9d2c` 的全部 23 个分支提交，包含 Node CA 持久化、Windows 环境刷新跟进、安装脚本文案，以及随后 3 个 Windows 图标提交。
+
+### 发版阻断项
+
+1. 相对数据目录会持久化依赖工作目录的 CA 路径。
+   - `resolveDataDir` 会原样返回 `./data` 这类显式参数，`cert.Manager.GetCACertPath` 因而得到相对路径 `data/ca.crt`。
+   - 新代码把该相对值直接写入 `setx`、`launchctl`、POSIX profile 和幂等 marker。PowerShell 块还用 `Test-Path` 保护赋值，因此客户端从其他目录启动时根本不会设置 `NODE_EXTRA_CA_CERTS`。
+   - 必须修复：在持久化及 marker 比较前把 CA 路径规范化为绝对路径，并增加从 `-data ./data` 启动、客户端从不同工作目录启动的回归测试。
+2. 已有的环境层用户配置会被覆盖。
+   - Windows 与 macOS 路径只扫描 profile 文本，随后无条件调用 `setx` 或 `launchctl setenv`。聚焦 overlay 测试预设了企业 CA 的 `NODE_EXTRA_CA_CERTS`，Windows 路径仍调用 `setx`，测试按预期失败。
+   - 必须修复：检查真实持久化层/当前环境，并保留非 MCC 管理的值。需补 Windows 注册表/会话和 macOS 会话测试，不能只测 profile 文本。
+3. 要求的原生平台验收仍未关闭。
+   - feature spec 仍记录 `Progress: 0 / 7 planned`，Windows/macOS/Linux 端到端验证清单也未勾选。
+   - Windows/macOS 交叉编译不能执行 token、注册表、profile、缺失盘符/UNC 和 `WM_SETTINGCHANGE` 行为。发版前至少要执行并归档 Windows 原生测试以及 Windows Orca/Node 端到端流程。
+
+### 验证证据
+
+- `make test` 通过，包含全仓 race 测试。
+- `go vet ./...` 通过。
+- `npm --prefix internal/frontend test` 通过：158 项，0 失败。
+- `npm --prefix internal/frontend run build` 通过，且构建后工作树保持干净。
+- 按发布脚本的 `GOOS`/`GOARCH`、`CGO_ENABLED=0`、`-trimpath` 和 release `ldflags` 形式，6 个发布目标全部构建成功。
+- Windows amd64 与 arm64 可执行文件均包含 `.rsrc` 段；按当前 `make icon` 配方重新生成的 `.ico` 与 `.syso` 和提交文件逐字节一致。
+- `go mod tidy -diff`、`go mod verify`、`git diff --check` 均通过。
+- 本地分支比 `origin/feat/node-extra-ca-certs-auto-setup` 多 3 个提交，均为尚未推送的 Windows 图标改动。
+
+### 安全结论
+
+diff 安全复审后没有可报告的安全漏洞。上述两个阻断项属于同用户配置完整性与正确性缺陷。残余加固项包括：profile 替换并非原子/descriptor-relative 操作，父链检查仍有 TOCTOU 窗口，`make icon` 使用了未锁定版本的开发依赖 `github.com/akavel/rsrc@latest`。
+
+### 最终复审结论
+
+暂不批准合并或发版。修复相对路径持久化和环境层自定义值覆盖、补回归测试、完成 Windows 原生验收并更新 feature 验证记录后，再做发版就绪复审。
+
+## 正确性修复复审 — `a2c0d4b..b3bd435`
+
+### 已确认解决
+
+- `tryPersistNodeCA` 现会在 stat、查询、持久化和 marker 操作前把 CA 路径转为绝对路径。red-green 回归测试证明，由相对 `-data` 产生的 CA 路径到达 adapter 和 marker 时已是绝对路径。
+- 执行器现会在修改前读取平台实际值。不同的非 MCC 值会返回 `ErrUserCustomValue`；匹配 marker 也不再掩盖用户后来设置的自定义值。
+- 仅当前用户绑定 marker 中记录的原 MCC 路径可以授权该精确旧值迁移，既保留 CA 路径搬迁能力，又拒绝无关自定义值。
+- 查询失败会在 `setx`、`launchctl setenv` 或 profile 写入前 fail-closed。
+- Windows 先查继承的进程环境再查 HKCU；macOS 先查进程环境再查 `launchctl`；其他平台检查进程环境并继续保留 profile 扫描。
+
+### 验证
+
+- 聚焦 red/green、bootstrap 全量、bootstrap race、`make test`、`go vet ./...`、`go mod tidy -diff` 和 `go mod verify` 均通过。
+- 前端测试 158 项全部通过，0 失败；生产前端构建通过且未产生被跟踪的改动。
+- Linux/macOS/Windows 的 amd64 与 arm64 共 6 个 release 构建形态全部通过。
+- Windows amd64/arm64 与 macOS bootstrap 测试二进制交叉编译成功。
+
+### 后续结论
+
+两个代码层合并阻断项均已解决，本分支在当前 Linux 自动化复审环境下批准合并。发版批准仍需在 Windows 原生执行 token/注册表/profile/缺失根/环境广播测试，并完成已记录的 Orca/Node 端到端流程；macOS/Linux 原生端到端记录仍属于原始全平台验收任务。

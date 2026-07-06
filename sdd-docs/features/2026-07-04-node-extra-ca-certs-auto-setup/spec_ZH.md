@@ -18,8 +18,8 @@
 代理入口：`cmd/server/main.go` → `internal/bootstrap`
 参考源站：Node.js TLS 文档、Windows 注册表环境变量 API、macOS `launchctl`、POSIX shell profile 约定
 技术栈：Go 1.26 标准库（`os`、`os/exec`、`runtime`、`path/filepath`、`syscall`）
-最后更新：2026-07-04
-进度：0 / 7 已规划
+最后更新：2026-07-06
+进度：6 / 7 已实现并通过自动化验证；原生端到端验证待完成
 
 ## 整体分析（源码分析）
 
@@ -106,13 +106,13 @@ if (Test-Path $mccCa) { $env:NODE_EXTRA_CA_CERTS = $mccCa }
 
 | 序号 | 状态 | 任务 | 产出 | 验证 |
 | --- | --- | --- | --- | --- |
-| 1 | 已规划 | 扩展 `EnvAdapter` 接口 + bootstrap 集成 | `bootstrap.go`（接口、`tryPersistNodeCA`、`Result` 字段） | 单元测试：mock adapter 验证调用与就绪判断 |
-| 2 | 已规划 | Windows 实现（注册表 + pwsh `$PROFILE`） | `adapters.go`（`PersistNodeCACert` Windows 分支 + pwsh profile 写入） | 单元测试 + 手动验证新 pwsh 里有变量 |
-| 3 | 已规划 | macOS 实现（launchctl + zsh/bash profile） | `adapters.go`（macOS 分支） | 单元测试 + 手动验证 |
-| 4 | 已规划 | Linux 实现（profile + 可选 `/etc/profile.d`） | `adapters.go`（Linux 分支） | 单元测试 + 手动验证 |
-| 5 | 已规划 | 幂等检测与过期识别（fingerprint 标记） | `bootstrap.go` + `adapters.go`（标记文件读写） | 单元测试：重复运行不重复写、CA 变更触发更新 |
-| 6 | 已规划 | 单元测试覆盖三平台 + 幂等 + 过期 | `bootstrap_test.go`、`adapters_test.go` | `go test ./internal/bootstrap/ -v -race` |
-| 7 | 已规划 | 端到端手动验证（三平台） | 验证记录 | 在三平台真机运行 mcc，确认 Node 客户端拿到变量 |
+| 1 | 已实现 | 扩展 `EnvAdapter` 接口 + bootstrap 集成 | `bootstrap.go`（接口、`tryPersistNodeCA`、`Result` 字段） | mock adapter 单元测试通过 |
+| 2 | 已实现 | Windows 实现（注册表 + pwsh `$PROFILE`） | `adapters.go` + `node_ca_lookup_windows.go` | 单元测试与 Windows 交叉编译通过；原生验证归入任务 7 |
+| 3 | 已实现 | macOS 实现（launchctl + zsh/bash profile） | `adapters.go` + `node_ca_lookup_darwin.go` | 单元测试与 macOS 交叉编译通过；原生验证归入任务 7 |
+| 4 | 已实现 | Linux 实现（profile；`/etc/profile.d` 为非目标） | `adapters.go` + `node_ca_lookup_other.go` | Linux 单元测试与 race 测试通过 |
+| 5 | 已实现 | 幂等检测与过期识别（fingerprint 标记） | `bootstrap.go` + `adapters.go`（标记文件读写） | 重复运行、CA 变更、绝对路径及旧 MCC 路径迁移测试通过 |
+| 6 | 已实现 | 单元测试覆盖三平台 + 幂等 + 过期 | `bootstrap_test.go` | 聚焦、全量及 race 测试通过 |
+| 7 | 待完成 | 端到端手动验证（三平台） | 验证记录 | 在三平台真机运行 mcc，确认 Node 客户端拿到变量 |
 
 ## 需求
 
