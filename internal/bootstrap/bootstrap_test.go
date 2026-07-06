@@ -1426,6 +1426,19 @@ func TestExecWithTimeout_QuickCommand_ReturnsSuccessfully(t *testing.T) {
 	}
 }
 
+func TestOSEnvAdapterLookupNodeCACert_UsesOSLookup(t *testing.T) {
+	original := lookupPersistedNodeCACert
+	lookupPersistedNodeCACert = func() (string, bool, error) {
+		return "/corporate/ca.pem", true, nil
+	}
+	t.Cleanup(func() { lookupPersistedNodeCACert = original })
+
+	got, exists, err := (&osEnvAdapter{}).LookupNodeCACert()
+	if err != nil || !exists || got != "/corporate/ca.pem" {
+		t.Fatalf("LookupNodeCACert() = (%q, %v, %v)", got, exists, err)
+	}
+}
+
 // --- tryPersistNodeCA tests ---
 
 func TestTryPersistNodeCA_EmptyCertPath_Skips(t *testing.T) {

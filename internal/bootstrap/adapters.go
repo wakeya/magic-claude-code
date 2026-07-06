@@ -27,6 +27,10 @@ func execWithTimeout(name string, args ...string) ([]byte, error) {
 
 var isDockerEnvFn = isDockerEnv
 
+// lookupPersistedNodeCACert reads the effective user/session value without
+// mutating it. Platform implementations live in node_ca_lookup_*.go.
+var lookupPersistedNodeCACert = lookupPersistedNodeCACertOS
+
 // --- Testable hooks for Windows pwsh/setx (not part of EnvAdapter interface) ---
 
 // setxEnvVar persists a user-level environment variable via setx.
@@ -414,8 +418,7 @@ func (a *osEnvAdapter) PersistRoot(rootDir string) error {
 }
 
 func (a *osEnvAdapter) LookupNodeCACert() (string, bool, error) {
-	value, exists := os.LookupEnv("NODE_EXTRA_CA_CERTS")
-	return value, exists && value != "", nil
+	return lookupPersistedNodeCACert()
 }
 
 // PersistNodeCACert 把 NODE_EXTRA_CA_CERTS 持久化到当前用户的 shell/桌面会话环境。
