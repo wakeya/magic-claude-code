@@ -37,11 +37,15 @@ icon:
 	go run github.com/akavel/rsrc@latest -ico "$(ICON_ICO)" -arch amd64 -o "$(ICON_SYSO)"
 	@echo "==> Done. Rebuild via 'make build' (Windows) or release.sh to pick up the new icon."
 
+GIT_VERSION := $(shell git describe --tags --always --dirty)
+
+# docker / docker-run 通过 build-arg 注入 git 版本号（tag/commit/dirty），让容器内
+# mcc --version 反映真实代码状态。直接 docker compose up（不走 Makefile）回退到 dev。
 docker:
-	docker build -t magic-claude-code .
+	docker build -t magic-claude-code --build-arg APP_VERSION=$(GIT_VERSION) .
 
 docker-run:
-	docker compose up -d
+	APP_VERSION=$(GIT_VERSION) docker compose up -d --build
 
 docker-stop:
 	docker compose down

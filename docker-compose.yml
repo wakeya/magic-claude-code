@@ -1,6 +1,10 @@
 services:
   mcc:
-    build: .
+    build:
+      context: .
+      args:
+        # 版本号注入：make docker-run 自动传 git describe；直接 docker compose up 时回退 dev
+        APP_VERSION: ${APP_VERSION:-dev}
     image: magic-claude-code
     container_name: mcc
     # ================================================================
