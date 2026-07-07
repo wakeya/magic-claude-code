@@ -3,14 +3,32 @@
 package bootstrap
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"magic-claude-code/internal/i18n"
+)
+
+// Sentinel errors for PersistNodeCACert outcomes.
+var (
+	// ErrPartialSuccess indicates some operations succeeded but others failed
+	// (e.g. setx failed but pwsh profile was written). The caller should NOT
+	// write the idempotency marker so the failed part is retried on next launch.
+	ErrPartialSuccess = errors.New("partial success: some operations succeeded but others failed")
+	// ErrEnvironmentRefresh indicates that the Windows user environment was
+	// persisted, but the desktop shell notification failed. Signing out and back
+	// in rebuilds the process environment from the persisted registry value.
+	ErrEnvironmentRefresh = errors.New("Windows environment refresh failed")
+	// ErrUserCustomValue indicates the user has a hand-written NODE_EXTRA_CA_CERTS
+	// entry outside mcc-managed blocks. mcc will not overwrite it.
+	ErrUserCustomValue = errors.New("user custom NODE_EXTRA_CA_CERTS already exists")
 )
 
 // Mode represents a connection mode.
@@ -35,20 +53,22 @@ type Capabilities struct {
 type StepResult struct {
 	Attempted bool
 	Success   bool
+	Partial   bool // 部分成功（如 setx 失败但 profile 成功）：需重试失败部分
 	Err       error
 }
 
 // Result records the full bootstrap outcome.
 type Result struct {
-	Caps             Capabilities
-	HostsResult      StepResult
-	TrustResult      StepResult
-	EnvResult        StepResult
-	PreferredMode    Mode
-	SelectedMode     Mode
-	Rationale        string
-	CACertPath       string
-	ExecRootDir      string
+	Caps              Capabilities
+	HostsResult       StepResult
+	TrustResult       StepResult
+	EnvResult         StepResult
+	NodeCAResult      StepResult // NODE_EXTRA_CA_CERTS 持久化结果
+	PreferredMode     Mode
+	SelectedMode      Mode
+	Rationale         string
+	CACertPath        string
+	ExecRootDir       string
 	GatewayListenAddr string
 	GatewayListenPort int
 }
@@ -71,20 +91,26 @@ type TrustAdapter interface {
 // EnvAdapter abstracts environment persistence.
 type EnvAdapter interface {
 	PersistRoot(rootDir string) error
+	// LookupNodeCACert reads the current platform's persisted/session value
+	// without mutating it, so user-managed CA configuration is not overwritten.
+	LookupNodeCACert() (value string, exists bool, err error)
+	// PersistNodeCACert 把指向 mcc CA 文件的 NODE_EXTRA_CA_CERTS 持久化到
+	// 当前用户的 shell/桌面会话环境，使未来启动的 Node.js 客户端能信任 mcc。
+	PersistNodeCACert(caCertPath string) error
 }
 
 // Executor runs the bootstrap sequence.
 type Executor struct {
-	dataDir            string
-	caCertPath         string
-	locale             string
-	preferredMode      Mode
-	gatewayListenAddr  string
-	gatewayListenPort  int
-	msg                i18n.Messages
-	hosts              HostsAdapter
-	trust              TrustAdapter
-	env                EnvAdapter
+	dataDir           string
+	caCertPath        string
+	locale            string
+	preferredMode     Mode
+	gatewayListenAddr string
+	gatewayListenPort int
+	msg               i18n.Messages
+	hosts             HostsAdapter
+	trust             TrustAdapter
+	env               EnvAdapter
 }
 
 // Option configures an Executor.
@@ -122,13 +148,13 @@ func WithEnvAdapter(a EnvAdapter) Option {
 func New(dataDir, caCertPath, locale string, opts ...Option) *Executor {
 	msg := i18n.Load(locale)
 	e := &Executor{
-		dataDir:            dataDir,
-		caCertPath:         caCertPath,
-		locale:             locale,
-		preferredMode:      ModeTransparent,
-		gatewayListenAddr:  "127.0.0.1",
-		gatewayListenPort:  17487,
-		msg:                msg,
+		dataDir:           dataDir,
+		caCertPath:        caCertPath,
+		locale:            locale,
+		preferredMode:     ModeTransparent,
+		gatewayListenAddr: "127.0.0.1",
+		gatewayListenPort: 17487,
+		msg:               msg,
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -161,11 +187,11 @@ func IsTransparentReady(r Result) bool {
 func (e *Executor) Run() Result {
 	caps := detectCapabilities()
 	result := Result{
-		Caps:               caps,
-		CACertPath:         e.caCertPath,
-		PreferredMode:      normalizeMode(e.preferredMode),
-		GatewayListenAddr:  e.gatewayListenAddr,
-		GatewayListenPort:  e.gatewayListenPort,
+		Caps:              caps,
+		CACertPath:        e.caCertPath,
+		PreferredMode:     normalizeMode(e.preferredMode),
+		GatewayListenAddr: e.gatewayListenAddr,
+		GatewayListenPort: e.gatewayListenPort,
 	}
 
 	exe, err := os.Executable()
@@ -183,6 +209,11 @@ func (e *Executor) Run() Result {
 			// 也能正确识别透明模式，不因 CanEditHosts/CanTrustCA 为 false 而跳过检测。
 			result.HostsResult = e.tryHosts()
 			result.TrustResult = e.tryTrustCA()
+			// CA 已就绪后，持久化 Node 客户端 CA 信任
+			// Docker 内跳过：容器内 profile 改动对宿主无意义（spec 约束 10）
+			if result.TrustResult.Success && !caps.IsDocker {
+				result.NodeCAResult = e.tryPersistNodeCA()
+			}
 		}
 		result.SelectedMode, result.Rationale = resolveModeLocalized(result.PreferredMode, result.Caps, result.HostsResult, result.TrustResult, e.locale)
 	case ModeTunnel:
@@ -231,6 +262,206 @@ func (e *Executor) tryPersistEnv(rootDir string) StepResult {
 	return StepResult{Attempted: true, Success: err == nil, Err: err}
 }
 
+// tryPersistNodeCA 持久化 NODE_EXTRA_CA_CERTS，使未来启动的 Node.js 客户端
+// （如 Claude Code）能信任 mcc 的 CA。仅在透明模式、非 Docker、CA 已就绪时调用。
+func (e *Executor) tryPersistNodeCA() StepResult {
+	if e.caCertPath == "" {
+		return StepResult{Attempted: false}
+	}
+	caCertPath, err := filepath.Abs(e.caCertPath)
+	if err != nil {
+		return StepResult{Attempted: true, Success: false, Err: fmt.Errorf("absolute CA cert path: %w", err)}
+	}
+	if _, err := os.Stat(caCertPath); err != nil {
+		// CA 文件不存在，依赖未满足
+		return StepResult{Attempted: true, Success: false, Err: err}
+	}
+	markerMatches := hasNodeCAMarker(e.dataDir, caCertPath)
+	// P2-2: 高权限运行（root/administrator）时拒绝写用户 profile/HKCU/session。
+	// 真实用户的 Node 客户端读自己的 profile，root/admin 写的它读不到（功能无效）；
+	// 且 HOME 等用户可控路径在高权限下可能被重定向越权（CWE-59）。让用户非特权重启 mcc。
+	if isPrivilegedRun() {
+		if markerMatches {
+			return StepResult{Success: true}
+		}
+		return StepResult{Attempted: true, Success: false, Err: ErrPrivilegedRun}
+	}
+	existing, exists, err := e.env.LookupNodeCACert()
+	if err != nil {
+		return StepResult{Attempted: true, Success: false, Err: fmt.Errorf("lookup persisted NODE_EXTRA_CA_CERTS: %w", err)}
+	}
+	if exists && existing != "" && !nodeCAPathsEqual(existing, caCertPath) {
+		previous, managed := previousManagedNodeCAPath(e.dataDir)
+		if !managed || !nodeCAPathsEqual(existing, previous) {
+			return StepResult{Attempted: true, Success: false, Err: ErrUserCustomValue}
+		}
+	}
+	// Marker 命中仍需先检查真实环境值，避免用户后续设置的自定义值被误报为 MCC 就绪。
+	if markerMatches {
+		return StepResult{Success: true}
+	}
+	err = e.env.PersistNodeCACert(caCertPath)
+	if err == nil {
+		writeNodeCAMarker(e.dataDir, caCertPath)
+		return StepResult{Attempted: true, Success: true}
+	}
+	if errors.Is(err, ErrPartialSuccess) {
+		// profile 已写但 setx/launchctl 失败：不写 marker，下次重试
+		return StepResult{Attempted: true, Success: false, Partial: true, Err: err}
+	}
+	if errors.Is(err, ErrUserCustomValue) {
+		// 不写 marker：用户清除自定义值后 mcc 应自动接管。
+		// 重复警告由 stateHash 抑制（NodeCAErr 已纳入 hash，状态不变会 suppress）。
+		return StepResult{Attempted: true, Success: false, Err: err}
+	}
+	return StepResult{Attempted: true, Success: false, Err: err}
+}
+
+const nodeCAMarkerName = ".node-ca-persisted"
+
+// nodeCAMarker 是 .node-ca-persisted 的 JSON 格式。除指纹外还记录证书路径和用户标识
+// (HOME/UID)，避免"证书内容没变但路径/用户变了"时错误跳过重新持久化（F-3/F-4）。
+type nodeCAMarker struct {
+	Fingerprint string `json:"fp"`
+	CertPath    string `json:"cert_path"`
+	Home        string `json:"home"`
+	UID         int    `json:"uid,omitempty"` // unix 普通用户；root/windows 不写
+}
+
+// hasNodeCAMarker reports whether the NodeCA marker matches the current cert AND
+// user identity. Returns false (triggering re-persistence) when the marker is
+// missing/corrupt/legacy-plain-text, the cert fingerprint changed, the cert path
+// changed (F-3), or the HOME/UID changed across users (F-4).
+func hasNodeCAMarker(dataDir, caCertPath string) bool {
+	if dataDir == "" {
+		return false
+	}
+	markerPath := filepath.Join(dataDir, nodeCAMarkerName)
+	if err := isSafeForWrite(markerPath); err != nil {
+		return false // marker 是符号链接/非常规 → 视为 stale（CWE-59）
+	}
+	raw, err := os.ReadFile(markerPath)
+	if err != nil {
+		return false
+	}
+	var m nodeCAMarker
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return false // 旧纯文本格式或损坏 → stale
+	}
+	if m.Fingerprint == "" {
+		return false
+	}
+	current, err := caFingerprint(caCertPath)
+	if err != nil {
+		return false
+	}
+	if m.Fingerprint != current {
+		return false // 证书重新生成
+	}
+	if m.CertPath != caCertPath {
+		return false // F-3: 路径变化
+	}
+	if !nodeCAMarkerUserMatches(m) {
+		return false // F-4: 跨用户
+	}
+	return true
+}
+
+// previousManagedNodeCAPath returns the prior CA path only when the marker is a
+// safe MCC marker bound to the current user. Fingerprint equality is deliberately
+// not required: a moved or regenerated CA still needs permission to replace the
+// exact old path that MCC previously persisted.
+func previousManagedNodeCAPath(dataDir string) (string, bool) {
+	if dataDir == "" {
+		return "", false
+	}
+	markerPath := filepath.Join(dataDir, nodeCAMarkerName)
+	if err := isSafeForWrite(markerPath); err != nil {
+		return "", false
+	}
+	raw, err := os.ReadFile(markerPath)
+	if err != nil {
+		return "", false
+	}
+	var m nodeCAMarker
+	if json.Unmarshal(raw, &m) != nil || m.Fingerprint == "" || m.CertPath == "" || !nodeCAMarkerUserMatches(m) {
+		return "", false
+	}
+	return m.CertPath, true
+}
+
+func nodeCAPathsEqual(left, right string) bool {
+	left = filepath.Clean(left)
+	right = filepath.Clean(right)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
+}
+
+// nodeCAMarkerUserMatches 检查 marker 记录的 HOME/UID 是否与当前进程一致。
+// HOME 是跨平台主标识：marker 必须记录非空 HOME 且与当前进程一致，缺 HOME 的
+// marker（旧格式或手构造）一律视为 stale，避免任意用户命中（F-4）。
+// UID 在 Unix 普通用户额外强制校验：marker 必须记录匹配的 UID，缺 UID 也视为
+// stale；root(uid=0)/Windows(uid=-1) 不持久化 UID，仅靠 HOME 绑定。
+func nodeCAMarkerUserMatches(m nodeCAMarker) bool {
+	if m.Home == "" {
+		return false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" || home != m.Home {
+		return false
+	}
+	if uid := os.Getuid(); uid > 0 {
+		// Unix 普通用户：marker 必须记录匹配的 UID。
+		if m.UID != uid {
+			return false
+		}
+	} else if m.UID != 0 {
+		// root(uid=0)/Windows(uid=-1)：writeNodeCAMarker 不持久化 UID，marker
+		// 不应记录 UID；读到非 0 UID 说明被构造/篡改，一律视为 stale。
+		return false
+	}
+	return true
+}
+
+// writeNodeCAMarker records the cert fingerprint, path, and current user identity
+// (HOME/UID) so future launches can detect staleness from cert regen, path change,
+// or cross-user launch. Best-effort — failure is silent.
+func writeNodeCAMarker(dataDir, caCertPath string) {
+	if dataDir == "" {
+		return
+	}
+	fp, err := caFingerprint(caCertPath)
+	if err != nil {
+		return
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return // 无法确定用户身份 → 不写可跨用户命中的 marker（F-4）
+	}
+	m := nodeCAMarker{
+		Fingerprint: fp,
+		CertPath:    caCertPath,
+		Home:        home,
+	}
+	if uid := os.Getuid(); uid > 0 {
+		m.UID = uid // unix 普通用户；root(0)/windows(-1) 不写
+	}
+	data, err := json.Marshal(m)
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		return
+	}
+	markerPath := filepath.Join(dataDir, nodeCAMarkerName)
+	if err := isSafeForWrite(markerPath); err != nil {
+		return // marker 是符号链接 → 拒绝写，避免越权（CWE-59）
+	}
+	_ = os.WriteFile(markerPath, data, 0644)
+}
+
 func (e *Executor) logDockerBoundary(result *Result) {
 	if e.locale == "zh" {
 		log.Println("[Bootstrap] 运行在 Docker 容器中，无法修改宿主机 hosts 或 CA 信任库。")
@@ -252,7 +483,7 @@ func (e *Executor) LogResult(r Result) {
 	}
 	saveState(statePath, r)
 
-	if IsTransparentReady(r) {
+	if IsTransparentReady(r) && !(r.NodeCAResult.Attempted && (!r.NodeCAResult.Success || r.NodeCAResult.Partial)) {
 		if e.locale == "zh" {
 			log.Println("[Bootstrap] 透明模式配置完成：hosts 已更新，CA 已安装。")
 		} else {
@@ -271,6 +502,7 @@ func (e *Executor) LogResult(r Result) {
 	printStep(e.locale, "hosts", r.HostsResult)
 	printStep(e.locale, "CA", r.TrustResult)
 	printStep(e.locale, "ENV", r.EnvResult)
+	printStep(e.locale, "NODE_CA", r.NodeCAResult)
 
 	fmt.Println()
 	instr := generateInstructions(r, e.locale)
@@ -288,6 +520,14 @@ func printModeSummary(r Result, locale string) {
 			log.Printf("[Bootstrap] 透明模式就绪（hosts/CA 已配置，状态未变化，跳过详细输出）")
 		} else {
 			log.Printf("[Bootstrap] Transparent mode ready (hosts/CA configured; state unchanged, details suppressed)")
+		}
+		// NodeCA 持续异常时追加简短提示（不破坏 suppress 设计）
+		if r.NodeCAResult.Attempted && (!r.NodeCAResult.Success || r.NodeCAResult.Partial) {
+			if locale == "zh" {
+				log.Printf("[Bootstrap] ⚠ NODE_EXTRA_CA_CERTS 未完全就绪，详见上次启动输出（删除 .bootstrap-state 可重新查看）")
+			} else {
+				log.Printf("[Bootstrap] ⚠ NODE_EXTRA_CA_CERTS not fully ready; see previous launch output (delete .bootstrap-state to show again)")
+			}
 		}
 		return
 	}
@@ -328,6 +568,18 @@ func printStep(locale, name string, sr StepResult) {
 				fmt.Printf("  %s: skipped\n", name)
 			}
 		}
+		return
+	}
+	if sr.Partial {
+		if locale == "zh" {
+			fmt.Printf("  %s: 部分成功", name)
+		} else {
+			fmt.Printf("  %s: PARTIAL", name)
+		}
+		if sr.Err != nil {
+			fmt.Printf(" (%v)", sr.Err)
+		}
+		fmt.Println()
 		return
 	}
 	if locale == "zh" {

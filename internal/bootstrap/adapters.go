@@ -5,10 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -23,6 +26,67 @@ func execWithTimeout(name string, args ...string) ([]byte, error) {
 }
 
 var isDockerEnvFn = isDockerEnv
+
+// lookupPersistedNodeCACert reads the effective user/session value without
+// mutating it. Platform implementations live in node_ca_lookup_*.go.
+var lookupPersistedNodeCACert = lookupPersistedNodeCACertOS
+
+// --- Testable hooks for Windows pwsh/setx (not part of EnvAdapter interface) ---
+
+// setxEnvVar persists a user-level environment variable via setx.
+// Overridable in tests to avoid real registry writes.
+var setxEnvVar = func(key, value string) error {
+	out, err := execWithTimeout("setx", key, value)
+	if err != nil {
+		return fmt.Errorf("setx %s: %w: %s", key, err, decodeCmdOutput(out))
+	}
+	return nil
+}
+
+// broadcastEnvironmentChange notifies the Windows shell after setx updates the
+// user environment. Tests replace it to avoid sending desktop messages.
+var broadcastEnvironmentChange = broadcastEnvironmentChangeOS
+
+// writeFileSync writes profile content (injectable wrapper around os.WriteFile).
+// Tests use it to simulate write failures without relying on chmod semantics
+// that are unreliable on Windows.
+var writeFileSync = func(path string, data []byte, perm os.FileMode) error {
+	return os.WriteFile(path, data, perm)
+}
+
+// pwshDetected reports whether any PowerShell is installed.
+// Overridable in tests to skip/exec-path probing.
+var pwshDetected = func() bool {
+	_, err1 := exec.LookPath("pwsh.exe")
+	_, err2 := exec.LookPath("powershell.exe")
+	return err1 == nil || err2 == nil
+}
+
+// pwshProfileCandidates returns the ordered list of PowerShell profile paths.
+// Overridable in tests to use temp directories.
+var pwshProfileCandidates = func(home string) []string {
+	return []string{
+		filepath.Join(home, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1"),
+		filepath.Join(home, "Documents", "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1"),
+	}
+}
+
+// launchctlSetenv sets an environment variable in the current macOS GUI session.
+// Overridable in tests to avoid real launchctl calls.
+var launchctlSetenv = func(key, value string) error {
+	out, err := execWithTimeout("launchctl", "setenv", key, value)
+	if err != nil {
+		return fmt.Errorf("launchctl setenv %s: %w: %s", key, err, decodeCmdOutput(out))
+	}
+	return nil
+}
+
+// hasLaunchctl reports whether the macOS launchctl command is available.
+// Overridable in tests to simulate macOS on non-macOS platforms.
+var hasLaunchctl = func() bool {
+	_, err := exec.LookPath("launchctl")
+	return err == nil
+}
 
 // osHostsAdapter handles real hosts-file modification.
 type osHostsAdapter struct{}
@@ -351,6 +415,566 @@ func (a *osEnvAdapter) PersistRoot(rootDir string) error {
 		}
 		return fmt.Errorf("no profile file writable (tried %v)", profiles)
 	}
+}
+
+func (a *osEnvAdapter) LookupNodeCACert() (string, bool, error) {
+	return lookupPersistedNodeCACert()
+}
+
+// PersistNodeCACert 把 NODE_EXTRA_CA_CERTS 持久化到当前用户的 shell/桌面会话环境。
+// 平台实现由 persistNodeCACertWindows / persistNodeCACertDarwin / persistNodeCACertPOSIX 提供。
+func (a *osEnvAdapter) PersistNodeCACert(caCertPath string) error {
+	switch runtime.GOOS {
+	case "windows":
+		return a.persistNodeCACertWindows(caCertPath)
+	case "darwin":
+		return a.persistNodeCACertDarwin(caCertPath)
+	default:
+		return a.persistNodeCACertPOSIX(caCertPath)
+	}
+}
+
+// --- Windows implementation ---
+
+const (
+	pwshProfileMarkerBegin = "# >>> mcc: Node.js CA trust (auto-managed, do not edit) >>>"
+	pwshProfileMarkerEnd   = "# <<< mcc <<<"
+)
+
+func (a *osEnvAdapter) persistNodeCACertWindows(caCertPath string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("user home dir: %w", err)
+	}
+	// F-1 fail-closed: setx 前预检查所有 profile。高权限运行遇 symlink/非常规
+	// profile 时返回 ErrUnsafeProfile（不 setx）；非特权运行跟随 symlink 读取。
+	custom, scanErr := scanPwshProfilesForCustomValue(home, isPrivilegedRun())
+	if scanErr != nil {
+		return scanErr
+	}
+	if custom {
+		return ErrUserCustomValue
+	}
+	var setxErr error
+	var refreshErr error
+	// ① setx 写用户级注册表（影响未来新进程）
+	if err := setxEnvVar("NODE_EXTRA_CA_CERTS", caCertPath); err != nil {
+		setxErr = err
+	} else if err := broadcastEnvironmentChange(); err != nil {
+		// 注册表值已经持久化，不回滚；profile 仍继续写入。调用方将刷新失败
+		// 视为 partial，并提示用户注销重登以重建 Explorer 的环境块。
+		refreshErr = err
+	}
+
+	// ② pwsh $PROFILE 兜底（覆盖 GUI 继承断链场景）
+	profileErr := a.writePwshProfileNodeCA(caCertPath)
+
+	// 5 步判定（严格按此顺序，ErrUserCustomValue 最优先不被 partial 吞掉）
+	// 1. 用户自定义值：原样返回，不包装为 partial
+	if errors.Is(profileErr, ErrUserCustomValue) {
+		return ErrUserCustomValue
+	}
+	// 2. 都失败：合并错误
+	if setxErr != nil && profileErr != nil {
+		return fmt.Errorf("setx: %v; profile: %w", setxErr, profileErr)
+	}
+	// 3. setx 失败 + profile 成功：partial
+	if setxErr != nil {
+		return fmt.Errorf("%w: setx: %v", ErrPartialSuccess, setxErr)
+	}
+	// 4. setx 成功但 Shell 刷新失败：注册表已可用，注销重登可恢复。
+	if refreshErr != nil {
+		if profileErr != nil {
+			return fmt.Errorf("%w: %w: %v; profile: %v", ErrPartialSuccess, ErrEnvironmentRefresh, refreshErr, profileErr)
+		}
+		return fmt.Errorf("%w: %w: %v", ErrPartialSuccess, ErrEnvironmentRefresh, refreshErr)
+	}
+	// 5. setx 成功 + profile 失败：partial（pwsh 兜底缺失）
+	if profileErr != nil {
+		if errors.Is(profileErr, ErrPartialSuccess) {
+			return profileErr // writePwshProfileNodeCA 已包装为 partial，避免双重包装
+		}
+		return fmt.Errorf("%w: profile: %w", ErrPartialSuccess, profileErr)
+	}
+	// 6. 全成功
+	return nil
+}
+
+// pwshSingleQuote 把字符串编码为 PowerShell 单引号字面量：单引号包裹、内部单引号双写。
+// 单引号字符串里 $、反引号、\ 都是字面量，杜绝 $()/反引号注入（P2-1）。CR/LF 被拒绝，
+// 防止换行断开字面量后注入新命令。
+func pwshSingleQuote(s string) (string, error) {
+	if strings.ContainsAny(s, "\r\n") {
+		return "", fmt.Errorf("reject newline in pwsh literal: %q", s)
+	}
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'", nil
+}
+
+// scanPwshProfilesForCustomValue 扫描所有 pwsh profile，返回是否含用户自定义值。
+// 高权限运行时 symlink/非常规 profile 视为不安全（fail-closed），返回包装了
+// ErrUnsafeProfile 的错误；非特权运行时跟随 symlink 读取（用户自己 home 自己负责）。
+// 用于 setx 覆盖前的预检查（F-1）：扫描完全成功前不得调用 setx，避免环境被改而
+// profile 未改。
+func scanPwshProfilesForCustomValue(home string, privileged bool) (custom bool, err error) {
+	for _, profile := range pwshProfileCandidates(home) {
+		if privileged {
+			if e := isSafeForWrite(profile); e != nil {
+				return false, fmt.Errorf("%w: %s", ErrUnsafeProfile, profile)
+			}
+		}
+		existing, err := readProfile(profile) // 非特权跟随 symlink；非 NotExist 错误上抛
+		if err != nil {
+			return false, err
+		}
+		if pwshProfileHasNodeCAVarOutsideMCCBlock(string(existing)) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// scanPOSIXProfilesForCustomValue 扫描所有 POSIX profile，返回是否含用户自定义值。
+// 语义同 scanPwshProfilesForCustomValue：高权限 fail-closed，非特权跟随 symlink。
+// 用于 launchctl setenv 覆盖前的预检查（F-1）。
+func scanPOSIXProfilesForCustomValue(shell, home string, privileged bool) (custom bool, err error) {
+	for _, profile := range resolveShellProfiles(shell, home) {
+		if privileged {
+			if e := isSafeForWrite(profile); e != nil {
+				return false, fmt.Errorf("%w: %s", ErrUnsafeProfile, profile)
+			}
+		}
+		existing, err := readProfile(profile)
+		if err != nil {
+			return false, err
+		}
+		if profileHasNodeCAKeyOutsideMCCBlock(shell, string(existing)) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// readProfile 读取 profile 内容用于扫描/写入决策。
+// 不存在视为空 profile（将创建），返回空内容 + nil。其他读取错误（权限、I/O、
+// 路径是目录等）原样返回，调用方必须上抛——否则会在 setx/launchctl 之前误判
+// "无用户自定义值"，导致环境被改而 profile 未改（F-1 fail-open）。
+func readProfile(profile string) ([]byte, error) {
+	b, err := os.ReadFile(profile)
+	if err == nil {
+		return b, nil
+	}
+	if !os.IsNotExist(err) {
+		// 非 NotExist 错误（权限、是目录、Linux ENOTDIR 等）原样上抛。
+		return nil, fmt.Errorf("read profile %s: %w", profile, err)
+	}
+	// NotExist：必须区分"叶子缺失（可创建）"和"祖先路径无效"。Windows 的
+	// ERROR_PATH_NOT_FOUND（祖先是文件/路径断裂）也被 os.IsNotExist 视为 true，
+	// 若直接当空 profile 会让 setx/launchctl 先执行，之后 MkdirAll 才失败（F-1）。
+	// validateParentChain 校验父链：叶子缺失才视为空，祖先无效则上抛。
+	if err := validateParentChain(profile); err != nil {
+		return nil, fmt.Errorf("read profile %s: %w", profile, err)
+	}
+	return nil, nil
+}
+
+// validateParentChain 确认 profile 的父目录链可被 MkdirAll 创建，关闭
+// Windows ERROR_PATH_NOT_FOUND / Linux 中间组件无效的 F-1 缺口。从直接父目录
+// 逐级向上 Stat（跟随 symlink，匹配 MkdirAll 语义），第一个存在的祖先必须是目录；
+// 若它是文件，MkdirAll 必失败 → 返回错误。若回溯到仍不存在的文件系统根（Windows
+// 未挂载盘符或不存在的 UNC share），同样返回错误，因为 MkdirAll 无法创建该根。
+// TOCTOU（校验与 MkdirAll 之间父链被替换）仍为残余风险。
+func validateParentChain(profile string) error {
+	return validateParentChainWithStat(profile, os.Stat)
+}
+
+// validateParentChainWithStat 承载父链遍历；stat 参数让测试可在任意平台确定性模拟
+// Windows 缺失卷根/UNC 根，不引入可变的包级测试 hook。
+func validateParentChainWithStat(profile string, stat func(string) (os.FileInfo, error)) error {
+	dir := filepath.Dir(profile)
+	for {
+		fi, err := stat(dir)
+		if err == nil {
+			if !fi.IsDir() {
+				return fmt.Errorf("parent %s is not a directory", dir)
+			}
+			return nil // 最近现存祖先是目录，叶子缺失可创建
+		}
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("stat parent %s: %w", dir, err)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return fmt.Errorf("filesystem root %s does not exist: %w", dir, err)
+		}
+		dir = parent
+	}
+}
+
+// isSafeForWrite 检查路径可安全写入：拒绝符号链接和非常规文件（CWE-59）。
+// 不存在视为安全（将创建）。高权限启动 + 用户可控路径（HOME/dataDir）时，符号链接
+// 可能指向高权限文件，os.ReadFile/WriteFile 会跟随链接越权读写，故读/写前都需先过此检查。
+// 用于 shell profile 和 bootstrap marker（.node-ca-persisted）。
+func isSafeForWrite(path string) error {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // 不存在 → 安全，将创建
+		}
+		return err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refuse symlink path (CWE-59): %s", path)
+	}
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("refuse non-regular path: %s", path)
+	}
+	return nil
+}
+
+func (a *osEnvAdapter) writePwshProfileNodeCA(caCertPath string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("user home dir: %w", err)
+	}
+	if !pwshDetected() {
+		return nil // pwsh 未安装，跳过
+	}
+	candidates := pwshProfileCandidates(home)
+
+	// P2-1: CA 路径必须渲染为 PowerShell 单引号字面量，杜绝 $() / 反引号注入。
+	// home 内用 Join-Path $env:USERPROFILE 保留可移植性；home 外用绝对路径单引号字面量。
+	var caRef string
+	sep := string(os.PathSeparator)
+	if strings.HasPrefix(caCertPath, home+sep) {
+		rel := strings.TrimPrefix(caCertPath, home+sep)
+		encoded, err := pwshSingleQuote(rel)
+		if err != nil {
+			return err
+		}
+		caRef = "Join-Path $env:USERPROFILE " + encoded
+	} else {
+		encoded, err := pwshSingleQuote(caCertPath)
+		if err != nil {
+			return err
+		}
+		caRef = encoded
+	}
+	block := fmt.Sprintf("%s\n"+
+		"$mccCa = %s\n"+
+		"if (Test-Path $mccCa) { $env:NODE_EXTRA_CA_CERTS = $mccCa }\n"+
+		"%s\n", pwshProfileMarkerBegin, caRef, pwshProfileMarkerEnd)
+
+	// 1b 策略：高权限严格（symlink fail-closed），非特权跟随 symlink（dotfiles 兼容）
+	privileged := isPrivilegedRun()
+	// 阶段 1：扫描所有候选，任一有用户自定义值则全部放弃
+	for _, profile := range candidates {
+		if privileged {
+			if e := isSafeForWrite(profile); e != nil {
+				return fmt.Errorf("%w: %s", ErrUnsafeProfile, profile)
+			}
+		}
+		existing, err := readProfile(profile)
+		if err != nil {
+			return err
+		}
+		if pwshProfileHasNodeCAVarOutsideMCCBlock(string(existing)) {
+			return ErrUserCustomValue
+		}
+	}
+
+	// 阶段 2：全部无自定义，逐个写入
+	var lastErr error
+	wrote := false
+	for _, profile := range candidates {
+		if privileged {
+			if e := isSafeForWrite(profile); e != nil {
+				lastErr = fmt.Errorf("%w: %s", ErrUnsafeProfile, profile)
+				continue
+			}
+		}
+		existing, err := readProfile(profile)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		// 先清理旧版 mcc $mccCa 残留（升级迁移），再写入/更新 mcc 块
+		stripped, stripChanged := stripLegacyMCCNodeCALines(string(existing))
+		updated, blockChanged := replaceMarkedBlock(stripped, pwshProfileMarkerBegin, pwshProfileMarkerEnd, block)
+		if !stripChanged && !blockChanged {
+			wrote = true
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(profile), 0755); err != nil {
+			lastErr = err
+			continue
+		}
+		if err := writeFileSync(profile, []byte(updated), 0644); err != nil {
+			lastErr = err
+			continue
+		}
+		wrote = true
+	}
+	if wrote && lastErr != nil {
+		return fmt.Errorf("%w: some pwsh profiles failed: %w", ErrPartialSuccess, lastErr)
+	}
+	if !wrote && lastErr != nil {
+		return lastErr
+	}
+	return nil
+}
+
+// pwshNodeCAAssignRe matches PowerShell assignment patterns for NODE_EXTRA_CA_CERTS:
+// $env:NODE_EXTRA_CA_CERTS = ..., $NODE_EXTRA_CA_CERTS = ...
+// Requires = after optional whitespace to distinguish assignments from reads/checks.
+var pwshNodeCAAssignRe = regexp.MustCompile(`(?i)\$(?:env:)?NODE_EXTRA_CA_CERTS\s*=`)
+
+// pwshProfileHasNodeCAVarOutsideMCCBlock 检测 profile 中是否存在非 mcc 管理的
+// NODE_EXTRA_CA_CERTS 赋值（用户手写的 $env:NODE_EXTRA_CA_CERTS = ... 行）。
+func pwshProfileHasNodeCAVarOutsideMCCBlock(content string) bool {
+	inBlock := false
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, pwshProfileMarkerBegin) {
+			inBlock = true
+			continue
+		}
+		if strings.Contains(trimmed, pwshProfileMarkerEnd) {
+			inBlock = false
+			continue
+		}
+		if inBlock || trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if pwshNodeCAAssignRe.MatchString(trimmed) {
+			// $mccCa 是 mcc 写入 profile 的专用变量名（新版块内也在用）。
+			// 块外出现引用 $mccCa 的旧版赋值，视为 mcc 旧版管理，不报自定义。
+			if strings.Contains(trimmed, "$mccCa") {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// stripLegacyMCCNodeCALines 删除 mcc 块外、匹配 $mccCa 的非注释行
+// （旧版 mcc 写入的 $mccCa = ... 和 if (Test-Path $mccCa) ... 残留）。
+// 保留 mcc 块内、注释行、用户其他内容。changed 表示是否实际改动。
+//
+// 升级场景：旧版 mcc 写入的 profile 没有新版 begin/end 标记，新版本
+// 检测会判为"块外自定义"。识别后由 writePwshProfileNodeCA 调用本函数
+// 清理旧版残留，再用 replaceMarkedBlock 写入新 mcc 块，完成一次性迁移。
+func stripLegacyMCCNodeCALines(content string) (string, bool) {
+	var kept []string
+	inBlock := false
+	changed := false
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, pwshProfileMarkerBegin) {
+			inBlock = true
+			kept = append(kept, line)
+			continue
+		}
+		if strings.Contains(trimmed, pwshProfileMarkerEnd) {
+			inBlock = false
+			kept = append(kept, line)
+			continue
+		}
+		// 块外、非注释、含 $mccCa（mcc 专用变量）→ 旧版残留，删除
+		if !inBlock && trimmed != "" && !strings.HasPrefix(trimmed, "#") && strings.Contains(trimmed, "$mccCa") {
+			changed = true
+			continue
+		}
+		kept = append(kept, line)
+	}
+	if !changed {
+		return content, false
+	}
+	return strings.Join(kept, "\n"), true
+}
+
+// replaceMarkedBlock 在 content 里替换 begin..end 标记之间的内容为 newBlock。
+// 若标记不存在则追加。changed 表示是否实际改动。
+func replaceMarkedBlock(content, begin, end, newBlock string) (string, bool) {
+	bi := strings.Index(content, begin)
+	ei := strings.Index(content, end)
+	if bi >= 0 && ei > bi {
+		// 已有标记块：比较内容，相同则不改
+		existing := content[bi : ei+len(end)]
+		if existing == strings.TrimRight(newBlock, "\n") {
+			return content, false
+		}
+		// 不同（路径变了）：替换
+		return content[:bi] + newBlock + content[ei+len(end):], true
+	}
+	// 无标记块：追加
+	if content != "" && !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	return content + newBlock, true
+}
+
+// --- macOS implementation ---
+
+func (a *osEnvAdapter) persistNodeCACertDarwin(caCertPath string) error {
+	// F-1 fail-closed: launchctl 前预检查所有 profile（同 Windows scan 语义）。
+	shell := os.Getenv("SHELL")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("user home dir: %w", err)
+	}
+	custom, scanErr := scanPOSIXProfilesForCustomValue(shell, home, isPrivilegedRun())
+	if scanErr != nil {
+		return scanErr
+	}
+	if custom {
+		return ErrUserCustomValue
+	}
+	// ① launchctl setenv 注入当前 GUI 会话
+	var launchctlErr error
+	if hasLaunchctl() {
+		if err := launchctlSetenv("NODE_EXTRA_CA_CERTS", caCertPath); err != nil {
+			launchctlErr = err
+			log.Printf("[Bootstrap] launchctl setenv failed: %v", launchctlErr)
+		}
+	}
+
+	// ② profile 持久化
+	profileErr := a.writePOSIXProfileNodeCA(caCertPath)
+
+	// 5 步判定（同 Windows 结构）
+	if errors.Is(profileErr, ErrUserCustomValue) {
+		return ErrUserCustomValue
+	}
+	if launchctlErr != nil && profileErr != nil {
+		return fmt.Errorf("launchctl: %v; profile: %w", launchctlErr, profileErr)
+	}
+	if launchctlErr != nil {
+		return fmt.Errorf("%w: launchctl: %v", ErrPartialSuccess, launchctlErr)
+	}
+	if profileErr != nil {
+		if errors.Is(profileErr, ErrPartialSuccess) {
+			return profileErr // writePOSIXProfileNodeCA 已包装为 partial，避免双重包装
+		}
+		return fmt.Errorf("%w: profile: %w", ErrPartialSuccess, profileErr)
+	}
+	return nil
+}
+
+// --- POSIX (macOS/Linux) shared implementation ---
+
+const (
+	posixCABlockBegin = "# >>> mcc: Node.js CA trust >>>"
+	posixCABlockEnd   = "# <<< mcc <<<"
+)
+
+func (a *osEnvAdapter) persistNodeCACertPOSIX(caCertPath string) error {
+	return a.writePOSIXProfileNodeCA(caCertPath)
+}
+
+func (a *osEnvAdapter) writePOSIXProfileNodeCA(caCertPath string) error {
+	shell := os.Getenv("SHELL")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("user home dir: %w", err)
+	}
+
+	exportLine := nodeCAExportLine(shell, caCertPath)
+	block := fmt.Sprintf("%s\n%s\n%s\n", posixCABlockBegin, exportLine, posixCABlockEnd)
+
+	profiles := resolveShellProfiles(shell, home)
+
+	// 1b 策略：高权限严格（symlink fail-closed），非特权跟随 symlink（dotfiles 兼容）
+	privileged := isPrivilegedRun()
+	// 阶段 1：扫描所有候选，任一有用户自定义值则全部放弃
+	for _, profile := range profiles {
+		if privileged {
+			if e := isSafeForWrite(profile); e != nil {
+				return fmt.Errorf("%w: %s", ErrUnsafeProfile, profile)
+			}
+		}
+		existing, err := readProfile(profile)
+		if err != nil {
+			return err
+		}
+		if profileHasNodeCAKeyOutsideMCCBlock(shell, string(existing)) {
+			return ErrUserCustomValue
+		}
+	}
+
+	// 阶段 2：全部无自定义，逐个写入
+	var lastErr error
+	for _, profile := range profiles {
+		if privileged {
+			if e := isSafeForWrite(profile); e != nil {
+				lastErr = fmt.Errorf("%w: %s", ErrUnsafeProfile, profile)
+				continue
+			}
+		}
+		existing, err := readProfile(profile)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		updated, changed := replaceMarkedBlock(string(existing), posixCABlockBegin, posixCABlockEnd, block)
+		if !changed {
+			return nil // 已含相同块
+		}
+		if err := os.MkdirAll(filepath.Dir(profile), 0755); err != nil {
+			lastErr = err
+			continue
+		}
+		if err := writeFileSync(profile, []byte(updated), 0644); err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return fmt.Errorf("no profile file writable (tried %v)", profiles)
+}
+
+// profileHasNodeCAKeyOutsideMCCBlock 检测 profile 中是否存在非 mcc 管理的
+// NODE_EXTRA_CA_CERTS 赋值（用户手写的 export/set 行，不在 mcc 标记块内）。
+func profileHasNodeCAKeyOutsideMCCBlock(shell, content string) bool {
+	inBlock := false
+	isFish := strings.Contains(shell, "fish")
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, posixCABlockBegin) {
+			inBlock = true
+			continue
+		}
+		if strings.Contains(trimmed, posixCABlockEnd) {
+			inBlock = false
+			continue
+		}
+		if inBlock || trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if isFish {
+			parsed, ok := parseFishExportLine(trimmed)
+			if ok && parsed.hasExport && parsed.key == "NODE_EXTRA_CA_CERTS" {
+				return true
+			}
+		} else {
+			rest := strings.TrimPrefix(trimmed, "export ")
+			rest = strings.TrimSpace(rest)
+			if strings.HasPrefix(rest, "NODE_EXTRA_CA_CERTS=") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func nodeCAExportLine(shell, caCertPath string) string {
+	if strings.Contains(shell, "fish") {
+		return fmt.Sprintf("set -gx NODE_EXTRA_CA_CERTS %s", shellQuote(caCertPath))
+	}
+	return fmt.Sprintf("export NODE_EXTRA_CA_CERTS=%s", shellQuote(caCertPath))
 }
 
 // writeCloser is the minimal interface writeProfileEntry needs from a profile
@@ -721,7 +1345,7 @@ func resolveShellProfiles(shell, home string) []string {
 
 func shellExportEntry(shell, key, value string) string {
 	if strings.Contains(shell, "fish") {
-		return fmt.Sprintf("\nset -x %s %s\n", key, shellQuote(value))
+		return fmt.Sprintf("\nset -gx %s %s\n", key, shellQuote(value))
 	}
 	return fmt.Sprintf("\nexport %s=%s\n", key, shellQuote(value))
 }

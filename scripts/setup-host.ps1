@@ -143,8 +143,8 @@ function Install-CA {
 
     Write-Info "CA 已安装到 Windows 根证书存储。"
     Write-Marker "ca-trust-installed" -CertPath $cert
-    Write-Info "提示: 如果使用 Node.js (Claude Code)，还需设置环境变量:"
-    Write-Host "  setx NODE_EXTRA_CA_CERTS `"$cert`""
+    Write-Info "下一步: 关闭管理员 PowerShell，以普通用户启动一次 mcc，让它自动配置 NODE_EXTRA_CA_CERTS。"
+    Write-Info "mcc 启动完成后，请完全退出并重新启动 Orca；若仍未生效，请注销并重新登录 Windows。"
 }
 
 # ─── 主逻辑 ───
@@ -159,6 +159,6 @@ switch ($Action) {
         Write-Host ""
         Install-CA
         Write-Host ""
-        Write-Info "全部配置完成！现在可以启动 Claude Code 了。"
+        Write-Info "系统级配置完成：hosts 已更新，CA 已安装。请按上方提示以普通用户启动 mcc。"
     }
 }
