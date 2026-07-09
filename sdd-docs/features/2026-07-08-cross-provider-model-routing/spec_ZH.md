@@ -1,6 +1,6 @@
 # 跨 Provider 模型路由规格
 
-本地页面：管理后台 Provider 编辑弹窗（`ProviderModal.vue`）/ 代理入口：`:443 /v1/messages` 与 `:443 /api/claude_cli/bootstrap` / 参考源站：`claude-code-src/src/src`（Claude Code 2.1.88 源码） / 技术栈：Go 1.26 标准库 + Vue 3 + 内嵌前端 / 最后更新：2026-07-08 / 进度：0 / 6 planned
+本地页面：管理后台 Provider 编辑弹窗（`ProviderModal.vue`）/ 代理入口：`:443 /v1/messages` 与 `:443 /api/claude_cli/bootstrap` / 参考源站：`claude-code-src/src/src`（Claude Code 2.1.88 源码） / 技术栈：Go 1.26 标准库 + Vue 3 + 内嵌前端 / 最后更新：2026-07-08 / 进度：0 / 7 planned
 
 ## 整体分析（源站分析）
 
@@ -104,7 +104,7 @@ if (getAPIProvider() !== 'firstParty') {
 - `isModelAllowed`（`modelAllowlist.ts:91-106`）：`availableModels` 未设置时放行所有模型；默认无白名单。
 - 菜单去重（`modelOptions.ts:481`）：注入项的 value 若与内置项重复则被忽略。
 
-→ **结论：任意非 `claude-*` 前缀的自定义字符串（如 `glm-4.6`、`kimi-k2`）都能被接受并写进请求。约束：`ExposedModel.ID` 不得使用 `claude-*` 前缀（会与内置项撞名被忽略），不得含 `[1m]` 后缀（会被 `parseUserSpecifiedModel` 按 1M 上下文特殊处理）。
+→ **结论：任意非 `claude-*` 前缀的自定义字符串（如 `glm-4.6`、`kimi-k2`）都能被接受并写进请求。约束：`ExposedModel.ID` 不得使用 `claude-*` 前缀（会与内置项撞名被忽略），不得含 `[1m]` 后缀（会被 `parseUserSpecifiedModel` 按 1M 上下文特殊处理），不得使用 `sonnet`/`opus`/`haiku`/`opusplan` 这些 Claude Code 别名。
 
 ### mcc 现状（改动基线）
 
@@ -113,10 +113,12 @@ if (getAPIProvider() !== 'firstParty') {
 | `internal/config/provider.go` | `Provider` 有 `ModelMappings map[string]string`（单 provider 内 client→backend 映射）；`MapModel(model)` 方法；`Validate()` | struct 定义 23-103，`MapModel` 239-247 |
 | `internal/config/config.go` | `Config.Providers []Provider` + `ActiveProviderID`；`GetActiveProvider()` 固定返回单一 active；`Validate()` 校验 | 21-60，`GetActiveProvider` 211-230 |
 | `internal/config/store.go` | `Store.Save` 用 `json.MarshalIndent(cfg)`，`Load` 用 `json.Unmarshal` —— **JSON 透传，新增字段自动支持** | 31-65 |
+| `internal/config/sqlite_store.go` | **不是 JSON 透传**：Provider 字段分散在 `providers` 表与 `provider_model_mappings` 表；新增字段必须显式加 SQLite schema/load/save，否则 SQLite 模式保存后会丢失 | `ensureProviderColumns` 145-162，`loadProviders` 290-346，`saveProviders` 386-432，`upsertProvider` 435-509 |
 | `internal/proxy/handler.go` | `ServeHTTP`：`activeProvider := cfg.GetActiveProvider()` → `activeProvider.MapModel(...)` → `transformRequest(body, activeProvider)`；`transformRequest` 内部自己做 `MapModel` + `MultimodalSwitch` override | `GetActiveProvider` 用法 73-91，`transformRequest` 625-695，model 映射 640-649 |
 | `internal/proxy/hardcoded.go` | `handleBootstrap` 返回固定空 `additional_model_options`，**不读 config** | 408-414 |
-| `internal/admin/provider_handler.go` | **手动枚举字段模式**：`providerResponseMap`、`createProvider.req`+构造、`updateProvider.req`+逐字段更新、`handleProviderDuplicate` 构造 —— 共 5 处需加字段 | responseMap 19-47，create 85-195，update 240-381，duplicate 781-806 |
+| `internal/admin/provider_handler.go` | **手动枚举字段模式**：`providerResponseMap`、`createProvider.req`+构造、`updateProvider.req`+逐字段更新、`handleProviderDuplicate` 构造；create/update/response/import 透传，duplicate 清空 `ExposedModels` | responseMap 19-47，create 85-195，update 240-381，duplicate 781-806 |
 | `internal/frontend/src/components/ProviderModal.vue` | provider 编辑表单；`model_mappings` 用动态数组 + add/remove 按钮（134-147 行） | mappings 状态 195，collect 245-252 |
+| `internal/frontend/src/composables/useApi.ts` | Provider TypeScript 类型与 create/update payload 类型手动声明，新增 `exposed_models` 必须同步类型 | `Provider` interface 29-55，`createProvider`/`updateProvider` payload 446 起 |
 
 ### 核心设计
 
@@ -146,17 +148,20 @@ if (getAPIProvider() !== 'firstParty') {
 3. **`transformRequest` 重构风险**：现有 `transformRequest` 内部调 `MapModel`；改造后 model 解析上移到 `ResolveModel`，`transformRequest` 改为接收已解析的 `backendModel`。必须保证 multimodal override 语义不变、OpenAI 格式转换路径不受影响。
 4. **bootstrap 读 config 失败**：回退到空 `additional_model_options`（与今天行为一致），不阻断 Claude Code 启动。
 5. **菜单项与内置项撞名**：`ExposedModel.ID` 用 `claude-*` 会被菜单去重忽略。命名约束写进校验与文档。
+6. **SQLite 持久化遗漏**：`Store` 是 JSON 透传，但 `SQLiteStore` 不是；如果不显式持久化 `ExposedModels`，管理端保存后在 SQLite 模式下会丢配置。
+7. **复制 Provider 与全局唯一性冲突**：duplicate 若直接复制 `ExposedModels`，新旧 provider 立刻产生重复 ID。复制 provider 时默认清空 `ExposedModels`，由用户手动重新命名后保存。
 
 ## 开发检查清单
 
 | 序号 | 状态 | 任务 | 产出 | 验证 |
 | --- | --- | --- | --- | --- |
 | 1 | Planned | config 层：`ExposedModel` 类型 + `Provider.ExposedModels` + 校验 + `ResolveModel` | `internal/config/provider.go`、`internal/config/config.go` | `go test ./internal/config/...` |
-| 2 | Planned | 代理路由接入：`handler.go` 用 `ResolveModel`，`transformRequest` 改签名 | `internal/proxy/handler.go` | `go test ./internal/proxy/...` |
-| 3 | Planned | bootstrap 注入：`handleBootstrap` 读 config 输出 `additional_model_options` | `internal/proxy/hardcoded.go` | bootstrap 单测 |
-| 4 | Planned | admin API 透传 `ExposedModels`（5 处） | `internal/admin/provider_handler.go` | `go test ./internal/admin/...` |
-| 5 | Planned | 前端 Provider 编辑表单加"对外模型"编辑区 + i18n | `ProviderModal.vue`、`useI18n.ts` | `npm run build` |
-| 6 | Planned | 端到端验证 + 回归 | 验证记录 | 手动全链路 + `make test` |
+| 2 | Planned | SQLite 持久化：`SQLiteStore` 保存/加载 `ExposedModels` | `internal/config/sqlite_store.go` | SQLite round-trip 单测 |
+| 3 | Planned | 代理路由接入：`handler.go` 用 `ResolveModel`，`transformRequest` 改签名 | `internal/proxy/handler.go` | `go test ./internal/proxy/...` |
+| 4 | Planned | bootstrap 注入：`handleBootstrap` 读 config 输出 `additional_model_options` | `internal/proxy/hardcoded.go` | bootstrap 单测 |
+| 5 | Planned | admin API 透传 `ExposedModels`（create/update/response/import；duplicate 清空） | `internal/admin/provider_handler.go` | `go test ./internal/admin/...` |
+| 6 | Planned | 前端 Provider 编辑表单加"对外模型"编辑区 + i18n + API 类型 | `ProviderModal.vue`、`useI18n.ts`、`useApi.ts` | `npm run build` |
+| 7 | Planned | 端到端验证 + 回归 | 验证记录 | 手动全链路 + `make test` |
 
 ## 需求
 
@@ -164,18 +169,19 @@ if (getAPIProvider() !== 'firstParty') {
 
 1. `ExposedModel` 类型与 `Provider.ExposedModels` 字段，JSON tag 为 `exposed_models,omitempty`。
 2. `Config.Validate()` 跨 provider 校验所有 `ExposedModel.ID` 全局唯一（大小写敏感、去空白），重复返回描述性错误。
-3. `Provider.Validate()` 校验单个 `ExposedModel`：`ID`/`Label` 非空（trim 后非空）；`ID` 不得以 `claude-` 开头、不得含 `[1m]`；`BackendModel` 为空时在 `ResolveModel` 内回退到 `ID`（不强制要求填写）。
+3. `Provider.Validate()` 校验单个 `ExposedModel`：`ID`/`Label` 非空（trim 后非空）；`ID` 不得以 `claude-` 开头、不得含 `[1m]`，不得等于 `sonnet`/`opus`/`haiku`/`opusplan`；建议仅允许 `[A-Za-z0-9._:-]+`，避免空白和控制字符；`BackendModel` 为空时在 `ResolveModel` 内回退到 `ID`（不强制要求填写）。
 4. `Config.ResolveModel(model string) (*Provider, string)` 方法，语义见"核心设计"。
 5. `handler.go` 的 `ServeHTTP` 用 `ResolveModel` 替代 `GetActiveProvider` + `MapModel` 两步；`transformRequest` 签名改为 `(body, provider, backendModel)`，移除其内部 `MapModel` 调用，保留 `MultimodalSwitch` override 与格式转换。
 6. `handleBootstrap` 读 config，收集 enabled provider 的 `ExposedModels` 生成 `additional_model_options`；读失败回退空数组。
-7. admin API 的 create/update/response/duplicate 5 处透传 `ExposedModels`；导入/导出因用 `config.Provider` 直接序列化，自动支持。
-8. 前端 `ProviderModal.vue` 新增"对外模型"编辑区（ID/Label/Description/BackendModel 四列动态表格），复用 `model_mappings` 的 add/remove 交互模式。
-9. 单元测试覆盖：`ResolveModel` 全分支、跨 provider ID 唯一性校验、`handleBootstrap` 收集逻辑与 schema 字段名、handler 路由集成。
+7. `SQLiteStore` 显式持久化 `ExposedModels`；JSON `Store` 无需改动。
+8. admin API 的 create/update/response/import 透传 `ExposedModels`；duplicate **不复制** `ExposedModels`（避免全局唯一 ID 冲突）；导出因用 `config.Provider` 直接序列化，自动包含该字段。
+9. 前端 `ProviderModal.vue` 新增"对外模型"编辑区（ID/Label/Description/BackendModel 动态表格），同步更新 `useApi.ts` 类型和 `useI18n.ts` 文案。
+10. 单元测试覆盖：`ResolveModel` 全分支、跨 provider ID 唯一性校验、SQLite round-trip、`handleBootstrap` 收集逻辑与 schema 字段名、handler 路由集成、admin create/update/import/duplicate 行为。
 
 ### 约束
 
 - 向后兼容：未配置 `ExposedModels` 的 provider 行为与今天完全一致（`ResolveModel` 走 fallback）。
-- 存储层（`Store`/`SQLiteStore`）JSON 透传，无需改动。
+- `Store`（JSON 文件）是 JSON 透传，无需额外持久化逻辑；`SQLiteStore` 不是 JSON 透传，必须显式新增持久化字段/编解码逻辑。
 - `ExposedModel.ID` 全局唯一性是路由正确性的硬约束。
 - 不修改 Claude Code 源码；本功能完全在 mcc 侧实现。
 
@@ -186,6 +192,7 @@ if (getAPIProvider() !== 'firstParty') {
 - 同一 provider 内两个 `ExposedModel` 指向相同 `BackendModel`：不报错（无意义但合法）。
 - `handleBootstrap` 收集到多个 provider 暴露同 `ID`：去重保留第一个（配置校验已禁止，此处为防御性）。
 - `additional_model_options` 为空数组时 Claude Code `/model` 菜单无变化。
+- 复制 provider：新 provider 默认 `ExposedModels` 为空，避免与原 provider 产生全局 ID 冲突；用户需要手动新增/改名后保存。
 
 ## 任务详情
 
@@ -261,6 +268,15 @@ for i, em := range p.ExposedModels {
     if strings.Contains(id, "[1m]") {
         return fmt.Errorf("exposed_models[%d]: id must not contain \"[1m]\" (reserved by Claude Code 1M-context handling)", i)
     }
+    switch id {
+    case "sonnet", "opus", "haiku", "opusplan":
+        return fmt.Errorf("exposed_models[%d]: id %q is reserved by Claude Code model aliases", i, id)
+    }
+    if strings.IndexFunc(id, func(r rune) bool {
+        return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == ':' || r == '-')
+    }) >= 0 {
+        return fmt.Errorf("exposed_models[%d]: id may only contain letters, digits, '.', '_', ':' and '-'", i)
+    }
     if seenExposedIDs[id] {
         return fmt.Errorf("exposed_models[%d]: duplicate id %q within provider", i, id)
     }
@@ -268,7 +284,20 @@ for i, em := range p.ExposedModels {
 }
 ```
 
-注意：`provider.go` 当前未 import `strings`，需在 import 块加入 `"strings"`。
+注意：
+- `provider.go` 当前未 import `strings`，需在 import 块加入 `"strings"`。
+- 保存前应规范化 `ExposedModel` 字段：`ID`、`Label`、`Description`、`BackendModel` 都 trim 后落盘；否则 bootstrap 可能输出带空白的 `model` 值，导致 `/model` 选中后的请求值和 `ResolveModel` 比较口径不一致。在 `Provider.Validate()` 的 ExposedModel 校验段**开头**用索引遍历 trim 后回写结构体（校验与后续逻辑都基于 trim 后的值）：
+
+```go
+for i := range p.ExposedModels {
+    p.ExposedModels[i].ID = strings.TrimSpace(p.ExposedModels[i].ID)
+    p.ExposedModels[i].Label = strings.TrimSpace(p.ExposedModels[i].Label)
+    p.ExposedModels[i].Description = strings.TrimSpace(p.ExposedModels[i].Description)
+    p.ExposedModels[i].BackendModel = strings.TrimSpace(p.ExposedModels[i].BackendModel)
+}
+```
+
+  注意此 trim 回写必须在 `for i, em := range p.ExposedModels` 校验循环**之前**执行，否则校验读到的是未 trim 的副本。
 
 **文件 2：`internal/config/config.go`**
 
@@ -468,7 +497,132 @@ go test -v -race ./internal/config/...
 
 ---
 
-### 任务 2：代理路由接入——handler.go
+### 任务 2：SQLite 持久化——sqlite_store.go
+
+#### 需求
+
+**Objective（目标）** — 让 SQLite 配置存储完整保存/加载 `Provider.ExposedModels`，避免管理端保存后自定义模型配置丢失。
+
+**Outcomes（成果）** — `internal/config/sqlite_store.go` 变更；SQLite round-trip 测试证明 `ExposedModels` 在 Save→Load 后完整保留。
+
+**Evidence（证据）** — 测试覆盖新库建表、旧库自动加列、保存后重新加载、legacy JSON migration 后字段保留。
+
+**Constraints（约束）** — JSON `Store` 不需要改；SQLite 现有 `providers` 表结构保持向后兼容；新增字段默认空数组；损坏 JSON 返回明确错误。
+
+**Edge Cases（边界）** — `nil`/空切片都保存为 `[]`；旧 SQLite 数据库无该列时自动 `ALTER TABLE`；加载空字符串或 `[]` 时得到 nil/空切片均可，但 API 输出必须稳定为 `[]` 或省略，由现有 JSON 行为决定。
+
+**Verification（验证）** — `go test -v -race ./internal/config/...`，重点包含 SQLiteStore round-trip。
+
+#### 计划
+
+**文件：`internal/config/sqlite_store.go`**
+
+新增 `providers.exposed_models` JSON 文本列：
+
+```go
+// ensureProviderColumns 的 columns map 中新增：
+"exposed_models": `ALTER TABLE providers ADD COLUMN exposed_models TEXT NOT NULL DEFAULT '[]'`,
+```
+
+改 `loadProviders()`：
+
+- SQL SELECT 列表加入 `exposed_models`。
+- Scan 变量加入 `exposedModels string`。
+- Scan 后调用 `decodeExposedModels(exposedModels)`，赋给 `p.ExposedModels`。
+
+改 `upsertProvider()`：
+
+- 在编码 `openAIExtraParams` 和 `quotaQueryConfig` 附近新增：
+
+```go
+exposedModels, err := encodeExposedModels(provider.ExposedModels)
+if err != nil {
+    return err
+}
+```
+
+- INSERT 列表、VALUES 占位符、ON CONFLICT 更新列表、Exec 参数全部加入 `exposed_models`。
+
+新增编解码 helper：
+
+```go
+func encodeExposedModels(models []ExposedModel) (string, error) {
+    if len(models) == 0 {
+        return "[]", nil
+    }
+    data, err := json.Marshal(models)
+    if err != nil {
+        return "", fmt.Errorf("encode exposed_models: %w", err)
+    }
+    return string(data), nil
+}
+
+func decodeExposedModels(value string) ([]ExposedModel, error) {
+    if strings.TrimSpace(value) == "" {
+        return nil, nil
+    }
+    var models []ExposedModel
+    if err := json.Unmarshal([]byte(value), &models); err != nil {
+        return nil, err
+    }
+    return models, nil
+}
+```
+
+注意：`sqlite_store.go` 已有 `encoding/json`、`fmt`，但当前没有 `strings`，新增 `decodeExposedModels` 后需要把 `"strings"` 加入 import；不要引入新表，`exposed_models` 是 provider 的嵌套配置，JSON 列足够。
+
+**测试：`internal/config/sqlite_store_test.go`（追加）**
+
+测试文件需要用到 `path/filepath` 与 `reflect`。
+
+```go
+func TestSQLiteStoreRoundTripsExposedModels(t *testing.T) {
+    path := filepath.Join(t.TempDir(), "config.db")
+    store, err := NewSQLiteStore(path, "")
+    if err != nil {
+        t.Fatalf("NewSQLiteStore: %v", err)
+    }
+    defer store.Close()
+
+    cfg := DefaultConfig()
+    provider := NewProvider("A", "https://a.example/anthropic", "token")
+    provider.ExposedModels = []ExposedModel{
+        {ID: "glm-4.6", Label: "GLM-4.6", Description: "GLM route", BackendModel: "glm-4.6"},
+        {ID: "kimi-k2", Label: "Kimi K2", BackendModel: "moonshot-v1-128k"},
+    }
+    cfg.Providers = []Provider{*provider}
+    cfg.ActiveProviderID = provider.ID
+
+    if err := store.Save(cfg); err != nil {
+        t.Fatalf("Save: %v", err)
+    }
+    loaded, err := store.Load()
+    if err != nil {
+        t.Fatalf("Load: %v", err)
+    }
+    got := loaded.GetProviderByID(provider.ID)
+    if got == nil {
+        t.Fatal("provider missing after load")
+    }
+    if !reflect.DeepEqual(got.ExposedModels, provider.ExposedModels) {
+        t.Fatalf("ExposedModels = %#v, want %#v", got.ExposedModels, provider.ExposedModels)
+    }
+}
+```
+
+再补一个旧库迁移测试：先创建不含 `exposed_models` 列的 SQLiteStore/或手动 drop 无法 drop 时用旧 schema SQL 建库，再 `NewSQLiteStore` 触发 `ensureProviderColumns`，断言 `PRAGMA table_info(providers)` 包含 `exposed_models` 且默认值可 Load。
+
+#### 验证
+
+```bash
+go test -v -race ./internal/config/...
+```
+
+预期：SQLiteStore 新旧库都能保存/读取 `ExposedModels`。
+
+---
+
+### 任务 3：代理路由接入——handler.go
 
 #### 需求
 
@@ -657,6 +811,12 @@ func (h *Handler) transformRequest(body []byte, provider *config.Provider, backe
 }
 ```
 
+**现有测试同步要求**：`server_test.go` 中有多处直接调用 `handler.transformRequest(body, provider)`。改签名后必须全部补第三参：
+- 普通模型映射测试：传 `provider.MapModel(originalModel)`，例如 original=`claude-sonnet-4-5` 时传 `provider.MapModel("claude-sonnet-4-5")`。
+- 不关心模型映射、只测 thinking/清洗/格式转换的测试：传请求体里的原始 model，或先解析后传同值。
+- 新增暴露模型路径测试：传 `ResolveModel` 得到的 `backendModel`，验证 `ExposedModel.BackendModel` 能成为最终请求 model。
+- 多模态测试：第三参传基础 backend model，仍断言 `MultimodalSwitch` 覆盖为 `MultimodalModel`。
+
 **测试：`internal/proxy/server_test.go`（追加集成测试）**
 
 ```go
@@ -692,7 +852,7 @@ go test -race ./internal/proxy/...
 
 ---
 
-### 任务 3：bootstrap 注入——hardcoded.go
+### 任务 4：bootstrap 注入——hardcoded.go
 
 #### 需求
 
@@ -752,9 +912,9 @@ func (h *Handler) collectAdditionalModelOptions() []map[string]string {
             }
             seen[id] = true
             opts = append(opts, map[string]string{
-                "model":       em.ID,
-                "name":        em.Label,
-                "description": em.Description,
+                "model":       id,
+                "name":        strings.TrimSpace(em.Label),
+                "description": strings.TrimSpace(em.Description),
             })
         }
     }
@@ -825,17 +985,17 @@ go test -v -run TestHandleBootstrap -race ./internal/proxy/...
 
 ---
 
-### 任务 4：admin API 透传 ExposedModels
+### 任务 5：admin API 透传 ExposedModels
 
 #### 需求
 
-**Objective（目标）** — 在 `provider_handler.go` 的 5 处手动枚举位置透传 `ExposedModels`，使前端可读写。
+**Objective（目标）** — 在 `provider_handler.go` 的手动枚举位置透传 `ExposedModels`，使前端可读写；复制 provider 时清空该字段，避免全局唯一 ID 冲突。
 
 **Outcomes（成果）** — `internal/admin/provider_handler.go` 变更；admin 测试覆盖 create/update 带 `ExposedModels`。
 
-**Evidence（证据）** — 测试：POST 创建带 `exposed_models` 的 provider → 响应含该字段；PUT 更新该字段 → 再次 GET 反映更新。
+**Evidence（证据）** — 测试：POST 创建带 `exposed_models` 的 provider → 响应含该字段；PUT 更新该字段 → 再次 GET 反映更新；duplicate 后新 provider 的 `exposed_models` 为空；导入重复 ID 时全局校验拒绝。
 
-**Constraints（约束）** — update 用指针类型（`*[]config.ExposedModel`）做可选更新，与现有可选字段模式一致；校验复用 `Provider.Validate()`（任务 1 已含 ExposedModel 校验）+ `Config.Validate()` 跨 provider 唯一性。
+**Constraints（约束）** — update 用指针类型（`*[]config.ExposedModel`）做可选更新，与现有可选字段模式一致；校验复用 `Provider.Validate()`（任务 1 已含 ExposedModel 校验）+ `Config.Validate()` 跨 provider 唯一性；duplicate 不复制 `ExposedModels`。
 
 **Edge Cases（边界）** — update 传 `null` 与传空数组 `[]` 的区别：传 `null`（字段省略）不变，传 `[]` 清空。`*[]T` 为 nil 时表示"不更新"，非 nil 时（含空切片）表示"替换为该值"。
 
@@ -843,7 +1003,7 @@ go test -v -run TestHandleBootstrap -race ./internal/proxy/...
 
 #### 计划
 
-**文件：`internal/admin/provider_handler.go`**，5 处改动：
+**文件：`internal/admin/provider_handler.go`**，关键改动：
 
 **改动 1：`providerResponseMap`（19-47 行）**，在 `"model_mappings"` 之后加：
 
@@ -877,15 +1037,18 @@ if req.ExposedModels != nil {
 }
 ```
 
-**改动 4：`handleProviderDuplicate` 的 newProvider 构造（781-806 行）**，加：
+**改动 4：`handleProviderDuplicate` 的 newProvider 构造（781-806 行）**：
 
 ```go
-ExposedModels: provider.ExposedModels,
+// 不复制 ExposedModels：ID 需要全局唯一，直接复制会让新旧 provider 冲突。
+ExposedModels: nil,
 ```
 
-**改动 5（校验升级）**：`createProvider` 和 `updateProvider` 现有调用是 `provider.Validate()`（单 provider 校验）。**跨 provider ID 唯一性需要 `cfg.Validate()`**。在两处 `provider.Validate()` 通过后，把 `cfg.Validate()` 也跑一遍（或直接把 `provider.Validate()` 替换为 `cfg.Validate()`——后者内部会调每个 provider 的 `Validate`）。
+也可以省略该字段，让零值 nil 生效；但测试必须明确 duplicate 后不带任何暴露模型。
 
-推荐：在 `s.configStore.Save(cfg)` 之前加：
+**改动 5（校验升级）**：`createProvider` 和 `updateProvider` 现有调用是 `provider.Validate()`（单 provider 校验）。**跨 provider ID 唯一性需要 `cfg.Validate()`**。在 create/update/import/duplicate 四条会写入 config 的路径，在 `Save(cfg)` 前都跑 `cfg.Validate()`（或直接把 create/update 的 `provider.Validate()` 替换为 `cfg.Validate()`——后者内部会调每个 provider 的 `Validate`）。
+
+推荐：在每个 `s.configStore.Save(cfg)` 之前加：
 
 ```go
 if err := cfg.Validate(); err != nil {
@@ -895,7 +1058,7 @@ if err := cfg.Validate(); err != nil {
 }
 ```
 
-保留现有 `provider.Validate()` 或删除均可（`cfg.Validate()` 已覆盖）。为减少重复，可删除 `provider.Validate()` 单独调用，改用 `cfg.Validate()`。**导入路径同样适用**：`handleImportProviders` 当前用 `cp.Validate()`（937 行），需在合并完成后、Save 前加 `cfg.Validate()` 全局校验。
+保留现有 `provider.Validate()` 或删除均可（`cfg.Validate()` 已覆盖）。为减少重复，可删除 `provider.Validate()` 单独调用，改用 `cfg.Validate()`。**导入路径同样适用**：`handleImportProviders` 当前用 `cp.Validate()`（937 行），需在合并完成后、Save 前加 `cfg.Validate()` 全局校验。duplicate 虽然清空了 `ExposedModels`，仍应 Save 前跑 `cfg.Validate()`，防止复制时带入其它非法配置。
 
 **测试：`internal/admin/config_handler_test.go` 或 `provider_handler_test.go`（追加）**
 
@@ -917,6 +1080,11 @@ func TestCreateProvider_WithExposedModels(t *testing.T) {
 func TestUpdateProvider_RejectsDuplicateExposedID(t *testing.T) {
     // provider A 已有 glm-4.6；给 provider B 也加 glm-4.6 → 400
 }
+
+func TestDuplicateProviderClearsExposedModels(t *testing.T) {
+    // 原 provider 有 ExposedModels；duplicate 后新 provider.ExposedModels 必须为空，
+    // 否则 cfg.Validate 会因全局重复 ID 失败，或者留下不可保存配置。
+}
 ```
 
 #### 验证
@@ -929,17 +1097,17 @@ go test -race ./internal/admin/...
 
 ---
 
-### 任务 5：前端 Provider 编辑表单
+### 任务 6：前端 Provider 编辑表单
 
 #### 需求
 
 **Objective（目标）** — `ProviderModal.vue` 新增"对外模型"编辑区，复用 `model_mappings` 的动态数组交互模式。
 
-**Outcomes（成果）** — `ProviderModal.vue`、`internal/frontend/src/composables/useI18n.ts` 变更；`npm run build` 通过。
+**Outcomes（成果）** — `ProviderModal.vue`、`internal/frontend/src/composables/useI18n.ts`、`internal/frontend/src/composables/useApi.ts` 变更；`npm run build` 通过。
 
 **Evidence（证据）** — 前端构建无错；表单能增删 `ExposedModel` 行并随保存提交。
 
-**Constraints（约束）** — 四列：ID / Label / Description / BackendModel；空行不提交；i18n 文案中英双语。
+**Constraints（约束）** — 四列：ID / Label / Description / BackendModel；空行不提交；i18n 文案中英双语；移动端不能挤压重叠；TypeScript API 类型必须同步。
 
 **Edge Cases（边界）** — 用户填了部分字段就保存（后端校验拒绝，前端应预校验非空提示）；编辑现有 provider 时回填。
 
@@ -951,23 +1119,21 @@ go test -race ./internal/admin/...
 
 参照现有 `model_mappings` 实现（134-147 行模板、195 行状态、245-252 行收集）。在 `model_mappings` 编辑区之后新增"对外模型"编辑区：
 
-模板（参照 134-147 行的 `v-for` + add/remove 按钮结构）：
+模板（参照 134-147 行的 `v-for` + add/remove 按钮结构）。不要只用 `pop()` 删除最后一行，必须支持删除当前行；移动端用响应式布局避免四列挤压：
 
 ```vue
 <label class="block text-[13px] font-semibold mb-2">{{ t('modal.exposed_models') }}</label>
 <div class="space-y-2">
-  <div v-for="(em, i) in exposedModels" :key="i" class="grid grid-cols-4 gap-2">
+  <div v-for="(em, i) in exposedModels" :key="i" class="grid grid-cols-1 md:grid-cols-[1fr_1fr_1.2fr_1fr_auto] gap-2">
     <input v-model="em.id" :placeholder="t('modal.exposed_model_id')" class="..." />
     <input v-model="em.label" :placeholder="t('modal.exposed_model_label')" class="..." />
     <input v-model="em.description" :placeholder="t('modal.exposed_model_desc')" class="..." />
     <input v-model="em.backend_model" :placeholder="t('modal.exposed_model_backend')" class="..." />
+    <button type="button" @click="exposedModels.splice(i, 1)">X</button>
   </div>
 </div>
 <button type="button" @click="exposedModels.push({ id: '', label: '', description: '', backend_model: '' })">
   {{ t('modal.add_exposed_model') }}
-</button>
-<button v-if="exposedModels.length > 0" type="button" @click="exposedModels.pop()">
-  {{ t('modal.remove_exposed_model') }}
 </button>
 ```
 
@@ -986,19 +1152,65 @@ if (props.provider?.exposed_models?.length) {
 
 ```ts
 function collectExposedModels() {
-  return exposedModels.value
-    .filter(em => em.id.trim() && em.label.trim()) // 丢弃 id/label 空的行
-    .map(em => ({
-      id: em.id.trim(),
-      label: em.label.trim(),
-      description: em.description.trim(),
-      backend_model: em.backend_model.trim(),
-    }))
+  const rows = exposedModels.value.map(em => ({
+    id: em.id.trim(),
+    label: em.label.trim(),
+    description: em.description.trim(),
+    backend_model: em.backend_model.trim(),
+  }))
+  const partial = rows.find(em => !isEmptyExposedModel(em) && (!em.id || !em.label))
+  if (partial) {
+    return { ok: false as const, error: t('modal.exposed_model_required') }
+  }
+  return { ok: true as const, value: rows.filter(em => !isEmptyExposedModel(em)) }
 }
-// 在提交对象里：exposed_models: collectExposedModels()
+
+function isEmptyExposedModel(em: { id: string; label: string; description: string; backend_model: string }) {
+  return !em.id && !em.label && !em.description && !em.backend_model
+}
 ```
 
-**文件 2：`internal/frontend/src/composables/useI18n.ts`**
+在 `save()` 内先调用 `collectExposedModels()`；失败则显示错误并停止提交；成功时用其 `value`：
+
+```ts
+const collected = collectExposedModels()
+if (!collected.ok) {
+  // 显示 collected.error（例如"对外模型需填写 ID 和显示名"），停止提交
+  formError.value = collected.error
+  return
+}
+// 在提交对象里加（注意是 collected.value，不是 exposed.value）：
+exposed_models: collected.value,
+```
+
+**文件 2：`internal/frontend/src/composables/useApi.ts`**
+
+新增类型并同步 Provider/create/update payload：
+
+```ts
+export interface ExposedModel {
+  id: string
+  label: string
+  description: string
+  backend_model: string
+}
+```
+
+在 `Provider` interface 中加入：
+
+```ts
+exposed_models?: ExposedModel[]
+```
+
+在 `createProvider` 和 `updateProvider` 的 `data` 类型中加入：
+
+```ts
+exposed_models?: ExposedModel[]
+```
+
+否则 `ProviderModal.vue` 的 `props.provider.exposed_models` 和提交 payload 会在 `npm run build` 时出现类型错误。
+
+**文件 3：`internal/frontend/src/composables/useI18n.ts`**
 
 在 i18n 字典的 `modal` 命名空间下加（中英各一份，参照现有 `add_mapping` 等条目位置）：
 
@@ -1010,6 +1222,7 @@ exposed_model_id: 'ID（菜单值）'
 exposed_model_label: '显示名'
 exposed_model_desc: '描述'
 exposed_model_backend: '后端模型名（空=同ID）'
+exposed_model_required: '对外模型需填写 ID 和显示名'
 ```
 
 （实际按 `useI18n.ts` 现有的中英分离结构填写两条。）
@@ -1024,7 +1237,7 @@ npm --prefix internal/frontend run build
 
 ---
 
-### 任务 6：端到端验证 + 回归
+### 任务 7：端到端验证 + 回归
 
 #### 需求
 

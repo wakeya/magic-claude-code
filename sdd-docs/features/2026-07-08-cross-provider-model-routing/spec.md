@@ -1,6 +1,6 @@
 # Cross-Provider Model Routing Spec
 
-Local page: Admin dashboard provider edit modal (`ProviderModal.vue`) / Proxy entry: `:443 /v1/messages` and `:443 /api/claude_cli/bootstrap` / Reference sources: `claude-code-src/src/src` (Claude Code 2.1.88 source) / Stack: Go 1.26 stdlib + Vue 3 + embedded frontend / Last updated: 2026-07-08 / Progress: 0 / 6 planned
+Local page: Admin dashboard provider edit modal (`ProviderModal.vue`) / Proxy entry: `:443 /v1/messages` and `:443 /api/claude_cli/bootstrap` / Reference sources: `claude-code-src/src/src` (Claude Code 2.1.88 source) / Stack: Go 1.26 stdlib + Vue 3 + embedded frontend / Last updated: 2026-07-08 / Progress: 0 / 7 planned
 
 ## Overall Analysis (Source Analysis)
 
@@ -104,7 +104,7 @@ In 3P-provider mode Claude Code does not issue the bootstrap request. But mcc re
 - `isModelAllowed` (`modelAllowlist.ts:91-106`): when `availableModels` is unset, all models are allowed; no allowlist by default.
 - Menu dedup (`modelOptions.ts:481`): an injected value colliding with a built-in item is ignored.
 
-→ **Conclusion: any non-`claude-*` custom string (e.g. `glm-4.6`, `kimi-k2`) is accepted and written into the request. Constraint: `ExposedModel.ID` must not use the `claude-*` prefix (collides with built-in items and is ignored) and must not contain `[1m]` (special-cased as 1M context by `parseUserSpecifiedModel`).**
+→ **Conclusion: any non-`claude-*` custom string (e.g. `glm-4.6`, `kimi-k2`) is accepted and written into the request. Constraint: `ExposedModel.ID` must not use the `claude-*` prefix (collides with built-in items and is ignored), must not contain `[1m]` (special-cased as 1M context by `parseUserSpecifiedModel`), and must not equal Claude Code aliases `sonnet`/`opus`/`haiku`/`opusplan`.**
 
 ### mcc Baseline (change targets)
 
@@ -112,11 +112,13 @@ In 3P-provider mode Claude Code does not issue the bootstrap request. But mcc re
 |------|---------------|---------------|
 | `internal/config/provider.go` | `Provider` has `ModelMappings map[string]string` (single-provider client→backend map); `MapModel(model)`; `Validate()` | struct 23-103, `MapModel` 239-247 |
 | `internal/config/config.go` | `Config.Providers []Provider` + `ActiveProviderID`; `GetActiveProvider()` returns single active; `Validate()` | 21-60, `GetActiveProvider` 211-230 |
-| `internal/config/store.go` | `Store.Save` uses `json.MarshalIndent(cfg)`, `Load` uses `json.Unmarshal` — **JSON pass-through; new fields supported automatically** | 31-65 |
+| `internal/config/store.go` | JSON `Store.Save` uses `json.MarshalIndent(cfg)`, `Load` uses `json.Unmarshal` — new fields supported automatically | 31-65 |
+| `internal/config/sqlite_store.go` | **Not JSON pass-through**: provider fields are explicitly stored in SQLite columns/tables; `ExposedModels` must be added to schema/load/save or SQLite mode will drop the setting | `ensureProviderColumns` 145-162, `loadProviders` 290-346, `saveProviders` 386-432, `upsertProvider` 435-509 |
 | `internal/proxy/handler.go` | `ServeHTTP`: `activeProvider := cfg.GetActiveProvider()` → `activeProvider.MapModel(...)` → `transformRequest(body, activeProvider)`; `transformRequest` internally does `MapModel` + `MultimodalSwitch` override | `GetActiveProvider` usage 73-91, `transformRequest` 625-695, model map 640-649 |
 | `internal/proxy/hardcoded.go` | `handleBootstrap` returns a fixed empty `additional_model_options`, **does not read config** | 408-414 |
-| `internal/admin/provider_handler.go` | **Manual field enumeration**: `providerResponseMap`, `createProvider.req`+ctor, `updateProvider.req`+per-field update, `handleProviderDuplicate` ctor — 5 places to extend | responseMap 19-47, create 85-195, update 240-381, duplicate 781-806 |
+| `internal/admin/provider_handler.go` | **Manual field enumeration**: `providerResponseMap`, `createProvider.req`+ctor, `updateProvider.req`+per-field update, `handleProviderDuplicate` ctor; create/update/response/import pass through, duplicate clears `ExposedModels` | responseMap 19-47, create 85-195, update 240-381, duplicate 781-806 |
 | `internal/frontend/src/components/ProviderModal.vue` | Provider edit form; `model_mappings` uses a dynamic array + add/remove (lines 134-147) | mappings state 195, collect 245-252 |
+| `internal/frontend/src/composables/useApi.ts` | Provider and create/update payload TypeScript types are manually declared; add `exposed_models` there too | `Provider` interface 29-55, create/update payloads 446+ |
 
 ### Core Design
 
@@ -146,17 +148,20 @@ In 3P-provider mode Claude Code does not issue the bootstrap request. But mcc re
 3. **`transformRequest` refactor risk**: the current `transformRequest` internally calls `MapModel`; after refactor, model resolution moves up to `ResolveModel`, and `transformRequest` receives the resolved `backendModel`. Multimodal override semantics and OpenAI-format conversion paths must remain unchanged.
 4. **Bootstrap config read failure**: fall back to an empty `additional_model_options` (same as today), must not block Claude Code startup.
 5. **Menu item name collision with built-ins**: an `ExposedModel.ID` using `claude-*` is deduped away. The naming constraint is enforced in validation and docs.
+6. **SQLite persistence**: JSON `Store` is pass-through, but `SQLiteStore` is not. Missing SQLite support would silently drop `ExposedModels`.
+7. **Duplicate provider conflict**: duplicating `ExposedModels` would immediately violate global ID uniqueness. Duplicate provider should clear `ExposedModels`.
 
 ## Development Checklist
 
 | # | Status | Task | Output | Verification |
 | --- | --- | --- | --- | --- |
 | 1 | Planned | config layer: `ExposedModel` type + `Provider.ExposedModels` + validation + `ResolveModel` | `internal/config/provider.go`, `internal/config/config.go` | `go test ./internal/config/...` |
-| 2 | Planned | proxy routing: `handler.go` uses `ResolveModel`; `transformRequest` signature change | `internal/proxy/handler.go` | `go test ./internal/proxy/...` |
-| 3 | Planned | bootstrap injection: `handleBootstrap` reads config, emits `additional_model_options` | `internal/proxy/hardcoded.go` | bootstrap unit test |
-| 4 | Planned | admin API passes through `ExposedModels` (5 places) | `internal/admin/provider_handler.go` | `go test ./internal/admin/...` |
-| 5 | Planned | frontend provider form "Exposed Models" editor + i18n | `ProviderModal.vue`, `useI18n.ts` | `npm run build` |
-| 6 | Planned | end-to-end verification + regression | verification record | manual full chain + `make test` |
+| 2 | Planned | SQLite persistence for `ExposedModels` | `internal/config/sqlite_store.go` | SQLite round-trip unit test |
+| 3 | Planned | proxy routing: `handler.go` uses `ResolveModel`; `transformRequest` signature change | `internal/proxy/handler.go` | `go test ./internal/proxy/...` |
+| 4 | Planned | bootstrap injection: `handleBootstrap` reads config, emits `additional_model_options` | `internal/proxy/hardcoded.go` | bootstrap unit test |
+| 5 | Planned | admin API passes through `ExposedModels`; duplicate clears them | `internal/admin/provider_handler.go` | `go test ./internal/admin/...` |
+| 6 | Planned | frontend provider form "Exposed Models" editor + i18n + API types | `ProviderModal.vue`, `useI18n.ts`, `useApi.ts` | `npm run build` |
+| 7 | Planned | end-to-end verification + regression | verification record | manual full chain + `make test` |
 
 ## Requirements
 
@@ -164,18 +169,19 @@ In 3P-provider mode Claude Code does not issue the bootstrap request. But mcc re
 
 1. `ExposedModel` type and `Provider.ExposedModels` field, JSON tag `exposed_models,omitempty`.
 2. `Config.Validate()` cross-provider uniqueness check on all `ExposedModel.ID` (case-sensitive, trimmed); descriptive error on duplicate.
-3. `Provider.Validate()` validates each `ExposedModel`: `ID`/`Label` non-empty (after trim); `ID` must not start with `claude-` or contain `[1m]`; empty `BackendModel` falls back to `ID` inside `ResolveModel` (not required).
+3. `Provider.Validate()` validates each `ExposedModel`: `ID`/`Label` non-empty (after trim); `ID` must not start with `claude-`, must not contain `[1m]`, must not equal Claude Code aliases `sonnet`/`opus`/`haiku`/`opusplan`, and should only contain `[A-Za-z0-9._:-]+`; empty `BackendModel` falls back to `ID` inside `ResolveModel` (not required).
 4. `Config.ResolveModel(model string) (*Provider, string)` with the semantics in "Core Design".
 5. `handler.go` `ServeHTTP` uses `ResolveModel` in place of `GetActiveProvider` + `MapModel`; `transformRequest` signature becomes `(body, provider, backendModel)`, drops its internal `MapModel`, keeps `MultimodalSwitch` override and format conversion.
 6. `handleBootstrap` reads config, collects enabled providers' `ExposedModels` into `additional_model_options`; falls back to empty on read failure.
-7. admin API create/update/response/duplicate pass through `ExposedModels` (5 places); import/export already serialize `config.Provider` directly, so they are supported automatically.
-8. frontend `ProviderModal.vue` adds an "Exposed Models" editor (ID/Label/Description/BackendModel dynamic table), reusing the `model_mappings` add/remove interaction.
-9. unit tests cover: `ResolveModel` all branches, cross-provider ID uniqueness, `handleBootstrap` collection and schema field names, handler routing integration.
+7. `SQLiteStore` explicitly persists `ExposedModels`; JSON `Store` needs no extra persistence work.
+8. admin API create/update/response/import pass through `ExposedModels`; duplicate does **not** copy them to avoid global ID conflicts; export serializes `config.Provider` directly.
+9. frontend `ProviderModal.vue` adds an "Exposed Models" editor (ID/Label/Description/BackendModel dynamic table), and `useApi.ts`/`useI18n.ts` are updated.
+10. unit tests cover: `ResolveModel` all branches, cross-provider ID uniqueness, SQLite round-trip, `handleBootstrap` collection and schema field names, handler routing integration, admin create/update/import/duplicate behavior.
 
 ### Constraints
 
 - Backward compatible: providers without `ExposedModels` behave exactly as today (`ResolveModel` falls back).
-- Storage layer (`Store`/`SQLiteStore`) is JSON pass-through; no change needed.
+- JSON `Store` is pass-through; `SQLiteStore` is not and must explicitly persist `ExposedModels`.
 - `ExposedModel.ID` global uniqueness is a hard correctness constraint.
 - Claude Code source is not modified; the feature is implemented entirely in mcc.
 
@@ -186,6 +192,7 @@ In 3P-provider mode Claude Code does not issue the bootstrap request. But mcc re
 - Two `ExposedModel`s in the same provider pointing to the same `BackendModel`: no error (meaningless but legal).
 - `handleBootstrap` collecting the same `ID` from multiple providers: dedup, keep first (config validation forbids this; defensive).
 - Empty `additional_model_options` leaves the Claude Code `/model` menu unchanged.
+- Duplicating a provider clears `ExposedModels`; the user must create new globally unique IDs manually.
 
 ## Task Details
 
@@ -210,7 +217,7 @@ In 3P-provider mode Claude Code does not issue the bootstrap request. But mcc re
 See `spec_ZH.md` Task 1 for exact code (struct fields, `Validate` additions, `ResolveModel` implementation, and the full test list). The two files are semantically identical; apply the same code blocks.
 
 Key additions:
-- `provider.go`: `ExposedModels []ExposedModel` field on `Provider`; `ExposedModel` type; per-item validation inside `Provider.Validate()` (reject empty ID/Label, `claude-` prefix, `[1m]`, intra-provider duplicate); import `"strings"`.
+- `provider.go`: `ExposedModels []ExposedModel` field on `Provider`; `ExposedModel` type; per-item validation inside `Provider.Validate()` (reject empty ID/Label, `claude-` prefix, `[1m]`, Claude Code aliases `sonnet`/`opus`/`haiku`/`opusplan`, characters outside `[A-Za-z0-9._:-]`, intra-provider duplicate); trim all fields (by index) before validating/persisting; import `"strings"`.
 - `config.go`: cross-provider `ID` uniqueness inside `Validate()`; `ResolveModel(model string) (*Provider, string)` method after `GetProviderByID`.
 
 #### Verification
@@ -223,7 +230,34 @@ Expected: all pass, including 9 new tests.
 
 ---
 
-### Task 2: proxy routing — handler.go
+### Task 2: SQLite persistence — sqlite_store.go
+
+#### Requirements
+
+**Objective** — Persist `Provider.ExposedModels` in SQLite mode.
+
+**Outcomes** — `internal/config/sqlite_store.go` changes; SQLite Save→Load preserves `ExposedModels`.
+
+**Evidence** — Unit tests cover new database creation, old database column migration, SQLite round-trip, and legacy JSON migration preservation.
+
+**Constraints** — JSON `Store` needs no change; SQLite stores `exposed_models` as a JSON text column on `providers` with default `[]`; malformed JSON returns a clear load error.
+
+**Edge Cases** — nil/empty slice persists as `[]`; old SQLite databases without the column get it through `ensureProviderColumns`; load of empty value yields nil/empty slice.
+
+**Verification** — `go test -v -race ./internal/config/...`.
+
+#### Plan
+
+See `spec_ZH.md` Task 2 for exact code. Summary:
+- Add `exposed_models TEXT NOT NULL DEFAULT '[]'` in `ensureProviderColumns`.
+- Add `exposed_models` to `loadProviders` SELECT/Scan and decode JSON into `p.ExposedModels`.
+- Add encode/decode helpers for `[]ExposedModel`.
+- Add `exposed_models` to `upsertProvider` INSERT/UPDATE/args.
+- Add SQLite round-trip and old-schema migration tests.
+
+---
+
+### Task 3: proxy routing — handler.go
 
 #### Requirements
 
@@ -241,9 +275,9 @@ Expected: all pass, including 9 new tests.
 
 #### Plan
 
-See `spec_ZH.md` Task 2 for before/after code. Summary of changes:
+See `spec_ZH.md` Task 3 for before/after code. Summary of changes:
 - `ServeHTTP`: read body first, then `metadata := ParseRequestMetadata(body)`, then `selectedProvider, backendModel := cfg.ResolveModel(metadata.OriginalModel)`; derive `backendURL`/`apiToken` from `selectedProvider`; call `transformRequest(body, selectedProvider, backendModel)`. Replace all subsequent `activeProvider` references in `ServeHTTP` with `selectedProvider`.
-- `transformRequest`: signature `(body, provider, backendModel)`; nil-provider guard (`if provider == nil { return body, nil }`); replace the `provider.MapModel(model)` line with `finalModel := backendModel`, then apply `MultimodalSwitch` override on top.
+- `transformRequest`: signature `(body, provider, backendModel)`; nil-provider guard (`if provider == nil { return body, nil }`); replace the `provider.MapModel(model)` line with `finalModel := backendModel`, then apply `MultimodalSwitch` override on top. Update all existing direct `transformRequest` tests to pass the new third argument.
 
 #### Verification
 
@@ -256,7 +290,7 @@ Expected: existing tests green (semantically equivalent) + new routing test pass
 
 ---
 
-### Task 3: bootstrap injection — hardcoded.go
+### Task 4: bootstrap injection — hardcoded.go
 
 #### Requirements
 
@@ -274,7 +308,7 @@ Expected: existing tests green (semantically equivalent) + new routing test pass
 
 #### Plan
 
-See `spec_ZH.md` Task 3 for the `handleBootstrap` + `collectAdditionalModelOptions` implementation and tests. Add `"strings"` to imports.
+See `spec_ZH.md` Task 4 for the `handleBootstrap` + `collectAdditionalModelOptions` implementation and tests. Add `"strings"` to imports. Emit trimmed `model`/`name`/`description` values.
 
 #### Verification
 
@@ -286,17 +320,17 @@ Expected: both tests pass.
 
 ---
 
-### Task 4: admin API passthrough
+### Task 5: admin API passthrough
 
 #### Requirements
 
-**Objective** — Pass `ExposedModels` through the 5 manual-enumeration sites in `provider_handler.go`.
+**Objective** — Pass `ExposedModels` through manual-enumeration sites in `provider_handler.go`; clear them when duplicating a provider.
 
 **Outcomes** — `internal/admin/provider_handler.go` changes; admin tests cover create/update with `ExposedModels`.
 
-**Evidence** — POST create with `exposed_models` → response includes it; PUT update → GET reflects it; duplicate-ID across providers → 400.
+**Evidence** — POST create with `exposed_models` → response includes it; PUT update → GET reflects it; duplicate-ID across providers → 400; duplicate provider response has empty `exposed_models`.
 
-**Constraints** — update uses `*[]config.ExposedModel` for optional update (nil = no change, non-nil including empty slice = replace); validation reuses `cfg.Validate()` for cross-provider uniqueness.
+**Constraints** — update uses `*[]config.ExposedModel` for optional update (nil = no change, non-nil including empty slice = replace); validation reuses `cfg.Validate()` for cross-provider uniqueness; duplicate clears `ExposedModels`.
 
 **Edge Cases** — `null` vs `[]` on update (null = unchanged, [] = cleared).
 
@@ -304,7 +338,7 @@ Expected: both tests pass.
 
 #### Plan
 
-See `spec_ZH.md` Task 4 for the 5 edits (responseMap, create req+ctor, update req+per-field, duplicate ctor) and the `cfg.Validate()` upgrade at save time (applies to create, update, and import).
+See `spec_ZH.md` Task 5 for the edits (responseMap, create req+ctor, update req+per-field, duplicate clear behavior) and the `cfg.Validate()` upgrade at save time (applies to create, update, import, and duplicate).
 
 #### Verification
 
@@ -316,17 +350,17 @@ Expected: green, including new tests.
 
 ---
 
-### Task 5: frontend provider form
+### Task 6: frontend provider form
 
 #### Requirements
 
 **Objective** — `ProviderModal.vue` adds an "Exposed Models" editor reusing `model_mappings`'s dynamic-array interaction.
 
-**Outcomes** — `ProviderModal.vue`, `useI18n.ts` changes; `npm run build` passes.
+**Outcomes** — `ProviderModal.vue`, `useI18n.ts`, and `useApi.ts` changes; `npm run build` passes.
 
 **Evidence** — Build succeeds; form can add/remove `ExposedModel` rows and submit on save.
 
-**Constraints** — Four columns: ID / Label / Description / BackendModel; empty rows not submitted; bilingual i18n.
+**Constraints** — Four columns: ID / Label / Description / BackendModel; empty rows not submitted; partially filled rows are rejected before submit; mobile layout must not overlap; bilingual i18n; API TypeScript types are updated.
 
 **Edge Cases** — Partial fill on save (backend rejects; frontend should pre-validate); backfill when editing an existing provider.
 
@@ -334,7 +368,7 @@ Expected: green, including new tests.
 
 #### Plan
 
-See `spec_ZH.md` Task 5 for template, state, and collection code, plus i18n entries.
+See `spec_ZH.md` Task 6 for template, state, collection code, `useApi.ts` types, and i18n entries.
 
 #### Verification
 
@@ -346,7 +380,7 @@ Expected: build success, `internal/frontend/dist` updated.
 
 ---
 
-### Task 6: end-to-end verification + regression
+### Task 7: end-to-end verification + regression
 
 #### Requirements
 
