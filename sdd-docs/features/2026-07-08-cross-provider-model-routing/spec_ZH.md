@@ -252,10 +252,16 @@ type ExposedModel struct {
 
 ```go
 // 校验对外暴露模型
+for i := range p.ExposedModels {
+    p.ExposedModels[i].ID = strings.TrimSpace(p.ExposedModels[i].ID)
+    p.ExposedModels[i].Label = strings.TrimSpace(p.ExposedModels[i].Label)
+    p.ExposedModels[i].Description = strings.TrimSpace(p.ExposedModels[i].Description)
+    p.ExposedModels[i].BackendModel = strings.TrimSpace(p.ExposedModels[i].BackendModel)
+}
 seenExposedIDs := make(map[string]bool)
 for i, em := range p.ExposedModels {
-    id := strings.TrimSpace(em.ID)
-    label := strings.TrimSpace(em.Label)
+    id := em.ID
+    label := em.Label
     if id == "" {
         return fmt.Errorf("exposed_models[%d]: id is required", i)
     }
@@ -286,18 +292,7 @@ for i, em := range p.ExposedModels {
 
 注意：
 - `provider.go` 当前未 import `strings`，需在 import 块加入 `"strings"`。
-- 保存前应规范化 `ExposedModel` 字段：`ID`、`Label`、`Description`、`BackendModel` 都 trim 后落盘；否则 bootstrap 可能输出带空白的 `model` 值，导致 `/model` 选中后的请求值和 `ResolveModel` 比较口径不一致。在 `Provider.Validate()` 的 ExposedModel 校验段**开头**用索引遍历 trim 后回写结构体（校验与后续逻辑都基于 trim 后的值）：
-
-```go
-for i := range p.ExposedModels {
-    p.ExposedModels[i].ID = strings.TrimSpace(p.ExposedModels[i].ID)
-    p.ExposedModels[i].Label = strings.TrimSpace(p.ExposedModels[i].Label)
-    p.ExposedModels[i].Description = strings.TrimSpace(p.ExposedModels[i].Description)
-    p.ExposedModels[i].BackendModel = strings.TrimSpace(p.ExposedModels[i].BackendModel)
-}
-```
-
-  注意此 trim 回写必须在 `for i, em := range p.ExposedModels` 校验循环**之前**执行，否则校验读到的是未 trim 的副本。
+- 主代码块开头已经用索引遍历 trim 并回写 `ExposedModel` 字段；不要改成只对局部变量 trim，否则保存后仍可能带空白。
 
 **文件 2：`internal/config/config.go`**
 
@@ -1212,7 +1207,7 @@ function isEmptyExposedModel(em: { id: string; label: string; description: strin
 const collected = collectExposedModels()
 if (!collected.ok) {
   // 显示 collected.error（例如"对外模型需填写 ID 和显示名"），停止提交
-  formError.value = collected.error
+  message.value = { text: collected.error, ok: false }
   return
 }
 // 在提交对象里加（注意是 collected.value，不是 exposed.value）：
