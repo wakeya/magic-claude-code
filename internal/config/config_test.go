@@ -313,6 +313,18 @@ func TestResolveModel_NoActiveReturnsNil(t *testing.T) {
 	}
 }
 
+func TestResolveModel_TrimsModelWhitespace(t *testing.T) {
+	cfg := &Config{Providers: []Provider{
+		{ID: "a", Name: "A", Enabled: true, ExposedModels: []ExposedModel{
+			{ID: "glm-4.6", Label: "GLM-4.6", BackendModel: "glm-4.6"},
+		}},
+	}}
+	p, backend := cfg.ResolveModel("  glm-4.6  ")
+	if p == nil || p.ID != "a" || backend != "glm-4.6" {
+		t.Fatalf("expected provider a + glm-4.6, got %v %q", p, backend)
+	}
+}
+
 func TestValidate_DuplicateExposedModelIDAcrossProviders(t *testing.T) {
 	cfg := &Config{Providers: []Provider{
 		{ID: "a", Name: "A", Enabled: true, APIURL: "https://a", ExposedModels: []ExposedModel{

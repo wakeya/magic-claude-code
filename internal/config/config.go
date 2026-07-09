@@ -265,6 +265,7 @@ func (c *Config) GetProviderByID(id string) *Provider {
 //
 // 调用方需处理 provider == nil 的情况（对应"无可用 provider"错误路径）。
 func (c *Config) ResolveModel(model string) (*Provider, string) {
+	model = strings.TrimSpace(model)
 	// 1. 暴露模型命中
 	for i := range c.Providers {
 		p := &c.Providers[i]
@@ -272,9 +273,9 @@ func (c *Config) ResolveModel(model string) (*Provider, string) {
 			continue
 		}
 		for _, em := range p.ExposedModels {
-			if strings.TrimSpace(em.ID) == model {
+			if em.ID == model {
 				backend := em.BackendModel
-				if strings.TrimSpace(backend) == "" {
+				if backend == "" {
 					backend = em.ID
 				}
 				return p, backend
