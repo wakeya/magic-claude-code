@@ -757,9 +757,10 @@ func copyUpstreamHeaders(dst *http.Request, src http.Header, apiToken string, ap
 			continue
 		}
 		// anthropic 格式：剥离 Anthropic-Beta 里的 context-1m 条目。
-		// Claude Code 对 1M 模型会加 context-1m-2025-08-07 beta，但第三方后端（GLM/DeepSeek 等）
-		// 通常不认该 beta；mcc 注入 [1m] 仅为让客户端正确判定上下文窗口，不应影响后端。
-		// 其他 beta（如 interleaved-thinking）保留。
+		// 设计取舍：mcc 定位为第三方 provider 透明代理（GLM/DeepSeek/MiniMax 等），这些后端
+		// 通常不认 Anthropic 的 context-1m beta；mcc 注入 [1m] 仅为让客户端正确判定上下文窗口，
+		// 不应让该 beta 到达后端引发兼容问题。其他 beta（如 interleaved-thinking）保留。
+		// 若将来需要对接官方 Anthropic 或真正依赖该 beta 的后端，可在此处加 provider 级开关。
 		if isAnthropic && strings.EqualFold(key, "Anthropic-Beta") {
 			for _, v := range stripContext1MBeta(values) {
 				dst.Header.Add(key, v)

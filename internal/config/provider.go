@@ -307,8 +307,7 @@ type ExposedModel struct {
 	// Description 是 /model 菜单里的描述文案。
 	Description string `json:"description"`
 
-	// BackendModel 是该 provider 后端真实模型名。
-	// 空字符串表示与 ID 相同。
+	// BackendModel 是该 provider 后端真实模型名（必填，由 Provider.Validate 校验非空）。
 	BackendModel string `json:"backend_model"`
 
 	// Context1M 标记该模型为 1M 上下文窗口。

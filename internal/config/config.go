@@ -277,11 +277,8 @@ func (c *Config) ResolveModel(model string) (*Provider, string) {
 		}
 		for _, em := range p.ExposedModels {
 			if em.ID == pureModel {
-				backend := em.BackendModel
-				if backend == "" {
-					backend = em.ID
-				}
-				return p, backend
+				// BackendModel 由 Provider.Validate 校验非空
+				return p, em.BackendModel
 			}
 		}
 	}

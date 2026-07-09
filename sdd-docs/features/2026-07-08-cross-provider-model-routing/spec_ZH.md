@@ -169,14 +169,15 @@ if (getAPIProvider() !== 'firstParty') {
 
 1. `ExposedModel` 类型与 `Provider.ExposedModels` 字段，JSON tag 为 `exposed_models,omitempty`。
 2. `Config.Validate()` 跨 provider 校验所有 `ExposedModel.ID` 全局唯一（大小写敏感、去空白），重复返回描述性错误。
-3. `Provider.Validate()` 校验单个 `ExposedModel`：`ID`/`Label` 非空（trim 后非空）；`ID` 不得以 `claude-` 开头、不得含 `[1m]`，不得等于 `sonnet`/`opus`/`haiku`/`opusplan`；建议仅允许 `[A-Za-z0-9._:-]+`，避免空白和控制字符；`BackendModel` 为空时在 `ResolveModel` 内回退到 `ID`（不强制要求填写）。
-4. `Config.ResolveModel(model string) (*Provider, string)` 方法，语义见"核心设计"。
+3. `Provider.Validate()` 校验单个 `ExposedModel`：`ID` 留空时自动生成 `em-<hex>` 稳定随机 ID（前端不再让用户手输）；`Label` 非空（trim 后）；`ID`（自动生成的或历史遗留的）不得以 `claude-` 开头、不得含 `[1m]`，不得等于 `sonnet`/`opus`/`haiku`/`opusplan`；仅允许 `[A-Za-z0-9._:-]+`；`BackendModel` **必填**（校验非空，不再"空则回退 ID"）。新增 `Context1M bool` 字段。
+4. `Config.ResolveModel(model string) (*Provider, string)` 方法，语义见"核心设计"。暴露模型匹配时统一剥离请求 model 的 `[1m]` 后缀（兼容 Context1M）。
 5. `handler.go` 的 `ServeHTTP` 用 `ResolveModel` 替代 `GetActiveProvider` + `MapModel` 两步；`transformRequest` 签名改为 `(body, provider, backendModel)`，移除其内部 `MapModel` 调用，保留 `MultimodalSwitch` override 与格式转换。
-6. `handleBootstrap` 读 config，收集 enabled provider 的 `ExposedModels` 生成 `additional_model_options`；description 自动拼接 provider 名（`"{Description} · {Provider.Name}"`，`Description` 空则只用 `Provider.Name`）；读失败回退空数组。
-7. `SQLiteStore` 显式持久化 `ExposedModels`；JSON `Store` 无需改动。
+6. `handleBootstrap` 读 config，收集 enabled provider 的 `ExposedModels` 生成 `additional_model_options`；`Context1M=true` 时菜单 value 附 `[1m]`（让 Claude Code 客户端按 1M 判定上下文窗口）；description 自动拼接 provider 名；读失败回退空数组。
+7. `SQLiteStore` 显式持久化 `ExposedModels`；JSON `Store` 无需改动。启动时一次性迁移：把非 `em-` 前缀的旧手输 ID 重新生成为 `em-<hex>`。
 8. admin API 的 create/update/response/import 透传 `ExposedModels`；duplicate **不复制** `ExposedModels`（避免全局唯一 ID 冲突）；导出因用 `config.Provider` 直接序列化，自动包含该字段。
-9. 前端 `ProviderModal.vue` 新增"对外模型"编辑区（ID/Label/Description/BackendModel 动态表格），同步更新 `useApi.ts` 类型和 `useI18n.ts` 文案。
-10. 单元测试覆盖：`ResolveModel` 全分支、跨 provider ID 唯一性校验、SQLite round-trip、`handleBootstrap` 收集逻辑与 schema 字段名、handler 路由集成、admin create/update/import/duplicate 行为。
+9. 前端 `ProviderModal.vue` 新增"对外模型"编辑区（Label/Description/BackendModel + 1M 勾选；**隐藏 ID 输入**，新行 ID 空→后端自动生成 `em-<hex>`，编辑现有 provider 保留已有 ID）；BackendModel 输入框提供从该 provider 模型映射 value 快捷填充的 datalist（不强制）；同步更新 `useApi.ts` 类型与 `useI18n.ts` 文案。
+10. 单元测试覆盖：`ResolveModel` 全分支（含 `[1m]` 容错）、跨 provider ID 唯一性校验、SQLite round-trip、`handleBootstrap` 收集逻辑与 schema 字段名、handler 路由集成、admin create/update/import/duplicate 行为、context-1m beta 剥离、旧 ID 迁移。
+11. `Context1M` + beta 剥离：`copyUpstreamHeaders` 在 anthropic 格式下剥离 `Anthropic-Beta` 的 `context-1m-*` 条目（mcc 面向第三方 provider，这些后端不认该 beta；其他 beta 如 interleaved-thinking 保留）。设计取舍：若对接官方 Anthropic 等真正依赖该 beta 的后端，需加 provider 级开关。
 
 ### 约束
 

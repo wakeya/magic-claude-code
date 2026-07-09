@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -250,21 +251,6 @@ func TestResolveModel_HitExposedModel(t *testing.T) {
 	}
 }
 
-func TestResolveModel_BackendModelEmptyFallsBackToID(t *testing.T) {
-	cfg := &Config{Providers: []Provider{
-		{ID: "a", Name: "A", Enabled: true, ExposedModels: []ExposedModel{
-			{ID: "kimi-k2", Label: "Kimi K2"}, // BackendModel 空
-		}},
-	}}
-	p, backend := cfg.ResolveModel("kimi-k2")
-	if backend != "kimi-k2" {
-		t.Fatalf("expected backend=kimi-k2, got %q", backend)
-	}
-	if p == nil || p.ID != "a" {
-		t.Fatalf("expected provider a, got %v", p)
-	}
-}
-
 func TestResolveModel_FallbackToActive(t *testing.T) {
 	cfg := &Config{
 		ActiveProviderID: "a",
@@ -348,29 +334,35 @@ func TestResolveModel_Context1MModelRoutesByPureID(t *testing.T) {
 func TestValidate_DuplicateExposedModelIDAcrossProviders(t *testing.T) {
 	cfg := &Config{Providers: []Provider{
 		{ID: "a", Name: "A", Enabled: true, APIURL: "https://a", ExposedModels: []ExposedModel{
-			{ID: "glm-4.6", Label: "GLM-4.6"},
+			{ID: "glm-4.6", Label: "GLM-4.6", BackendModel: "glm-4.6"},
 		}},
 		{ID: "b", Name: "B", Enabled: true, APIURL: "https://b", ExposedModels: []ExposedModel{
-			{ID: "glm-4.6", Label: "GLM-4.6"}, // 跨 provider 重复
+			{ID: "glm-4.6", Label: "GLM-4.6", BackendModel: "glm-4.6"}, // 跨 provider 重复
 		}},
 	}}
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("expected duplicate ID error, got nil")
 	}
+	if !strings.Contains(err.Error(), "duplicated") {
+		t.Fatalf("error should mention duplication, got: %v", err)
+	}
 }
 
 func TestValidate_SameIDAcrossDisabledAndEnabled(t *testing.T) {
 	cfg := &Config{Providers: []Provider{
 		{ID: "a", Name: "A", Enabled: true, APIURL: "https://a", ExposedModels: []ExposedModel{
-			{ID: "glm-4.6", Label: "GLM-4.6"},
+			{ID: "glm-4.6", Label: "GLM-4.6", BackendModel: "glm-4.6"},
 		}},
 		{ID: "b", Name: "B", Enabled: false, APIURL: "https://b", ExposedModels: []ExposedModel{
-			{ID: "glm-4.6", Label: "GLM-4.6"},
+			{ID: "glm-4.6", Label: "GLM-4.6", BackendModel: "glm-4.6"},
 		}},
 	}}
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("expected duplicate ID error across enabled/disabled, got nil")
+	}
+	if !strings.Contains(err.Error(), "duplicated") {
+		t.Fatalf("error should mention duplication, got: %v", err)
 	}
 }

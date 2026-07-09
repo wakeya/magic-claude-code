@@ -169,14 +169,15 @@ In 3P-provider mode Claude Code does not issue the bootstrap request. But mcc re
 
 1. `ExposedModel` type and `Provider.ExposedModels` field, JSON tag `exposed_models,omitempty`.
 2. `Config.Validate()` cross-provider uniqueness check on all `ExposedModel.ID` (case-sensitive, trimmed); descriptive error on duplicate.
-3. `Provider.Validate()` validates each `ExposedModel`: `ID`/`Label` non-empty (after trim); `ID` must not start with `claude-`, must not contain `[1m]`, must not equal Claude Code aliases `sonnet`/`opus`/`haiku`/`opusplan`, and should only contain `[A-Za-z0-9._:-]+`; empty `BackendModel` falls back to `ID` inside `ResolveModel` (not required).
-4. `Config.ResolveModel(model string) (*Provider, string)` with the semantics in "Core Design".
+3. `Provider.Validate()` validates each `ExposedModel`: empty `ID` is auto-generated as `em-<hex>` stable random ID (frontend no longer asks users to type it); `Label` non-empty (after trim); `ID` (auto-generated or legacy) must not start with `claude-`, must not contain `[1m]`, must not equal aliases `sonnet`/`opus`/`haiku`/`opusplan`, and only allows `[A-Za-z0-9._:-]+`; `BackendModel` is **required** (validated non-empty, no longer "falls back to ID"). New `Context1M bool` field.
+4. `Config.ResolveModel(model string) (*Provider, string)` per "Core Design". Exposed-model matching strips a trailing `[1m]` from the request model (Context1M tolerance).
 5. `handler.go` `ServeHTTP` uses `ResolveModel` in place of `GetActiveProvider` + `MapModel`; `transformRequest` signature becomes `(body, provider, backendModel)`, drops its internal `MapModel`, keeps `MultimodalSwitch` override and format conversion.
-6. `handleBootstrap` reads config, collects enabled providers' `ExposedModels` into `additional_model_options`; the `description` auto-appends the provider name (`"{Description} · {Provider.Name}"`, or just `Provider.Name` when Description is empty); falls back to empty on read failure.
-7. `SQLiteStore` explicitly persists `ExposedModels`; JSON `Store` needs no extra persistence work.
-8. admin API create/update/response/import pass through `ExposedModels`; duplicate does **not** copy them to avoid global ID conflicts; export serializes `config.Provider` directly.
-9. frontend `ProviderModal.vue` adds an "Exposed Models" editor (ID/Label/Description/BackendModel dynamic table), and `useApi.ts`/`useI18n.ts` are updated.
-10. unit tests cover: `ResolveModel` all branches, cross-provider ID uniqueness, SQLite round-trip, `handleBootstrap` collection and schema field names, handler routing integration, admin create/update/import/duplicate behavior.
+6. `handleBootstrap` reads config, collects enabled providers' `ExposedModels` into `additional_model_options`; when `Context1M=true` the menu value is suffixed with `[1m]` so Claude Code treats it as 1M context; description auto-appends provider name; falls back to empty on read failure.
+7. `SQLiteStore` explicitly persists `ExposedModels`; JSON `Store` needs no extra work. One-time startup migration regenerates non-`em-` legacy IDs to `em-<hex>`.
+8. admin API create/update/response/import pass through `ExposedModels`; duplicate does **not** copy them; export serializes `config.Provider` directly.
+9. frontend `ProviderModal.vue` adds an "Exposed Models" editor (Label/Description/BackendModel + 1M checkbox; **ID input hidden** — new rows have empty ID → backend auto-generates `em-<hex>`, editing keeps existing IDs); BackendModel input offers a datalist for quick fill from that provider's model-mapping values (not enforced); `useApi.ts`/`useI18n.ts` updated.
+10. unit tests cover: `ResolveModel` all branches (incl. `[1m]` tolerance), cross-provider ID uniqueness, SQLite round-trip, `handleBootstrap` collection and schema field names, handler routing integration, admin create/update/import/duplicate behavior, context-1m beta stripping, legacy ID migration.
+11. `Context1M` + beta stripping: `copyUpstreamHeaders` strips `context-1m-*` entries from `Anthropic-Beta` in anthropic format (mcc targets third-party providers that don't recognize this beta; other betas like interleaved-thinking are kept). Design trade-off: a provider-level toggle would be needed to support official Anthropic or backends that truly require the beta.
 
 ### Constraints
 
