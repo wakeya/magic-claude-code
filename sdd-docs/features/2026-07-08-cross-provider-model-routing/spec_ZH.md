@@ -1170,7 +1170,7 @@ go test -race ./internal/admin/...
 <datalist id="exposed-backend-options">
   <option v-for="v in backendModelOptions" :key="v" :value="v" />
 </datalist>
-<button type="button" @click="exposedModels.push({ label: '', description: '', backend_model: '', context_1m: false })">
+<button type="button" @click="exposedModels.push({ id: '', label: '', description: '', backend_model: '', context_1m: false })">
   {{ t('modal.add_exposed_model') }}
 </button>
 ```
@@ -1236,6 +1236,7 @@ export interface ExposedModel {
   label: string
   description: string
   backend_model: string
+  context_1m?: boolean
 }
 ```
 
