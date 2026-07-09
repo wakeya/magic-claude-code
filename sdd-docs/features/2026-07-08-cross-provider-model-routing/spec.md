@@ -205,7 +205,7 @@ In 3P-provider mode Claude Code does not issue the bootstrap request. But mcc re
 
 **Outcomes** — Changes to `internal/config/provider.go` and `internal/config/config.go`; new tests pass.
 
-**Evidence** — `ResolveModel` unit tests cover hit / fallback / disabled-skip / BackendModel-empty-fallback / no-active-nil; `Config.Validate` covers duplicate ID error.
+**Evidence** — `ResolveModel` unit tests cover hit / fallback / disabled-skip / `[1m]` tolerance / no-active-nil; `Config.Validate` covers duplicate ID error (asserts message contains `duplicated`).
 
 **Constraints** — Preserve existing `MapModel`, `GetActiveProvider`, `Validate` semantics; new field uses `omitempty`.
 
@@ -361,7 +361,7 @@ Expected: green, including new tests.
 
 **Evidence** — Build succeeds; form can add/remove `ExposedModel` rows and submit on save.
 
-**Constraints** — Four columns: ID / Label / Description / BackendModel; empty rows not submitted; partially filled rows are rejected before submit; mobile layout must not overlap; bilingual i18n; API TypeScript types are updated.
+**Constraints** — Three columns + 1M checkbox: Label / Description / BackendModel + 1M; **ID input hidden** (new rows have empty ID → backend auto-generates `em-<hex>`, editing keeps existing IDs); `BackendModel` is required and offers a datalist quick-fill from that provider's model-mapping values (not enforced); empty rows not submitted; partially filled rows are rejected before submit; mobile layout must not overlap; bilingual i18n; API TypeScript types are updated.
 
 **Edge Cases** — Partial fill on save (backend rejects; frontend should pre-validate); backfill when editing an existing provider.
 

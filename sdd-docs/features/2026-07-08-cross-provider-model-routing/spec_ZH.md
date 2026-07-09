@@ -209,7 +209,7 @@ if (getAPIProvider() !== 'firstParty') {
 
 **Constraints（约束）** — 不破坏现有 `MapModel`、`GetActiveProvider`、`Validate` 语义；新字段 JSON tag 带 `omitempty`。
 
-**Edge Cases（边界）** — `ID` 前后空白；disabled provider 的暴露模型；`BackendModel` 空；无 active provider。
+**Edge Cases（边界）** — `ID` 前后空白；disabled provider 的暴露模型；`BackendModel` 必填（空值保存失败）；无 active provider。
 
 **Verification（验证）** — `go test -v -race ./internal/config/...` 全绿。
 
@@ -243,8 +243,7 @@ type ExposedModel struct {
     // Description 是 /model 菜单里的描述文案。
     Description string `json:"description"`
 
-    // BackendModel 是该 provider 后端真实模型名。
-    // 空字符串表示与 ID 相同。
+    // BackendModel 是该 provider 后端真实模型名（必填，由 Provider.Validate 校验非空）。
     BackendModel string `json:"backend_model"`
 }
 ```
@@ -1154,53 +1153,62 @@ go test -race ./internal/admin/...
 
 参照现有 `model_mappings` 实现（134-147 行模板、195 行状态、245-252 行收集）。在 `model_mappings` 编辑区之后新增"对外模型"编辑区：
 
-模板（参照 134-147 行的 `v-for` + add/remove 按钮结构）。不要只用 `pop()` 删除最后一行，必须支持删除当前行；移动端用响应式布局避免四列挤压：
+模板（参照 134-147 行的 `v-for` + add/remove 按钮结构）。不要只用 `pop()` 删除最后一行，必须支持删除当前行；**隐藏 ID 输入**（ID 由后端自动生成，用户无需手输）；BackendModel 输入框加 `list` 属性提供快捷填充；移动端用响应式布局避免挤压：
 
 ```vue
 <label class="block text-[13px] font-semibold mb-2">{{ t('modal.exposed_models') }}</label>
 <div class="space-y-2">
-  <div v-for="(em, i) in exposedModels" :key="i" class="grid grid-cols-1 md:grid-cols-[1fr_1fr_1.2fr_1fr_auto] gap-2">
-    <input v-model="em.id" :placeholder="t('modal.exposed_model_id')" class="..." />
+  <div v-for="(em, i) in exposedModels" :key="i" class="grid grid-cols-1 md:grid-cols-[1fr_1.2fr_1fr_auto_auto] gap-2">
     <input v-model="em.label" :placeholder="t('modal.exposed_model_label')" class="..." />
     <input v-model="em.description" :placeholder="t('modal.exposed_model_desc')" class="..." />
-    <input v-model="em.backend_model" :placeholder="t('modal.exposed_model_backend')" class="..." />
+    <input v-model="em.backend_model" list="exposed-backend-options" :placeholder="t('modal.exposed_model_backend')" class="..." />
+    <label :title="t('modal.exposed_model_1m_hint')"><input v-model="em.context_1m" type="checkbox" /> 1M</label>
     <button type="button" @click="exposedModels.splice(i, 1)">X</button>
   </div>
 </div>
-<button type="button" @click="exposedModels.push({ id: '', label: '', description: '', backend_model: '' })">
+<p class="app-muted text-xs mt-1.5">{{ t('modal.exposed_model_backend_hint') }}</p>
+<datalist id="exposed-backend-options">
+  <option v-for="v in backendModelOptions" :key="v" :value="v" />
+</datalist>
+<button type="button" @click="exposedModels.push({ label: '', description: '', backend_model: '', context_1m: false })">
   {{ t('modal.add_exposed_model') }}
 </button>
 ```
 
-状态（参照 195 行 `mappings` 的 ref 初始化）：
+状态（参照 195 行 `mappings` 的 ref 初始化；保留现有 id 用于回填，新行 id 为空→后端生成）：
 
 ```ts
-const exposedModels = ref<{ id: string; label: string; description: string; backend_model: string }[]>([])
+const exposedModels = ref<{ id: string; label: string; description: string; backend_model: string; context_1m: boolean }[]>([])
+// 后端模型名快捷选项：取自该 provider 模型映射的 value（去重）
+const backendModelOptions = computed(() => [...new Set(mappings.value.map(m => m.to.trim()).filter(Boolean))])
 
-// 初始化（参照 245 行 collectMappings 之前的 entries 回填）
+// 初始化（编辑现有 provider 时回填，保留 id；新行由 add 按钮创建、id 为空）
 if (props.provider?.exposed_models?.length) {
-  exposedModels.value = props.provider.exposed_models.map(em => ({ ...em }))
+  exposedModels.value = props.provider.exposed_models.map(em => ({
+    id: em.id, label: em.label, description: em.description, backend_model: em.backend_model, context_1m: em.context_1m ?? false,
+  }))
 }
 ```
 
-收集提交（参照 283 行 `collectMappings()` 的调用处，在提交 payload 里加 `exposed_models`）：
+收集提交（参照 283 行 `collectMappings()` 的调用处，在提交 payload 里加 `exposed_models`）：ID 不要求（空则后端自动生成），BackendModel 必填：
 
 ```ts
 function collectExposedModels() {
   const rows = exposedModels.value.map(em => ({
-    id: em.id.trim(),
+    id: em.id.trim(), // 回填的现有 id 保留；新行为空 → 后端生成 em-<hex>
     label: em.label.trim(),
     description: em.description.trim(),
     backend_model: em.backend_model.trim(),
+    context_1m: em.context_1m ?? false,
   }))
-  const partial = rows.find(em => !isEmptyExposedModel(em) && (!em.id || !em.label))
+  const partial = rows.find(em => !isEmptyExposedModel(em) && (!em.label || !em.backend_model))
   if (partial) {
     return { ok: false as const, error: t('modal.exposed_model_required') }
   }
   return { ok: true as const, value: rows.filter(em => !isEmptyExposedModel(em)) }
 }
 
-function isEmptyExposedModel(em: { id: string; label: string; description: string; backend_model: string }) {
+function isEmptyExposedModel(em: { id: string; label: string; description: string; backend_model: string; context_1m: boolean }) {
   return !em.id && !em.label && !em.description && !em.backend_model
 }
 ```
@@ -1210,7 +1218,7 @@ function isEmptyExposedModel(em: { id: string; label: string; description: strin
 ```ts
 const collected = collectExposedModels()
 if (!collected.ok) {
-  // 显示 collected.error（例如"对外模型需填写 ID 和显示名"），停止提交
+  // 显示 collected.error（例如"对外模型需填写显示名和后端模型名"），停止提交
   message.value = { text: collected.error, ok: false }
   return
 }
