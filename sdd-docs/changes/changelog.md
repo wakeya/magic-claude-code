@@ -7,6 +7,29 @@
 
 ---
 
+## v0.14.0 (2026-07-09)
+
+### Added
+- **跨 Provider 模型路由（`/model` 菜单注入自定义模型）**：Claude Code 的 `/model` 菜单现在可以出现 mcc 配置的自定义模型；用户在会话内切换后，该会话后续请求走切换后的模型（可跨不同 Provider），其他会话保持默认（走 `ActiveProviderID`）。会话级隔离由 Claude Code 客户端原生保证（`mainLoopModelOverride` 纯内存态、不落盘），mcc 无需做会话识别。每个 Provider 新增 `ExposedModels`（Label / Description / BackendModel / Context1M），mcc 通过 `/api/claude_cli/bootstrap` 的 `additional_model_options` 把它们注入 `/model` 菜单；请求处理时 `Config.ResolveModel` 按请求 `model` 字段路由到对应 Provider 并替换为后端真实模型名，未命中则 fallback 到 active Provider 的 `ModelMappings`（向后兼容，未配置 `ExposedModels` 的用户行为不变）。菜单 description 自动拼接 Provider 名（`"{Description} · {Provider.Name}"`，空则只用 Provider 名），零配置即可看到模型归属
+- **`ExposedModel.Context1M`（1M 上下文标记）**：勾选后 bootstrap 注入的菜单 value 附 `[1m]` 后缀，让 Claude Code 客户端按 1M 判定上下文窗口（claude-hud 用量、autocompact 阈值正确）；mcc 路由侧统一剥离请求 `model` 的 `[1m]` 后缀（用纯 ID 匹配 `ExposedModel.ID`），并主动剥离 `Anthropic-Beta` 的 `context-1m-*` 条目，避免透传给不兼容的第三方后端（其余 beta 如 `interleaved-thinking` 保留）
+- **`ExposedModel.ID` 自动生成 + `BackendModel` 必填**：ID 是纯内部路由键（不展示给用户），改为后端自动生成 `em-<hex>`，前端隐藏 ID 输入框；`BackendModel` 改为必填，前端配 `datalist` 快捷入口（选项取自该 Provider 模型映射的 value，去重），可选填充不强制
+- **SQLite 旧 ID 一次性迁移**：启动时把非 `em-` 前缀的旧手输 ID 重新生成为 `em-<hex>`，已是 `em-` 的不变（`ExposedModel` 走 JSON 序列化，`Context1M` 等新字段自动持久化）
+
+### Changed
+- **`ResolveModel` 入口 trim**：请求体 `model` 字段可能含前后空白，方法入口统一 trim，避免与已 trim 的 `ExposedModel.ID` 比较不对称
+- **`createProvider` 响应用 trim 后的值**：避免 API 响应返回带空白的 `ExposedModel` 字段
+- **import / duplicate 清空 `ExposedModels`**：导入的 duplicate 分支与复制 Provider 一致清空 `ExposedModels`，避免与原 Provider 产生全局 ID 冲突导致 `cfg.Validate()` 拒绝整个导入
+
+### Docs
+- 跨 Provider 模型路由 feature spec 与评审记录（中英双语）：`sdd-docs/features/2026-07-08-cross-provider-model-routing/`
+- README 透明 / 隧道模式 `settings.json` 示例补充 `ANTHROPIC_API_KEY`，并新增 bootstrap 两道门槛说明：bootstrap 只认 OAuth / `ANTHROPIC_API_KEY`（`ANTHROPIC_AUTH_TOKEN` 不被接受）、`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` 会把 bootstrap 当非必要流量跳过；网关模式 3P 不触发 bootstrap，`ExposedModels` 不会出现在 `/model` 菜单（中英文同步）
+
+### 注意
+- 旧 `ExposedModel.ID` 迁移为 `em-<hex>` 后，用户 `~/.claude.json` 里已保存的 `mainLoopModelOverride` 失效，需在 `/model` 重新选择
+- 透明 / 隧道模式下，若 Claude Code 使用 `ANTHROPIC_AUTH_TOKEN` 而非 `ANTHROPIC_API_KEY`，bootstrap 不会发起，`ExposedModels` 不会出现在 `/model` 菜单（参考 README 配置）
+
+---
+
 ## v0.13.0 (2026-07-06)
 
 ### Added
