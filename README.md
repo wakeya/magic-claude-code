@@ -714,10 +714,20 @@ docker compose up -d --build
 ```json
 {
   "env": {
-    "ANTHROPIC_BASE_URL": "https://api.anthropic.com"
+    "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
+    "ANTHROPIC_API_KEY": "any-non-empty"
   }
 }
 ```
+
+> **⚠️ 让 `/model` 菜单出现跨 provider 模型**
+>
+> Claude Code 启动时向 `/api/claude_cli/bootstrap` 拉取额外模型选项，mcc 在此注入你在管理后台配置的 ExposedModels。要让它生效，客户端需满足两个前提：
+>
+> 1. **认证用 `ANTHROPIC_API_KEY`，不要用 `ANTHROPIC_AUTH_TOKEN`**：Claude Code 的 bootstrap 只认 OAuth 或 `x-api-key`。mcc 会用供应商 token 覆盖请求里的认证头，因此这个值填任意非空值即可（示例里用 `"any-non-empty"`）。
+> 2. **不要设置 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`**：否则 Claude Code 会把 bootstrap 当作非必要流量直接跳过，`/model` 菜单不会刷新出自定义模型。
+>
+> 隧道模式同理（它也不改 `ANTHROPIC_BASE_URL`，Claude Code 仍以 firstParty 自居发 bootstrap）。网关模式改了 `ANTHROPIC_BASE_URL`，Claude Code 进入 3P provider 模式、不发 bootstrap，因此 ExposedModels 不会出现在 `/model` 菜单。
 
 #### 隧道模式
 
@@ -729,12 +739,15 @@ docker compose up -d --build
 {
   "env": {
     "HTTPS_PROXY": "https://127.0.0.1:443",
-    "NODE_EXTRA_CA_CERTS": "/path/to/magic-claude-code/data/ca.crt"
+    "NODE_EXTRA_CA_CERTS": "/path/to/magic-claude-code/data/ca.crt",
+    "ANTHROPIC_API_KEY": "any-non-empty"
   }
 }
 ```
 
 保存后重启 Claude Code。
+
+> 同样地，要让 `/model` 菜单出现跨 provider 模型，请遵守上方透明模式列出的两个客户端前提（认证用 `ANTHROPIC_API_KEY`、不要设置 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`）。
 
 #### 网关模式
 
