@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -952,6 +953,56 @@ func TestSQLiteStoreRoundTripsNilExposedModels(t *testing.T) {	path := filepath.
 	// nil 和空切片均可接受，取决于 JSON unmarshal 行为
 	if len(got.ExposedModels) != 0 {
 		t.Fatalf("ExposedModels = %#v, want empty", got.ExposedModels)
+	}
+}
+
+func TestSQLiteStoreMigratesLegacyExposedModelIDs(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "proxy.db")
+	// 第一次：存入旧格式（非 em- 前缀）ID
+	store, err := NewSQLiteStore(dbPath, "")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	cfg := DefaultConfig()
+	provider := NewProvider("A", "https://a.example/anthropic", "token")
+	provider.ExposedModels = []ExposedModel{
+		{ID: "glm-5.2-ky", Label: "GLM-5.2", BackendModel: "glm-5.2", Context1M: true},
+		{ID: "em-abcd1234", Label: "Already New", BackendModel: "x"}, // 已是 em- 前缀，不应变
+	}
+	cfg.Providers = []Provider{*provider}
+	cfg.ActiveProviderID = provider.ID
+	if err := store.Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// 第二次：重新打开，触发 migrateExposedModelIDs
+	store2, err := NewSQLiteStore(dbPath, "")
+	if err != nil {
+		t.Fatalf("reopen NewSQLiteStore: %v", err)
+	}
+	defer store2.Close()
+	loaded, err := store2.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := loaded.GetProviderByID(provider.ID).ExposedModels
+	if !strings.HasPrefix(got[0].ID, "em-") {
+		t.Fatalf("legacy ID not migrated: %q", got[0].ID)
+	}
+	if got[0].ID == "glm-5.2-ky" {
+		t.Fatal("legacy ID should have changed")
+	}
+	// 保留其他字段
+	if got[0].Label != "GLM-5.2" || got[0].BackendModel != "glm-5.2" || !got[0].Context1M {
+		t.Fatalf("migration lost fields: %#v", got[0])
+	}
+	// 已是 em- 的不变
+	if got[1].ID != "em-abcd1234" {
+		t.Fatalf("em- ID should be unchanged: %q", got[1].ID)
 	}
 }
 

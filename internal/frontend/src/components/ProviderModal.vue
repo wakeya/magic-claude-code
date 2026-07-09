@@ -150,11 +150,10 @@
       <div class="mb-5 pt-4" style="border-top: 1px solid var(--app-border)">
         <label class="block text-[13px] font-semibold mb-2">{{ t('modal.exposed_models') }}</label>
         <div class="space-y-2.5">
-          <div v-for="(em, i) in exposedModels" :key="i" class="grid grid-cols-1 md:grid-cols-[1fr_1fr_1.2fr_1fr_auto_auto] gap-2 items-center">
-            <input v-model="em.id" type="text" :placeholder="t('modal.exposed_model_id')" class="app-control px-3 py-2 rounded-md text-sm outline-none focus:border-primary" />
+          <div v-for="(em, i) in exposedModels" :key="i" class="grid grid-cols-1 md:grid-cols-[1fr_1.2fr_1fr_auto_auto] gap-2 items-center">
             <input v-model="em.label" type="text" :placeholder="t('modal.exposed_model_label')" class="app-control px-3 py-2 rounded-md text-sm outline-none focus:border-primary" />
             <input v-model="em.description" type="text" :placeholder="t('modal.exposed_model_desc')" class="app-control px-3 py-2 rounded-md text-sm outline-none focus:border-primary" />
-            <input v-model="em.backend_model" type="text" :placeholder="t('modal.exposed_model_backend')" class="app-control px-3 py-2 rounded-md text-sm outline-none focus:border-primary" />
+            <input v-model="em.backend_model" list="exposed-backend-options" type="text" :placeholder="t('modal.exposed_model_backend')" class="app-control px-3 py-2 rounded-md text-sm outline-none focus:border-primary" />
             <label class="flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer" :title="t('modal.exposed_model_1m_hint')">
               <input v-model="em.context_1m" type="checkbox" class="w-4 h-4 accent-primary cursor-pointer" />
               1M
@@ -165,6 +164,10 @@
             >X</button>
           </div>
         </div>
+        <p class="app-muted text-xs mt-1.5">{{ t('modal.exposed_model_backend_hint') }}</p>
+        <datalist id="exposed-backend-options">
+          <option v-for="v in backendModelOptions" :key="v" :value="v" />
+        </datalist>
         <button class="app-control mt-2.5 px-3 py-1.5 rounded-md text-xs font-semibold cursor-pointer transition-all" @click="exposedModels.push({ id: '', label: '', description: '', backend_model: '', context_1m: false })">{{ t('modal.add_exposed_model') }}</button>
       </div>
 
@@ -214,6 +217,15 @@ const form = reactive({
 })
 
 const mappings = ref<{ from: string; to: string }[]>([{ from: '', to: '' }])
+// 后端模型名快捷选项：取自当前 provider 的模型映射 value（去重），供 BackendModel 输入框补全
+const backendModelOptions = computed(() => {
+  const set = new Set<string>()
+  for (const m of mappings.value) {
+    const v = m.to.trim()
+    if (v) set.add(v)
+  }
+  return [...set]
+})
 const exposedModels = ref<{ id: string; label: string; description: string; backend_model: string; context_1m: boolean }[]>([])
 const openAIExtraParamsText = ref(formatOpenAIExtraParams(defaultOpenAIExtraParams()))
 const message = ref<{ text: string; ok: boolean }>({ text: '', ok: false })
@@ -296,7 +308,7 @@ function collectExposedModels(): { ok: true; value: { id: string; label: string;
     backend_model: em.backend_model.trim(),
     context_1m: em.context_1m ?? false,
   }))
-  const partial = rows.find(em => !isEmptyExposedModel(em) && (!em.id || !em.label))
+  const partial = rows.find(em => !isEmptyExposedModel(em) && (!em.label || !em.backend_model))
   if (partial) {
     return { ok: false as const, error: t('modal.exposed_model_required') }
   }

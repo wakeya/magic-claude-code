@@ -208,34 +208,37 @@ func (p *Provider) Validate() error {
 		p.ExposedModels[i].BackendModel = strings.TrimSpace(p.ExposedModels[i].BackendModel)
 	}
 	seenExposedIDs := make(map[string]bool)
-	for i, em := range p.ExposedModels {
-		id := em.ID
-		label := em.Label
-		if id == "" {
-			return fmt.Errorf("exposed_models[%d]: id is required", i)
+	for i := range p.ExposedModels {
+		em := &p.ExposedModels[i]
+		// ID 留空时自动生成稳定随机 ID（前端隐藏 ID 输入，用户无需手输）
+		if em.ID == "" {
+			em.ID = generateExposedModelID()
 		}
-		if label == "" {
+		if em.Label == "" {
 			return fmt.Errorf("exposed_models[%d]: label is required", i)
 		}
-		if strings.HasPrefix(id, "claude-") {
+		if em.BackendModel == "" {
+			return fmt.Errorf("exposed_models[%d]: backend_model is required", i)
+		}
+		if strings.HasPrefix(em.ID, "claude-") {
 			return fmt.Errorf("exposed_models[%d]: id must not start with \"claude-\" (conflicts with built-in menu items)", i)
 		}
-		if strings.Contains(id, "[1m]") {
+		if strings.Contains(em.ID, "[1m]") {
 			return fmt.Errorf("exposed_models[%d]: id must not contain \"[1m]\" (reserved by Claude Code 1M-context handling)", i)
 		}
-		switch id {
+		switch em.ID {
 		case "sonnet", "opus", "haiku", "opusplan":
-			return fmt.Errorf("exposed_models[%d]: id %q is reserved by Claude Code model aliases", i, id)
+			return fmt.Errorf("exposed_models[%d]: id %q is reserved by Claude Code model aliases", i, em.ID)
 		}
-		if strings.IndexFunc(id, func(r rune) bool {
+		if strings.IndexFunc(em.ID, func(r rune) bool {
 			return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == ':' || r == '-')
 		}) >= 0 {
 			return fmt.Errorf("exposed_models[%d]: id may only contain letters, digits, '.', '_', ':' and '-'", i)
 		}
-		if seenExposedIDs[id] {
-			return fmt.Errorf("exposed_models[%d]: duplicate id %q within provider", i, id)
+		if seenExposedIDs[em.ID] {
+			return fmt.Errorf("exposed_models[%d]: duplicate id %q within provider", i, em.ID)
 		}
-		seenExposedIDs[id] = true
+		seenExposedIDs[em.ID] = true
 	}
 
 	return nil
@@ -319,6 +322,13 @@ type ExposedModel struct {
 // generateProviderID 生成唯一的供应商 ID
 func generateProviderID() string {
 	return "provider-" + randomHex(8) + "-" + randomHex(4)
+}
+
+// generateExposedModelID 生成对外暴露模型的稳定随机 ID。
+// ID 纯内部用（Claude Code /model 菜单 value + mcc 路由键），用户无需感知，
+// 故用 em- 前缀 + 随机 hex，无语义、稳定（生成后写回 struct，不随重排变化）。
+func generateExposedModelID() string {
+	return "em-" + randomHex(8)
 }
 
 // randomHex 生成指定长度的十六进制字符串

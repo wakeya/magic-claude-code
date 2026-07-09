@@ -83,7 +83,37 @@ func (s *SQLiteStore) init(dbExisted bool) error {
 		return err
 	}
 	if shouldMigrate {
-		return s.migrateLegacyJSON()
+		if err := s.migrateLegacyJSON(); err != nil {
+			return err
+		}
+	}
+	return s.migrateExposedModelIDs()
+}
+
+// migrateExposedModelIDs 一次性迁移：把非 "em-" 前缀的旧手输 ExposedModel.ID
+// 重新生成为 em-<hex> 随机 ID。迁移后均为 em- 前缀，不再触发。
+// 旧 ID 形如 glm-5.2-ky（用户手输），新 ID 由系统自动生成、前端不再展示。
+// 注意：迁移后用户 ~/.claude.json 里的旧 mainLoopModelOverride 失效，需重新 /model 选择。
+func (s *SQLiteStore) migrateExposedModelIDs() error {
+	cfg, err := s.Load()
+	if err != nil {
+		return err
+	}
+	if cfg == nil {
+		return nil
+	}
+	changed := false
+	for i := range cfg.Providers {
+		for j := range cfg.Providers[i].ExposedModels {
+			em := &cfg.Providers[i].ExposedModels[j]
+			if em.ID != "" && !strings.HasPrefix(em.ID, "em-") {
+				em.ID = generateExposedModelID()
+				changed = true
+			}
+		}
+	}
+	if changed {
+		return s.save(cfg)
 	}
 	return nil
 }

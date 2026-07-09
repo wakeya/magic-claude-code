@@ -1092,7 +1092,7 @@ func TestDuplicateProviderClearsExposedModels(t *testing.T) {
 	cfg := config.DefaultConfig()
 	provider := config.NewProvider("Original", "https://a.example.com/v1", "token")
 	provider.ExposedModels = []config.ExposedModel{
-		{ID: "glm-4.6", Label: "GLM-4.6"},
+		{ID: "glm-4.6", Label: "GLM-4.6", BackendModel: "glm-4.6"},
 	}
 	cfg.Providers = []config.Provider{*provider}
 	cfg.ActiveProviderID = provider.ID
@@ -1122,7 +1122,7 @@ func TestCreateProvider_RejectsDuplicateExposedIDAcrossProviders(t *testing.T) {
 	cfg := config.DefaultConfig()
 	providerA := config.NewProvider("A", "https://a.example.com/v1", "token")
 	providerA.ExposedModels = []config.ExposedModel{
-		{ID: "glm-4.6", Label: "GLM-4.6"},
+		{ID: "glm-4.6", Label: "GLM-4.6", BackendModel: "glm-4.6"},
 	}
 	cfg.Providers = []config.Provider{*providerA}
 	cfg.ActiveProviderID = providerA.ID
@@ -1130,7 +1130,7 @@ func TestCreateProvider_RejectsDuplicateExposedIDAcrossProviders(t *testing.T) {
 	server := NewServer(&AdminConfig{Password: "secret"}, store, nil)
 
 	// 尝试创建一个有同 ID 的 provider
-	body := `{"name":"B","api_url":"https://b.example.com/v1","api_token":"token","exposed_models":[{"id":"glm-4.6","label":"GLM-4.6"}]}`
+	body := `{"name":"B","api_url":"https://b.example.com/v1","api_token":"token","exposed_models":[{"id":"glm-4.6","label":"GLM-4.6","backend_model":"glm-4.6"}]}`
 	req := httptest.NewRequest("POST", "/api/providers", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	server.handleProviders(rec, req)
@@ -1144,14 +1144,14 @@ func TestImportProviders_DuplicateStrategyClearsExposedModels(t *testing.T) {
 	cfg := config.DefaultConfig()
 	// 现有 provider A 已有 exposed model glm-4.6
 	providerA := config.NewProvider("A", "https://a.example.com/v1", "token")
-	providerA.ExposedModels = []config.ExposedModel{{ID: "glm-4.6", Label: "GLM-4.6"}}
+	providerA.ExposedModels = []config.ExposedModel{{ID: "glm-4.6", Label: "GLM-4.6", BackendModel: "glm-4.6"}}
 	cfg.Providers = []config.Provider{*providerA}
 	cfg.ActiveProviderID = providerA.ID
 	store := config.NewMockStore(cfg)
 	server := NewServer(&AdminConfig{Password: "secret"}, store, nil)
 
 	// 导入同 ID 的 provider，带同 ID 的 exposed model，策略 duplicate
-	body := `{"version":1,"providers":[{"id":"` + providerA.ID + `","name":"A copy","api_url":"https://copy.example.com/v1","api_token":"t","exposed_models":[{"id":"glm-4.6","label":"GLM-4.6"}]}],"strategy":"duplicate"}`
+	body := `{"version":1,"providers":[{"id":"` + providerA.ID + `","name":"A copy","api_url":"https://copy.example.com/v1","api_token":"t","exposed_models":[{"id":"glm-4.6","label":"GLM-4.6","backend_model":"glm-4.6"}]}],"strategy":"duplicate"}`
 	req := httptest.NewRequest("POST", "/api/providers/import", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	server.handleImportProviders(rec, req)
