@@ -26,6 +26,14 @@ export interface StatusInfo {
   last_provider_request?: string | null
 }
 
+export interface ExposedModel {
+  id: string
+  label: string
+  description: string
+  backend_model: string
+  context_1m?: boolean
+}
+
 export interface Provider {
   id: string
   name: string
@@ -35,6 +43,7 @@ export interface Provider {
   openai_extra_params?: Record<string, unknown>
   claude_code_compat_hint: boolean
   model_mappings: Record<string, string>
+  exposed_models?: ExposedModel[]
   supports_thinking: boolean
   multimodal_switch: boolean
   multimodal_model: string
@@ -451,6 +460,7 @@ export function useApi() {
     openai_extra_params?: Record<string, unknown>
     claude_code_compat_hint?: boolean
     model_mappings: Record<string, string>
+    exposed_models?: ExposedModel[]
     supports_thinking?: boolean
     multimodal_switch?: boolean
     multimodal_model?: string
@@ -486,6 +496,7 @@ export function useApi() {
       openai_extra_params?: Record<string, unknown>
       claude_code_compat_hint?: boolean
       model_mappings?: Record<string, string>
+      exposed_models?: ExposedModel[]
       supports_thinking?: boolean
       multimodal_switch?: boolean
       multimodal_model?: string

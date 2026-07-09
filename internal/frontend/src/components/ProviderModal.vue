@@ -147,6 +147,30 @@
         <button class="app-control mt-2.5 px-3 py-1.5 rounded-md text-xs font-semibold cursor-pointer transition-all" @click="mappings.push({ from: '', to: '' })">{{ t('modal.add_mapping') }}</button>
       </div>
 
+      <div class="mb-5 pt-4" style="border-top: 1px solid var(--app-border)">
+        <label class="block text-[13px] font-semibold mb-2">{{ t('modal.exposed_models') }}</label>
+        <div class="space-y-2.5">
+          <div v-for="(em, i) in exposedModels" :key="i" class="grid grid-cols-1 md:grid-cols-[1fr_1.2fr_1fr_auto_auto] gap-2 items-center">
+            <input v-model="em.label" type="text" :placeholder="t('modal.exposed_model_label')" class="app-control px-3 py-2 rounded-md text-sm outline-none focus:border-primary" />
+            <input v-model="em.description" type="text" :placeholder="t('modal.exposed_model_desc')" class="app-control px-3 py-2 rounded-md text-sm outline-none focus:border-primary" />
+            <input v-model="em.backend_model" list="exposed-backend-options" type="text" :placeholder="t('modal.exposed_model_backend')" class="app-control px-3 py-2 rounded-md text-sm outline-none focus:border-primary" />
+            <label class="flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer" :title="t('modal.exposed_model_1m_hint')">
+              <input v-model="em.context_1m" type="checkbox" class="w-4 h-4 accent-primary cursor-pointer" />
+              1M
+            </label>
+            <button
+              class="px-2 py-1 bg-danger text-white border-none rounded-md text-xs font-semibold cursor-pointer hover:scale-105 transition-all whitespace-nowrap"
+              @click="exposedModels.splice(i, 1)"
+            >X</button>
+          </div>
+        </div>
+        <p class="app-muted text-xs mt-1.5">{{ t('modal.exposed_model_backend_hint') }}</p>
+        <datalist id="exposed-backend-options">
+          <option v-for="v in backendModelOptions" :key="v" :value="v" />
+        </datalist>
+        <button class="app-control mt-2.5 px-3 py-1.5 rounded-md text-xs font-semibold cursor-pointer transition-all" @click="exposedModels.push({ id: '', label: '', description: '', backend_model: '', context_1m: false })">{{ t('modal.add_exposed_model') }}</button>
+      </div>
+
       <div class="flex gap-2.5">
         <button class="app-control px-5 py-2.5 rounded-lg text-sm font-semibold cursor-pointer transition-all" @click="$emit('close')">{{ t('modal.cancel') }}</button>
         <button class="app-control px-5 py-2.5 rounded-lg text-sm font-semibold cursor-pointer transition-all" @click="testConnection">{{ t('modal.test') }}</button>
@@ -193,6 +217,16 @@ const form = reactive({
 })
 
 const mappings = ref<{ from: string; to: string }[]>([{ from: '', to: '' }])
+// 后端模型名快捷选项：取自当前 provider 的模型映射 value（去重），供 BackendModel 输入框补全
+const backendModelOptions = computed(() => {
+  const set = new Set<string>()
+  for (const m of mappings.value) {
+    const v = m.to.trim()
+    if (v) set.add(v)
+  }
+  return [...set]
+})
+const exposedModels = ref<{ id: string; label: string; description: string; backend_model: string; context_1m: boolean }[]>([])
 const openAIExtraParamsText = ref(formatOpenAIExtraParams(defaultOpenAIExtraParams()))
 const message = ref<{ text: string; ok: boolean }>({ text: '', ok: false })
 const showToken = ref(false)
@@ -244,6 +278,11 @@ onMounted(() => {
     openAIExtraParamsText.value = formatOpenAIExtraParams(props.provider.openai_extra_params || defaultOpenAIExtraParams())
     const entries = Object.entries(props.provider.model_mappings || {})
     mappings.value = entries.length > 0 ? entries.map(([from, to]) => ({ from, to })) : [{ from: '', to: '' }]
+    if (props.provider.exposed_models?.length) {
+      exposedModels.value = props.provider.exposed_models.map(em => ({
+        id: em.id, label: em.label, description: em.description, backend_model: em.backend_model, context_1m: em.context_1m ?? false,
+      }))
+    }
   }
 })
 
@@ -257,6 +296,25 @@ function collectMappings(): Record<string, string> {
   return result
 }
 
+function isEmptyExposedModel(em: { id: string; label: string; description: string; backend_model: string; context_1m: boolean }) {
+  return !em.id && !em.label && !em.description && !em.backend_model
+}
+
+function collectExposedModels(): { ok: true; value: { id: string; label: string; description: string; backend_model: string; context_1m: boolean }[] } | { ok: false; error: string } {
+  const rows = exposedModels.value.map(em => ({
+    id: em.id.trim(),
+    label: em.label.trim(),
+    description: em.description.trim(),
+    backend_model: em.backend_model.trim(),
+    context_1m: em.context_1m ?? false,
+  }))
+  const partial = rows.find(em => !isEmptyExposedModel(em) && (!em.label || !em.backend_model))
+  if (partial) {
+    return { ok: false as const, error: t('modal.exposed_model_required') }
+  }
+  return { ok: true as const, value: rows.filter(em => !isEmptyExposedModel(em)) }
+}
+
 async function save() {
   if (!form.name || !form.api_url) {
     message.value = { text: t('modal.required'), ok: false }
@@ -264,6 +322,11 @@ async function save() {
   }
   if (form.multimodal_switch && !form.multimodal_model.trim()) {
     message.value = { text: t('modal.required'), ok: false }
+    return
+  }
+  const collected = collectExposedModels()
+  if (!collected.ok) {
+    message.value = { text: collected.error, ok: false }
     return
   }
   const openAIExtraParams = parseOpenAIExtraParams()
@@ -281,6 +344,7 @@ async function save() {
     ...(isOpenAICompatible.value ? { claude_code_compat_hint: form.claude_code_compat_hint } : {}),
     openai_extra_params: isOpenAICompatible.value ? openAIExtraParams.value : {},
     model_mappings: collectMappings(),
+    exposed_models: collected.value,
     supports_thinking: form.supports_thinking,
     multimodal_switch: form.multimodal_switch,
     multimodal_model: form.multimodal_switch ? form.multimodal_model.trim() : '',

@@ -69,28 +69,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 获取活跃的供应商
-	activeProvider := cfg.GetActiveProvider()
-
-	// 确定后端 URL 和 API Token
-	var backendURL string
-	var apiToken string
-
-	if activeProvider != nil {
-		backendURL = activeProvider.APIURL
-		apiToken = activeProvider.APIToken
-	} else if cfg.BackendURL != "" {
-		// 向后兼容：使用旧的 BackendURL
-		backendURL = cfg.BackendURL
-		// 从请求中获取 Authorization header
-		apiToken = ""
-	} else {
-		log.Printf("No active provider configured")
-		http.Error(w, "No active provider", http.StatusServiceUnavailable)
-		return
-	}
-
-	// 读取请求体 (限制大小)
+	// 先读 body 再路由：model 字段在 body 内
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodySize+1))
 	if err != nil {
 		log.Printf("Error reading request body: %v", err)
@@ -99,28 +78,38 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body.Close()
 
-	// 检查请求体是否超过限制
 	if len(body) > maxRequestBodySize {
 		log.Printf("Request body too large: %d bytes", len(body))
 		http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
 		return
 	}
 
-	// 转换请求体（模型映射 + 按供应商能力调整）
-	modifiedBody := body
 	metadata := usage.ParseRequestMetadata(body, r.Header)
-	mappedModel := metadata.OriginalModel
-	if activeProvider != nil {
-		mappedModel = activeProvider.MapModel(metadata.OriginalModel)
-		modifiedBody, err = h.transformRequest(body, activeProvider)
-		if err != nil {
-			log.Printf("Error transforming request: %v", err)
-			http.Error(w, "Error transforming request", http.StatusBadRequest)
-			return
-		} else {
-			mappedModel = usage.ParseRequestMetadata(modifiedBody, r.Header).OriginalModel
-		}
+
+	// 按 model 路由：命中暴露模型 → 对应 provider；否则 fallback active
+	selectedProvider, backendModel := cfg.ResolveModel(metadata.OriginalModel)
+
+	var backendURL string
+	var apiToken string
+	if selectedProvider != nil {
+		backendURL = selectedProvider.APIURL
+		apiToken = selectedProvider.APIToken
+	} else if cfg.BackendURL != "" {
+		backendURL = cfg.BackendURL
+		apiToken = ""
+	} else {
+		log.Printf("No active provider configured")
+		http.Error(w, "No active provider", http.StatusServiceUnavailable)
+		return
 	}
+
+	modifiedBody, err := h.transformRequest(body, selectedProvider, backendModel)
+	if err != nil {
+		log.Printf("Error transforming request: %v", err)
+		http.Error(w, "Error transforming request", http.StatusBadRequest)
+		return
+	}
+	mappedModel := usage.ParseRequestMetadata(modifiedBody, r.Header).OriginalModel
 
 	reqID := randomHex(8)
 
@@ -132,9 +121,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 创建后端请求
-	backendURL = buildUpstreamURL(backendURL, r.URL.Path, providerAPIFormat(activeProvider))
+	backendURL = buildUpstreamURL(backendURL, r.URL.Path, providerAPIFormat(selectedProvider))
 	if r.URL.RawQuery != "" {
-		upstreamQuery := stripAnthropicQueryParams(r.URL.RawQuery, providerAPIFormat(activeProvider))
+		upstreamQuery := stripAnthropicQueryParams(r.URL.RawQuery, providerAPIFormat(selectedProvider))
 		if upstreamQuery != "" {
 			backendURL += "?" + upstreamQuery
 		}
@@ -143,11 +132,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 请求入口日志（此时 backendURL 已是最终转发 URL，与出口日志语义一致）
 	log.Printf("[%s] >>> %s %s%s model=%s stream=%v msgs=%d tools=%d size=%d%s",
 		reqID, r.Method, r.Host, r.URL.Path, modelStr, isStream, msgs, tools, len(body),
-		providerLogFields(activeProvider, backendURL))
-	usageReq := h.newUsageRequest(r, activeProvider, backendURL, metadata, mappedModel, len(modifiedBody))
+		providerLogFields(selectedProvider, backendURL))
+	usageReq := h.newUsageRequest(r, selectedProvider, backendURL, metadata, mappedModel, len(modifiedBody))
 	shouldRecordUsage := h.recorder != nil && shouldRecordUsagePath(r.URL.Path)
 
-	apiFmt := providerAPIFormat(activeProvider)
+	apiFmt := providerAPIFormat(selectedProvider)
 	client := &http.Client{
 		Transport: h.transport,
 		Timeout:   10 * time.Minute,
@@ -162,9 +151,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return client.Do(upReq)
 	}
 
-	if activeProvider != nil && activeProvider.RateLimitQueueEnabled && activeProvider.MaxConcurrentRequests > 0 {
-		result, acquireErr := h.rateLimiter.Acquire(r.Context(), activeProvider.ID,
-			activeProvider.MaxConcurrentRequests, activeProvider.MaxQueueSize, activeProvider.QueueTimeoutMS)
+	if selectedProvider != nil && selectedProvider.RateLimitQueueEnabled && selectedProvider.MaxConcurrentRequests > 0 {
+		result, acquireErr := h.rateLimiter.Acquire(r.Context(), selectedProvider.ID,
+			selectedProvider.MaxConcurrentRequests, selectedProvider.MaxQueueSize, selectedProvider.QueueTimeoutMS)
 		if acquireErr != nil {
 			statusCode := http.StatusTooManyRequests
 			errType := "rate_limit_queue_full"
@@ -173,7 +162,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				errType = "rate_limit_queue_timeout"
 			}
 			log.Printf("[%s] <<< %d rate_limit=%s provider_name=%q",
-				reqID, statusCode, errType, activeProvider.Name)
+				reqID, statusCode, errType, selectedProvider.Name)
 			if shouldRecordUsage {
 				usageReq.ErrorType = errType
 				h.finishUsageRecord(usageReq, usage.TokenRecord{
@@ -187,22 +176,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer result.Release()
 		if result.Queued {
 			log.Printf("[%s] <<< rate_limit_queue provider_name=%q wait=%v",
-				reqID, activeProvider.Name, result.WaitTime)
+				reqID, selectedProvider.Name, result.WaitTime)
 		}
 	}
 
 	requestStarted := usageReq.StartedAt
 	upstreamStarted := time.Now()
 	var resp *http.Response
-	if activeProvider != nil && activeProvider.Retry429Enabled {
+	if selectedProvider != nil && selectedProvider.Retry429Enabled {
 		retryLogf := func(format string, args ...any) {
 			log.Printf("[%s] "+format, append([]any{reqID}, args...)...)
 		}
 		resp, err = ratelimit.DoWithRetry429(r.Context(), doUpstream,
-			activeProvider.Retry429Enabled,
-			activeProvider.Retry429MaxAttempts,
-			activeProvider.Retry429InitialDelayMS,
-			activeProvider.Retry429MaxDelayMS,
+			selectedProvider.Retry429Enabled,
+			selectedProvider.Retry429MaxAttempts,
+			selectedProvider.Retry429InitialDelayMS,
+			selectedProvider.Retry429MaxDelayMS,
 			retryLogf)
 	} else {
 		resp, err = doUpstream()
@@ -228,8 +217,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	usageReq.StatusCode = &resp.StatusCode
 
 	// 反应式错误恢复：400 时尝试清理请求并重试
-	if resp.StatusCode == 400 && shouldRecordUsagePath(r.URL.Path) && activeProvider != nil {
-		retried, restoredBody := h.tryRectify(r, modifiedBody, resp, backendURL, apiToken, client, providerAPIFormat(activeProvider))
+	if resp.StatusCode == 400 && shouldRecordUsagePath(r.URL.Path) && selectedProvider != nil {
+		retried, restoredBody := h.tryRectify(r, modifiedBody, resp, backendURL, apiToken, client, providerAPIFormat(selectedProvider))
 		if retried != nil {
 			resp = retried
 			defer resp.Body.Close()
@@ -244,7 +233,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// 复制响应 header
 	for key, values := range resp.Header {
-		if !shouldForwardResponseHeader(key, providerAPIFormat(activeProvider)) {
+		if !shouldForwardResponseHeader(key, providerAPIFormat(selectedProvider)) {
 			continue
 		}
 		for _, value := range values {
@@ -254,7 +243,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// 响应出口日志
 	log.Printf("[%s] <<< %d %s%s model=%s upstream=%dms%s",
-		reqID, resp.StatusCode, r.Host, r.URL.Path, modelStr, headerMS, providerLogFields(activeProvider, backendURL))
+		reqID, resp.StatusCode, r.Host, r.URL.Path, modelStr, headerMS, providerLogFields(selectedProvider, backendURL))
 
 	// 设置状态码
 	w.WriteHeader(resp.StatusCode)
@@ -270,8 +259,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			observer = streamObserver
 		}
 		streamBody := resp.Body
-		if resp.StatusCode < 400 && providerAPIFormat(activeProvider) != config.APIFormatAnthropic {
-			streamBody = streamOpenAIStreamingResponse(resp.Body, providerAPIFormat(activeProvider))
+		if resp.StatusCode < 400 && providerAPIFormat(selectedProvider) != config.APIFormatAnthropic {
+			streamBody = streamOpenAIStreamingResponse(resp.Body, providerAPIFormat(selectedProvider))
 		}
 		streamErr := copyWithHeartbeatAndObserver(hw, streamBody, observer)
 		if streamErr != nil {
@@ -292,8 +281,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// 非 SSE 响应，直接复制
 		observer := newResponseObserver(requestStarted, 4*1024*1024)
 		responseBody := resp.Body
-		if resp.StatusCode < 400 && providerAPIFormat(activeProvider) != config.APIFormatAnthropic {
-			converted, convertErr := convertOpenAINonStreamingResponse(resp.Body, providerAPIFormat(activeProvider))
+		if resp.StatusCode < 400 && providerAPIFormat(selectedProvider) != config.APIFormatAnthropic {
+			converted, convertErr := convertOpenAINonStreamingResponse(resp.Body, providerAPIFormat(selectedProvider))
 			if convertErr != nil {
 				log.Printf("Error converting OpenAI response: %v", convertErr)
 				usageReq.ErrorType = usage.ErrorHTTP
@@ -621,8 +610,14 @@ func streamAnomalyPayload(reqID string, responseBytes int64, diag usage.SSEDiagn
 	return string(out)
 }
 
-// transformRequest 转换请求体（模型映射 + 按供应商能力剥离 thinking）
-func (h *Handler) transformRequest(body []byte, provider *config.Provider) ([]byte, error) {
+// transformRequest 转换请求体。
+// backendModel 是由 Config.ResolveModel 解析出的、应写入后端请求体的模型名
+// （暴露模型命中 → BackendModel；fallback → active.MapModel 结果）。
+// MultimodalSwitch 触发时覆盖为 MultimodalModel。
+func (h *Handler) transformRequest(body []byte, provider *config.Provider, backendModel string) ([]byte, error) {
+	if provider == nil {
+		return body, nil // 无 provider（BackendURL 兼容模式），不转换
+	}
 	var req map[string]any
 	if err := json.Unmarshal(body, &req); err != nil {
 		return body, nil
@@ -636,14 +631,14 @@ func (h *Handler) transformRequest(body []byte, provider *config.Provider) ([]by
 		}
 	}
 
-	// 模型映射
+	// 模型替换：以 ResolveModel 的结果为基础，叠加多模态 override
 	if model, ok := req["model"].(string); ok {
-		mapped := provider.MapModel(model)
+		finalModel := backendModel
 		if provider.MultimodalSwitch && provider.MultimodalModel != "" && requestContainsNonTextContent(req) {
-			mapped = provider.MultimodalModel
+			finalModel = provider.MultimodalModel
 		}
-		if mapped != model {
-			req["model"] = mapped
+		if finalModel != model {
+			req["model"] = finalModel
 			changed = true
 		}
 	}
@@ -761,6 +756,17 @@ func copyUpstreamHeaders(dst *http.Request, src http.Header, apiToken string, ap
 		if !isAnthropic && (strings.EqualFold(key, "Anthropic-Version") || strings.EqualFold(key, "Anthropic-Beta")) {
 			continue
 		}
+		// anthropic 格式：剥离 Anthropic-Beta 里的 context-1m 条目。
+		// 设计取舍：mcc 定位为第三方 provider 透明代理（GLM/DeepSeek/MiniMax 等），这些后端
+		// 通常不认 Anthropic 的 context-1m beta；mcc 注入 [1m] 仅为让客户端正确判定上下文窗口，
+		// 不应让该 beta 到达后端引发兼容问题。其他 beta（如 interleaved-thinking）保留。
+		// 若将来需要对接官方 Anthropic 或真正依赖该 beta 的后端，可在此处加 provider 级开关。
+		if isAnthropic && strings.EqualFold(key, "Anthropic-Beta") {
+			for _, v := range stripContext1MBeta(values) {
+				dst.Header.Add(key, v)
+			}
+			continue
+		}
 		if strings.EqualFold(key, "Accept-Encoding") || strings.EqualFold(key, "TE") {
 			continue
 		}
@@ -778,6 +784,30 @@ func copyUpstreamHeaders(dst *http.Request, src http.Header, apiToken string, ap
 	if !hasAuth && apiToken != "" {
 		dst.Header.Set("Authorization", "Bearer "+apiToken)
 	}
+}
+
+// stripContext1MBeta 从 Anthropic-Beta header 值中剥离 context-1m 系列 beta 条目，
+// 保留其余 beta。每个 value 可能是单个 beta 或逗号分隔的多个 beta；
+// 剥离后若某 value 变空则整体丢弃。
+func stripContext1MBeta(values []string) []string {
+	var result []string
+	for _, v := range values {
+		var kept []string
+		for _, part := range strings.Split(v, ",") {
+			trimmed := strings.TrimSpace(part)
+			if trimmed == "" {
+				continue
+			}
+			if strings.HasPrefix(trimmed, "context-1m") {
+				continue
+			}
+			kept = append(kept, trimmed)
+		}
+		if len(kept) > 0 {
+			result = append(result, strings.Join(kept, ","))
+		}
+	}
+	return result
 }
 
 // summarizeCompatHeaders 提取对兼容性排查有用的请求头（用于错误日志）

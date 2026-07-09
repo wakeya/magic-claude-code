@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -888,5 +890,237 @@ func TestSQLiteStoreSnapshotTableCreated(t *testing.T) {
 	}
 	if tableName != "provider_quota_snapshots" {
 		t.Errorf("table name = %q, want provider_quota_snapshots", tableName)
+	}
+}
+
+func TestSQLiteStoreRoundTripsExposedModels(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.db")
+	store, err := NewSQLiteStore(path, "")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	cfg := DefaultConfig()
+	provider := NewProvider("A", "https://a.example/anthropic", "token")
+	provider.ExposedModels = []ExposedModel{
+		{ID: "glm-4.6", Label: "GLM-4.6", Description: "GLM route", BackendModel: "glm-4.6"},
+		{ID: "kimi-k2", Label: "Kimi K2", BackendModel: "moonshot-v1-128k"},
+	}
+	cfg.Providers = []Provider{*provider}
+	cfg.ActiveProviderID = provider.ID
+
+	if err := store.Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := loaded.GetProviderByID(provider.ID)
+	if got == nil {
+		t.Fatal("provider missing after load")
+	}
+	if !reflect.DeepEqual(got.ExposedModels, provider.ExposedModels) {
+		t.Fatalf("ExposedModels = %#v, want %#v", got.ExposedModels, provider.ExposedModels)
+	}
+}
+
+func TestSQLiteStoreRoundTripsNilExposedModels(t *testing.T) {	path := filepath.Join(t.TempDir(), "config.db")
+	store, err := NewSQLiteStore(path, "")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	cfg := DefaultConfig()
+	provider := NewProvider("B", "https://b.example/anthropic", "token")
+	// 不设置 ExposedModels（nil）
+	cfg.Providers = []Provider{*provider}
+	cfg.ActiveProviderID = provider.ID
+
+	if err := store.Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := loaded.GetProviderByID(provider.ID)
+	if got == nil {
+		t.Fatal("provider missing after load")
+	}
+	// nil 和空切片均可接受，取决于 JSON unmarshal 行为
+	if len(got.ExposedModels) != 0 {
+		t.Fatalf("ExposedModels = %#v, want empty", got.ExposedModels)
+	}
+}
+
+func TestSQLiteStoreMigratesLegacyExposedModelIDs(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "proxy.db")
+	// 第一次：存入旧格式（非 em- 前缀）ID
+	store, err := NewSQLiteStore(dbPath, "")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	cfg := DefaultConfig()
+	provider := NewProvider("A", "https://a.example/anthropic", "token")
+	provider.ExposedModels = []ExposedModel{
+		{ID: "glm-5.2-ky", Label: "GLM-5.2", BackendModel: "glm-5.2", Context1M: true},
+		{ID: "em-abcd1234", Label: "Already New", BackendModel: "x"}, // 已是 em- 前缀，不应变
+	}
+	cfg.Providers = []Provider{*provider}
+	cfg.ActiveProviderID = provider.ID
+	if err := store.Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// 第二次：重新打开，触发 migrateExposedModelIDs
+	store2, err := NewSQLiteStore(dbPath, "")
+	if err != nil {
+		t.Fatalf("reopen NewSQLiteStore: %v", err)
+	}
+	defer store2.Close()
+	loaded, err := store2.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := loaded.GetProviderByID(provider.ID).ExposedModels
+	if !strings.HasPrefix(got[0].ID, "em-") {
+		t.Fatalf("legacy ID not migrated: %q", got[0].ID)
+	}
+	if got[0].ID == "glm-5.2-ky" {
+		t.Fatal("legacy ID should have changed")
+	}
+	// 保留其他字段
+	if got[0].Label != "GLM-5.2" || got[0].BackendModel != "glm-5.2" || !got[0].Context1M {
+		t.Fatalf("migration lost fields: %#v", got[0])
+	}
+	// 已是 em- 的不变
+	if got[1].ID != "em-abcd1234" {
+		t.Fatalf("em- ID should be unchanged: %q", got[1].ID)
+	}
+}
+
+func TestSQLiteStoreRoundTripsContext1M(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.db")
+	store, err := NewSQLiteStore(path, "")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	cfg := DefaultConfig()
+	provider := NewProvider("A", "https://a.example/anthropic", "token")
+	provider.ExposedModels = []ExposedModel{
+		{ID: "glm-5.2", Label: "GLM-5.2", BackendModel: "glm-5.2", Context1M: true},
+		{ID: "glm-4.6", Label: "GLM-4.6", BackendModel: "glm-4.6"}, // Context1M=false
+	}
+	cfg.Providers = []Provider{*provider}
+	cfg.ActiveProviderID = provider.ID
+
+	if err := store.Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := loaded.GetProviderByID(provider.ID).ExposedModels
+	if len(got) != 2 {
+		t.Fatalf("ExposedModels len = %d, want 2", len(got))
+	}
+	if !got[0].Context1M {
+		t.Fatalf("glm-5.2 Context1M = false, want true (not persisted)")
+	}
+	if got[1].Context1M {
+		t.Fatalf("glm-4.6 Context1M = true, want false")
+	}
+}
+
+func TestSQLiteStoreAddsExposedModelsColumnToExistingDB(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "proxy.db")
+	db, err := sql.Open("sqlite", "file:"+dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	// 模拟旧库：不含 exposed_models 列
+	_, err = db.Exec(`
+		CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+		CREATE TABLE providers (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			api_url TEXT NOT NULL,
+			api_token TEXT NOT NULL DEFAULT '',
+			supports_thinking INTEGER NOT NULL DEFAULT 0,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);
+		CREATE TABLE provider_model_mappings (
+			provider_id TEXT NOT NULL,
+			source_model TEXT NOT NULL,
+			target_model TEXT NOT NULL,
+			PRIMARY KEY (provider_id, source_model)
+		);
+		CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+		INSERT INTO schema_migrations(version, applied_at) VALUES (1, '2026-06-01T00:00:00Z');
+		INSERT INTO providers(id, name, api_url, api_token, supports_thinking, enabled, created_at, updated_at)
+		VALUES ('provider-a', 'Legacy', 'https://legacy.example.com/anthropic', 'token', 1, 1, '2026-06-01T00:00:00Z', '2026-06-01T00:00:00Z');
+	`)
+	if err != nil {
+		db.Close()
+		t.Fatalf("create legacy schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	// 打开旧库，触发 ensureProviderColumns
+	store, err := NewSQLiteStore(dbPath, filepath.Join(dir, "missing-config.json"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	// 验证 PRAGMA table_info 包含 exposed_models
+	rows, err := store.DB().Query(`PRAGMA table_info(providers)`)
+	if err != nil {
+		t.Fatalf("PRAGMA: %v", err)
+	}
+	hasColumn := false
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if name == "exposed_models" {
+			hasColumn = true
+		}
+	}
+	rows.Close()
+	if !hasColumn {
+		t.Fatal("exposed_models column missing after migration")
+	}
+
+	// 验证旧库 provider 可正常加载，ExposedModels 为空
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(loaded.Providers) != 1 {
+		t.Fatalf("providers = %d", len(loaded.Providers))
+	}
+	if len(loaded.Providers[0].ExposedModels) != 0 {
+		t.Fatalf("legacy provider ExposedModels = %#v, want empty", loaded.Providers[0].ExposedModels)
 	}
 }

@@ -709,10 +709,20 @@ Transparent Mode has the highest priority and suits scenarios where you want to 
 ```json
 {
   "env": {
-    "ANTHROPIC_BASE_URL": "https://api.anthropic.com"
+    "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
+    "ANTHROPIC_API_KEY": "any-non-empty"
   }
 }
 ```
+
+> **⚠️ Surfacing cross-provider models in the `/model` menu**
+>
+> On startup Claude Code fetches extra model options from `/api/claude_cli/bootstrap`; mcc injects the ExposedModels you configured in the admin panel here. Two client-side prerequisites must hold for this to work:
+>
+> 1. **Authenticate with `ANTHROPIC_API_KEY`, not `ANTHROPIC_AUTH_TOKEN`**: Claude Code's bootstrap only accepts OAuth or `x-api-key`. mcc overwrites the auth header with the provider token, so any non-empty value works (the example uses `"any-non-empty"`).
+> 2. **Do not set `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`**: otherwise Claude Code skips bootstrap as non-essential traffic and the `/model` menu never refreshes with your custom models.
+>
+> Tunnel Mode behaves the same way (it also leaves `ANTHROPIC_BASE_URL` untouched, so Claude Code still considers itself firstParty and sends bootstrap). Gateway Mode changes `ANTHROPIC_BASE_URL`, which puts Claude Code into 3P provider mode where bootstrap is not sent, so ExposedModels never appear in the `/model` menu.
 
 #### Tunnel Mode
 
@@ -724,12 +734,15 @@ Tunnel Mode does not modify hosts; it relies on `HTTPS_PROXY` and `NODE_EXTRA_CA
 {
   "env": {
     "HTTPS_PROXY": "https://127.0.0.1:443",
-    "NODE_EXTRA_CA_CERTS": "/path/to/magic-claude-code/data/ca.crt"
+    "NODE_EXTRA_CA_CERTS": "/path/to/magic-claude-code/data/ca.crt",
+    "ANTHROPIC_API_KEY": "any-non-empty"
   }
 }
 ```
 
 Save and restart Claude Code.
+
+> Likewise, to surface cross-provider models in the `/model` menu, follow the two client-side prerequisites listed under Transparent Mode above (authenticate with `ANTHROPIC_API_KEY` and do not set `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`).
 
 #### Gateway Mode
 

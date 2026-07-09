@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"magic-claude-code/internal/providerquota"
@@ -47,6 +48,12 @@ type Provider struct {
 	// key: 客户端请求的模型名（如 claude-sonnet-4）
 	// value: 实际转发到后端的模型名（如 glm-5）
 	ModelMappings map[string]string `json:"model_mappings"`
+
+	// ExposedModels 对外暴露给 Claude Code /model 菜单的模型列表。
+	// 用户在 /model 选中某项后，该会话后续请求的 model 字段等于 ExposedModel.ID，
+	// mcc 据此路由到此 provider 并把 model 替换为 BackendModel。
+	// ID 跨所有 provider 全局唯一（由 Config.Validate 校验）。
+	ExposedModels []ExposedModel `json:"exposed_models,omitempty"`
 
 	// SupportsThinking 后端是否支持 thinking 字段
 	SupportsThinking bool `json:"supports_thinking"`
@@ -193,6 +200,47 @@ func (p *Provider) Validate() error {
 		}
 	}
 
+	// 校验对外暴露模型
+	for i := range p.ExposedModels {
+		p.ExposedModels[i].ID = strings.TrimSpace(p.ExposedModels[i].ID)
+		p.ExposedModels[i].Label = strings.TrimSpace(p.ExposedModels[i].Label)
+		p.ExposedModels[i].Description = strings.TrimSpace(p.ExposedModels[i].Description)
+		p.ExposedModels[i].BackendModel = strings.TrimSpace(p.ExposedModels[i].BackendModel)
+	}
+	seenExposedIDs := make(map[string]bool)
+	for i := range p.ExposedModels {
+		em := &p.ExposedModels[i]
+		// ID 留空时自动生成稳定随机 ID（前端隐藏 ID 输入，用户无需手输）
+		if em.ID == "" {
+			em.ID = generateExposedModelID()
+		}
+		if em.Label == "" {
+			return fmt.Errorf("exposed_models[%d]: label is required", i)
+		}
+		if em.BackendModel == "" {
+			return fmt.Errorf("exposed_models[%d]: backend_model is required", i)
+		}
+		if strings.HasPrefix(em.ID, "claude-") {
+			return fmt.Errorf("exposed_models[%d]: id must not start with \"claude-\" (conflicts with built-in menu items)", i)
+		}
+		if strings.Contains(em.ID, "[1m]") {
+			return fmt.Errorf("exposed_models[%d]: id must not contain \"[1m]\" (reserved by Claude Code 1M-context handling)", i)
+		}
+		switch em.ID {
+		case "sonnet", "opus", "haiku", "opusplan":
+			return fmt.Errorf("exposed_models[%d]: id %q is reserved by Claude Code model aliases", i, em.ID)
+		}
+		if strings.IndexFunc(em.ID, func(r rune) bool {
+			return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == ':' || r == '-')
+		}) >= 0 {
+			return fmt.Errorf("exposed_models[%d]: id may only contain letters, digits, '.', '_', ':' and '-'", i)
+		}
+		if seenExposedIDs[em.ID] {
+			return fmt.Errorf("exposed_models[%d]: duplicate id %q within provider", i, em.ID)
+		}
+		seenExposedIDs[em.ID] = true
+	}
+
 	return nil
 }
 
@@ -246,9 +294,40 @@ func (p *Provider) MapModel(model string) string {
 	return model
 }
 
+// ExposedModel 声明一个对外暴露给 Claude Code /model 菜单的模型。
+type ExposedModel struct {
+	// ID 是全局唯一的逻辑模型名，同时是 /model 菜单选项的 value。
+	// 用户选中后，Claude Code 把它作为请求的 model 字段。
+	// 不得以 "claude-" 开头（会与内置菜单项撞名被忽略），不得含 "[1m]"。
+	ID string `json:"id"`
+
+	// Label 是 /model 菜单里显示的名称。
+	Label string `json:"label"`
+
+	// Description 是 /model 菜单里的描述文案。
+	Description string `json:"description"`
+
+	// BackendModel 是该 provider 后端真实模型名（必填，由 Provider.Validate 校验非空）。
+	BackendModel string `json:"backend_model"`
+
+	// Context1M 标记该模型为 1M 上下文窗口。
+	// 为 true 时，bootstrap 注入的菜单 value 会附 [1m] 后缀，
+	// 让 Claude Code 客户端按 1M 判定上下文窗口（Sy 正则匹配 [1m]）。
+	// mcc 路由仍用不含 [1m] 的纯 ID 匹配（Claude Code 发往后端的 model 已剥离 [1m]）。
+	// 同时 mcc 会剥离 context-1m beta header，避免透传给不兼容的后端。
+	Context1M bool `json:"context_1m,omitempty"`
+}
+
 // generateProviderID 生成唯一的供应商 ID
 func generateProviderID() string {
 	return "provider-" + randomHex(8) + "-" + randomHex(4)
+}
+
+// generateExposedModelID 生成对外暴露模型的稳定随机 ID。
+// ID 纯内部用（Claude Code /model 菜单 value + mcc 路由键），用户无需感知，
+// 故用 em- 前缀 + 随机 hex，无语义、稳定（生成后写回 struct，不随重排变化）。
+func generateExposedModelID() string {
+	return "em-" + randomHex(8)
 }
 
 // randomHex 生成指定长度的十六进制字符串

@@ -613,3 +613,111 @@ func TestHandleCountTokensTooLarge(t *testing.T) {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
 	}
 }
+
+func TestHandleBootstrap_EmitsExposedModels(t *testing.T) {
+	store := config.NewMockStore(&config.Config{
+		Providers: []config.Provider{
+			{ID: "a", Name: "智谱", Enabled: true, ExposedModels: []config.ExposedModel{
+				{ID: "glm-4.6", Label: "GLM-4.6", Description: "日常编码", BackendModel: "glm-4.6"},
+			}},
+			{ID: "b", Name: "B", Enabled: false, ExposedModels: []config.ExposedModel{
+				{ID: "disabled-model", Label: "Disabled"},
+			}},
+		},
+	})
+	handler := &Handler{configStore: store}
+	rec := httptest.NewRecorder()
+	handler.handleBootstrap(rec)
+
+	var resp struct {
+		ClientData             any                   `json:"client_data"`
+		AdditionalModelOptions []map[string]string   `json:"additional_model_options"`
+		CwkCfgKey              any                   `json:"cwk_cfg_key"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if len(resp.AdditionalModelOptions) != 1 {
+		t.Fatalf("expected 1 option (disabled provider excluded), got %d: %v",
+			len(resp.AdditionalModelOptions), resp.AdditionalModelOptions)
+	}
+	opt := resp.AdditionalModelOptions[0]
+	if opt["model"] != "glm-4.6" || opt["name"] != "GLM-4.6" || opt["description"] != "日常编码 · 智谱" {
+		t.Fatalf("unexpected option fields (description should auto-append provider name): %v", opt)
+	}
+}
+
+func TestHandleBootstrap_DescriptionEmptyUsesProviderName(t *testing.T) {
+	store := config.NewMockStore(&config.Config{
+		Providers: []config.Provider{
+			{ID: "a", Name: "月之暗面", Enabled: true, ExposedModels: []config.ExposedModel{
+				{ID: "kimi-k2", Label: "Kimi K2", Description: ""}, // description 空
+			}},
+		},
+	})
+	handler := &Handler{configStore: store}
+	rec := httptest.NewRecorder()
+	handler.handleBootstrap(rec)
+
+	var resp struct {
+		AdditionalModelOptions []map[string]string `json:"additional_model_options"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if len(resp.AdditionalModelOptions) != 1 {
+		t.Fatalf("expected 1 option, got %d", len(resp.AdditionalModelOptions))
+	}
+	// description 为空时只用 provider 名
+	if resp.AdditionalModelOptions[0]["description"] != "月之暗面" {
+		t.Fatalf("expected description=月之暗面, got %q", resp.AdditionalModelOptions[0]["description"])
+	}
+}
+
+func TestHandleBootstrap_NoConfigReturnsEmpty(t *testing.T) {
+	handler := &Handler{configStore: nil} // 无 store
+	rec := httptest.NewRecorder()
+	handler.handleBootstrap(rec)
+	var resp map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	arr, ok := resp["additional_model_options"].([]any)
+	if !ok || len(arr) != 0 {
+		t.Fatalf("expected empty array, got %v", resp["additional_model_options"])
+	}
+}
+
+func TestHandleBootstrap_Context1MAppendsBracket1m(t *testing.T) {
+	store := config.NewMockStore(&config.Config{
+		Providers: []config.Provider{
+			{ID: "a", Name: "GLM", Enabled: true, ExposedModels: []config.ExposedModel{
+				{ID: "glm-5.2", Label: "GLM-5.2", BackendModel: "glm-5.2", Context1M: true},
+				{ID: "glm-4.6", Label: "GLM-4.6", BackendModel: "glm-4.6"}, // Context1M=false
+			}},
+		},
+	})
+	handler := &Handler{configStore: store}
+	rec := httptest.NewRecorder()
+	handler.handleBootstrap(rec)
+
+	var resp struct {
+		AdditionalModelOptions []map[string]string `json:"additional_model_options"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if len(resp.AdditionalModelOptions) != 2 {
+		t.Fatalf("expected 2 options, got %d", len(resp.AdditionalModelOptions))
+	}
+	byModel := map[string]string{}
+	for _, opt := range resp.AdditionalModelOptions {
+		byModel[opt["name"]] = opt["model"]
+	}
+	// Context1M=true 的模型，菜单 value 附 [1m]
+	if byModel["GLM-5.2"] != "glm-5.2[1m]" {
+		t.Fatalf("Context1M model value = %q, want glm-5.2[1m]", byModel["GLM-5.2"])
+	}
+	// Context1M=false 的模型，菜单 value 保持纯 ID
+	if byModel["GLM-4.6"] != "glm-4.6" {
+		t.Fatalf("non-1M model value = %q, want glm-4.6", byModel["GLM-4.6"])
+	}
+}

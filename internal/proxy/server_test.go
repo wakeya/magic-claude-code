@@ -934,7 +934,7 @@ func TestTransformRequestPreservesClaudeCodeContextFields(t *testing.T) {
 		"thinking":{"type":"enabled","budget_tokens":1024}
 	}`
 	handler := NewHandler(config.NewMockStore(nil), nil)
-	modified, err := handler.transformRequest([]byte(body), provider)
+	modified, err := handler.transformRequest([]byte(body), provider, provider.MapModel("claude-sonnet-4-5"))
 	if err != nil {
 		t.Fatalf("transform request: %v", err)
 	}
@@ -974,7 +974,7 @@ func TestTransformRequestUsesMultimodalModelForImageToolResult(t *testing.T) {
 				]
 			}]
 		}]
-	}`), provider)
+	}`), provider, "mimo-v2.5-pro")
 	if err != nil {
 		t.Fatalf("transform request: %v", err)
 	}
@@ -1020,7 +1020,7 @@ func TestTransformRequestUsesMultimodalModelForNonTextMediaTypes(t *testing.T) {
 			handler := NewHandler(config.NewMockStore(nil), nil)
 
 			body := `{"model":"claude-opus-4-6","messages":[{"role":"user","content":[` + tt.block + `]}]}`
-			modified, err := handler.transformRequest([]byte(body), provider)
+			modified, err := handler.transformRequest([]byte(body), provider, "mimo-v2.5-pro")
 			if err != nil {
 				t.Fatalf("transform request: %v", err)
 			}
@@ -1046,7 +1046,7 @@ func TestTransformRequestUsesMappedModelForTextWhenMultimodalSwitchEnabled(t *te
 	modified, err := handler.transformRequest([]byte(`{
 		"model":"claude-opus-4-6",
 		"messages":[{"role":"user","content":"hello"}]
-	}`), provider)
+	}`), provider, "mimo-v2.5-pro")
 	if err != nil {
 		t.Fatalf("transform request: %v", err)
 	}
@@ -1069,7 +1069,7 @@ func TestTransformRequestKeepsMappedModelForImageWhenMultimodalSwitchDisabled(t 
 	modified, err := handler.transformRequest([]byte(`{
 		"model":"claude-opus-4-6",
 		"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}}]}]
-	}`), provider)
+	}`), provider, "glm-5.1")
 	if err != nil {
 		t.Fatalf("transform request: %v", err)
 	}
@@ -1090,7 +1090,7 @@ func TestTransformRequestStripsThinkingWithoutModelMappings(t *testing.T) {
 
 	modified, err := handler.transformRequest(
 		[]byte(`{"model":"claude-sonnet-4-5","thinking":{"type":"enabled","budget_tokens":1024}}`),
-		provider,
+		provider, "claude-sonnet-4-5",
 	)
 	if err != nil {
 		t.Fatalf("transform request: %v", err)
@@ -1268,6 +1268,44 @@ func TestCopyUpstreamHeadersFiltersAnthropicHeaders(t *testing.T) {
 	}
 }
 
+func TestCopyUpstreamHeadersStripsContext1MBetaInAnthropicMode(t *testing.T) {
+	// anthropic 格式：context-1m 系列被剥离，其他 beta 保留
+	dst := httptest.NewRequest("POST", "/test", nil)
+	copyUpstreamHeaders(dst, http.Header{
+		"Anthropic-Beta": {"context-1m-2025-08-07,interleaved-thinking-2025-05-14"},
+	}, "token", config.APIFormatAnthropic)
+	got := dst.Header.Get("Anthropic-Beta")
+	if strings.Contains(got, "context-1m") {
+		t.Fatalf("context-1m should be stripped in anthropic mode, got %q", got)
+	}
+	if !strings.Contains(got, "interleaved-thinking") {
+		t.Fatalf("other beta should be preserved, got %q", got)
+	}
+
+	// 多个 header 实例 + 纯 context-1m 实例应整体丢弃
+	dst2 := httptest.NewRequest("POST", "/test", nil)
+	copyUpstreamHeaders(dst2, http.Header{
+		"Anthropic-Beta": {"context-1m-2025-08-07", "interleaved-thinking-2025-05-14"},
+	}, "token", config.APIFormatAnthropic)
+	got2 := dst2.Header.Values("Anthropic-Beta")
+	joined := strings.Join(got2, ",")
+	if strings.Contains(joined, "context-1m") {
+		t.Fatalf("context-1m should be fully stripped, got %v", got2)
+	}
+	if !strings.Contains(joined, "interleaved-thinking") {
+		t.Fatalf("other beta preserved, got %v", got2)
+	}
+
+	// 非 anthropic 格式：Anthropic-Beta 整个不转发（既有行为）
+	dst3 := httptest.NewRequest("POST", "/test", nil)
+	copyUpstreamHeaders(dst3, http.Header{
+		"Anthropic-Beta": {"context-1m-2025-08-07,interleaved-thinking-2025-05-14"},
+	}, "token", config.APIFormatOpenAIChat)
+	if dst3.Header.Get("Anthropic-Beta") != "" {
+		t.Fatalf("Anthropic-Beta should not be forwarded in non-anthropic mode, got %q", dst3.Header.Get("Anthropic-Beta"))
+	}
+}
+
 const toolReferenceBody = `{
 	"model":"claude-opus-4-6",
 	"messages":[{
@@ -1307,7 +1345,7 @@ func TestProactiveClean_AnthropicDefault_PreservesToolReference(t *testing.T) {
 	provider.APIFormat = config.APIFormatAnthropic
 
 	handler := NewHandler(config.NewMockStore(nil), nil)
-	modified, err := handler.transformRequest([]byte(toolReferenceBody), provider)
+	modified, err := handler.transformRequest([]byte(toolReferenceBody), provider, "claude-opus-4-6")
 	if err != nil {
 		t.Fatalf("transform request: %v", err)
 	}
@@ -1329,7 +1367,7 @@ func TestProactiveClean_AnthropicStripEnabled_RemovesToolReference(t *testing.T)
 	provider.StripUnknownContentBlocks = true
 
 	handler := NewHandler(config.NewMockStore(nil), nil)
-	modified, err := handler.transformRequest([]byte(toolReferenceBody), provider)
+	modified, err := handler.transformRequest([]byte(toolReferenceBody), provider, "claude-opus-4-6")
 	if err != nil {
 		t.Fatalf("transform request: %v", err)
 	}
@@ -1350,7 +1388,7 @@ func TestProactiveClean_OfficialAnthropic_PreservesToolReference(t *testing.T) {
 	provider.APIFormat = config.APIFormatAnthropic
 
 	handler := NewHandler(config.NewMockStore(nil), nil)
-	modified, err := handler.transformRequest([]byte(toolReferenceBody), provider)
+	modified, err := handler.transformRequest([]byte(toolReferenceBody), provider, "claude-opus-4-6")
 	if err != nil {
 		t.Fatalf("transform request: %v", err)
 	}
@@ -1375,13 +1413,13 @@ func TestProactiveClean_OpenAIChat_StripFlagHasNoEffect(t *testing.T) {
 	body := []byte(toolReferenceBody)
 
 	provider.StripUnknownContentBlocks = false
-	withoutStrip, err := handler.transformRequest(body, provider)
+	withoutStrip, err := handler.transformRequest(body, provider, "glm-4-plus")
 	if err != nil {
 		t.Fatalf("transform without strip: %v", err)
 	}
 
 	provider.StripUnknownContentBlocks = true
-	withStrip, err := handler.transformRequest(body, provider)
+	withStrip, err := handler.transformRequest(body, provider, "glm-4-plus")
 	if err != nil {
 		t.Fatalf("transform with strip: %v", err)
 	}
@@ -2513,4 +2551,108 @@ func TestProxyDoesNotRetryZhipu1210WhenToolCleanupMakesNoChanges(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "1210") {
 		t.Fatalf("response body should contain original 1210 error: %s", rec.Body.String())
 	}
+}
+
+func TestServeHTTP_RoutesByExposedModelID(t *testing.T) {
+	// 两个 provider，各暴露一个模型；active 是 A
+	upstreamA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		json.Unmarshal(body, &req)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(fmt.Sprintf(`{"provider":"a","model":"%v","usage":{"input_tokens":1,"output_tokens":1}}`, req["model"])))
+	}))
+	defer upstreamA.Close()
+
+	upstreamB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		json.Unmarshal(body, &req)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(fmt.Sprintf(`{"provider":"b","model":"%v","usage":{"input_tokens":1,"output_tokens":1}}`, req["model"])))
+	}))
+	defer upstreamB.Close()
+
+	store := config.NewMockStore(&config.Config{
+		ActiveProviderID: "a",
+		Providers: []config.Provider{
+			{ID: "a", Name: "A", Enabled: true, APIURL: upstreamA.URL, APIToken: "ta",
+				ExposedModels: []config.ExposedModel{{ID: "glm-4.6", Label: "GLM-4.6", BackendModel: "glm-4.6"}}},
+			{ID: "b", Name: "B", Enabled: true, APIURL: upstreamB.URL, APIToken: "tb",
+				ExposedModels: []config.ExposedModel{{ID: "kimi-k2", Label: "Kimi K2", BackendModel: "moonshot-v1"}}},
+		},
+	})
+	h := NewHandler(store, http.DefaultTransport.(*http.Transport))
+
+	t.Run("exposed model routes to correct provider", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{
+			"model":"kimi-k2",
+			"stream":false,
+			"messages":[{"role":"user","content":"hello"}]
+		}`))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+		}
+		var resp map[string]any
+		json.Unmarshal(rec.Body.Bytes(), &resp)
+		if resp["provider"] != "b" {
+			t.Fatalf("expected provider b, got %v", resp["provider"])
+		}
+		// 验证后端收到的是 BackendModel
+		if resp["model"] != "moonshot-v1" {
+			t.Fatalf("expected model moonshot-v1, got %v", resp["model"])
+		}
+	})
+
+	t.Run("non-exposed model falls back to active provider", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{
+			"model":"claude-sonnet",
+			"stream":false,
+			"messages":[{"role":"user","content":"hello"}]
+		}`))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+		}
+		var resp map[string]any
+		json.Unmarshal(rec.Body.Bytes(), &resp)
+		if resp["provider"] != "a" {
+			t.Fatalf("expected fallback to provider a, got %v", resp["provider"])
+		}
+	})
+
+	t.Run("disabled provider's exposed model is skipped", func(t *testing.T) {
+		// 创建一个新的 handler，B 禁用
+		store2 := config.NewMockStore(&config.Config{
+			ActiveProviderID: "a",
+			Providers: []config.Provider{
+				{ID: "a", Name: "A", Enabled: true, APIURL: upstreamA.URL, APIToken: "ta"},
+				{ID: "b", Name: "B", Enabled: false, APIURL: upstreamB.URL, APIToken: "tb",
+					ExposedModels: []config.ExposedModel{{ID: "kimi-k2", Label: "Kimi K2", BackendModel: "moonshot-v1"}}},
+			},
+		})
+		h2 := NewHandler(store2, http.DefaultTransport.(*http.Transport))
+		req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{
+			"model":"kimi-k2",
+			"stream":false,
+			"messages":[{"role":"user","content":"hello"}]
+		}`))
+		rec := httptest.NewRecorder()
+		h2.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+		}
+		var resp map[string]any
+		json.Unmarshal(rec.Body.Bytes(), &resp)
+		// B 禁用，应 fallback 到 A
+		if resp["provider"] != "a" {
+			t.Fatalf("expected fallback to provider a when B disabled, got %v", resp["provider"])
+		}
+	})
 }
