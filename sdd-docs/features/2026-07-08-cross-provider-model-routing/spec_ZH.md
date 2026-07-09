@@ -1218,7 +1218,7 @@ function isEmptyExposedModel(em: { id: string; label: string; description: strin
 ```ts
 const collected = collectExposedModels()
 if (!collected.ok) {
-  // 显示 collected.error（例如"对外模型需填写显示名和后端模型名"），停止提交
+  // 显示 collected.error（例如"/model 切换模型需填写显示名和后端模型名"），停止提交
   message.value = { text: collected.error, ok: false }
   return
 }
@@ -1259,14 +1259,14 @@ exposed_models?: ExposedModel[]
 在 i18n 字典的 `modal` 命名空间下加（中英各一份，参照现有 `add_mapping` 等条目位置）：
 
 ```
-exposed_models: '对外模型 / Exposed Models'
+exposed_models: '/model 可切换模型'
 add_exposed_model: '添加模型 / Add Model'
 remove_exposed_model: '移除 / Remove'
 exposed_model_label: '显示名'
 exposed_model_desc: '描述'
 exposed_model_backend: '后端模型名（必填）'
 exposed_model_backend_hint: '可从模型映射 value 快捷填充；ID 由系统自动生成'
-exposed_model_required: '对外模型需填写显示名和后端模型名'
+exposed_model_required: '/model 切换模型需填写显示名和后端模型名'
 exposed_model_1m_hint: '勾选后按 1M 上下文窗口判定；mcc 剥离 context-1m beta，不影响后端'
 ```
 
