@@ -134,7 +134,7 @@ In 3P-provider mode Claude Code does not issue the bootstrap request. But mcc re
 2. Routing hit → `ExposedModel.BackendModel`
 3. fallback → `active.MapModel(model)`
 
-**Bootstrap injection**: `handleBootstrap` now reads config, collects all enabled providers' `ExposedModels`, and emits `additional_model_options: [{model: ID, name: Label, description: Description}, ...]`.
+**Bootstrap injection**: `handleBootstrap` now reads config, collects all enabled providers' `ExposedModels`, and emits `additional_model_options: [{model: ID, name: Label, description: auto-composed}, ...]`. The `description` auto-appends the provider name for attribution: `"{Description} · {Provider.Name}"` when Description is non-empty, else just `Provider.Name` — so each menu option shows its provider with zero extra config.
 
 **Relationship with existing `ModelMappings` (independent, cooperative, non-conflicting)**:
 - `ModelMappings`: handles Claude Code's **built-in** model names (`claude-opus-4-8` etc.), used on the fallback path. Key is unique within a provider; **value may repeat** (multiple `claude-*` → same backend model is legal).
@@ -172,7 +172,7 @@ In 3P-provider mode Claude Code does not issue the bootstrap request. But mcc re
 3. `Provider.Validate()` validates each `ExposedModel`: `ID`/`Label` non-empty (after trim); `ID` must not start with `claude-`, must not contain `[1m]`, must not equal Claude Code aliases `sonnet`/`opus`/`haiku`/`opusplan`, and should only contain `[A-Za-z0-9._:-]+`; empty `BackendModel` falls back to `ID` inside `ResolveModel` (not required).
 4. `Config.ResolveModel(model string) (*Provider, string)` with the semantics in "Core Design".
 5. `handler.go` `ServeHTTP` uses `ResolveModel` in place of `GetActiveProvider` + `MapModel`; `transformRequest` signature becomes `(body, provider, backendModel)`, drops its internal `MapModel`, keeps `MultimodalSwitch` override and format conversion.
-6. `handleBootstrap` reads config, collects enabled providers' `ExposedModels` into `additional_model_options`; falls back to empty on read failure.
+6. `handleBootstrap` reads config, collects enabled providers' `ExposedModels` into `additional_model_options`; the `description` auto-appends the provider name (`"{Description} · {Provider.Name}"`, or just `Provider.Name` when Description is empty); falls back to empty on read failure.
 7. `SQLiteStore` explicitly persists `ExposedModels`; JSON `Store` needs no extra persistence work.
 8. admin API create/update/response/import pass through `ExposedModels`; duplicate does **not** copy them to avoid global ID conflicts; export serializes `config.Provider` directly.
 9. frontend `ProviderModal.vue` adds an "Exposed Models" editor (ID/Label/Description/BackendModel dynamic table), and `useApi.ts`/`useI18n.ts` are updated.
@@ -308,7 +308,7 @@ Expected: existing tests green (semantically equivalent) + new routing test pass
 
 #### Plan
 
-See `spec_ZH.md` Task 4 for the `handleBootstrap` + `collectAdditionalModelOptions` implementation and tests. Add `"strings"` to imports. Emit trimmed `model`/`name`/`description` values.
+See `spec_ZH.md` Task 4 for the `handleBootstrap` + `collectAdditionalModelOptions` implementation and tests. Add `"strings"` to imports. The emitted `description` auto-appends the provider name for attribution: `"{Description} · {Provider.Name}"` when Description is non-empty, else just `Provider.Name` — so each `/model` menu option shows its provider with zero extra config. Emit trimmed `model`/`name` values. Tests must cover both the append case and the empty-Description case.
 
 #### Verification
 

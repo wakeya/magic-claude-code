@@ -134,7 +134,7 @@ if (getAPIProvider() !== 'firstParty') {
 2. 路由命中 → `ExposedModel.BackendModel`
 3. fallback → `active.MapModel(model)`
 
-**bootstrap 注入**：`handleBootstrap` 改为读 config，收集所有 enabled provider 的 `ExposedModels`，输出为 `additional_model_options: [{model: ID, name: Label, description: Description}, ...]`。
+**bootstrap 注入**：`handleBootstrap` 改为读 config，收集所有 enabled provider 的 `ExposedModels`，输出为 `additional_model_options: [{model: ID, name: Label, description: 自动拼接}, ...]`。description 自动拼接 provider 名以体现归属：`Description` 非空时为 `"{Description} · {Provider.Name}"`，为空时只用 `Provider.Name`（零配置即可在 `/model` 菜单看到每个模型归属哪个 provider）。
 
 **与现有 `ModelMappings` 的关系（独立、协同、不冲突）**：
 - `ModelMappings`：处理 Claude Code **内置会发的**模型名（`claude-opus-4-8` 等），fallback 路径用。key 在 provider 内唯一，**value 允许重复**（多个 `claude-*` 指向同一后端模型合法）。
@@ -172,7 +172,7 @@ if (getAPIProvider() !== 'firstParty') {
 3. `Provider.Validate()` 校验单个 `ExposedModel`：`ID`/`Label` 非空（trim 后非空）；`ID` 不得以 `claude-` 开头、不得含 `[1m]`，不得等于 `sonnet`/`opus`/`haiku`/`opusplan`；建议仅允许 `[A-Za-z0-9._:-]+`，避免空白和控制字符；`BackendModel` 为空时在 `ResolveModel` 内回退到 `ID`（不强制要求填写）。
 4. `Config.ResolveModel(model string) (*Provider, string)` 方法，语义见"核心设计"。
 5. `handler.go` 的 `ServeHTTP` 用 `ResolveModel` 替代 `GetActiveProvider` + `MapModel` 两步；`transformRequest` 签名改为 `(body, provider, backendModel)`，移除其内部 `MapModel` 调用，保留 `MultimodalSwitch` override 与格式转换。
-6. `handleBootstrap` 读 config，收集 enabled provider 的 `ExposedModels` 生成 `additional_model_options`；读失败回退空数组。
+6. `handleBootstrap` 读 config，收集 enabled provider 的 `ExposedModels` 生成 `additional_model_options`；description 自动拼接 provider 名（`"{Description} · {Provider.Name}"`，`Description` 空则只用 `Provider.Name`）；读失败回退空数组。
 7. `SQLiteStore` 显式持久化 `ExposedModels`；JSON `Store` 无需改动。
 8. admin API 的 create/update/response/import 透传 `ExposedModels`；duplicate **不复制** `ExposedModels`（避免全局唯一 ID 冲突）；导出因用 `config.Provider` 直接序列化，自动包含该字段。
 9. 前端 `ProviderModal.vue` 新增"对外模型"编辑区（ID/Label/Description/BackendModel 动态表格），同步更新 `useApi.ts` 类型和 `useI18n.ts` 文案。
@@ -911,10 +911,19 @@ func (h *Handler) collectAdditionalModelOptions() []map[string]string {
                 continue // 单项空 ID 由校验保证；此处防御性去重
             }
             seen[id] = true
+            // 自动把 provider 名附到 description，让 /model 菜单体现模型归属（零配置）
+            desc := strings.TrimSpace(em.Description)
+            if providerName := strings.TrimSpace(p.Name); providerName != "" {
+                if desc == "" {
+                    desc = providerName
+                } else {
+                    desc = desc + " · " + providerName
+                }
+            }
             opts = append(opts, map[string]string{
                 "model":       id,
                 "name":        strings.TrimSpace(em.Label),
-                "description": strings.TrimSpace(em.Description),
+                "description": desc,
             })
         }
     }
@@ -932,8 +941,8 @@ func (h *Handler) collectAdditionalModelOptions() []map[string]string {
 func TestHandleBootstrap_EmitsExposedModels(t *testing.T) {
     store := config.NewMockStore(&config.Config{
         Providers: []config.Provider{
-            {ID: "a", Name: "A", Enabled: true, ExposedModels: []config.ExposedModel{
-                {ID: "glm-4.6", Label: "GLM-4.6", Description: "智谱 GLM-4.6", BackendModel: "glm-4.6"},
+            {ID: "a", Name: "智谱", Enabled: true, ExposedModels: []config.ExposedModel{
+                {ID: "glm-4.6", Label: "GLM-4.6", Description: "日常编码", BackendModel: "glm-4.6"},
             }},
             {ID: "b", Name: "B", Enabled: false, ExposedModels: []config.ExposedModel{
                 {ID: "disabled-model", Label: "Disabled"},
@@ -957,8 +966,35 @@ func TestHandleBootstrap_EmitsExposedModels(t *testing.T) {
             len(resp.AdditionalModelOptions), resp.AdditionalModelOptions)
     }
     opt := resp.AdditionalModelOptions[0]
-    if opt["model"] != "glm-4.6" || opt["name"] != "GLM-4.6" || opt["description"] != "智谱 GLM-4.6" {
-        t.Fatalf("unexpected option fields: %v", opt)
+    if opt["model"] != "glm-4.6" || opt["name"] != "GLM-4.6" || opt["description"] != "日常编码 · 智谱" {
+        t.Fatalf("unexpected option fields (description should auto-append provider name): %v", opt)
+    }
+}
+
+func TestHandleBootstrap_DescriptionEmptyUsesProviderName(t *testing.T) {
+    store := config.NewMockStore(&config.Config{
+        Providers: []config.Provider{
+            {ID: "a", Name: "月之暗面", Enabled: true, ExposedModels: []config.ExposedModel{
+                {ID: "kimi-k2", Label: "Kimi K2", Description: ""}, // description 空
+            }},
+        },
+    })
+    handler := &Handler{configStore: store}
+    rec := httptest.NewRecorder()
+    handler.handleBootstrap(rec)
+
+    var resp struct {
+        AdditionalModelOptions []map[string]string `json:"additional_model_options"`
+    }
+    if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+        t.Fatalf("invalid json: %v", err)
+    }
+    if len(resp.AdditionalModelOptions) != 1 {
+        t.Fatalf("expected 1 option, got %d", len(resp.AdditionalModelOptions))
+    }
+    // description 为空时只用 provider 名
+    if resp.AdditionalModelOptions[0]["description"] != "月之暗面" {
+        t.Fatalf("expected description=月之暗面, got %q", resp.AdditionalModelOptions[0]["description"])
     }
 }
 
