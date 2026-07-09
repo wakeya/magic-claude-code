@@ -125,7 +125,7 @@ if (getAPIProvider() !== 'firstParty') {
 **数据模型**：在 `Provider` 上新增 `ExposedModels []ExposedModel`。每个 `ExposedModel` 声明一个对外暴露给 `/model` 菜单的模型：`ID`（全局唯一路由键，成为请求 model 字段）、`Label`、`Description`、`BackendModel`（该 provider 真实模型名）。
 
 **路由层**：`Config` 新增 `ResolveModel(model) (*Provider, string)` 方法，统一完成"选 provider + 算后端模型名"。查找顺序：
-1. 扫描所有 **enabled** provider 的 `ExposedModels`，找到 `ID == model` → 返回该 provider + `BackendModel`（空则回退 `ID`）。
+1. 扫描所有 **enabled** provider 的 `ExposedModels`，找到 `ID == model`（统一剥离请求 model 的 `[1m]` 后缀以兼容 Context1M）→ 返回该 provider + `BackendModel`（由 Validate 保证非空）。
 2. 未命中 → 返回 `GetActiveProvider()` + `active.MapModel(model)`（向后兼容现有 `ModelMappings`）。
 3. 无 active → 返回 `(nil, model)`。
 
@@ -189,7 +189,7 @@ if (getAPIProvider() !== 'firstParty') {
 ### 边界条件
 
 - 请求 `model` 命中某 disabled provider 的 `ExposedModel.ID`：跳过该 provider，继续找其它 enabled provider 的同 ID；都没有则 fallback。
-- `ExposedModel.BackendModel` 为空：`ResolveModel` 用 `ID` 作为后端模型名。
+- `ExposedModel.BackendModel` 必填（Validate 校验非空）；空值会在保存时报错。
 - 同一 provider 内两个 `ExposedModel` 指向相同 `BackendModel`：不报错（无意义但合法）。
 - `handleBootstrap` 收集到多个 provider 暴露同 `ID`：去重保留第一个（配置校验已禁止，此处为防御性）。
 - `additional_model_options` 为空数组时 Claude Code `/model` 菜单无变化。
@@ -205,7 +205,7 @@ if (getAPIProvider() !== 'firstParty') {
 
 **Outcomes（成果）** — `internal/config/provider.go` 和 `internal/config/config.go` 变更；`go test ./internal/config/...` 通过新增测试。
 
-**Evidence（证据）** — `ResolveModel` 单测覆盖命中/fallback/disabled 跳过/BackendModel 空回退/无 active 返 nil；`Config.Validate` 测试覆盖 ID 重复报错。
+**Evidence（证据）** — `ResolveModel` 单测覆盖命中/fallback/disabled 跳过/`[1m]` 容错/无 active 返 nil；`Config.Validate` 测试覆盖 ID 重复报错（断言含 `duplicated`）。
 
 **Constraints（约束）** — 不破坏现有 `MapModel`、`GetActiveProvider`、`Validate` 语义；新字段 JSON tag 带 `omitempty`。
 
@@ -260,34 +260,37 @@ for i := range p.ExposedModels {
     p.ExposedModels[i].BackendModel = strings.TrimSpace(p.ExposedModels[i].BackendModel)
 }
 seenExposedIDs := make(map[string]bool)
-for i, em := range p.ExposedModels {
-    id := em.ID
-    label := em.Label
-    if id == "" {
-        return fmt.Errorf("exposed_models[%d]: id is required", i)
+for i := range p.ExposedModels {
+    em := &p.ExposedModels[i]
+    // ID 留空时自动生成 em-<hex> 稳定随机 ID（前端隐藏 ID 输入）
+    if em.ID == "" {
+        em.ID = generateExposedModelID()
     }
-    if label == "" {
+    if em.Label == "" {
         return fmt.Errorf("exposed_models[%d]: label is required", i)
     }
-    if strings.HasPrefix(id, "claude-") {
+    if em.BackendModel == "" {
+        return fmt.Errorf("exposed_models[%d]: backend_model is required", i)
+    }
+    if strings.HasPrefix(em.ID, "claude-") {
         return fmt.Errorf("exposed_models[%d]: id must not start with \"claude-\" (conflicts with built-in menu items)", i)
     }
-    if strings.Contains(id, "[1m]") {
+    if strings.Contains(em.ID, "[1m]") {
         return fmt.Errorf("exposed_models[%d]: id must not contain \"[1m]\" (reserved by Claude Code 1M-context handling)", i)
     }
-    switch id {
+    switch em.ID {
     case "sonnet", "opus", "haiku", "opusplan":
-        return fmt.Errorf("exposed_models[%d]: id %q is reserved by Claude Code model aliases", i, id)
+        return fmt.Errorf("exposed_models[%d]: id %q is reserved by Claude Code model aliases", i, em.ID)
     }
-    if strings.IndexFunc(id, func(r rune) bool {
+    if strings.IndexFunc(em.ID, func(r rune) bool {
         return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == ':' || r == '-')
     }) >= 0 {
         return fmt.Errorf("exposed_models[%d]: id may only contain letters, digits, '.', '_', ':' and '-'", i)
     }
-    if seenExposedIDs[id] {
-        return fmt.Errorf("exposed_models[%d]: duplicate id %q within provider", i, id)
+    if seenExposedIDs[em.ID] {
+        return fmt.Errorf("exposed_models[%d]: duplicate id %q within provider", i, em.ID)
     }
-    seenExposedIDs[id] = true
+    seenExposedIDs[em.ID] = true
 }
 ```
 
@@ -323,13 +326,16 @@ for i := range c.Providers {
 // ResolveModel 根据请求的 model 字段解析出 provider 和应写入后端请求体的模型名。
 //
 // 查找顺序：
-//  1. 扫描所有 enabled provider 的 ExposedModels，命中 ID 匹配项 → 返回该 provider
-//     与其 BackendModel（BackendModel 为空则用 ID）。
+//  1. 扫描所有 enabled provider 的 ExposedModels，命中 ID 匹配项（统一剥离请求 model
+//     的 [1m] 后缀以兼容 Context1M）→ 返回该 provider 与其 BackendModel（由
+//     Provider.Validate 保证非空）。
 //  2. 未命中 → 返回 active provider 与 active.MapModel(model)（向后兼容 ModelMappings）。
 //  3. 无 active provider → 返回 (nil, model)。
 //
 // 调用方需处理 provider == nil 的情况（对应"无可用 provider"错误路径）。
 func (c *Config) ResolveModel(model string) (*Provider, string) {
+    model = strings.TrimSpace(model)
+    pureModel := strings.TrimSuffix(model, "[1m]") // 兼容 Context1M
     // 1. 暴露模型命中
     for i := range c.Providers {
         p := &c.Providers[i]
@@ -337,12 +343,8 @@ func (c *Config) ResolveModel(model string) (*Provider, string) {
             continue
         }
         for _, em := range p.ExposedModels {
-            if strings.TrimSpace(em.ID) == model {
-                backend := em.BackendModel
-                if strings.TrimSpace(backend) == "" {
-                    backend = em.ID
-                }
-                return p, backend
+            if em.ID == pureModel {
+                return p, em.BackendModel // Validate 保证非空
             }
         }
     }
@@ -372,18 +374,19 @@ func TestResolveModel_HitExposedModel(t *testing.T) {
     }
 }
 
-func TestResolveModel_BackendModelEmptyFallsBackToID(t *testing.T) {
+// Context1M 模型：ResolveModel 剥离 [1m] 后用纯 ID 匹配，兼容 Claude Code
+// 发纯 ID 或含 [1m] 两种行为。
+func TestResolveModel_Context1MModelRoutesByPureID(t *testing.T) {
     cfg := &Config{Providers: []Provider{
         {ID: "a", Name: "A", Enabled: true, ExposedModels: []ExposedModel{
-            {ID: "kimi-k2", Label: "Kimi K2"}, // BackendModel 空
+            {ID: "glm-5.2", Label: "GLM-5.2", BackendModel: "glm-5.2", Context1M: true},
         }},
     }}
-    p, backend := cfg.ResolveModel("kimi-k2")
-    if backend != "kimi-k2" {
-        t.Fatalf("expected backend=kimi-k2, got %q", backend)
+    if p, _ := cfg.ResolveModel("glm-5.2"); p == nil || p.ID != "a" {
+        t.Fatalf("pure ID should hit, got %v", p)
     }
-    if p == nil || p.ID != "a" {
-        t.Fatalf("expected provider a, got %v", p)
+    if p, _ := cfg.ResolveModel("glm-5.2[1m]"); p == nil || p.ID != "a" {
+        t.Fatalf("[1m] suffix should be tolerated, got %v", p)
     }
 }
 
@@ -1139,7 +1142,7 @@ go test -race ./internal/admin/...
 
 **Evidence（证据）** — 前端构建无错；表单能增删 `ExposedModel` 行并随保存提交。
 
-**Constraints（约束）** — 四列：ID / Label / Description / BackendModel；空行不提交；i18n 文案中英双语；移动端不能挤压重叠；TypeScript API 类型必须同步。
+**Constraints（约束）** — 三列 + 1M 勾选：Label / Description / BackendModel + 1M；**隐藏 ID 输入**（新行 ID 空→后端自动生成 `em-<hex>`，编辑保留现有 ID）；BackendModel 必填且可从该 provider 模型映射 value 快捷填充（datalist，不强制）；空行不提交；i18n 文案中英双语；移动端不能挤压重叠；TypeScript API 类型必须同步。
 
 **Edge Cases（边界）** — 用户填了部分字段就保存（后端校验拒绝，前端应预校验非空提示）；编辑现有 provider 时回填。
 
@@ -1250,11 +1253,12 @@ exposed_models?: ExposedModel[]
 exposed_models: '对外模型 / Exposed Models'
 add_exposed_model: '添加模型 / Add Model'
 remove_exposed_model: '移除 / Remove'
-exposed_model_id: 'ID（菜单值）'
 exposed_model_label: '显示名'
 exposed_model_desc: '描述'
-exposed_model_backend: '后端模型名（空=同ID）'
-exposed_model_required: '对外模型需填写 ID 和显示名'
+exposed_model_backend: '后端模型名（必填）'
+exposed_model_backend_hint: '可从模型映射 value 快捷填充；ID 由系统自动生成'
+exposed_model_required: '对外模型需填写显示名和后端模型名'
+exposed_model_1m_hint: '勾选后按 1M 上下文窗口判定；mcc 剥离 context-1m beta，不影响后端'
 ```
 
 （实际按 `useI18n.ts` 现有的中英分离结构填写两条。）

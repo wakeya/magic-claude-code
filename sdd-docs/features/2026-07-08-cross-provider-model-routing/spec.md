@@ -125,7 +125,7 @@ In 3P-provider mode Claude Code does not issue the bootstrap request. But mcc re
 **Data model**: add `ExposedModels []ExposedModel` on `Provider`. Each `ExposedModel` declares a model exposed to the `/model` menu: `ID` (globally-unique routing key, becomes the request `model` field), `Label`, `Description`, `BackendModel` (the provider's real model name).
 
 **Routing layer**: a new `Config.ResolveModel(model) (*Provider, string)` method unifies "pick provider" and "compute backend model". Lookup order:
-1. Scan all **enabled** providers' `ExposedModels`; if `ID == model` → return that provider + `BackendModel` (empty falls back to `ID`).
+1. Scan all **enabled** providers' `ExposedModels`; if `ID == model` (stripping a trailing `[1m]` for Context1M tolerance) → return that provider + `BackendModel` (Validate guarantees non-empty).
 2. No hit → return `GetActiveProvider()` + `active.MapModel(model)` (backward compatible with existing `ModelMappings`).
 3. No active → return `(nil, model)`.
 
@@ -189,7 +189,7 @@ In 3P-provider mode Claude Code does not issue the bootstrap request. But mcc re
 ### Edge Cases
 
 - A request `model` hits an `ExposedModel.ID` of a **disabled** provider: skip that provider, keep searching other enabled providers for the same ID; none → fallback.
-- Empty `ExposedModel.BackendModel`: `ResolveModel` uses `ID` as the backend model.
+- `ExposedModel.BackendModel` is required (Validate rejects empty); an empty value fails the save with a descriptive error.
 - Two `ExposedModel`s in the same provider pointing to the same `BackendModel`: no error (meaningless but legal).
 - `handleBootstrap` collecting the same `ID` from multiple providers: dedup, keep first (config validation forbids this; defensive).
 - Empty `additional_model_options` leaves the Claude Code `/model` menu unchanged.

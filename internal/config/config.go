@@ -258,8 +258,9 @@ func (c *Config) GetProviderByID(id string) *Provider {
 // ResolveModel 根据请求的 model 字段解析出 provider 和应写入后端请求体的模型名。
 //
 // 查找顺序：
-//  1. 扫描所有 enabled provider 的 ExposedModels，命中 ID 匹配项 → 返回该 provider
-//     与其 BackendModel（BackendModel 为空则用 ID）。
+//  1. 扫描所有 enabled provider 的 ExposedModels，命中 ID 匹配项（统一剥离请求 model
+//     的 [1m] 后缀以兼容 Context1M）→ 返回该 provider 与其 BackendModel（由
+//     Provider.Validate 保证非空）。
 //  2. 未命中 → 返回 active provider 与 active.MapModel(model)（向后兼容 ModelMappings）。
 //  3. 无 active provider → 返回 (nil, model)。
 //
