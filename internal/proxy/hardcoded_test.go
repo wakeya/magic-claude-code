@@ -685,3 +685,39 @@ func TestHandleBootstrap_NoConfigReturnsEmpty(t *testing.T) {
 		t.Fatalf("expected empty array, got %v", resp["additional_model_options"])
 	}
 }
+
+func TestHandleBootstrap_Context1MAppendsBracket1m(t *testing.T) {
+	store := config.NewMockStore(&config.Config{
+		Providers: []config.Provider{
+			{ID: "a", Name: "GLM", Enabled: true, ExposedModels: []config.ExposedModel{
+				{ID: "glm-5.2", Label: "GLM-5.2", BackendModel: "glm-5.2", Context1M: true},
+				{ID: "glm-4.6", Label: "GLM-4.6", BackendModel: "glm-4.6"}, // Context1M=false
+			}},
+		},
+	})
+	handler := &Handler{configStore: store}
+	rec := httptest.NewRecorder()
+	handler.handleBootstrap(rec)
+
+	var resp struct {
+		AdditionalModelOptions []map[string]string `json:"additional_model_options"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if len(resp.AdditionalModelOptions) != 2 {
+		t.Fatalf("expected 2 options, got %d", len(resp.AdditionalModelOptions))
+	}
+	byModel := map[string]string{}
+	for _, opt := range resp.AdditionalModelOptions {
+		byModel[opt["name"]] = opt["model"]
+	}
+	// Context1M=true 的模型，菜单 value 附 [1m]
+	if byModel["GLM-5.2"] != "glm-5.2[1m]" {
+		t.Fatalf("Context1M model value = %q, want glm-5.2[1m]", byModel["GLM-5.2"])
+	}
+	// Context1M=false 的模型，菜单 value 保持纯 ID
+	if byModel["GLM-4.6"] != "glm-4.6" {
+		t.Fatalf("non-1M model value = %q, want glm-4.6", byModel["GLM-4.6"])
+	}
+}

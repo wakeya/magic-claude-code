@@ -439,6 +439,12 @@ func (h *Handler) collectAdditionalModelOptions() []map[string]string {
 				continue // 单项空 ID 由校验保证；此处防御性去重
 			}
 			seen[id] = true
+			// Context1M 时给菜单 value 附 [1m]，让 Claude Code 客户端按 1M 判定上下文窗口。
+			// mcc 路由仍用纯 id 匹配（Claude Code 发往后端时已剥离 [1m]）。
+			modelValue := id
+			if em.Context1M {
+				modelValue = id + "[1m]"
+			}
 			// 自动把 provider 名附到 description，让 /model 菜单体现模型归属（零配置）
 			desc := strings.TrimSpace(em.Description)
 			if providerName := strings.TrimSpace(p.Name); providerName != "" {
@@ -449,7 +455,7 @@ func (h *Handler) collectAdditionalModelOptions() []map[string]string {
 				}
 			}
 			opts = append(opts, map[string]string{
-				"model":       id,
+				"model":       modelValue,
 				"name":        strings.TrimSpace(em.Label),
 				"description": desc,
 			})

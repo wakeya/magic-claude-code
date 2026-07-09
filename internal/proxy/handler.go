@@ -756,6 +756,16 @@ func copyUpstreamHeaders(dst *http.Request, src http.Header, apiToken string, ap
 		if !isAnthropic && (strings.EqualFold(key, "Anthropic-Version") || strings.EqualFold(key, "Anthropic-Beta")) {
 			continue
 		}
+		// anthropic 格式：剥离 Anthropic-Beta 里的 context-1m 条目。
+		// Claude Code 对 1M 模型会加 context-1m-2025-08-07 beta，但第三方后端（GLM/DeepSeek 等）
+		// 通常不认该 beta；mcc 注入 [1m] 仅为让客户端正确判定上下文窗口，不应影响后端。
+		// 其他 beta（如 interleaved-thinking）保留。
+		if isAnthropic && strings.EqualFold(key, "Anthropic-Beta") {
+			for _, v := range stripContext1MBeta(values) {
+				dst.Header.Add(key, v)
+			}
+			continue
+		}
 		if strings.EqualFold(key, "Accept-Encoding") || strings.EqualFold(key, "TE") {
 			continue
 		}
@@ -773,6 +783,30 @@ func copyUpstreamHeaders(dst *http.Request, src http.Header, apiToken string, ap
 	if !hasAuth && apiToken != "" {
 		dst.Header.Set("Authorization", "Bearer "+apiToken)
 	}
+}
+
+// stripContext1MBeta 从 Anthropic-Beta header 值中剥离 context-1m 系列 beta 条目，
+// 保留其余 beta。每个 value 可能是单个 beta 或逗号分隔的多个 beta；
+// 剥离后若某 value 变空则整体丢弃。
+func stripContext1MBeta(values []string) []string {
+	var result []string
+	for _, v := range values {
+		var kept []string
+		for _, part := range strings.Split(v, ",") {
+			trimmed := strings.TrimSpace(part)
+			if trimmed == "" {
+				continue
+			}
+			if strings.HasPrefix(trimmed, "context-1m") {
+				continue
+			}
+			kept = append(kept, trimmed)
+		}
+		if len(kept) > 0 {
+			result = append(result, strings.Join(kept, ","))
+		}
+	}
+	return result
 }
 
 // summarizeCompatHeaders 提取对兼容性排查有用的请求头（用于错误日志）

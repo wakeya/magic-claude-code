@@ -925,8 +925,7 @@ func TestSQLiteStoreRoundTripsExposedModels(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreRoundTripsNilExposedModels(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.db")
+func TestSQLiteStoreRoundTripsNilExposedModels(t *testing.T) {	path := filepath.Join(t.TempDir(), "config.db")
 	store, err := NewSQLiteStore(path, "")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore: %v", err)
@@ -953,6 +952,42 @@ func TestSQLiteStoreRoundTripsNilExposedModels(t *testing.T) {
 	// nil 和空切片均可接受，取决于 JSON unmarshal 行为
 	if len(got.ExposedModels) != 0 {
 		t.Fatalf("ExposedModels = %#v, want empty", got.ExposedModels)
+	}
+}
+
+func TestSQLiteStoreRoundTripsContext1M(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.db")
+	store, err := NewSQLiteStore(path, "")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	cfg := DefaultConfig()
+	provider := NewProvider("A", "https://a.example/anthropic", "token")
+	provider.ExposedModels = []ExposedModel{
+		{ID: "glm-5.2", Label: "GLM-5.2", BackendModel: "glm-5.2", Context1M: true},
+		{ID: "glm-4.6", Label: "GLM-4.6", BackendModel: "glm-4.6"}, // Context1M=false
+	}
+	cfg.Providers = []Provider{*provider}
+	cfg.ActiveProviderID = provider.ID
+
+	if err := store.Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := loaded.GetProviderByID(provider.ID).ExposedModels
+	if len(got) != 2 {
+		t.Fatalf("ExposedModels len = %d, want 2", len(got))
+	}
+	if !got[0].Context1M {
+		t.Fatalf("glm-5.2 Context1M = false, want true (not persisted)")
+	}
+	if got[1].Context1M {
+		t.Fatalf("glm-4.6 Context1M = true, want false")
 	}
 }
 

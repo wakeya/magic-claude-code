@@ -150,18 +150,22 @@
       <div class="mb-5 pt-4" style="border-top: 1px solid var(--app-border)">
         <label class="block text-[13px] font-semibold mb-2">{{ t('modal.exposed_models') }}</label>
         <div class="space-y-2.5">
-          <div v-for="(em, i) in exposedModels" :key="i" class="grid grid-cols-1 md:grid-cols-[1fr_1fr_1.2fr_1fr_auto] gap-2 items-center">
+          <div v-for="(em, i) in exposedModels" :key="i" class="grid grid-cols-1 md:grid-cols-[1fr_1fr_1.2fr_1fr_auto_auto] gap-2 items-center">
             <input v-model="em.id" type="text" :placeholder="t('modal.exposed_model_id')" class="app-control px-3 py-2 rounded-md text-sm outline-none focus:border-primary" />
             <input v-model="em.label" type="text" :placeholder="t('modal.exposed_model_label')" class="app-control px-3 py-2 rounded-md text-sm outline-none focus:border-primary" />
             <input v-model="em.description" type="text" :placeholder="t('modal.exposed_model_desc')" class="app-control px-3 py-2 rounded-md text-sm outline-none focus:border-primary" />
             <input v-model="em.backend_model" type="text" :placeholder="t('modal.exposed_model_backend')" class="app-control px-3 py-2 rounded-md text-sm outline-none focus:border-primary" />
+            <label class="flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer" :title="t('modal.exposed_model_1m_hint')">
+              <input v-model="em.context_1m" type="checkbox" class="w-4 h-4 accent-primary cursor-pointer" />
+              1M
+            </label>
             <button
               class="px-2 py-1 bg-danger text-white border-none rounded-md text-xs font-semibold cursor-pointer hover:scale-105 transition-all whitespace-nowrap"
               @click="exposedModels.splice(i, 1)"
             >X</button>
           </div>
         </div>
-        <button class="app-control mt-2.5 px-3 py-1.5 rounded-md text-xs font-semibold cursor-pointer transition-all" @click="exposedModels.push({ id: '', label: '', description: '', backend_model: '' })">{{ t('modal.add_exposed_model') }}</button>
+        <button class="app-control mt-2.5 px-3 py-1.5 rounded-md text-xs font-semibold cursor-pointer transition-all" @click="exposedModels.push({ id: '', label: '', description: '', backend_model: '', context_1m: false })">{{ t('modal.add_exposed_model') }}</button>
       </div>
 
       <div class="flex gap-2.5">
@@ -210,7 +214,7 @@ const form = reactive({
 })
 
 const mappings = ref<{ from: string; to: string }[]>([{ from: '', to: '' }])
-const exposedModels = ref<{ id: string; label: string; description: string; backend_model: string }[]>([])
+const exposedModels = ref<{ id: string; label: string; description: string; backend_model: string; context_1m: boolean }[]>([])
 const openAIExtraParamsText = ref(formatOpenAIExtraParams(defaultOpenAIExtraParams()))
 const message = ref<{ text: string; ok: boolean }>({ text: '', ok: false })
 const showToken = ref(false)
@@ -263,7 +267,9 @@ onMounted(() => {
     const entries = Object.entries(props.provider.model_mappings || {})
     mappings.value = entries.length > 0 ? entries.map(([from, to]) => ({ from, to })) : [{ from: '', to: '' }]
     if (props.provider.exposed_models?.length) {
-      exposedModels.value = props.provider.exposed_models.map(em => ({ ...em }))
+      exposedModels.value = props.provider.exposed_models.map(em => ({
+        id: em.id, label: em.label, description: em.description, backend_model: em.backend_model, context_1m: em.context_1m ?? false,
+      }))
     }
   }
 })
@@ -278,16 +284,17 @@ function collectMappings(): Record<string, string> {
   return result
 }
 
-function isEmptyExposedModel(em: { id: string; label: string; description: string; backend_model: string }) {
+function isEmptyExposedModel(em: { id: string; label: string; description: string; backend_model: string; context_1m: boolean }) {
   return !em.id && !em.label && !em.description && !em.backend_model
 }
 
-function collectExposedModels(): { ok: true; value: { id: string; label: string; description: string; backend_model: string }[] } | { ok: false; error: string } {
+function collectExposedModels(): { ok: true; value: { id: string; label: string; description: string; backend_model: string; context_1m: boolean }[] } | { ok: false; error: string } {
   const rows = exposedModels.value.map(em => ({
     id: em.id.trim(),
     label: em.label.trim(),
     description: em.description.trim(),
     backend_model: em.backend_model.trim(),
+    context_1m: em.context_1m ?? false,
   }))
   const partial = rows.find(em => !isEmptyExposedModel(em) && (!em.id || !em.label))
   if (partial) {

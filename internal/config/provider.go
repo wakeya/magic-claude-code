@@ -307,6 +307,13 @@ type ExposedModel struct {
 	// BackendModel 是该 provider 后端真实模型名。
 	// 空字符串表示与 ID 相同。
 	BackendModel string `json:"backend_model"`
+
+	// Context1M 标记该模型为 1M 上下文窗口。
+	// 为 true 时，bootstrap 注入的菜单 value 会附 [1m] 后缀，
+	// 让 Claude Code 客户端按 1M 判定上下文窗口（Sy 正则匹配 [1m]）。
+	// mcc 路由仍用不含 [1m] 的纯 ID 匹配（Claude Code 发往后端的 model 已剥离 [1m]）。
+	// 同时 mcc 会剥离 context-1m beta header，避免透传给不兼容的后端。
+	Context1M bool `json:"context_1m,omitempty"`
 }
 
 // generateProviderID 生成唯一的供应商 ID

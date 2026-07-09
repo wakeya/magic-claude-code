@@ -1268,6 +1268,44 @@ func TestCopyUpstreamHeadersFiltersAnthropicHeaders(t *testing.T) {
 	}
 }
 
+func TestCopyUpstreamHeadersStripsContext1MBetaInAnthropicMode(t *testing.T) {
+	// anthropic 格式：context-1m 系列被剥离，其他 beta 保留
+	dst := httptest.NewRequest("POST", "/test", nil)
+	copyUpstreamHeaders(dst, http.Header{
+		"Anthropic-Beta": {"context-1m-2025-08-07,interleaved-thinking-2025-05-14"},
+	}, "token", config.APIFormatAnthropic)
+	got := dst.Header.Get("Anthropic-Beta")
+	if strings.Contains(got, "context-1m") {
+		t.Fatalf("context-1m should be stripped in anthropic mode, got %q", got)
+	}
+	if !strings.Contains(got, "interleaved-thinking") {
+		t.Fatalf("other beta should be preserved, got %q", got)
+	}
+
+	// 多个 header 实例 + 纯 context-1m 实例应整体丢弃
+	dst2 := httptest.NewRequest("POST", "/test", nil)
+	copyUpstreamHeaders(dst2, http.Header{
+		"Anthropic-Beta": {"context-1m-2025-08-07", "interleaved-thinking-2025-05-14"},
+	}, "token", config.APIFormatAnthropic)
+	got2 := dst2.Header.Values("Anthropic-Beta")
+	joined := strings.Join(got2, ",")
+	if strings.Contains(joined, "context-1m") {
+		t.Fatalf("context-1m should be fully stripped, got %v", got2)
+	}
+	if !strings.Contains(joined, "interleaved-thinking") {
+		t.Fatalf("other beta preserved, got %v", got2)
+	}
+
+	// 非 anthropic 格式：Anthropic-Beta 整个不转发（既有行为）
+	dst3 := httptest.NewRequest("POST", "/test", nil)
+	copyUpstreamHeaders(dst3, http.Header{
+		"Anthropic-Beta": {"context-1m-2025-08-07,interleaved-thinking-2025-05-14"},
+	}, "token", config.APIFormatOpenAIChat)
+	if dst3.Header.Get("Anthropic-Beta") != "" {
+		t.Fatalf("Anthropic-Beta should not be forwarded in non-anthropic mode, got %q", dst3.Header.Get("Anthropic-Beta"))
+	}
+}
+
 const toolReferenceBody = `{
 	"model":"claude-opus-4-6",
 	"messages":[{

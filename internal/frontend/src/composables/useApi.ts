@@ -31,6 +31,7 @@ export interface ExposedModel {
   label: string
   description: string
   backend_model: string
+  context_1m?: boolean
 }
 
 export interface Provider {

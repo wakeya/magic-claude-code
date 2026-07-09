@@ -325,6 +325,26 @@ func TestResolveModel_TrimsModelWhitespace(t *testing.T) {
 	}
 }
 
+// Context1M 模型：Claude Code 发往后端的 model 已剥离 [1m]（纯 ID），
+// ResolveModel 仍用纯 ID 匹配，[1m] 不污染路由键。
+func TestResolveModel_Context1MModelRoutesByPureID(t *testing.T) {
+	cfg := &Config{Providers: []Provider{
+		{ID: "a", Name: "A", Enabled: true, ExposedModels: []ExposedModel{
+			{ID: "glm-5.2", Label: "GLM-5.2", BackendModel: "glm-5.2", Context1M: true},
+		}},
+	}}
+	// Claude Code 剥离 [1m] 后发纯 ID "glm-5.2" → 命中
+	p, backend := cfg.ResolveModel("glm-5.2")
+	if p == nil || p.ID != "a" || backend != "glm-5.2" {
+		t.Fatalf("Context1M model should route by pure ID, got %v %q", p, backend)
+	}
+	// 容错：即使 Claude Code 发含 [1m] 的 model，也应剥离后命中纯 ID
+	p2, backend2 := cfg.ResolveModel("glm-5.2[1m]")
+	if p2 == nil || p2.ID != "a" || backend2 != "glm-5.2" {
+		t.Fatalf("Context1M model should tolerate [1m] suffix, got %v %q", p2, backend2)
+	}
+}
+
 func TestValidate_DuplicateExposedModelIDAcrossProviders(t *testing.T) {
 	cfg := &Config{Providers: []Provider{
 		{ID: "a", Name: "A", Enabled: true, APIURL: "https://a", ExposedModels: []ExposedModel{

@@ -266,6 +266,9 @@ func (c *Config) GetProviderByID(id string) *Provider {
 // 调用方需处理 provider == nil 的情况（对应"无可用 provider"错误路径）。
 func (c *Config) ResolveModel(model string) (*Provider, string) {
 	model = strings.TrimSpace(model)
+	// Context1M 暴露模型：Claude Code 菜单 value 含 [1m]，但发往后端的 model 通常已剥离。
+	// 为兼容两种情况，暴露模型匹配时统一剥离 [1m] 后缀（ID 本身不含 [1m]，由校验保证）。
+	pureModel := strings.TrimSuffix(model, "[1m]")
 	// 1. 暴露模型命中
 	for i := range c.Providers {
 		p := &c.Providers[i]
@@ -273,7 +276,7 @@ func (c *Config) ResolveModel(model string) (*Provider, string) {
 			continue
 		}
 		for _, em := range p.ExposedModels {
-			if em.ID == model {
+			if em.ID == pureModel {
 				backend := em.BackendModel
 				if backend == "" {
 					backend = em.ID
