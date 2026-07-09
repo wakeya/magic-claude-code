@@ -235,3 +235,110 @@ func TestConfigValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveModel_HitExposedModel(t *testing.T) {
+	cfg := &Config{
+		Providers: []Provider{
+			{ID: "a", Name: "A", Enabled: true, ExposedModels: []ExposedModel{
+				{ID: "glm-4.6", Label: "GLM-4.6", BackendModel: "glm-4.6"},
+			}},
+		},
+	}
+	p, backend := cfg.ResolveModel("glm-4.6")
+	if p == nil || p.ID != "a" || backend != "glm-4.6" {
+		t.Fatalf("expected provider a + glm-4.6, got %v %q", p, backend)
+	}
+}
+
+func TestResolveModel_BackendModelEmptyFallsBackToID(t *testing.T) {
+	cfg := &Config{Providers: []Provider{
+		{ID: "a", Name: "A", Enabled: true, ExposedModels: []ExposedModel{
+			{ID: "kimi-k2", Label: "Kimi K2"}, // BackendModel 空
+		}},
+	}}
+	p, backend := cfg.ResolveModel("kimi-k2")
+	if backend != "kimi-k2" {
+		t.Fatalf("expected backend=kimi-k2, got %q", backend)
+	}
+	if p == nil || p.ID != "a" {
+		t.Fatalf("expected provider a, got %v", p)
+	}
+}
+
+func TestResolveModel_FallbackToActive(t *testing.T) {
+	cfg := &Config{
+		ActiveProviderID: "a",
+		Providers: []Provider{
+			{ID: "a", Name: "A", Enabled: true, ModelMappings: map[string]string{
+				"claude-opus-4-8": "glm-5.2",
+			}},
+		},
+	}
+	p, backend := cfg.ResolveModel("claude-opus-4-8")
+	if p == nil || p.ID != "a" {
+		t.Fatalf("expected active provider a, got %v", p)
+	}
+	if backend != "glm-5.2" {
+		t.Fatalf("expected mapped glm-5.2, got %q", backend)
+	}
+}
+
+func TestResolveModel_SkipsDisabledProvider(t *testing.T) {
+	cfg := &Config{Providers: []Provider{
+		{ID: "disabled", Name: "Disabled", Enabled: false, ExposedModels: []ExposedModel{
+			{ID: "glm-4.6", Label: "GLM-4.6", BackendModel: "glm-4.6"},
+		}},
+		{ID: "active", Name: "Active", Enabled: true},
+	}}
+	cfg.ActiveProviderID = "active"
+	// 命中项在 disabled provider，应跳过并 fallback
+	p, backend := cfg.ResolveModel("glm-4.6")
+	if p == nil || p.ID != "active" {
+		t.Fatalf("expected fallback to active, got %v", p)
+	}
+	// fallback 走 MapModel，无映射则原样
+	if backend != "glm-4.6" {
+		t.Fatalf("expected original model glm-4.6, got %q", backend)
+	}
+}
+
+func TestResolveModel_NoActiveReturnsNil(t *testing.T) {
+	cfg := &Config{} // 无 provider
+	p, backend := cfg.ResolveModel("anything")
+	if p != nil {
+		t.Fatalf("expected nil provider, got %v", p)
+	}
+	if backend != "anything" {
+		t.Fatalf("expected original model, got %q", backend)
+	}
+}
+
+func TestValidate_DuplicateExposedModelIDAcrossProviders(t *testing.T) {
+	cfg := &Config{Providers: []Provider{
+		{ID: "a", Name: "A", Enabled: true, APIURL: "https://a", ExposedModels: []ExposedModel{
+			{ID: "glm-4.6", Label: "GLM-4.6"},
+		}},
+		{ID: "b", Name: "B", Enabled: true, APIURL: "https://b", ExposedModels: []ExposedModel{
+			{ID: "glm-4.6", Label: "GLM-4.6"}, // 跨 provider 重复
+		}},
+	}}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected duplicate ID error, got nil")
+	}
+}
+
+func TestValidate_SameIDAcrossDisabledAndEnabled(t *testing.T) {
+	cfg := &Config{Providers: []Provider{
+		{ID: "a", Name: "A", Enabled: true, APIURL: "https://a", ExposedModels: []ExposedModel{
+			{ID: "glm-4.6", Label: "GLM-4.6"},
+		}},
+		{ID: "b", Name: "B", Enabled: false, APIURL: "https://b", ExposedModels: []ExposedModel{
+			{ID: "glm-4.6", Label: "GLM-4.6"},
+		}},
+	}}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected duplicate ID error across enabled/disabled, got nil")
+	}
+}

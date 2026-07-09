@@ -405,12 +405,57 @@ func optimizedGrowthBookFeatures() map[string]any {
 
 // handleBootstrap 处理启动引导配置
 // 源码期望 client_data + additional_model_options + cwk_cfg_key
+// additional_model_options 收集所有 enabled provider 的 ExposedModels，
+// 让 Claude Code /model 菜单出现 mcc 配置的自定义模型。
 func (h *Handler) handleBootstrap(w http.ResponseWriter) {
 	writeJSONResponse(w, http.StatusOK, map[string]any{
-		"client_data":            map[string]any{},
-		"additional_model_options": []any{},
-		"cwk_cfg_key":            nil,
+		"client_data":              map[string]any{},
+		"additional_model_options": h.collectAdditionalModelOptions(),
+		"cwk_cfg_key":              nil,
 	})
+}
+
+// collectAdditionalModelOptions 收集 enabled provider 的 ExposedModels，
+// 生成 Claude Code bootstrap 响应所需的 additional_model_options 数组。
+// 读 config 失败或无数据时返回空数组（保持与历史行为一致）。
+func (h *Handler) collectAdditionalModelOptions() []map[string]string {
+	if h.configStore == nil {
+		return []map[string]string{}
+	}
+	cfg, err := h.configStore.Load()
+	if err != nil || cfg == nil {
+		return []map[string]string{}
+	}
+	opts := make([]map[string]string, 0)
+	seen := make(map[string]bool)
+	for i := range cfg.Providers {
+		p := &cfg.Providers[i]
+		if !p.Enabled {
+			continue
+		}
+		for _, em := range p.ExposedModels {
+			id := strings.TrimSpace(em.ID)
+			if id == "" || seen[id] {
+				continue // 单项空 ID 由校验保证；此处防御性去重
+			}
+			seen[id] = true
+			// 自动把 provider 名附到 description，让 /model 菜单体现模型归属（零配置）
+			desc := strings.TrimSpace(em.Description)
+			if providerName := strings.TrimSpace(p.Name); providerName != "" {
+				if desc == "" {
+					desc = providerName
+				} else {
+					desc = desc + " · " + providerName
+				}
+			}
+			opts = append(opts, map[string]string{
+				"model":       id,
+				"name":        strings.TrimSpace(em.Label),
+				"description": desc,
+			})
+		}
+	}
+	return opts
 }
 
 // handleMCPRegistry 处理 MCP 注册表请求

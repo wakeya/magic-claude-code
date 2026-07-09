@@ -171,3 +171,90 @@ func TestProviderClaudeCodeCompatHintDefaultsForOpenAICompatibleOnly(t *testing.
 		t.Fatal("explicit true should enable Claude Code compat hint")
 	}
 }
+
+func TestProviderValidate_ExposedModelRejectsClaudePrefix(t *testing.T) {
+	p := &Provider{Name: "A", APIURL: "https://a", ExposedModels: []ExposedModel{
+		{ID: "claude-opus-4-8", Label: "X"},
+	}}
+	if err := p.Validate(); err == nil {
+		t.Fatal("expected error for claude- prefix ID")
+	}
+}
+
+func TestProviderValidate_ExposedModelRejects1mSuffix(t *testing.T) {
+	p := &Provider{Name: "A", APIURL: "https://a", ExposedModels: []ExposedModel{
+		{ID: "glm-4.6[1m]", Label: "X"},
+	}}
+	if err := p.Validate(); err == nil {
+		t.Fatal("expected error for [1m] suffix ID")
+	}
+}
+
+func TestProviderValidate_ExposedModelRejectsAlias(t *testing.T) {
+	for _, alias := range []string{"sonnet", "opus", "haiku", "opusplan"} {
+		p := &Provider{Name: "A", APIURL: "https://a", ExposedModels: []ExposedModel{
+			{ID: alias, Label: "X"},
+		}}
+		if err := p.Validate(); err == nil {
+			t.Fatalf("expected error for alias %q", alias)
+		}
+	}
+}
+
+func TestProviderValidate_ExposedModelRejectsInvalidChars(t *testing.T) {
+	p := &Provider{Name: "A", APIURL: "https://a", ExposedModels: []ExposedModel{
+		{ID: "glm 4.6", Label: "X"}, // 空格不允许
+	}}
+	if err := p.Validate(); err == nil {
+		t.Fatal("expected error for ID with spaces")
+	}
+}
+
+func TestProviderValidate_ExposedModelDuplicateWithinProvider(t *testing.T) {
+	p := &Provider{Name: "A", APIURL: "https://a", ExposedModels: []ExposedModel{
+		{ID: "glm-4.6", Label: "X"},
+		{ID: "glm-4.6", Label: "Y"},
+	}}
+	if err := p.Validate(); err == nil {
+		t.Fatal("expected duplicate ID error within provider")
+	}
+}
+
+func TestProviderValidate_ExposedModelTrimAndRequired(t *testing.T) {
+	// 空 ID 应拒绝
+	p := &Provider{Name: "A", APIURL: "https://a", ExposedModels: []ExposedModel{
+		{ID: "  ", Label: "X"},
+	}}
+	if err := p.Validate(); err == nil {
+		t.Fatal("expected error for empty ID after trim")
+	}
+
+	// 空 Label 应拒绝
+	p2 := &Provider{Name: "A", APIURL: "https://a", ExposedModels: []ExposedModel{
+		{ID: "glm-4.6", Label: "  "},
+	}}
+	if err := p2.Validate(); err == nil {
+		t.Fatal("expected error for empty label after trim")
+	}
+}
+
+func TestProviderValidate_ExposedModelTrimWritesBack(t *testing.T) {
+	p := &Provider{Name: "A", APIURL: "https://a", ExposedModels: []ExposedModel{
+		{ID: "  glm-4.6  ", Label: "  GLM  ", Description: "  desc  ", BackendModel: "  glm-4.6  "},
+	}}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.ExposedModels[0].ID != "glm-4.6" {
+		t.Fatalf("ID not trimmed: %q", p.ExposedModels[0].ID)
+	}
+	if p.ExposedModels[0].Label != "GLM" {
+		t.Fatalf("Label not trimmed: %q", p.ExposedModels[0].Label)
+	}
+	if p.ExposedModels[0].Description != "desc" {
+		t.Fatalf("Description not trimmed: %q", p.ExposedModels[0].Description)
+	}
+	if p.ExposedModels[0].BackendModel != "glm-4.6" {
+		t.Fatalf("BackendModel not trimmed: %q", p.ExposedModels[0].BackendModel)
+	}
+}

@@ -138,6 +138,22 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// 校验 ExposedModel.ID 跨 provider 全局唯一
+	exposedIDs := make(map[string]string) // id -> 首次出现的 provider name
+	for i := range c.Providers {
+		for _, em := range c.Providers[i].ExposedModels {
+			id := strings.TrimSpace(em.ID)
+			if id == "" {
+				continue // 单项空 ID 由 Provider.Validate 捕获
+			}
+			if firstProvider, exists := exposedIDs[id]; exists {
+				return fmt.Errorf("exposed model id %q is duplicated between provider %q and %q",
+					id, firstProvider, c.Providers[i].Name)
+			}
+			exposedIDs[id] = c.Providers[i].Name
+		}
+	}
+
 	return nil
 }
 
@@ -237,4 +253,38 @@ func (c *Config) GetProviderByID(id string) *Provider {
 		}
 	}
 	return nil
+}
+
+// ResolveModel 根据请求的 model 字段解析出 provider 和应写入后端请求体的模型名。
+//
+// 查找顺序：
+//  1. 扫描所有 enabled provider 的 ExposedModels，命中 ID 匹配项 → 返回该 provider
+//     与其 BackendModel（BackendModel 为空则用 ID）。
+//  2. 未命中 → 返回 active provider 与 active.MapModel(model)（向后兼容 ModelMappings）。
+//  3. 无 active provider → 返回 (nil, model)。
+//
+// 调用方需处理 provider == nil 的情况（对应"无可用 provider"错误路径）。
+func (c *Config) ResolveModel(model string) (*Provider, string) {
+	// 1. 暴露模型命中
+	for i := range c.Providers {
+		p := &c.Providers[i]
+		if !p.Enabled {
+			continue
+		}
+		for _, em := range p.ExposedModels {
+			if strings.TrimSpace(em.ID) == model {
+				backend := em.BackendModel
+				if strings.TrimSpace(backend) == "" {
+					backend = em.ID
+				}
+				return p, backend
+			}
+		}
+	}
+	// 2. fallback：active provider + MapModel
+	if active := c.GetActiveProvider(); active != nil {
+		return active, active.MapModel(model)
+	}
+	// 3. 无 active
+	return nil, model
 }

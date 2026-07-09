@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -159,6 +160,7 @@ func (s *SQLiteStore) ensureProviderColumns() error {
 		"retry_429_initial_delay_ms":   `ALTER TABLE providers ADD COLUMN retry_429_initial_delay_ms INTEGER NOT NULL DEFAULT 1000`,
 		"retry_429_max_delay_ms":       `ALTER TABLE providers ADD COLUMN retry_429_max_delay_ms INTEGER NOT NULL DEFAULT 10000`,
 		"quota_query_config":           `ALTER TABLE providers ADD COLUMN quota_query_config TEXT NOT NULL DEFAULT '{}'`,
+		"exposed_models":              `ALTER TABLE providers ADD COLUMN exposed_models TEXT NOT NULL DEFAULT '[]'`,
 	}
 	rows, err := s.db.Query(`PRAGMA table_info(providers)`)
 	if err != nil {
@@ -288,7 +290,7 @@ func (s *SQLiteStore) loadSettings() (map[string]string, error) {
 }
 
 func (s *SQLiteStore) loadProviders() ([]Provider, error) {
-	rows, err := s.db.Query(`SELECT id, name, api_url, api_token, api_format, openai_extra_params, supports_thinking, multimodal_switch, multimodal_model, claude_code_compat_hint, strip_unknown_content_blocks, rate_limit_queue_enabled, max_concurrent_requests, max_queue_size, queue_timeout_ms, retry_429_enabled, retry_429_max_attempts, retry_429_initial_delay_ms, retry_429_max_delay_ms, quota_query_config, enabled, created_at, updated_at FROM providers ORDER BY created_at ASC, id ASC`)
+	rows, err := s.db.Query(`SELECT id, name, api_url, api_token, api_format, openai_extra_params, supports_thinking, multimodal_switch, multimodal_model, claude_code_compat_hint, strip_unknown_content_blocks, rate_limit_queue_enabled, max_concurrent_requests, max_queue_size, queue_timeout_ms, retry_429_enabled, retry_429_max_attempts, retry_429_initial_delay_ms, retry_429_max_delay_ms, quota_query_config, exposed_models, enabled, created_at, updated_at FROM providers ORDER BY created_at ASC, id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -301,8 +303,8 @@ func (s *SQLiteStore) loadProviders() ([]Provider, error) {
 		var claudeCodeCompatHint sql.NullBool
 		var openAIExtraParams, createdAt, updatedAt string
 		var rateLimitQueueEnabled, retry429Enabled int
-		var quotaQueryConfig string
-		if err := rows.Scan(&p.ID, &p.Name, &p.APIURL, &p.APIToken, &p.APIFormat, &openAIExtraParams, &supportsThinking, &multimodalSwitch, &p.MultimodalModel, &claudeCodeCompatHint, &stripUnknownContentBlocks, &rateLimitQueueEnabled, &p.MaxConcurrentRequests, &p.MaxQueueSize, &p.QueueTimeoutMS, &retry429Enabled, &p.Retry429MaxAttempts, &p.Retry429InitialDelayMS, &p.Retry429MaxDelayMS, &quotaQueryConfig, &enabled, &createdAt, &updatedAt); err != nil {
+		var quotaQueryConfig, exposedModelsStr string
+		if err := rows.Scan(&p.ID, &p.Name, &p.APIURL, &p.APIToken, &p.APIFormat, &openAIExtraParams, &supportsThinking, &multimodalSwitch, &p.MultimodalModel, &claudeCodeCompatHint, &stripUnknownContentBlocks, &rateLimitQueueEnabled, &p.MaxConcurrentRequests, &p.MaxQueueSize, &p.QueueTimeoutMS, &retry429Enabled, &p.Retry429MaxAttempts, &p.Retry429InitialDelayMS, &p.Retry429MaxDelayMS, &quotaQueryConfig, &exposedModelsStr, &enabled, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
 		params, err := decodeOpenAIExtraParams(openAIExtraParams)
@@ -326,6 +328,12 @@ func (s *SQLiteStore) loadProviders() ([]Provider, error) {
 		}
 		providerquota.MigrateLegacyCredentials(qq, p.APIURL)
 		p.QuotaQuery = qq
+		// Decode exposed models.
+		exposedModels, err := decodeExposedModels(exposedModelsStr)
+		if err != nil {
+			return nil, fmt.Errorf("decode provider %s exposed_models: %w", p.ID, err)
+		}
+		p.ExposedModels = exposedModels
 		p.Enabled = enabled == 1
 		p.CreatedAt = parseSQLiteTime(createdAt)
 		p.UpdatedAt = parseSQLiteTime(updatedAt)
@@ -453,9 +461,14 @@ func upsertProvider(tx *sql.Tx, provider Provider) error {
 		return err
 	}
 
+	exposedModelsJSON, err := encodeExposedModels(provider.ExposedModels)
+	if err != nil {
+		return err
+	}
+
 	_, err = tx.Exec(
-		`INSERT INTO providers(id, name, api_url, api_token, api_format, openai_extra_params, supports_thinking, multimodal_switch, multimodal_model, claude_code_compat_hint, strip_unknown_content_blocks, rate_limit_queue_enabled, max_concurrent_requests, max_queue_size, queue_timeout_ms, retry_429_enabled, retry_429_max_attempts, retry_429_initial_delay_ms, retry_429_max_delay_ms, quota_query_config, enabled, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO providers(id, name, api_url, api_token, api_format, openai_extra_params, supports_thinking, multimodal_switch, multimodal_model, claude_code_compat_hint, strip_unknown_content_blocks, rate_limit_queue_enabled, max_concurrent_requests, max_queue_size, queue_timeout_ms, retry_429_enabled, retry_429_max_attempts, retry_429_initial_delay_ms, retry_429_max_delay_ms, quota_query_config, exposed_models, enabled, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		 name = excluded.name,
 		 api_url = excluded.api_url,
@@ -476,6 +489,7 @@ func upsertProvider(tx *sql.Tx, provider Provider) error {
 		 retry_429_initial_delay_ms = excluded.retry_429_initial_delay_ms,
 		 retry_429_max_delay_ms = excluded.retry_429_max_delay_ms,
 		 quota_query_config = excluded.quota_query_config,
+		 exposed_models = excluded.exposed_models,
 		 enabled = excluded.enabled,
 		 created_at = excluded.created_at,
 		 updated_at = excluded.updated_at`,
@@ -499,6 +513,7 @@ func upsertProvider(tx *sql.Tx, provider Provider) error {
 		provider.Retry429InitialDelayMS,
 		provider.Retry429MaxDelayMS,
 		quotaQueryConfig,
+		exposedModelsJSON,
 		boolToInt(provider.Enabled),
 		createdAt.UTC().Format(time.RFC3339Nano),
 		updatedAt.UTC().Format(time.RFC3339Nano),
@@ -609,4 +624,26 @@ func nullableBool(value *bool) any {
 		return nil
 	}
 	return boolToInt(*value)
+}
+
+func encodeExposedModels(models []ExposedModel) (string, error) {
+	if len(models) == 0 {
+		return "[]", nil
+	}
+	data, err := json.Marshal(models)
+	if err != nil {
+		return "", fmt.Errorf("encode exposed_models: %w", err)
+	}
+	return string(data), nil
+}
+
+func decodeExposedModels(value string) ([]ExposedModel, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	var models []ExposedModel
+	if err := json.Unmarshal([]byte(value), &models); err != nil {
+		return nil, err
+	}
+	return models, nil
 }

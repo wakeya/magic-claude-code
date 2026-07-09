@@ -26,6 +26,7 @@ func providerResponseMap(p config.Provider, active bool) map[string]interface{} 
 		"openai_extra_params":          p.OpenAIExtraParams,
 		"claude_code_compat_hint":      p.UseClaudeCodeCompatHint(),
 		"model_mappings":               p.ModelMappings,
+		"exposed_models":               p.ExposedModels,
 		"supports_thinking":            p.SupportsThinking,
 		"multimodal_switch":            p.MultimodalSwitch,
 		"multimodal_model":             p.MultimodalModel,
@@ -89,8 +90,9 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 		APIFormat                 config.APIFormat  `json:"api_format"`
 		OpenAIExtraParams         map[string]any    `json:"openai_extra_params"`
 		ClaudeCodeCompatHint      *bool             `json:"claude_code_compat_hint"`
-		ModelMappings             map[string]string `json:"model_mappings"`
-		SupportsThinking          bool              `json:"supports_thinking"`
+		ModelMappings             map[string]string         `json:"model_mappings"`
+		ExposedModels             []config.ExposedModel     `json:"exposed_models"`
+		SupportsThinking          bool                      `json:"supports_thinking"`
 		MultimodalSwitch          bool              `json:"multimodal_switch"`
 		MultimodalModel           string            `json:"multimodal_model"`
 		StripUnknownContentBlocks bool              `json:"strip_unknown_content_blocks"`
@@ -153,6 +155,7 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 		OpenAIExtraParams:         req.OpenAIExtraParams,
 		ClaudeCodeCompatHint:      req.ClaudeCodeCompatHint,
 		ModelMappings:             req.ModelMappings,
+		ExposedModels:             req.ExposedModels,
 		SupportsThinking:          req.SupportsThinking,
 		MultimodalSwitch:          req.MultimodalSwitch,
 		MultimodalModel:           req.MultimodalModel,
@@ -169,17 +172,18 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:                 now,
 		UpdatedAt:                 now,
 	}
-	if err := provider.Validate(); err != nil {
-		jsonErr, _ := json.Marshal(map[string]string{"error": err.Error()})
-		http.Error(w, string(jsonErr), http.StatusBadRequest)
-		return
-	}
 
 	cfg.Providers = append(cfg.Providers, provider)
 
 	// 如果是第一个供应商，自动激活
 	if len(cfg.Providers) == 1 {
 		cfg.ActiveProviderID = provider.ID
+	}
+
+	if err := cfg.Validate(); err != nil {
+		jsonErr, _ := json.Marshal(map[string]string{"error": err.Error()})
+		http.Error(w, string(jsonErr), http.StatusBadRequest)
+		return
 	}
 
 	if err := s.configStore.Save(cfg); err != nil {
@@ -244,8 +248,9 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request, id strin
 		APIFormat                 *config.APIFormat `json:"api_format"`
 		OpenAIExtraParams         map[string]any    `json:"openai_extra_params"`
 		ClaudeCodeCompatHint      *bool             `json:"claude_code_compat_hint"`
-		ModelMappings             map[string]string `json:"model_mappings"`
-		SupportsThinking          *bool             `json:"supports_thinking"`
+		ModelMappings             map[string]string         `json:"model_mappings"`
+		ExposedModels             *[]config.ExposedModel    `json:"exposed_models"`
+		SupportsThinking          *bool                     `json:"supports_thinking"`
 		MultimodalSwitch          *bool             `json:"multimodal_switch"`
 		MultimodalModel           *string           `json:"multimodal_model"`
 		StripUnknownContentBlocks *bool             `json:"strip_unknown_content_blocks"`
@@ -311,6 +316,9 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request, id strin
 	if req.ModelMappings != nil {
 		provider.ModelMappings = req.ModelMappings
 	}
+	if req.ExposedModels != nil {
+		provider.ExposedModels = *req.ExposedModels
+	}
 	if req.Enabled != nil {
 		provider.Enabled = *req.Enabled
 	}
@@ -354,7 +362,7 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request, id strin
 		http.Error(w, `{"error": "multimodal_model is required when multimodal_switch is enabled"}`, http.StatusBadRequest)
 		return
 	}
-	if err := provider.Validate(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		jsonErr, _ := json.Marshal(map[string]string{"error": err.Error()})
 		http.Error(w, string(jsonErr), http.StatusBadRequest)
 		return
@@ -806,6 +814,12 @@ func (s *Server) handleProviderDuplicate(w http.ResponseWriter, r *http.Request)
 	}
 	cfg.Providers = append(cfg.Providers, newProvider)
 
+	if err := cfg.Validate(); err != nil {
+		jsonErr, _ := json.Marshal(map[string]string{"error": err.Error()})
+		http.Error(w, string(jsonErr), http.StatusBadRequest)
+		return
+	}
+
 	if err := s.configStore.Save(cfg); err != nil {
 		http.Error(w, `{"error": "failed to save config"}`, http.StatusInternalServerError)
 		return
@@ -972,6 +986,12 @@ func (s *Server) handleImportProviders(w http.ResponseWriter, r *http.Request) {
 			existingIdx[cp.ID] = len(cfg.Providers) - 1
 			summary.Imported++
 		}
+	}
+
+	// 全局校验（含跨 provider ExposedModel ID 唯一性）
+	if err := cfg.Validate(); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error": %q}`, err.Error()), http.StatusBadRequest)
+		return
 	}
 
 	if err := s.configStore.Save(cfg); err != nil {
