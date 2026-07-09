@@ -40,6 +40,19 @@ sudo make run
 sudo go run ./cmd/server -data ./data
 ```
 
+### 5. Docker 本地部署
+
+```bash
+# 一键构建并启动（通过 git describe 自动注入版本号到 mcc --version）
+make docker-run
+
+# 查看日志 / 停止
+docker logs -f mcc
+make docker-stop
+```
+
+`make docker-run` 等价于 `APP_VERSION=$(git describe --tags --always --dirty) docker compose up -d --build`，版本号反映当前代码状态（tag / commit / dirty）。直接 `docker compose up`（不走 Makefile）时版本号为 `dev`。
+
 ## 模块说明
 
 ### internal/config

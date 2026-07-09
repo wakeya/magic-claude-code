@@ -185,6 +185,9 @@ docker compose ps
 # 一键重新构建并部署
 docker compose up -d --build
 
+# 或者用 Make（克隆仓库后可用，自动注入 git 版本号到 mcc --version）
+make docker-run
+
 # 查看启动日志
 docker compose logs -f
 ```
