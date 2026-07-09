@@ -1139,3 +1139,78 @@ func TestCreateProvider_RejectsDuplicateExposedIDAcrossProviders(t *testing.T) {
 		t.Fatalf("expected 400 for duplicate exposed ID, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestImportProviders_DuplicateStrategyClearsExposedModels(t *testing.T) {
+	cfg := config.DefaultConfig()
+	// 现有 provider A 已有 exposed model glm-4.6
+	providerA := config.NewProvider("A", "https://a.example.com/v1", "token")
+	providerA.ExposedModels = []config.ExposedModel{{ID: "glm-4.6", Label: "GLM-4.6"}}
+	cfg.Providers = []config.Provider{*providerA}
+	cfg.ActiveProviderID = providerA.ID
+	store := config.NewMockStore(cfg)
+	server := NewServer(&AdminConfig{Password: "secret"}, store, nil)
+
+	// 导入同 ID 的 provider，带同 ID 的 exposed model，策略 duplicate
+	body := `{"version":1,"providers":[{"id":"` + providerA.ID + `","name":"A copy","api_url":"https://copy.example.com/v1","api_token":"t","exposed_models":[{"id":"glm-4.6","label":"GLM-4.6"}]}],"strategy":"duplicate"}`
+	req := httptest.NewRequest("POST", "/api/providers/import", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	server.handleImportProviders(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var summary map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &summary)
+	if duplicated, _ := summary["duplicated"].(float64); duplicated != 1 {
+		t.Fatalf("expected duplicated=1, got %v", summary)
+	}
+
+	// 验证 duplicate 出来的新 provider 没有 exposed_models（避免与原 provider 的全局 ID 冲突）
+	loaded, _ := store.Load()
+	var dup *config.Provider
+	for i := range loaded.Providers {
+		if loaded.Providers[i].ID != providerA.ID && loaded.Providers[i].Name == "A copy" {
+			dup = &loaded.Providers[i]
+			break
+		}
+	}
+	if dup == nil {
+		t.Fatal("duplicate provider not found")
+	}
+	if len(dup.ExposedModels) != 0 {
+		t.Fatalf("duplicate provider should have empty ExposedModels, got %v", dup.ExposedModels)
+	}
+}
+
+func TestCreateProvider_ReturnsTrimmedExposedModels(t *testing.T) {
+	cfg := config.DefaultConfig()
+	store := config.NewMockStore(cfg)
+	server := NewServer(&AdminConfig{Password: "secret"}, store, nil)
+
+	// 故意带空格的 ID/label/description/backend_model
+	body := `{"name":"A","api_url":"https://a.example.com/v1","api_token":"t","exposed_models":[{"id":"  glm-4.6  ","label":"  GLM  ","description":"  desc  ","backend_model":"  glm-4.6  "}]}`
+	req := httptest.NewRequest("POST", "/api/providers", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	server.handleProviders(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	provider := resp["provider"].(map[string]any)
+	models := provider["exposed_models"].([]any)
+	m := models[0].(map[string]any)
+	if m["id"] != "glm-4.6" {
+		t.Fatalf("response id not trimmed: %v", m["id"])
+	}
+	if m["label"] != "GLM" {
+		t.Fatalf("response label not trimmed: %v", m["label"])
+	}
+	if m["description"] != "desc" {
+		t.Fatalf("response description not trimmed: %v", m["description"])
+	}
+	if m["backend_model"] != "glm-4.6" {
+		t.Fatalf("response backend_model not trimmed: %v", m["backend_model"])
+	}
+}

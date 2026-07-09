@@ -460,7 +460,8 @@ export function useApi() {
     claude_code_compat_hint?: boolean
     model_mappings: Record<string, string>
     exposed_models?: ExposedModel[]
-    supports_thinking?: boolean    multimodal_switch?: boolean
+    supports_thinking?: boolean
+    multimodal_switch?: boolean
     multimodal_model?: string
     strip_unknown_content_blocks?: boolean
     rate_limit_queue_enabled?: boolean

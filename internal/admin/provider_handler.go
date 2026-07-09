@@ -192,9 +192,11 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	// 用 cfg.Providers 的最后一个元素构造响应：cfg.Validate 会 trim exposed_models
+	// 等字段并写回 slice 内的副本（append 后局部 provider 变量与 slice 元素是不同副本）。
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success":  true,
-		"provider": providerResponseMap(provider, len(cfg.Providers) == 1),
+		"provider": providerResponseMap(cfg.Providers[len(cfg.Providers)-1], len(cfg.Providers) == 1),
 	})
 }
 
@@ -969,7 +971,10 @@ func (s *Server) handleImportProviders(w http.ResponseWriter, r *http.Request) {
 				summary.Overwritten++
 			case "duplicate":
 				// 冲突项生成新 ID 追加，原供应商不变。
+				// 清空 ExposedModels：ID 需要全局唯一，保留会导致与原 provider 冲突。
+				// 与 handleProviderDuplicate 语义一致。
 				cp.ID = generateProviderID()
+				cp.ExposedModels = nil
 				cp.CreatedAt = now
 				cp.UpdatedAt = now
 				cfg.Providers = append(cfg.Providers, cp)
