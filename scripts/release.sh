@@ -164,7 +164,7 @@ if [ -n "${GITEE_TOKEN:-}" ]; then
       -H "Content-Type: application/json" \
       -d "$(jq -n --arg tag "$TAG" --arg body "$RELEASE_BODY" \
         '{tag_name:$tag, name:$tag, body:$body, target_commitish:"main"}')" \
-      "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases")
+      "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases" || true)
 
     if [ "$STATUS" -ge 200 ] && [ "$STATUS" -lt 300 ]; then
       GITEE_RELEASE_ID=$(jq -r '.id' /tmp/gitee-release.json)
@@ -184,7 +184,7 @@ if [ -n "${GITEE_TOKEN:-}" ]; then
         -X POST \
         -H "Authorization: Bearer ${GITEE_TOKEN}" \
         -F "file=@${f}" \
-        "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases/${GITEE_RELEASE_ID}/attach_files")
+        "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases/${GITEE_RELEASE_ID}/attach_files" || true)
 
       if [ "$STATUS" -ge 200 ] && [ "$STATUS" -lt 300 ]; then
         info "  ✓ ${fname}"
@@ -215,7 +215,7 @@ if [ -n "${GITCODE_TOKEN:-}" ]; then
       -H "Content-Type: application/json" \
       -d "$(jq -n --arg tag "$TAG" --arg body "$RELEASE_BODY" \
         '{tag_name:$tag, name:$tag, body:$body, target_commitish:"main"}')" \
-      "https://api.gitcode.com/api/v5/repos/${GITCODE_REPO}/releases")
+      "https://api.gitcode.com/api/v5/repos/${GITCODE_REPO}/releases" || true)
 
     if [ "$STATUS" -ge 200 ] && [ "$STATUS" -lt 300 ]; then
       info "GitCode Release 创建成功"
@@ -254,7 +254,7 @@ if [ -n "${GITCODE_TOKEN:-}" ]; then
       -H "x-obs-callback: ${HDR_CALLBACK}" \
       -H "Content-Type: ${HDR_CTYPE}" \
       --data-binary "@${f}" \
-      "$UPLOAD_URL")
+      "$UPLOAD_URL" || true)
 
     if [ "$STATUS" -ge 200 ] && [ "$STATUS" -lt 300 ]; then
       info "  ✓ ${fname}"
@@ -290,7 +290,7 @@ if [ -n "${GITLAB_TOKEN:-}" ]; then
       --arg body "$RELEASE_BODY" \
       --argjson assets "$ASSETS_JSON" \
       '{tag_name:$tag, name:$name, description:$body, assets:{links:$assets}}')" \
-    "${GITLAB_URL}/api/v4/projects/${GITLAB_PROJECT_ID}/releases")
+    "${GITLAB_URL}/api/v4/projects/${GITLAB_PROJECT_ID}/releases" || true)
 
   if [ "$STATUS" -ge 200 ] && [ "$STATUS" -lt 300 ]; then
     info "GitLab Release 创建成功（链接指向 GitHub 下载）"
