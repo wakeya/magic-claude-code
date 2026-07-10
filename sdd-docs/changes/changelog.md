@@ -7,6 +7,24 @@
 
 ---
 
+## v0.15.0 (2026-07-10)
+
+### Added
+- **Claude Code 端点兼容本地拦截（fail-closed 守卫）**：新版 Claude Code 客户端（2.1.206）引入大量控制面 / 遥测 / 插件 / design 端点（`/v1/logs`、`/api/frame/*`、`/api/ws/speech_to_text/voice_stream`、`/v1/design/*` 等），旧版 MCC 把这些未识别端点全部转发给上游模型供应商，浪费 token、产生噪音错误、并可能泄露客户端元数据。新版改为 fail-closed 路由：已知本地端点本地响应、已知模型端点（`POST /v1/messages`、`POST /anthropic/v1/messages`）转发配置的 Provider、其余未知非模型端点本地拦截并只记录 method / path / query
+- **2.1.206 新端点本地兼容响应**：为客户端新增端点提供 schema 兼容的本地响应——MCP connector search / suggest / list 返回 `{"results":[]}`；plugin / skill search 从本地 marketplace / skill manifests（`~/.claude`，best-effort 读取，缺失回退空数组，兼容 Docker 未挂载场景）填充结果；installed skill health（`GET /api/claude_code/skills`）返回 `{"skills":[...]}`；frame（list / track / deploy / contract）、design consent / MCP、voice stream 返回精确状态码与错误结构，避免客户端解析异常
+- **`/v1/models` 本地模型发现**：改用 MCC 配置生成模型列表返回客户端，不再转发给上游供应商
+
+### Security
+- **fail-closed 端点守卫（防客户端元数据泄露）**：未知非模型端点（如 `/favicon.ico`、`/v1/logs`、`/v1/metrics`、`/v1/traces` 及各类控制面端点）不再转发给模型供应商，本地拦截并仅记录 method / path / query，避免客户端元数据泄露给第三方模型供应商、浪费上游请求额度与产生噪音错误
+
+### Changed
+- **请求路由架构从 permissive 转 fail-closed**：`internal/proxy` 请求处理由「默认转发所有未识别端点」改为「仅已知本地 / 已知模型端点放行，其余拦截」。`POST /v1/messages` 与 `POST /anthropic/v1/messages` 继续作为模型推理端点转发，`POST /v1/messages/count_tokens` 保持本地处理
+
+### Docs
+- Claude Code 端点兼容 feature spec 与评审记录（中英双语）：`sdd-docs/features/2026-07-10-claude-code-endpoint-compatibility/`
+
+---
+
 ## v0.14.0 (2026-07-09)
 
 ### Added
