@@ -630,9 +630,9 @@ func TestHandleBootstrap_EmitsExposedModels(t *testing.T) {
 	handler.handleBootstrap(rec)
 
 	var resp struct {
-		ClientData             any                   `json:"client_data"`
-		AdditionalModelOptions []map[string]string   `json:"additional_model_options"`
-		CwkCfgKey              any                   `json:"cwk_cfg_key"`
+		ClientData             any                 `json:"client_data"`
+		AdditionalModelOptions []map[string]string `json:"additional_model_options"`
+		CwkCfgKey              any                 `json:"cwk_cfg_key"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("invalid json: %v", err)
@@ -719,5 +719,325 @@ func TestHandleBootstrap_Context1MAppendsBracket1m(t *testing.T) {
 	// Context1M=false 的模型，菜单 value 保持纯 ID
 	if byModel["GLM-4.6"] != "glm-4.6" {
 		t.Fatalf("non-1M model value = %q, want glm-4.6", byModel["GLM-4.6"])
+	}
+}
+
+// TestStaticProbeEndpointsAreLocal 验证浏览器/静态探测路径本地返回 404 空 body，
+// 不转发给上游 provider。
+func TestStaticProbeEndpointsAreLocal(t *testing.T) {
+	handler := NewHandler(config.NewMockStore(nil), nil)
+	probes := []string{
+		"/favicon.ico",
+		"/robots.txt",
+		"/apple-touch-icon.png",
+		"/apple-touch-icon-precomposed.png",
+	}
+	for _, path := range probes {
+		t.Run("GET "+path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rec := httptest.NewRecorder()
+			if !handler.handleHardcodedEndpoint(rec, req) {
+				t.Fatalf("handleHardcodedEndpoint should handle %s", path)
+			}
+			if rec.Code != http.StatusNotFound {
+				t.Errorf("status = %d, want 404", rec.Code)
+			}
+			if rec.Body.Len() != 0 {
+				t.Errorf("want empty body, got %q", rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestHardcodedTelemetryOTLPEndpoints 验证 OTLP 遥测端点本地 204（POST）/ 405（非 POST），
+// 且不解析 payload。
+func TestHardcodedTelemetryOTLPEndpoints(t *testing.T) {
+	handler := NewHandler(config.NewMockStore(nil), nil)
+	endpoints := []string{"/v1/metrics", "/v1/logs", "/v1/traces"}
+
+	t.Run("POST returns 204 empty without parsing body", func(t *testing.T) {
+		for _, path := range endpoints {
+			largeBody := strings.Repeat("x", 64*1024) // 大体积遥测 body，不应被解析
+			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(largeBody))
+			rec := httptest.NewRecorder()
+			if !handler.handleHardcodedEndpoint(rec, req) {
+				t.Fatalf("should handle %s", path)
+			}
+			if rec.Code != http.StatusNoContent {
+				t.Errorf("%s status = %d, want 204", path, rec.Code)
+			}
+			if rec.Body.Len() != 0 {
+				t.Errorf("%s want empty body, got %q", path, rec.Body.String())
+			}
+		}
+	})
+
+	t.Run("non-POST returns 405", func(t *testing.T) {
+		for _, path := range endpoints {
+			for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete} {
+				req := httptest.NewRequest(method, path, nil)
+				rec := httptest.NewRecorder()
+				handler.handleHardcodedEndpoint(rec, req)
+				if rec.Code != http.StatusMethodNotAllowed {
+					t.Errorf("%s %s status = %d, want 405", method, path, rec.Code)
+				}
+				if allow := rec.Header().Get("Allow"); allow != http.MethodPost {
+					t.Errorf("%s %s Allow = %q, want POST", method, path, allow)
+				}
+			}
+		}
+	})
+
+	t.Run("POST with oversized body returns 204 via bounded drain", func(t *testing.T) {
+		// 超过 maxLocalDrainSize 的遥测 body：有界 drain 后仍返回 204，不挂起（gpt-5.6 审查点）。
+		huge := strings.Repeat("x", int(maxLocalDrainSize)+2*1024*1024)
+		req := httptest.NewRequest(http.MethodPost, "/v1/metrics", strings.NewReader(huge))
+		rec := httptest.NewRecorder()
+		handler.handleHardcodedEndpoint(rec, req)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, want 204 (bounded drain must not error)", rec.Code)
+		}
+	})
+}
+
+// TestHardcodedModelsUsesConfiguredProviders 验证 /v1/models 从 MCC 现有 provider/model
+// 配置派生模型列表（不新建平行 registry），按 id 去重排序，配置为空时返回空列表。
+func TestHardcodedModelsUsesConfiguredProviders(t *testing.T) {
+	store := config.NewMockStore(&config.Config{
+		Providers: []config.Provider{
+			{ID: "a", Name: "智谱", Enabled: true, ExposedModels: []config.ExposedModel{
+				{ID: "glm-4.6", Label: "GLM-4.6", BackendModel: "glm-4.6"},
+				{ID: "kimi-k2", Label: "Kimi K2", BackendModel: "kimi"},
+			}},
+			{ID: "b", Name: "Disabled", Enabled: false, ExposedModels: []config.ExposedModel{
+				{ID: "disabled-model", Label: "D"},
+			}},
+		},
+	})
+	handler := &Handler{configStore: store}
+
+	t.Run("GET returns config-derived models sorted by id", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		rec := httptest.NewRecorder()
+		if !handler.handleHardcodedEndpoint(rec, req) {
+			t.Fatal("should handle /v1/models")
+		}
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		var resp struct {
+			Data []struct {
+				ID          string `json:"id"`
+				Type        string `json:"type"`
+				DisplayName string `json:"display_name"`
+			} `json:"data"`
+			HasMore bool `json:"has_more"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v body=%s", err, rec.Body.String())
+		}
+		if resp.HasMore {
+			t.Errorf("has_more = true, want false")
+		}
+		// disabled provider 不应出现
+		if len(resp.Data) != 2 {
+			t.Fatalf("data len = %d, want 2 (disabled provider excluded): %+v", len(resp.Data), resp.Data)
+		}
+		// 按 id 升序
+		if resp.Data[0].ID != "glm-4.6" || resp.Data[1].ID != "kimi-k2" {
+			t.Fatalf("unexpected order: %s, %s", resp.Data[0].ID, resp.Data[1].ID)
+		}
+		for _, m := range resp.Data {
+			if m.Type != "model" {
+				t.Errorf("model %s type = %q, want model", m.ID, m.Type)
+			}
+		}
+		// display_name 用 Label（GLM-4.6 / Kimi K2），id 保持不变用于模型选择
+		byID := map[string]string{}
+		for _, m := range resp.Data {
+			byID[m.ID] = m.DisplayName
+		}
+		if byID["glm-4.6"] != "GLM-4.6" {
+			t.Errorf("glm-4.6 display_name = %q, want Label 'GLM-4.6'", byID["glm-4.6"])
+		}
+		if byID["kimi-k2"] != "Kimi K2" {
+			t.Errorf("kimi-k2 display_name = %q, want Label 'Kimi K2'", byID["kimi-k2"])
+		}
+	})
+
+	t.Run("empty Label falls back to id for display_name", func(t *testing.T) {
+		// dedup fixture 的 dup/uniq 都没设 Label，display_name 应回退 id
+		dupStore := config.NewMockStore(&config.Config{
+			Providers: []config.Provider{
+				{ID: "a", Name: "A", Enabled: true, ExposedModels: []config.ExposedModel{{ID: "dup"}}},
+				{ID: "b", Name: "B", Enabled: true, ExposedModels: []config.ExposedModel{{ID: "uniq"}}},
+			},
+		})
+		h := &Handler{configStore: dupStore}
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		rec := httptest.NewRecorder()
+		h.handleHardcodedEndpoint(rec, req)
+		var resp struct {
+			Data []struct {
+				ID          string `json:"id"`
+				DisplayName string `json:"display_name"`
+			} `json:"data"`
+		}
+		json.NewDecoder(rec.Body).Decode(&resp)
+		for _, m := range resp.Data {
+			if m.DisplayName != m.ID {
+				t.Errorf("model %s display_name = %q, want fallback to id", m.ID, m.DisplayName)
+			}
+		}
+	})
+
+	t.Run("dedupes duplicate model ids across providers", func(t *testing.T) {
+		dupStore := config.NewMockStore(&config.Config{
+			Providers: []config.Provider{
+				{ID: "a", Name: "A", Enabled: true, ExposedModels: []config.ExposedModel{{ID: "dup"}}},
+				{ID: "b", Name: "B", Enabled: true, ExposedModels: []config.ExposedModel{{ID: "dup"}, {ID: "uniq"}}},
+			},
+		})
+		h := &Handler{configStore: dupStore}
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		rec := httptest.NewRecorder()
+		h.handleHardcodedEndpoint(rec, req)
+		var resp struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		json.NewDecoder(rec.Body).Decode(&resp)
+		if len(resp.Data) != 2 {
+			t.Fatalf("data len = %d, want 2 (dup + uniq)", len(resp.Data))
+		}
+	})
+
+	t.Run("empty config returns empty data", func(t *testing.T) {
+		h := &Handler{configStore: config.NewMockStore(nil)}
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		rec := httptest.NewRecorder()
+		h.handleHardcodedEndpoint(rec, req)
+		var resp struct {
+			Data    []any `json:"data"`
+			HasMore bool  `json:"has_more"`
+		}
+		json.NewDecoder(rec.Body).Decode(&resp)
+		if len(resp.Data) != 0 {
+			t.Fatalf("data len = %d, want 0", len(resp.Data))
+		}
+		if resp.HasMore {
+			t.Errorf("has_more = true, want false")
+		}
+	})
+
+	t.Run("nil configStore returns empty data", func(t *testing.T) {
+		h := &Handler{configStore: nil}
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		rec := httptest.NewRecorder()
+		h.handleHardcodedEndpoint(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+	})
+
+	t.Run("non-GET returns 405", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/models", nil)
+		rec := httptest.NewRecorder()
+		handler.handleHardcodedEndpoint(rec, req)
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("status = %d, want 405", rec.Code)
+		}
+		if allow := rec.Header().Get("Allow"); allow != http.MethodGet {
+			t.Errorf("Allow = %q, want GET", allow)
+		}
+	})
+}
+
+// TestHardcodedLowRiskClaudeCodeEndpoints 验证低风险 Claude Code API 端点本地返回
+// 兼容空状态，并回归断言 count_tokens 在加入默认拦截 guard 后仍本地处理。
+func TestHardcodedLowRiskClaudeCodeEndpoints(t *testing.T) {
+	handler := NewHandler(config.NewMockStore(nil), nil)
+
+	t.Run("team_usage returns empty aggregates", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/claude_code/discovery/team_usage", nil)
+		rec := httptest.NewRecorder()
+		if !handler.handleHardcodedEndpoint(rec, req) {
+			t.Fatal("should handle team_usage")
+		}
+		var resp map[string]json.RawMessage
+		json.NewDecoder(rec.Body).Decode(&resp)
+		for _, key := range []string{"teams", "usage", "data"} {
+			raw, ok := resp[key]
+			if !ok {
+				t.Fatalf("response missing %q: %v", key, resp)
+			}
+			if string(raw) != "[]" {
+				t.Errorf("%s = %s, want []", key, string(raw))
+			}
+		}
+	})
+
+	t.Run("notification preferences returns disabled state", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/claude_code/notification/preferences", nil)
+		rec := httptest.NewRecorder()
+		if !handler.handleHardcodedEndpoint(rec, req) {
+			t.Fatal("should handle notification/preferences")
+		}
+		var resp struct {
+			Preferences          map[string]any `json:"preferences"`
+			NotificationsEnabled bool           `json:"notifications_enabled"`
+		}
+		json.NewDecoder(rec.Body).Decode(&resp)
+		if resp.NotificationsEnabled {
+			t.Errorf("notifications_enabled = true, want false")
+		}
+	})
+
+	t.Run("onboarding returns empty object for multiple methods", func(t *testing.T) {
+		for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch} {
+			req := httptest.NewRequest(method, "/api/organizations/org-abc/claude_code/onboarding", nil)
+			rec := httptest.NewRecorder()
+			if !handler.handleHardcodedEndpoint(rec, req) {
+				t.Fatalf("%s onboarding should be handled", method)
+			}
+			if rec.Code != http.StatusOK {
+				t.Errorf("%s status = %d, want 200", method, rec.Code)
+			}
+			if strings.TrimSpace(rec.Body.String()) != "{}" {
+				t.Errorf("%s body = %q, want {}", method, rec.Body.String())
+			}
+		}
+	})
+
+	t.Run("count_tokens still local after fail-closed guard", func(t *testing.T) {
+		body := `{"model":"claude-opus-4-6","messages":[{"role":"user","content":"hello"}]}`
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		if !handler.handleHardcodedEndpoint(rec, req) {
+			t.Fatal("count_tokens should be handled locally")
+		}
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+	})
+
+	// 低风险 GET-only 端点：非 GET 应返回 405（gpt-5.6 审查点：补 method checks）。
+	for _, path := range []string{
+		"/api/claude_code/discovery/team_usage",
+		"/api/claude_code/notification/preferences",
+		"/api/claude_code/skills",
+	} {
+		t.Run("POST "+path+" returns 405", func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
+			rec := httptest.NewRecorder()
+			handler.handleHardcodedEndpoint(rec, req)
+			if rec.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("status = %d, want 405", rec.Code)
+			}
+			if allow := rec.Header().Get("Allow"); allow != http.MethodGet {
+				t.Errorf("Allow = %q, want GET", allow)
+			}
+		})
 	}
 }

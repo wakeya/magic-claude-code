@@ -5,7 +5,7 @@
 参考来源：Claude Code `2.1.196` 与 `2.1.206` 提取 JS、Docker `mcc` 日志、本地 Claude 配置/插件/skills  
 技术栈：Go 1.26 标准库代理、现有 MCC provider/config 包  
 最后更新：2026-07-10  
-进度：0 / 7 已规划
+进度：7 / 7 已验证（validated）
 
 ## 整体分析（源站分析）
 
@@ -158,13 +158,13 @@ internal/proxy/handler.go ServeHTTP
 
 | 序号 | 状态 | 任务 | 产出 | 验证 |
 | --- | --- | --- | --- | --- |
-| 1 | 已规划 | 端点策略与默认拦截 guard | `endpoint_policy.go`、handler guard、策略测试 | 未知端点被拦截；只有消息端点转发 |
-| 2 | 已规划 | 遥测、探测、模型与低风险 Claude Code API 本地响应 | hardcoded handlers 与测试 | 本地 2xx/204 响应；不上游 |
-| 3 | 已规划 | 插件、skill、MCP connector 兼容 | 本地 catalog loader/search handlers | Search schema 匹配客户端 parser |
-| 4 | 已规划 | Frame artifact 兼容 | frame handlers 与测试 | 空列表、204 track、受控发布拒绝 |
-| 5 | 已规划 | Design 与不支持的 streaming 兼容 | design/ws handlers 与测试 | Consent 可用；design MCP/语音流被本地拦截 |
-| 6 | 已规划 | 日志与诊断 | 不含敏感信息的拦截日志 | 未知路径产生一条有用日志 |
-| 7 | 已规划 | 回归验证与端点矩阵 | 测试、可选脚本/文档更新 | `go test ./...`；端点矩阵复核 |
+| 1 | ✅ 已完成 | 端点策略与默认拦截 guard | `endpoint_policy.go`、`blocked.go`、handler guard | `TestClassifyForwardingEndpoint`/`TestEndpointPolicy`/`TestServeHTTPFailClosed` 通过；blocked 端点上游计数器为 0 |
+| 2 | ✅ 已完成 | 遥测、探测、模型与低风险 Claude Code API 本地响应 | hardcoded handlers、`handleModels`（配置派生） | `TestStaticProbeEndpoints`/`TestHardcodedTelemetry`/`TestHardcodedModels`/`TestHardcodedLowRiskClaudeCode` 通过 |
+| 3 | ✅ 已完成 | 插件、skill、MCP connector 兼容 | `local_catalog.go`、org 搜索 handler | `TestLocalCatalog`/`TestPluginSkillSearch`/`TestMCPConnectorEndpoints` 通过；具体 handler 先于宽泛 fallback |
+| 4 | ✅ 已完成 | Frame artifact 兼容 | `frame.go` | `TestFrameEndpointCompatibility` 通过 |
+| 5 | ✅ 已完成 | Design 与不支持的 streaming 兼容 | `design_streaming.go` | `TestDesignEndpointCompatibility`/`TestUnsupportedStreamingEndpoints` 通过 |
+| 6 | ✅ 已完成 | 日志与诊断 | `logBlockedEndpoint`（含控制字符 sanitize） | `TestBlockedEndpointLogging`/`TestBlockedEndpointLogInjectionGuard`/`TestOrgEndpointsSingleHandlingLog` 通过 |
+| 7 | ✅ 已完成 | 回归验证与端点矩阵 | 全量测试、无前端改动 | `go test ./internal/proxy` 415 通过；`go test ./...` 1311 通过 |
 
 ## 需求
 
@@ -236,27 +236,30 @@ internal/proxy/handler.go ServeHTTP
    - 优先使用 `CLAUDE_CONFIG_DIR`。
    - 否则使用 `os.UserHomeDir()` + `.claude`。
    - 如果 home directory 不可用，则返回空 catalog。
-2. 候选文件：
-   - `plugins/marketplaces/*/.claude-plugin/marketplace.json`
-   - `plugins/marketplaces/*/.claude-plugin/plugin.json`
-   - `skills/*/SKILL.md`
-   - 可选只读读取 `.claude.json` 与 `settings.json` 元数据。
+2. 候选文件（**修订：marketplace.json plugins[] 为插件主源**）：
+   - 插件主源：`plugins/marketplaces/*/.claude-plugin/marketplace.json` 的 `plugins[]` 数组（字段取 `name`/`displayName`/`description`/`category`/`tags`/`keywords`）。官方市场把全部插件汇总在该数组，逐个 `plugin.json` 扫描会漏掉大多数插件。
+   - skill 源：`skills/*/SKILL.md` 与 `plugins/marketplaces/*/skills/*/SKILL.md`（覆盖插件提供的 skill）。
+   - 文件解析无结果时，可选只读 `~/.claude.json`（configDir 父目录）的 `pluginUsage`/`skillUsage` 键做名字兜底（复合键 `name@market` 拆分）。
+   - `settings.json` 提供 enabledPlugins（复合键格式，见下）。
 3. 搜索请求解析：
    - 支持 `{"keywords":["foo","bar"]}`。
    - 兼容 `{"keywords":"foo bar"}`。
    - body 缺失或格式错误时返回未过滤第一页或空列表。
 4. 匹配：
-   - 对 `id`、`name`、`description`、`tags`、`keywords`、来源 marketplace 名称做大小写不敏感 substring 匹配。
+   - 对 `id`、`name`、`displayName`、`description`、`category`、`tags`、`keywords`、来源 marketplace 名称做大小写不敏感 substring 匹配。
    - 不引入模糊搜索依赖或外部库。
 5. 结果限制：
    - 最多返回 50 条。
    - 稳定排序：enabled 优先，然后 lowercase name，然后 id。
-6. enabled 判断：
+6. enabled 判断（**修订：支持复合键**）：
    - 读取 `settings.json.enabledPlugins`。
-   - map 中 result id 对应 boolean `true` 时返回 `enabled:true`，否则 false。
+   - 真实键格式为复合键 `plugin@market`（如 `agent-sdk-dev@claude-plugins-official`），故同时尝试 `enabled[id]` 与 `enabled[id+"@"+source]`；任一为 `true` 即 `enabled:true`。
 7. 失败行为：
    - JSON 格式错误、目录不可读、文件缺失都不能返回 HTTP 500。
    - 可以记录简短 debug/warn 日志，但 HTTP 响应仍然是兼容的空结果。
+8. 方法强制（**修订：按契约强制**）：
+   - 组织级搜索端点（connectors/plugins/skills search）仅接受 `POST`，非 `POST` 先有界 drain/close body 再返回 `405`。
+   - `/api/claude_code/discovery/team_usage`、`/notification/preferences`、`/api/claude_code/skills` 仅接受 `GET`，非 `GET` 返回 `405`。
 
 ### 约束
 
@@ -268,6 +271,11 @@ internal/proxy/handler.go ServeHTTP
 6. 端点分类必须确定、易审计；避免用一个巨大正则隐藏意图。
 7. 本功能不为 Frame、Design、遥测状态增加持久化。
 8. 保持已转发 `/v1/messages` 请求的现有 usage accounting 行为。
+9. **有界 drain（gpt-5.6 审查修订）**：所有本地 hardcoded/compat/blocked/telemetry/connector 端点的请求体 drain 必须使用有界 `drainRequestBodyLimited`（上限 `maxLocalDrainSize`=1MB），包括 `handleHardcodedEndpoint` 的共享 drain（已统一改为有界）。不得保留无界 `io.Copy`，避免 DoS（CWE-400）。POST /v1/messages 等转发请求不走此路径（走 handler.go 的 maxRequestBodySize）。超出上限可关闭连接（不保证 keep-alive）。
+10. **插件 catalog 去重与响应 id（gpt-5.6 第二/三轮）**：去重 key 用 `id@source`，跨市场同名插件视为不同插件、不互相丢弃；**响应 JSON 的 `id` 字段也用复合键 `plugin@market`**（Claude Code 2.1.206 用 pluginId 唯一定位，不读自定义 source 字段），与 `enabledPlugins` 键格式一致；无 market 名时回退纯插件 id。
+11. **两个 skill 数据源分离（gpt-5.6 第三轮）**：
+    - `/skills/search`：扫描 marketplace 完整 catalog（4 个 glob：`skills/*/SKILL.md`、`plugins/marketplaces/*/skills/*/SKILL.md`、`plugins/marketplaces/*/plugins/*/skills/*/SKILL.md`、`plugins/marketplaces/*/external_plugins/*/skills/*/SKILL.md`）。
+    - `/api/claude_code/skills`：只报**已安装** skill——读 `plugins/installed_plugins.json` 的 `plugins[plugin@market][].installPath`，扫描各 installPath 下 `skills/*/SKILL.md`，加个人 `skills/*/SKILL.md`；不返回整个 marketplace catalog，也不全部标 `health=good`。
 
 ### 实现审查重点
 
@@ -369,9 +377,9 @@ internal/proxy/handler.go ServeHTTP
 
 #### 验证
 
-- [ ] Classifier 单元测试通过。
-- [ ] blocked endpoint 集成测试证明不会调用上游。
-- [ ] `POST /v1/messages` 在测试中仍进入现有转发路径。
+- [x] Classifier 单元测试通过。（`TestClassifyForwardingEndpoint*`、`TestEndpointPolicy`）
+- [x] blocked endpoint 集成测试证明不会调用上游。（`TestServeHTTPFailClosed` 断言 `atomic` 计数器 delta=0）
+- [x] `POST /v1/messages` 在测试中仍进入现有转发路径。（`TestServeHTTPFailClosed` 正面对照 delta>=1）
 
 ### 任务 2：遥测、探测、模型与低风险本地响应
 
@@ -411,9 +419,10 @@ internal/proxy/handler.go ServeHTTP
    - 编写该 handler 前必须先阅读现有 config/provider struct 与测试；不得猜测新字段名。
    - 按 `id` 去重。
    - 按 `id` 排序。
-   - 响应：
+   - `id` 用于真实模型选择（保持不变）；`display_name` 取 `ExposedModel.Label`（去空格，空则回退 id），让 UI 显示更友好。
+   - 响应示例：
      ```json
-     {"data":[{"id":"model-id","type":"model","display_name":"model-id"}],"has_more":false}
+     {"data":[{"id":"glm-4.6","type":"model","display_name":"GLM-4.6"}],"has_more":false}
      ```
    - 配置加载失败或没有模型时，返回 `{"data":[],"has_more":false}`。
 5. 低风险 Claude Code API：
@@ -431,10 +440,10 @@ internal/proxy/handler.go ServeHTTP
 
 #### 验证
 
-- [ ] 遥测端点返回 `204`，且不解析 payload。
-- [ ] `/v1/models` 返回配置派生数据或空列表。
-- [ ] 浏览器探测路径不再转发上游。
-- [ ] 现有 hardcoded endpoints 仍然通过测试。
+- [x] 遥测端点返回 `204`，且不解析 payload。（`TestHardcodedTelemetryOTLPEndpoints`，64KB body）
+- [x] `/v1/models` 返回配置派生数据或空列表。（`TestHardcodedModelsUsesConfiguredProviders`，复用 `collectModelIDs` 遍历 `cfg.Providers[].ExposedModels`）
+- [x] 浏览器探测路径不再转发上游。（`TestStaticProbeEndpointsAreLocal`）
+- [x] 现有 hardcoded endpoints 仍然通过测试。（全包 1311 通过）
 
 ### 任务 3：插件、Skill 与 MCP Connector 兼容
 
@@ -507,9 +516,9 @@ internal/proxy/handler.go ServeHTTP
 
 #### 验证
 
-- [ ] 搜索端点返回客户端兼容的 `results`。
-- [ ] 缺失 `~/.claude` 返回空结果，不返回 `500`。
-- [ ] 现有宽泛 `/api/oauth/organizations/` fallback 不会遮蔽新增具体 handler。
+- [x] 搜索端点返回客户端兼容的 `results`。（`TestPluginSkillSearchReturnsConfigDerivedResults`）
+- [x] 缺失 `~/.claude` 返回空结果，不返回 `500`。（`TestPluginSkillSearchReturnsEmptyOnMalformedConfig`）
+- [x] 现有宽泛 `/api/oauth/organizations/` fallback 不会遮蔽新增具体 handler。（`handleOrgScopedSearch` 在 drain/switch 之前命中；回归断言证明 fallback 仍返回 `{}`）
 
 ### 任务 4：Frame Artifact 兼容
 
@@ -553,10 +562,10 @@ internal/proxy/handler.go ServeHTTP
 
 #### 验证
 
-- [ ] Frame list 是空数组。
-- [ ] Tracking 与 deploy completion 是 no-op `204`。
-- [ ] 发布尝试返回客户端可识别的 `reason:"write_gate_disabled"`。
-- [ ] 所有 Frame 路由均不上游。
+- [x] Frame list 是空数组。（`TestFrameEndpointCompatibility`）
+- [x] Tracking 与 deploy completion 是 no-op `204`。
+- [x] 发布尝试返回客户端可识别的 `reason:"write_gate_disabled"`。
+- [x] 所有 Frame 路由均不上游。（前缀 `/api/frame/` 注册为 hardcoded，guard 之前拦截）
 
 ### 任务 5：Design 与不支持的 Streaming 兼容
 
@@ -602,9 +611,9 @@ internal/proxy/handler.go ServeHTTP
 
 #### 验证
 
-- [ ] Design consent 不再转发。
-- [ ] Design MCP 返回受控 unsupported error。
-- [ ] WebSocket/audio 路径本地拦截。
+- [x] Design consent 不再转发。（`TestDesignEndpointCompatibility`：GET 200 / POST·DELETE 204 / 其它 405）
+- [x] Design MCP 返回受控 unsupported error。（`403 unsupported_local_endpoint`）
+- [x] WebSocket/audio 路径本地拦截。（`TestUnsupportedStreamingEndpoints`：`501`，无 Upgrade 响应头、不 hijack）
 
 ### 任务 6：日志与诊断
 
@@ -642,9 +651,9 @@ internal/proxy/handler.go ServeHTTP
 
 #### 验证
 
-- [ ] 拦截日志能定位 endpoint 与 reason。
-- [ ] 日志不包含 request body、authorization、cookies 或原始 query token。
-- [ ] 单个请求不会重复打印拦截日志。
+- [x] 拦截日志能定位 endpoint 与 reason。（`TestBlockedEndpointLogging` 断言含 method/path/status/reason/query_present/ua）
+- [x] 日志不包含 request body、authorization、cookies 或原始 query token。（断言 `secret`/`Bearer`/`api_key`/`a=b`/`token=secret` 等均不出现）
+- [x] 单个请求不会重复打印拦截日志。（`TestBlockedEndpointLogInjectionGuard` + `TestOrgEndpointsSingleHandlingLog`；额外对 path/UA 做控制字符 sanitize 防 CWE-117 日志注入）
 
 ### 任务 7：回归验证与端点矩阵
 
@@ -691,7 +700,94 @@ internal/proxy/handler.go ServeHTTP
 
 #### 验证
 
-- [ ] `go test ./internal/proxy` 通过。
-- [ ] `go test ./...` 通过。
-- [ ] 本规格中的端点矩阵与实现 handler 一致。
-- [ ] 测试证明未知非模型端点无法进入 provider 转发。
+- [x] `go test ./internal/proxy` 通过。（415 个测试通过）
+- [x] `go test ./...` 通过。（1311 个测试通过，16 个包；未触碰前端/admin，故跳过 npm 验证）
+- [x] 本规格中的端点矩阵与实现 handler 一致。（2.1.206 全部新增端点要么本地处理要么被拦截，仅 `POST /v1/messages`、`POST /anthropic/v1/messages` 转发）
+- [x] 测试证明未知非模型端点无法进入 provider 转发。（`TestServeHTTPFailClosed` 原子计数器断言）
+
+#### 实际验证证据
+
+```text
+# 任务 1-6 验收命令
+go test ./internal/proxy -run 'TestEndpointPolicy|TestServeHTTPFailClosed'                 # 26 passed
+go test ./internal/proxy -run 'TestClassifyForwardingEndpoint|TestServeHTTPFailClosed'     # 43 passed
+go test ./internal/proxy -run 'TestStaticProbeEndpoints|TestHardcodedTelemetry|TestHardcodedModels|TestHardcodedLowRiskClaudeCode'  # 19 passed
+CLAUDE_CONFIG_DIR=$(mktemp -d) go test ./internal/proxy -run 'TestLocalCatalog|TestPluginSkillSearch|TestMCPConnectorEndpoints'      # ok
+go test ./internal/proxy -run TestFrameEndpointCompatibility                                # 10 passed
+go test ./internal/proxy -run 'TestDesignEndpointCompatibility|TestUnsupportedStreamingEndpoints'  # 12 passed
+go test ./internal/proxy -run 'TestBlockedEndpointLogging|TestBlockedEndpointLogInjectionGuard|TestOrgEndpointsSingleHandlingLog'  # passed
+
+# 回归
+go test ./internal/proxy   # 415 passed
+go test ./...              # 1311 passed
+go vet ./...               # No issues
+```
+
+#### 实现文件清单（diff 范围限于 internal/proxy/）
+
+```text
+M internal/proxy/handler.go              # ServeHTTP 插入 fail-closed guard
+M internal/proxy/hardcoded.go            # 注册表 + 新端点 handlers + handleModels
+M internal/proxy/hardcoded_test.go       # 任务 2 测试
++ internal/proxy/endpoint_policy.go      # classifier
++ internal/proxy/endpoint_policy_test.go # classifier + fail-closed 集成测试
++ internal/proxy/blocked.go              # handleBlockedEndpoint + 安全日志 + sanitize
++ internal/proxy/blocked_test.go         # 拦截响应体 + 日志安全 + 注入防护
++ internal/proxy/helpers.go              # writeNoContent / methodAllowed / encodeJSONBody
++ internal/proxy/local_catalog.go        # 本地 catalog 加载 + 搜索 + org handler
++ internal/proxy/local_catalog_test.go   # catalog / 搜索 / connector / skills 测试
++ internal/proxy/frame.go                # Frame artifact handlers
++ internal/proxy/frame_test.go           # Frame 契约测试
++ internal/proxy/design_streaming.go     # Design consent/mcp + ws 拦截
++ internal/proxy/design_streaming_test.go# Design/ws 测试
+```
+
+未来 Claude Code 版本更新端点矩阵的提取命令：
+
+```bash
+rg -o '"/(api|v1|mcp-registry|anthropic)[^"]*"' /path/to/claude_code_src_<VERSION>.js | sort -u
+```
+
+## 附录：gpt-5.6 审查反馈修复（2026-07-10）
+
+基于 gpt-5.6 对首版实现的审查，结合真实 `~/.claude` 配置核对，修复了以下 3 类问题：
+
+1. **有界 drain（中等 / DoS）**：新增 `drainRequestBodyLimited(r, maxLocalDrainSize)`（1MB 上限），
+   用于 `handleBlockedEndpoint`、`handleTelemetry`、`handleMCPConnectors` 与组织搜索非 POST 分支。
+   telemetry 从 post-drain switch 移到 pre-drain 段，避免走共享无界 `drainRequestBody`。
+   测试：`TestBlockedEndpointLargeBodyBoundedDrain`、`TestHardcodedTelemetryOTLPEndpoints/POST_with_oversized_body`。
+2. **marketplace.json plugins[] 解析（中等 / 数据不足）**：`loadPlugins` 改为解析每个市场的
+   `marketplace.json` 的 `plugins[]` 数组（字段 `name`/`displayName`/`description`/`category`/`tags`/`keywords`），
+   覆盖官方市场 255+ 插件；`source`=marketplace name 与 `enabledPlugins` 复合键后缀一致。
+   enabled 查找支持复合键 `plugin@market`（`isPluginEnabled`）。skill glob 扩展到
+   `plugins/marketplaces/*/skills/*/SKILL.md`（插件提供的 skill）。文件解析无结果时用
+   `~/.claude.json` 的 `pluginUsage`/`skillUsage` 键做名字兜底。
+   测试：`TestLocalCatalogLoadsMarketplacePluginJSON`、`TestPluginProvidedSkillsLoaded`、`TestClaudeJSONFallbackWhenNoFiles`。
+3. **方法强制（低-中 / 契约一致性）**：组织级搜索端点（connectors/plugins/skills search）强制 POST-only
+   （非 POST 有界 drain + 405）；`team_usage`/`notification/preferences`/`/api/claude_code/skills` 强制 GET-only（405）。
+   测试：`TestOrgScopedSearchRejectsNonPost`、`TestHardcodedLowRiskClaudeCodeEndpoints` 的 405 子测试。
+
+修复后 `go test ./internal/proxy` 448 通过，`go test ./...` 1344 通过，`go vet ./...` 无问题。
+
+## 附录：gpt-5.6 第二轮审查修复（2026-07-10）
+
+第二轮审查发现共享 `drainRequestBody`（`handleHardcodedEndpoint` 第 144 行）仍是无界 `io.Copy`，部分新增本地端点（frame/design/ws/models 非 GET/favicon 带 body 等）在到达具体 handler 前会先走它。修复：
+
+1. **共享 drain 改为有界**：`handleHardcodedEndpoint` 的共享 drain 统一改为 `drainRequestBodyLimited(r, maxLocalDrainSize)`；移除无任何调用者的无界 `drainRequestBody` 死代码。POST /v1/messages 不受影响（不走此路径）。测试：`TestLocalEndpointsBoundedDrainOnOversizedBody`（frame track/deploy、design mcp/consent、ws voice_stream、favicon、models 非 GET、feedback、bootstrap 共 9 条，超 2MB body 全部快速返回且状态符合契约）。
+2. **插件 catalog 去重用复合键**：`loadPlugins` 内部 `seen` key 改为 `id@source`，跨市场同名插件不再互相丢弃；返回 JSON 的 `id` 字段仍保持插件 id。测试：`TestPluginCatalogDedupByCompoundKey`。
+
+验证：`go test ./internal/proxy -race` 460 通过；`go test ./... -count=1` 1356 通过；`go vet ./...` 无问题；`display_name` 改用 `ExposedModel.Label`（空回退 id）。
+
+## 附录：gpt-5.6 第三轮审查修复（2026-07-10）
+
+第三轮审查发现 skill 扫描不完整、有界 drain 测试无法防回归、跨市场同名插件身份歧义。修复：
+
+1. **skill 目录完整扫描 + 两个数据源分离**：`loadSkills` 扩展到 4 个 glob（市场级 + `plugins/<p>/skills/` + `external_plugins/<p>/skills/`），覆盖真实目录的 56 市场级 + 42 插件内嵌 + 7 external 共 105 个 skill。新增 `loadInstalledSkills`：读 `plugins/installed_plugins.json` 的 `installPath`，只扫描已安装插件的 cache 目录 `skills/*/SKILL.md` + 个人 `skills/*/SKILL.md`。`/skills/search` 用 `loadSkills`（完整 marketplace catalog）；`/api/claude_code/skills` 改用 `loadInstalledSkills`（仅已安装，不再返回整个 catalog 全标 good）。测试：fixture 区分 marketplace-only skill（plugin-skill，不安装）与 installed skill（installed-skill，经 installed_plugins.json 指向 cache），断言前者不在 skills 健康、后者在。
+2. **有界 drain 测试改为计数断言**：新增 `syntheticCountReader`（记录读取字节数 + Close），`TestDrainRequestBodyLimitedStopsAtCap` 断言 `drainRequestBodyLimited` 恰好读取 `maxLocalDrainSize` 字节、调用 Close、不超读。即使底层提供远超上限数据也不无界读取——若改回无界 `io.Copy`，`body.read` 会等于 total 而非上限，测试失败。
+3. **插件响应 id 用复合键 `plugin@market`**：`loadPlugins` 的 `item.ID` 改为 `name@market`（无 market 时回退纯 name），客户端可唯一定位跨市场同名插件；与 `enabledPlugins` 键格式一致，`isPluginEnabled(enabled, item)` 的 `enabled[item.ID]` 直接命中。`.claude.json` 兜底同步用复合 id。
+
+验证：`go test ./internal/proxy -race` 461 通过；`go test ./... -count=1` 1357 通过；`go vet ./...` 无问题；`gofmt -d` 无输出。
+
+**维护补强（gpt-5.6 非阻塞备注）**：插件内嵌/cache skill 的 `source` 改为 `plugin@market`（含市场名），使跨市场同名插件提供的同名 skill 的 dedup key（`id@source`）唯一、不被合并；市场级 skill 的 source 仍为市场名。测试：`TestSkillDedupDisambiguatesSameNameAcrossMarkets`。另修正 `TestPluginCatalogDedupByCompoundKey` 过期注释。
+
+**marketplace 名归一化（gpt-5.6 第三轮 follow-up，中等）**：`buildMarketNameMap` 在 `loadSkills`/`loadInstalledSkills` 开始时构建一次"目录名 → 规范 marketplace name"映射（读 `marketplaces/<dir>/.claude-plugin/marketplace.json` 的 `name`，缺失回退目录名）。`skillPathSource`/`canonicalMarketName` 用规范名构造 source，避免临时目录（如 `temp_1772758330775`）与规范目录（`claude-plugins-official`）指向同一 marketplace 时产生重复 skill（实测 14 个重复）。测试：`TestSkillDedupNormalizesTempMarketplaceDir`（两目录 manifest 同名 + 同 plugin/skill → 只保留一条，source 为 `plugin@claude-plugins-official`）。验证：`go test ./internal/proxy -race` 463；`go test ./... -count=1` 1359。

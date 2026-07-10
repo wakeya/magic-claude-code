@@ -5,7 +5,7 @@ Proxy entry: `internal/proxy/handler.go`, `internal/proxy/hardcoded.go`
 Reference sources: Claude Code extracted JS `2.1.196` and `2.1.206`, Docker `mcc` logs, local Claude config/plugins/skills  
 Stack: Go 1.26 stdlib proxy, existing MCC provider/config packages  
 Last updated: 2026-07-10  
-Progress: 0 / 7 planned
+Progress: 7 / 7 validated
 
 ## Overall Analysis (Source Analysis)
 
@@ -158,13 +158,13 @@ Implementation must treat these files as optional best-effort inputs. MCC runs i
 
 | Order | Status | Task | Output | Verification |
 | --- | --- | --- | --- | --- |
-| 1 | Planned | Endpoint policy and fail-closed guard | `endpoint_policy.go`, handler guard, policy tests | Unknown endpoints blocked; only message endpoints forward |
-| 2 | Planned | Local responders for telemetry, probes, models, and low-risk Claude Code APIs | hardcoded handlers and tests | Local 2xx/204 responses; no upstream call |
-| 3 | Planned | Plugin, skill, and MCP connector compatibility | local catalog loader/search handlers | Search schema matches client parser |
-| 4 | Planned | Frame artifact compatibility | frame handlers and tests | Empty list, 204 tracking, controlled publish denial |
-| 5 | Planned | Design and unsupported streaming compatibility | design/ws handlers and tests | Consent works; design MCP/voice stream blocked cleanly |
-| 6 | Planned | Logging and diagnostics | safe block logs without secrets | Unknown path produces one useful log line |
-| 7 | Planned | Regression verification and source-diff script | tests, optional script/docs update | `go test ./...`; endpoint matrix review |
+| 1 | ✅ Done | Endpoint policy and fail-closed guard | `endpoint_policy.go`, `blocked.go`, handler guard | `TestClassifyForwardingEndpoint`/`TestEndpointPolicy`/`TestServeHTTPFailClosed` pass; blocked-endpoint upstream counter stays 0 |
+| 2 | ✅ Done | Local responders for telemetry, probes, models, and low-risk Claude Code APIs | hardcoded handlers, `handleModels` (config-derived) | `TestStaticProbeEndpoints`/`TestHardcodedTelemetry`/`TestHardcodedModels`/`TestHardcodedLowRiskClaudeCode` pass |
+| 3 | ✅ Done | Plugin, skill, and MCP connector compatibility | `local_catalog.go`, org-scoped search handlers | `TestLocalCatalog`/`TestPluginSkillSearch`/`TestMCPConnectorEndpoints` pass; specific handlers precede broad fallback |
+| 4 | ✅ Done | Frame artifact compatibility | `frame.go` | `TestFrameEndpointCompatibility` passes |
+| 5 | ✅ Done | Design and unsupported streaming compatibility | `design_streaming.go` | `TestDesignEndpointCompatibility`/`TestUnsupportedStreamingEndpoints` pass |
+| 6 | ✅ Done | Logging and diagnostics | `logBlockedEndpoint` (with control-char sanitization) | `TestBlockedEndpointLogging`/`TestBlockedEndpointLogInjectionGuard`/`TestOrgEndpointsSingleHandlingLog` pass |
+| 7 | ✅ Done | Regression verification and endpoint matrix | full test suite, no frontend change | `go test ./internal/proxy` 415 pass; `go test ./...` 1311 pass |
 
 ## Requirements
 
@@ -236,26 +236,29 @@ Plugin/skill search must use a small internal package or helper file under `inte
    - Use `CLAUDE_CONFIG_DIR` when set.
    - Else use `os.UserHomeDir()` + `.claude`.
    - If no home directory is available, return an empty catalog.
-2. Candidate files:
-   - `plugins/marketplaces/*/.claude-plugin/marketplace.json`
-   - `plugins/marketplaces/*/.claude-plugin/plugin.json`
-   - `skills/*/SKILL.md`
-   - Optional read-only metadata from `.claude.json` and `settings.json`.
+2. Candidate files (**revised: marketplace.json plugins[] is the primary plugin source**):
+   - Plugin primary source: the `plugins[]` array of each `plugins/marketplaces/*/.claude-plugin/marketplace.json` (fields `name`/`displayName`/`description`/`category`/`tags`/`keywords`). The official marketplace aggregates all plugins in this array; scanning individual `plugin.json` files misses most.
+   - Skill sources: `skills/*/SKILL.md` and `plugins/marketplaces/*/skills/*/SKILL.md` (covers plugin-provided skills).
+   - When file parsing yields nothing, optionally fall back to `~/.claude.json` (parent of configDir) `pluginUsage`/`skillUsage` keys for name-only entries (compound key `name@market` split).
+   - `settings.json` provides enabledPlugins (compound-key format, see below).
 3. Search request parsing:
    - Accept `{"keywords":["foo","bar"]}`.
    - Also tolerate `{"keywords":"foo bar"}` and missing/invalid bodies by returning the unfiltered first page or empty list.
 4. Matching:
-   - Case-insensitive substring match against `id`, `name`, `description`, `tags`, `keywords`, and source marketplace name.
+   - Case-insensitive substring match against `id`, `name`, `displayName`, `description`, `category`, `tags`, `keywords`, and source marketplace name.
    - No fuzzy dependency or external library.
 5. Result limits:
    - Return at most 50 results.
    - Stable sort by enabled first, then lowercase name, then id.
-6. Enabled detection:
+6. Enabled detection (**revised: compound-key support**):
    - Read `settings.json.enabledPlugins`.
-   - If the map contains the result id with boolean `true`, set `enabled:true`; otherwise false.
+   - Real keys are compound `plugin@market` (e.g. `agent-sdk-dev@claude-plugins-official`), so try both `enabled[id]` and `enabled[id+"@"+source]`; either `true` yields `enabled:true`.
 7. Failure behavior:
    - Malformed JSON, unreadable directories, or missing files must not return HTTP 500.
    - Log a concise debug/warn line if useful, but still return an empty compatible response.
+8. Method enforcement (**revised: enforce per contract**):
+   - Organization search endpoints (connectors/plugins/skills search) accept `POST` only; non-POST bounded-drains/closes the body then returns `405`.
+   - `/api/claude_code/discovery/team_usage`, `/notification/preferences`, `/api/claude_code/skills` accept `GET` only; non-GET returns `405`.
 
 ### Constraints
 
@@ -267,6 +270,11 @@ Plugin/skill search must use a small internal package or helper file under `inte
 6. Keep endpoint classification deterministic and easy to audit; avoid one large regex that hides intent.
 7. Do not add persistence for Frame, Design, or telemetry state in this feature.
 8. Maintain existing usage accounting behavior for forwarded `/v1/messages` requests.
+9. **Bounded drain (gpt-5.6 review revision)**: request-body drain for all local hardcoded/compat/blocked/telemetry/connector endpoints must use bounded `drainRequestBodyLimited` (cap `maxLocalDrainSize`=1MB), including the shared drain in `handleHardcodedEndpoint` (now uniformly bounded). No unbounded `io.Copy` remains, to avoid DoS (CWE-400). Forwarded requests like POST /v1/messages do not use this path (they use handler.go's maxRequestBodySize). Exceeding the cap may close the connection (keep-alive not guaranteed).
+10. **Plugin catalog dedup and response id (gpt-5.6 round 2/3)**: dedup key uses `id@source` so same-named plugins across different marketplaces are treated as distinct and not dropped; **the returned JSON `id` field also uses the compound key `plugin@market`** (Claude Code 2.1.206 uses pluginId as the unique locator and does not read a custom source field), matching the `enabledPlugins` key format; falls back to plain plugin id when no market name.
+11. **Two skill data sources separated (gpt-5.6 round 3)**:
+    - `/skills/search`: scans the full marketplace catalog (4 globs: `skills/*/SKILL.md`, `plugins/marketplaces/*/skills/*/SKILL.md`, `plugins/marketplaces/*/plugins/*/skills/*/SKILL.md`, `plugins/marketplaces/*/external_plugins/*/skills/*/SKILL.md`).
+    - `/api/claude_code/skills`: reports **installed** skills only — reads `plugins/installed_plugins.json` `plugins[plugin@market][].installPath`, scans each installPath's `skills/*/SKILL.md`, plus personal `skills/*/SKILL.md`; does not return the whole marketplace catalog or mark all as `health=good`.
 
 ### Implementation Review Hotspots
 
@@ -368,9 +376,9 @@ These points are mandatory review gates for the GLM-5.2 implementation:
 
 #### Verification
 
-- [ ] Classifier unit tests pass.
-- [ ] Blocked endpoint integration test proves upstream is not called.
-- [ ] `POST /v1/messages` still reaches the existing forwarding path in tests.
+- [x] Classifier unit tests pass. (`TestClassifyForwardingEndpoint*`, `TestEndpointPolicy`)
+- [x] Blocked endpoint integration test proves upstream is not called. (`TestServeHTTPFailClosed` asserts atomic counter delta=0)
+- [x] `POST /v1/messages` still reaches the existing forwarding path in tests. (positive control delta>=1)
 
 ### Task 2: Telemetry, Probe, Model, and Low-Risk Local Responders
 
@@ -410,9 +418,10 @@ These points are mandatory review gates for the GLM-5.2 implementation:
    - Before writing this handler, inspect the existing config/provider structs and tests; do not guess new field names.
    - De-duplicate by `id`.
    - Sort by `id`.
-   - Response:
+   - `id` is the model selection key (unchanged); `display_name` uses `ExposedModel.Label` (trimmed, falls back to id when empty) for friendlier UI display.
+   - Response example:
      ```json
-     {"data":[{"id":"model-id","type":"model","display_name":"model-id"}],"has_more":false}
+     {"data":[{"id":"glm-4.6","type":"model","display_name":"GLM-4.6"}],"has_more":false}
      ```
    - If config load fails or no models exist, return `{"data":[],"has_more":false}`.
 5. Low-risk Claude Code APIs:
@@ -430,10 +439,10 @@ These points are mandatory review gates for the GLM-5.2 implementation:
 
 #### Verification
 
-- [ ] Telemetry endpoints return `204` and do not parse payloads.
-- [ ] `/v1/models` returns config-derived data or an empty list.
-- [ ] Browser probes no longer forward to upstream.
-- [ ] Existing hardcoded endpoints remain green.
+- [x] Telemetry endpoints return `204` and do not parse payloads. (`TestHardcodedTelemetryOTLPEndpoints`, 64KB body)
+- [x] `/v1/models` returns config-derived data or an empty list. (`TestHardcodedModelsUsesConfiguredProviders`; `collectModelIDs` reuses `cfg.Providers[].ExposedModels`)
+- [x] Browser probes no longer forward to upstream. (`TestStaticProbeEndpointsAreLocal`)
+- [x] Existing hardcoded endpoints remain green. (full suite 1311 pass)
 
 ### Task 3: Plugin, Skill, and MCP Connector Compatibility
 
@@ -506,9 +515,9 @@ These points are mandatory review gates for the GLM-5.2 implementation:
 
 #### Verification
 
-- [ ] Search endpoints return client-compatible `results`.
-- [ ] Missing `~/.claude` returns empty results, not `500`.
-- [ ] Existing broad `/api/oauth/organizations/` fallback does not mask the new specific handlers.
+- [x] Search endpoints return client-compatible `results`. (`TestPluginSkillSearchReturnsConfigDerivedResults`)
+- [x] Missing `~/.claude` returns empty results, not `500`. (`TestPluginSkillSearchReturnsEmptyOnMalformedConfig`)
+- [x] Existing broad `/api/oauth/organizations/` fallback does not mask the new specific handlers. (`handleOrgScopedSearch` runs before drain/switch; regression asserts fallback still returns `{}`)
 
 ### Task 4: Frame Artifact Compatibility
 
@@ -552,10 +561,10 @@ These points are mandatory review gates for the GLM-5.2 implementation:
 
 #### Verification
 
-- [ ] Frame list is an empty array.
-- [ ] Tracking and deploy completion are no-op `204`.
-- [ ] Publish attempts fail with `reason:"write_gate_disabled"` recognized by the client.
-- [ ] No Frame route forwards upstream.
+- [x] Frame list is an empty array. (`TestFrameEndpointCompatibility`)
+- [x] Tracking and deploy completion are no-op `204`.
+- [x] Publish attempts fail with `reason:"write_gate_disabled"` recognized by the client.
+- [x] No Frame route forwards upstream. (prefix `/api/frame/` registered as hardcoded, intercepted before the guard)
 
 ### Task 5: Design and Unsupported Streaming Compatibility
 
@@ -601,9 +610,9 @@ These points are mandatory review gates for the GLM-5.2 implementation:
 
 #### Verification
 
-- [ ] Design consent no longer forwards.
-- [ ] Design MCP returns a controlled unsupported error.
-- [ ] WebSocket/audio path is blocked locally.
+- [x] Design consent no longer forwards. (`TestDesignEndpointCompatibility`: GET 200 / POST·DELETE 204 / other 405)
+- [x] Design MCP returns a controlled unsupported error. (`403 unsupported_local_endpoint`)
+- [x] WebSocket/audio path is blocked locally. (`TestUnsupportedStreamingEndpoints`: `501`, no Upgrade header, no hijack)
 
 ### Task 6: Logging and Diagnostics
 
@@ -641,9 +650,9 @@ These points are mandatory review gates for the GLM-5.2 implementation:
 
 #### Verification
 
-- [ ] Block logs identify the endpoint and reason.
-- [ ] Logs do not contain request body, authorization, cookies, or raw query tokens.
-- [ ] Logs are not duplicated for a single request.
+- [x] Block logs identify the endpoint and reason. (`TestBlockedEndpointLogging` asserts method/path/status/reason/query_present/ua present)
+- [x] Logs do not contain request body, authorization, cookies, or raw query tokens. (asserts `secret`/`Bearer`/`api_key`/`a=b`/`token=secret` absent)
+- [x] Logs are not duplicated for a single request. (`TestBlockedEndpointLogInjectionGuard` + `TestOrgEndpointsSingleHandlingLog`; path/UA control chars sanitized against CWE-117 log injection)
 
 ### Task 7: Regression Verification and Endpoint Matrix
 
@@ -690,7 +699,83 @@ These points are mandatory review gates for the GLM-5.2 implementation:
 
 #### Verification
 
-- [ ] `go test ./internal/proxy` passes.
-- [ ] `go test ./...` passes.
-- [ ] Endpoint matrix in this spec matches implemented handlers.
-- [ ] No unknown non-model endpoint can reach provider forwarding in tests.
+- [x] `go test ./internal/proxy` passes. (415 tests pass)
+- [x] `go test ./...` passes. (1311 tests pass across 16 packages; frontend/admin untouched, so npm verification skipped)
+- [x] Endpoint matrix in this spec matches implemented handlers. (every 2.1.206 endpoint is either handled locally or blocked; only `POST /v1/messages` and `POST /anthropic/v1/messages` forward)
+- [x] No unknown non-model endpoint can reach provider forwarding in tests. (`TestServeHTTPFailClosed` atomic-counter assertion)
+
+#### Actual verification evidence
+
+```text
+# Task 1-6 acceptance commands
+go test ./internal/proxy -run 'TestEndpointPolicy|TestServeHTTPFailClosed'                 # 26 passed
+go test ./internal/proxy -run 'TestClassifyForwardingEndpoint|TestServeHTTPFailClosed'     # 43 passed
+go test ./internal/proxy -run 'TestStaticProbeEndpoints|TestHardcodedTelemetry|TestHardcodedModels|TestHardcodedLowRiskClaudeCode'  # 19 passed
+CLAUDE_CONFIG_DIR=$(mktemp -d) go test ./internal/proxy -run 'TestLocalCatalog|TestPluginSkillSearch|TestMCPConnectorEndpoints'      # ok
+go test ./internal/proxy -run TestFrameEndpointCompatibility                                # 10 passed
+go test ./internal/proxy -run 'TestDesignEndpointCompatibility|TestUnsupportedStreamingEndpoints'  # 12 passed
+go test ./internal/proxy -run 'TestBlockedEndpointLogging|TestBlockedEndpointLogInjectionGuard|TestOrgEndpointsSingleHandlingLog'  # passed
+
+# Regression
+go test ./internal/proxy   # 415 passed
+go test ./...              # 1311 passed
+go vet ./...               # No issues
+```
+
+#### Implementation file inventory (diff scoped to internal/proxy/)
+
+```text
+M internal/proxy/handler.go              # ServeHTTP inserts fail-closed guard
+M internal/proxy/hardcoded.go            # registry + new endpoint handlers + handleModels
+M internal/proxy/hardcoded_test.go       # task 2 tests
++ internal/proxy/endpoint_policy.go      # classifier
++ internal/proxy/endpoint_policy_test.go # classifier + fail-closed integration tests
++ internal/proxy/blocked.go              # handleBlockedEndpoint + safe logging + sanitization
++ internal/proxy/blocked_test.go         # blocked response body + log safety + injection guard
++ internal/proxy/helpers.go              # writeNoContent / methodAllowed / encodeJSONBody
++ internal/proxy/local_catalog.go        # local catalog load + search + org handlers
++ internal/proxy/local_catalog_test.go   # catalog / search / connector / skills tests
++ internal/proxy/frame.go                # Frame artifact handlers
++ internal/proxy/frame_test.go           # Frame contract tests
++ internal/proxy/design_streaming.go     # Design consent/mcp + ws blocking
++ internal/proxy/design_streaming_test.go# Design/ws tests
+```
+
+Endpoint-matrix extraction command for future Claude Code updates:
+
+```bash
+rg -o '"/(api|v1|mcp-registry|anthropic)[^"]*"' /path/to/claude_code_src_<VERSION>.js | sort -u
+```
+
+## Appendix: gpt-5.6 Review Fixes (2026-07-10)
+
+Based on gpt-5.6's review of the first implementation and cross-checking the real `~/.claude` config, three issue classes were fixed:
+
+1. **Bounded drain (medium / DoS)**: added `drainRequestBodyLimited(r, maxLocalDrainSize)` (1MB cap), used by `handleBlockedEndpoint`, `handleTelemetry`, `handleMCPConnectors`, and the org-search non-POST branch. Telemetry moved from the post-drain switch to the pre-drain section so it no longer hits the shared unbounded `drainRequestBody`. Tests: `TestBlockedEndpointLargeBodyBoundedDrain`, `TestHardcodedTelemetryOTLPEndpoints/POST_with_oversized_body`.
+2. **marketplace.json plugins[] parsing (medium / insufficient data)**: `loadPlugins` now parses each marketplace's `marketplace.json` `plugins[]` array (fields `name`/`displayName`/`description`/`category`/`tags`/`keywords`), covering the official marketplace's 255+ plugins; `source` = marketplace name matches the `enabledPlugins` compound-key suffix. Enabled lookup supports compound key `plugin@market` (`isPluginEnabled`). Skill glob expanded to `plugins/marketplaces/*/skills/*/SKILL.md` (plugin-provided skills). When file parsing yields nothing, `~/.claude.json` `pluginUsage`/`skillUsage` keys are used as a name-only fallback. Tests: `TestLocalCatalogLoadsMarketplacePluginJSON`, `TestPluginProvidedSkillsLoaded`, `TestClaudeJSONFallbackWhenNoFiles`.
+3. **Method enforcement (low-medium / contract consistency)**: organization search endpoints (connectors/plugins/skills search) are now POST-only (non-POST bounded-drains + 405); `team_usage`/`notification/preferences`/`/api/claude_code/skills` are GET-only (405). Tests: `TestOrgScopedSearchRejectsNonPost`, the 405 subtests in `TestHardcodedLowRiskClaudeCodeEndpoints`.
+
+After fixes: `go test ./internal/proxy` 448 pass, `go test ./...` 1344 pass, `go vet ./...` clean.
+
+## Appendix: gpt-5.6 Round-2 Review Fixes (2026-07-10)
+
+Round 2 found the shared `drainRequestBody` (`handleHardcodedEndpoint` line 144) was still an unbounded `io.Copy`; several new local endpoints (frame/design/ws, models non-GET, favicon with body, etc.) hit it before reaching their handler. Fixes:
+
+1. **Shared drain → bounded**: the shared drain in `handleHardcodedEndpoint` is now uniformly `drainRequestBodyLimited(r, maxLocalDrainSize)`; the unbounded `drainRequestBody` (no remaining callers) was removed as dead code. POST /v1/messages is unaffected (does not use this path). Test: `TestLocalEndpointsBoundedDrainOnOversizedBody` (9 cases: frame track/deploy, design mcp/consent, ws voice_stream, favicon, models non-GET, feedback, bootstrap — all return within contract status with a >2MB body).
+2. **Plugin catalog dedup by compound key**: `loadPlugins` internal `seen` key is now `id@source`, so same-named plugins across marketplaces are no longer dropped; the returned JSON `id` field still holds the plugin id. Test: `TestPluginCatalogDedupByCompoundKey`.
+
+Verification: `go test ./internal/proxy -race` 460 pass; `go test ./... -count=1` 1356 pass; `go vet ./...` clean; `display_name` now uses `ExposedModel.Label` (falls back to id).
+
+## Appendix: gpt-5.6 Round-3 Review Fixes (2026-07-10)
+
+Round 3 found incomplete skill scanning, a bounded-drain test that could not prevent regressions, and cross-marketplace same-name plugin identity ambiguity. Fixes:
+
+1. **Complete skill scanning + two data sources separated**: `loadSkills` expanded to 4 globs (market-level + `plugins/<p>/skills/` + `external_plugins/<p>/skills/`), covering the real directory's 56 market-level + 42 plugin-internal + 7 external skills. New `loadInstalledSkills` reads `plugins/installed_plugins.json` installPaths, scanning only installed plugins' cache `skills/*/SKILL.md` + personal `skills/*/SKILL.md`. `/skills/search` uses `loadSkills` (full marketplace catalog); `/api/claude_code/skills` now uses `loadInstalledSkills` (installed only, no longer returns the whole catalog marked good). Tests: the fixture separates a marketplace-only skill (plugin-skill, not installed) from an installed skill (installed-skill, via installed_plugins.json → cache), asserting the former is absent from skills health and the latter present.
+2. **Bounded-drain test switched to counting assertions**: added `syntheticCountReader` (records bytes read + Close); `TestDrainRequestBodyLimitedStopsAtCap` asserts `drainRequestBodyLimited` reads exactly `maxLocalDrainSize` bytes, calls Close, and does not over-read. Even with far-more-than-cap data it stays bounded — reverting to unbounded `io.Copy` would make `body.read` equal `total` (not the cap), failing the test.
+3. **Plugin response id uses compound key `plugin@market`**: `loadPlugins` sets `item.ID = name@market` (falls back to plain name without a market), so the client can uniquely locate cross-marketplace same-name plugins; matches the `enabledPlugins` key format, so `isPluginEnabled(enabled, item)` hits via `enabled[item.ID]` directly. The `.claude.json` fallback uses the compound id too.
+
+Verification: `go test ./internal/proxy -race` 461 pass; `go test ./... -count=1` 1357 pass; `go vet ./...` clean; `gofmt -d` no output.
+
+**Maintenance hardening (gpt-5.6 non-blocking note)**: plugin-internal/cache skill `source` is now `plugin@market` (includes the marketplace), so same-named skills from same-named plugins across marketplaces get a unique dedup key (`id@source`) and are not merged; market-level skills keep source = market name. Test: `TestSkillDedupDisambiguatesSameNameAcrossMarkets`. Also fixed the stale comment in `TestPluginCatalogDedupByCompoundKey`.
+
+**Marketplace name normalization (gpt-5.6 round-3 follow-up, medium)**: `buildMarketNameMap` builds a "dir name -> canonical marketplace name" map once at the start of `loadSkills`/`loadInstalledSkills` (reading `marketplaces/<dir>/.claude-plugin/marketplace.json`'s `name`, falling back to the dir name). `skillPathSource`/`canonicalMarketName` build the source from the canonical name, preventing duplicate skills when a temp dir (e.g. `temp_1772758330775`) and the canonical dir (`claude-plugins-official`) point to the same marketplace (14 duplicates observed on the real config). Test: `TestSkillDedupNormalizesTempMarketplaceDir` (two dirs with the same manifest name + same plugin/skill -> one entry kept, source = `plugin@claude-plugins-official`). Verification: `go test ./internal/proxy -race` 463; `go test ./... -count=1` 1359.
