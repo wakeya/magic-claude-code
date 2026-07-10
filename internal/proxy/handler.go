@@ -61,6 +61,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Fail-closed guard：只有显式模型推理端点（POST /v1/messages、POST /anthropic/v1/messages）
+	// 允许进入下方转发流程。所有未识别的非模型端点一律本地拦截，绝不转发给配置的上游 provider。
+	// 必须在 handleHardcodedEndpoint 之后、加载配置/provider 解析/请求转换之前。
+	decision := classifyForwardingEndpoint(r.Method, r.URL.Path)
+	switch decision.action {
+	case endpointActionForwardModel:
+		// 继续现有转发流程
+	case endpointActionMethodNotAllowed:
+		h.handleBlockedEndpoint(w, r, http.StatusMethodNotAllowed, decision.reason)
+		return
+	default:
+		h.handleBlockedEndpoint(w, r, http.StatusNotFound, decision.reason)
+		return
+	}
+
 	// 加载配置
 	cfg, err := h.configStore.Load()
 	if err != nil {

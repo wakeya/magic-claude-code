@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 )
 
@@ -42,6 +43,24 @@ func isHardcodedEndpoint(path string) bool {
 		"/api/auth/trusted_devices",
 		"/api/oauth/file_upload",
 		"/v1/messages/count_tokens",
+		// 浏览器/静态探测：本地 404 空 body，不转发上游
+		"/favicon.ico",
+		"/robots.txt",
+		"/apple-touch-icon.png",
+		"/apple-touch-icon-precomposed.png",
+		// OTLP 遥测：POST 本地 204，非 POST 405
+		"/v1/metrics",
+		"/v1/logs",
+		"/v1/traces",
+		// 模型发现：从 MCC 配置本地派生，不转发上游
+		"/v1/models",
+		// 低风险 Claude Code 控制面端点
+		"/api/claude_code/discovery/team_usage",
+		"/api/claude_code/notification/preferences",
+		"/api/claude_code/skills",
+		// Claude Design consent / MCP bridge
+		"/v1/design/consent",
+		"/v1/design/mcp",
 	}
 
 	for _, match := range exactMatches {
@@ -61,6 +80,8 @@ func isHardcodedEndpoint(path string) bool {
 		"/v1/session_ingress/session/",
 		"/api/oauth/organizations/",
 		"/v1/code/sessions/",
+		"/api/frame/",
+		"/api/ws/",
 	}
 
 	for _, prefix := range prefixMatches {
@@ -71,6 +92,11 @@ func isHardcodedEndpoint(path string) bool {
 
 	// Desktop 更新探测：/api/desktop/**/update
 	if strings.HasPrefix(path, "/api/desktop/") && strings.HasSuffix(path, "/update") {
+		return true
+	}
+
+	// Claude Code onboarding：/api/organizations/{orgUUID}/claude_code/onboarding（与 /api/oauth/organizations/ 不同前缀）
+	if strings.HasPrefix(path, "/api/organizations/") && strings.HasSuffix(path, "/claude_code/onboarding") {
 		return true
 	}
 
@@ -92,6 +118,19 @@ func (h *Handler) handleHardcodedEndpoint(w http.ResponseWriter, r *http.Request
 		return true
 	}
 
+	// 组织级搜索端点（plugins/skills/mcp connectors search）需要读取请求体做关键字搜索，
+	// 必须先于宽泛 /api/oauth/organizations/ fallback 与 drain 命中，否则客户端只拿到 {}。
+	if h.handleOrgScopedSearch(w, r) {
+		return true
+	}
+
+	// OTLP 遥测端点：POST 204 / 非 POST 405。body 可能很大，用有界 drain（避免无界 io.Copy DoS），
+	// 必须在共享 drain 之前处理，否则会走 hardcoded.go:137 的无界 drain。
+	if isTelemetryPath(path) {
+		h.handleTelemetry(w, r)
+		return true
+	}
+
 	// Desktop 更新探测：方法白名单检查在 drain 之前，避免对非 HEAD/GET 请求 drain body
 	if strings.HasPrefix(path, "/api/desktop/") && strings.HasSuffix(path, "/update") {
 		if r.Method != http.MethodHead && r.Method != http.MethodGet {
@@ -101,8 +140,9 @@ func (h *Handler) handleHardcodedEndpoint(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	// 消耗请求体以确保连接可复用
-	drainRequestBody(r)
+	// 有界消耗请求体（最多 maxLocalDrainSize），确保小 body 连接可复用、大 body 不被无界 drain。
+	// 本地 hardcoded/compat 端点都是小 JSON 控制面请求；POST /v1/messages 不走此路径（走 handler.go 的 maxRequestBodySize）。
+	drainRequestBodyLimited(r, maxLocalDrainSize)
 
 	log.Printf("[Hardcoded] Handling %s %s", r.Method, path)
 
@@ -198,23 +238,93 @@ func (h *Handler) handleHardcodedEndpoint(w http.ResponseWriter, r *http.Request
 		h.handleRemoteSettings(w)
 		return true
 
+	// 浏览器/静态探测 - 本地 404 空 body
+	case path == "/favicon.ico" ||
+		path == "/robots.txt" ||
+		path == "/apple-touch-icon.png" ||
+		path == "/apple-touch-icon-precomposed.png":
+		w.WriteHeader(http.StatusNotFound)
+		return true
+
+	// 模型发现 - 从 MCC 配置本地派生，GET only
+	case path == "/v1/models":
+		if !methodAllowed(w, r, http.MethodGet) {
+			return true
+		}
+		h.handleModels(w)
+		return true
+
+	// 低风险 Claude Code 控制面端点
+	case path == "/api/claude_code/discovery/team_usage":
+		if !methodAllowed(w, r, http.MethodGet) {
+			return true
+		}
+		writeJSONResponse(w, http.StatusOK, map[string]any{
+			"teams": []any{},
+			"usage": []any{},
+			"data":  []any{},
+		})
+		return true
+
+	case path == "/api/claude_code/notification/preferences":
+		if !methodAllowed(w, r, http.MethodGet) {
+			return true
+		}
+		writeJSONResponse(w, http.StatusOK, map[string]any{
+			"preferences":           map[string]any{},
+			"notifications_enabled": false,
+		})
+		return true
+
+	case strings.HasPrefix(path, "/api/organizations/") && strings.HasSuffix(path, "/claude_code/onboarding"):
+		h.handleEmptyResponse(w)
+		return true
+
+	// 已安装 skill 健康 - GET /api/claude_code/skills
+	case path == "/api/claude_code/skills":
+		if !methodAllowed(w, r, http.MethodGet) {
+			return true
+		}
+		h.handleClaudeCodeSkills(w)
+		return true
+
+	// Frame artifact 兼容 - 列表/track/deploy/contract/slug 全部本地处理
+	case strings.HasPrefix(path, "/api/frame/"):
+		h.handleFrameEndpoint(w, r)
+		return true
+
+	// Claude Design consent - GET/POST/DELETE 本地状态
+	case path == "/v1/design/consent":
+		h.handleDesignConsent(w, r)
+		return true
+
+	// Claude Design MCP bridge - POST 返回受控 unsupported
+	case path == "/v1/design/mcp":
+		h.handleDesignMCP(w, r)
+		return true
+
+	// WebSocket / 语音流端点 - 任意方法本地 501，不 hijack
+	case strings.HasPrefix(path, "/api/ws/"):
+		h.handleUnsupportedStreamingEndpoint(w)
+		return true
+
 	// 低优先级端点 - 统一返回空 JSON
 	case path == "/api/oauth/profile",
-			path == "/api/claude_cli_profile",
-			path == "/api/oauth/usage",
-			path == "/api/claude_code/user_settings",
-			strings.HasPrefix(path, "/api/oauth/account/"),
-			path == "/api/claude_code_grove",
-			path == "/api/organization/claude_code_first_token_date",
-			path == "/v1/ultrareview/quota",
-			strings.HasPrefix(path, "/v1/session_ingress/session/"),
-			path == "/api/claude_code/team_memory",
-			path == "/api/auth/trusted_devices",
-			path == "/api/oauth/file_upload",
-			strings.HasPrefix(path, "/api/oauth/organizations/"),
-			strings.HasPrefix(path, "/v1/code/sessions/"):
-			h.handleEmptyResponse(w)
-			return true
+		path == "/api/claude_cli_profile",
+		path == "/api/oauth/usage",
+		path == "/api/claude_code/user_settings",
+		strings.HasPrefix(path, "/api/oauth/account/"),
+		path == "/api/claude_code_grove",
+		path == "/api/organization/claude_code_first_token_date",
+		path == "/v1/ultrareview/quota",
+		strings.HasPrefix(path, "/v1/session_ingress/session/"),
+		path == "/api/claude_code/team_memory",
+		path == "/api/auth/trusted_devices",
+		path == "/api/oauth/file_upload",
+		strings.HasPrefix(path, "/api/oauth/organizations/"),
+		strings.HasPrefix(path, "/v1/code/sessions/"):
+		h.handleEmptyResponse(w)
+		return true
 	}
 
 	return false
@@ -268,9 +378,9 @@ func (h *Handler) handleOrganization(w http.ResponseWriter) {
 // 响应格式: { "success": true, "transcript_id": "xxx" }
 func (h *Handler) handleSessionTranscripts(w http.ResponseWriter) {
 	response := map[string]interface{}{
-		"success":        true,
-		"transcript_id":  generateID(),
-		"share_url":      "",
+		"success":       true,
+		"transcript_id": generateID(),
+		"share_url":     "",
 	}
 
 	writeJSONResponse(w, http.StatusOK, response)
@@ -383,23 +493,23 @@ func (h *Handler) handleGrowthBookFeature(w http.ResponseWriter) {
 func optimizedGrowthBookFeatures() map[string]any {
 	return map[string]any{
 		// 启用有益功能（defaultValue=false，源码分析）
-		"tengu_coral_fern":   true, // 记忆上下文搜索
-		"tengu_moth_copse":   true, // 附件优化
-		"tengu_glacier_2xr":  true, // 工具搜索推荐
-		"tengu_copper_panda": true, // 技能改进建议
+		"tengu_coral_fern":    true, // 记忆上下文搜索
+		"tengu_moth_copse":    true, // 附件优化
+		"tengu_glacier_2xr":   true, // 工具搜索推荐
+		"tengu_copper_panda":  true, // 技能改进建议
 		"tengu_hive_evidence": true, // 验证代理
-		"tengu_basalt_3kr":   true, // MCP 指令增量
-		"tengu_amber_prism":  true, // 消息优化
+		"tengu_basalt_3kr":    true, // MCP 指令增量
+		"tengu_amber_prism":   true, // 消息优化
 
 		// 禁用遥测（GitHub issue #25141 证实服务端推送 true）
-		"tengu_log_datadog_events":  false,
-		"tengu_log_segment_events":  false,
-		"enhanced_telemetry_beta":   false,
+		"tengu_log_datadog_events": false,
+		"tengu_log_segment_events": false,
+		"enhanced_telemetry_beta":  false,
 
 		// 禁用有害 A/B 测试（GitHub issue #62205 证实服务端推送 true 锁权限）
-		"tengu_permission_friction":  false,
-		"tengu_harbor":               false,
-		"tengu_harbor_permissions":   false,
+		"tengu_permission_friction": false,
+		"tengu_harbor":              false,
+		"tengu_harbor_permissions":  false,
 	}
 }
 
@@ -462,6 +572,94 @@ func (h *Handler) collectAdditionalModelOptions() []map[string]string {
 		}
 	}
 	return opts
+}
+
+// isTelemetryPath 判断是否为 OTLP 遥测端点。
+func isTelemetryPath(path string) bool {
+	return path == "/v1/metrics" || path == "/v1/logs" || path == "/v1/traces"
+}
+
+// handleTelemetry 处理 OTLP 遥测端点：POST 返回 204，其它方法返回 405。
+// body 可能很大（OTLP 批量），用有界 drain 丢弃后返回，不解析 payload。
+// 在 ServeHTTP 的共享 drain 之前调用，避免无界 io.Copy。
+func (h *Handler) handleTelemetry(w http.ResponseWriter, r *http.Request) {
+	drainRequestBodyLimited(r, maxLocalDrainSize)
+	log.Printf("[Hardcoded] Handling %s %s", r.Method, r.URL.Path)
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		encodeJSONBody(w, map[string]any{
+			"error": map[string]any{
+				"type":    "method_not_allowed",
+				"message": "Only POST is allowed for telemetry endpoints",
+			},
+		})
+		return
+	}
+	writeNoContent(w)
+}
+
+// handleModels 处理 GET /v1/models，从 MCC 现有 provider/model 配置派生模型列表。
+// 不新建平行 model registry，而是复用 handleBootstrap 已依赖的 enabled provider ExposedModels 结构。
+// 按 id 去重、按 id 升序；id 用于真实模型选择，display_name 用 ExposedModel.Label（空则回退 id）。
+// 配置加载失败或无模型时返回空 data（保持客户端兼容，不 500）。
+func (h *Handler) handleModels(w http.ResponseWriter) {
+	data := h.collectModels()
+	writeJSONResponse(w, http.StatusOK, map[string]any{
+		"data":     data,
+		"has_more": false,
+	})
+}
+
+// modelsListEntry 是 /v1/models 响应的单条模型项。
+type modelsListEntry struct {
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	DisplayName string `json:"display_name"`
+}
+
+// collectModels 收集所有 enabled provider 的 ExposedModels，去重后按 id 升序返回。
+// id 是模型选择键（保持不变），display_name 取 ExposedModel.Label（去空格，空则回退 id）。
+// 读 config 失败或无数据时返回空切片（非 nil，确保 JSON 输出为 []）。
+func (h *Handler) collectModels() []modelsListEntry {
+	empty := []modelsListEntry{}
+	if h.configStore == nil {
+		return empty
+	}
+	cfg, err := h.configStore.Load()
+	if err != nil || cfg == nil {
+		return empty
+	}
+	seen := make(map[string]struct{})
+	entries := make([]modelsListEntry, 0)
+	for i := range cfg.Providers {
+		p := &cfg.Providers[i]
+		if !p.Enabled {
+			continue
+		}
+		for _, em := range p.ExposedModels {
+			id := strings.TrimSpace(em.ID)
+			if id == "" {
+				continue
+			}
+			if _, dup := seen[id]; dup {
+				continue
+			}
+			seen[id] = struct{}{}
+			display := strings.TrimSpace(em.Label)
+			if display == "" {
+				display = id // Label 缺失时回退 id，保证 display_name 永不空
+			}
+			entries = append(entries, modelsListEntry{
+				ID:          id,
+				Type:        "model",
+				DisplayName: display,
+			})
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
+	return entries
 }
 
 // handleMCPRegistry 处理 MCP 注册表请求
@@ -550,12 +748,18 @@ func randomHex(length int) string {
 	return hex.EncodeToString(b)[:length]
 }
 
-// drainRequestBody 消耗并关闭请求体，确保 HTTP 连接可复用
-func drainRequestBody(r *http.Request) {
+// maxLocalDrainSize 限制本地拦截路径（blocked、telemetry、connector）读取请求体的字节数。
+// 这些路径可能收到未知来源或大体积请求体，无界 io.Copy 会造成 DoS（CWE-400）。
+// 超出限制时连接可能不复用，可接受——拦截路径不依赖 keep-alive。
+const maxLocalDrainSize int64 = 1 << 20 // 1MB
+
+// drainRequestBodyLimited 最多读取 limit 字节后关闭请求体，超出部分不再读取。
+// 用于所有本地 hardcoded/compat/blocked/telemetry/connector 端点，防止大体积或恶意 body
+// 造成无界 drain DoS（CWE-400）。POST /v1/messages 等转发请求不走此路径（走 handler.go 的 maxRequestBodySize）。
+// 超出 limit 时连接不复用，可接受——本地控制面端点不依赖 keep-alive。
+func drainRequestBodyLimited(r *http.Request, limit int64) {
 	if r.Body != nil {
-		if _, err := io.Copy(io.Discard, r.Body); err != nil {
-			log.Printf("Warning: failed to drain request body: %v", err)
-		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, limit))
 		r.Body.Close()
 	}
 }
