@@ -7,6 +7,21 @@
 
 ---
 
+## v0.15.1 (2026-07-10)
+
+### Security
+- **升级 echarts 6.0.0 → 6.1.0 修复 moderate XSS**（GHSA-fgmj-fm8m-jvvx）：管理面板图表渲染相关的跨站脚本漏洞，影响生产前端
+- **升级 vite 8.0.8 → 8.1.4 修复 high 漏洞**（GHSA-v6wh-96g9-6wx3 + GHSA-fx2h-pf6j-xcff）：仅影响 Windows 开发环境 dev server，不影响生产构建产物
+- **npm audit**：2 vulnerabilities → 0
+
+### Changed
+- **release.sh 支持 RELEASE_REF 补发历史版本**：新增 `RELEASE_REF` 环境变量，默认 `main`（行为不变），设 `RELEASE_REF=<tag>` 时 checkout 该 tag 构建真正的历史版本二进制。原脚本强制 checkout main，补发历史版本会在最新代码上构建并注入旧版本号，产物不正确
+
+### Docs
+- npm audit 修复 feature spec 与审查记录（中英双语）：`sdd-docs/features/2026-07-10-npm-audit-fix/`
+
+---
+
 ## v0.15.0 (2026-07-10)
 
 ### Added
