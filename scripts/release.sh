@@ -67,11 +67,20 @@ fi
 
 info "发布 $TAG"
 
-# ===== [1/8] 同步 main 分支 =====
-info "[1/8] 同步 main 分支"
-git fetch origin main
-git checkout main
-git pull origin main
+# ===== [1/8] 同步代码到目标 ref =====
+# 默认 checkout main（正常发版：main == tag 对应代码）；
+# 设 RELEASE_REF=<tag> 时 checkout 该 tag（detached HEAD），用于补发历史版本——
+# 否则会在最新 main 上构建并注入旧版本号，产物不是真正的历史版本二进制。
+RELEASE_REF="${RELEASE_REF:-main}"
+info "[1/8] 同步代码到 $RELEASE_REF"
+if [ "$RELEASE_REF" = "main" ]; then
+  git fetch origin main
+  git checkout main
+  git pull origin main
+else
+  git fetch origin --tags
+  git checkout "$RELEASE_REF"
+fi
 
 # ===== [2/8] 构建前端 =====
 info "[2/8] 构建前端"
