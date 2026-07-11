@@ -178,18 +178,22 @@ func alertName(desc byte) string {
 		return "missing_extension"
 	case 110:
 		return "unsupported_extension"
-	case 113:
+	case 111:
 		return "certificate_unobtainable"
-	case 114:
+	case 112:
 		return "unrecognized_name"
-	case 115:
+	case 113:
 		return "bad_certificate_status_response"
-	case 116:
+	case 114:
 		return "bad_certificate_hash_value"
-	case 117:
+	case 115:
 		return "unknown_psk_identity"
+	case 116:
+		return "certificate_required"
 	case 120:
 		return "no_application_protocol"
+	case 121:
+		return "encrypted_client_hello_required"
 	}
 	return fmt.Sprintf("alert_%d", desc)
 }

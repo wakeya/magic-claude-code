@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"net"
 	"strings"
 	"testing"
 )
@@ -154,7 +155,14 @@ func TestAlertNameKnown(t *testing.T) {
 		48:  "unknown_ca",
 		51:  "decrypt_error",
 		70:  "protocol_version",
+		111: "certificate_unobtainable",
+		112: "unrecognized_name",
+		113: "bad_certificate_status_response",
+		114: "bad_certificate_hash_value",
+		115: "unknown_psk_identity",
+		116: "certificate_required",
 		120: "no_application_protocol",
+		121: "encrypted_client_hello_required",
 	}
 	for desc, want := range cases {
 		if got := alertName(desc); got != want {
@@ -204,5 +212,34 @@ func TestHintFormat(t *testing.T) {
 		if !strings.Contains(h, want) {
 			t.Errorf("hint %q missing %q", h, want)
 		}
+	}
+}
+
+// --- Read 驱动 feed（端到端：Read → feed → detected）---
+// 验证 alertDetectingConn.Read 真的把底层字节喂给 feed，而不只是 feed 单元测试
+// 自身的闭环。模拟握手期间客户端发 ClientHello + 明文 Alert 的真实读取路径。
+func TestReadDrivesFeed(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	ac := &alertDetectingConn{Conn: server}
+
+	ch := tlsRecord(22, make([]byte, 20)) // 模拟 ClientHello
+	al := alertRecord(2, 48)              // fatal/unknown_ca
+	go func() {
+		_, _ = client.Write(append(ch, al...))
+		_ = client.Close()
+	}()
+
+	buf := make([]byte, 4096)
+	for {
+		n, err := ac.Read(buf)
+		if err != nil && n == 0 {
+			break
+		}
+	}
+	if !ac.detected || ac.desc != 48 {
+		t.Fatalf("Read-driven: detected=%v desc=%d", ac.detected, ac.desc)
 	}
 }

@@ -1589,6 +1589,66 @@ func TestTLSListenerLogsSNIOnUntrustedCert(t *testing.T) {
 	}
 }
 
+// TestTLSListenerAlertHintOnUntrustedCert 端到端验证 alertDetectingConn：
+// 客户端不信任自签名证书，证书校验失败后发明文 alert。handleConn 的失败日志
+// 应同时保留 Go 原始错误（如 bad record MAC）并追加 alert hint。
+//
+// 强制 TLS 1.2：客户端证书验证发生在 ChangeCipherSpec 之前，此时的 alert 是明文
+// （content type=21, length=2），alertDetectingConn 才能识别。TLS 1.3 同阶段的
+// alert 是加密的（外层 AppData），不在本检测器范围。
+func TestTLSListenerAlertHintOnUntrustedCert(t *testing.T) {
+	certPath, keyPath := testTLSCertPair(t)
+	certPair, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		t.Fatalf("load key pair: %v", err)
+	}
+
+	sniStore := &sync.Map{}
+	tlsCfg := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		MaxVersion: tls.VersionTLS12, // 强制 TLS 1.2，让客户端发明文 alert
+		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			if hello.Conn != nil && hello.ServerName != "" {
+				sniStore.Store(hello.Conn.RemoteAddr().String(), hello.ServerName)
+			}
+			return &certPair, nil
+		},
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	var logBuf safeLogBuffer
+	tlsLn := newTLSListener(ln, tlsCfg, sniStore, defaultHandshakeTimeout, defaultMaxHandshakes, log.New(&logBuf, "", log.LstdFlags))
+	defer tlsLn.Close()
+
+	conn, dialErr := tls.Dial("tcp", ln.Addr().String(), &tls.Config{
+		ServerName: "api.anthropic.com",
+		MaxVersion: tls.VersionTLS12, // 客户端强制 TLS 1.2
+	})
+	if conn != nil {
+		conn.Close()
+	}
+	if dialErr == nil {
+		t.Skip("TLS handshake succeeded unexpectedly; cannot test alert hint logging")
+	}
+
+	if !waitForLog(&logBuf, 2*time.Second, "client sent plaintext") {
+		t.Fatalf("timeout waiting for alert hint; got %q", logBuf.String())
+	}
+
+	logStr := logBuf.String()
+	// alertDetectingConn 应检测到客户端的明文 alert 并追加 hint
+	if !strings.Contains(logStr, "client sent plaintext") {
+		t.Errorf("expected 'client sent plaintext' alert hint in log, got %q", logStr)
+	}
+	// Go 原始握手错误仍保留（不被 hint 替换）
+	if !strings.Contains(logStr, "TLS handshake error") {
+		t.Errorf("expected original 'TLS handshake error' preserved, got %q", logStr)
+	}
+}
+
 func TestTLSListenerSlowHandshakeDoesNotBlock(t *testing.T) {
 	certPath, keyPath := testTLSCertPair(t)
 	certPair, err := tls.LoadX509KeyPair(certPath, keyPath)
