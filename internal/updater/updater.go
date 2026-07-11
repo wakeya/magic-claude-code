@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,12 +32,12 @@ const (
 
 // UpdateInfo describes an available update.
 type UpdateInfo struct {
-	CurrentVersion  string
-	LatestVersion   string
-	SourceName      string
-	ReleaseURL      string
-	AssetName       string
-	DownloadURL string
+	CurrentVersion string
+	LatestVersion  string
+	SourceName     string
+	ReleaseURL     string
+	AssetName      string
+	DownloadURL    string
 }
 
 // ApplyResult holds the outcome of a successful update.
@@ -136,12 +137,12 @@ func (u *Updater) checkSource(ctx context.Context, src ReleaseSource) (*UpdateIn
 	}
 
 	return &UpdateInfo{
-		CurrentVersion:  current,
-		LatestVersion:   latest,
-		SourceName:      src.Name(),
-		ReleaseURL:      release.HTMLURL,
-		AssetName:       assetName,
-		DownloadURL: downloadURL,
+		CurrentVersion: current,
+		LatestVersion:  latest,
+		SourceName:     src.Name(),
+		ReleaseURL:     release.HTMLURL,
+		AssetName:      assetName,
+		DownloadURL:    downloadURL,
 	}, nil
 }
 
@@ -157,11 +158,10 @@ func (u *Updater) DownloadAndApply(ctx context.Context, info *UpdateInfo) (*Appl
 		return nil, fmt.Errorf("download asset: %w", err)
 	}
 
-	idx := strings.LastIndex(info.DownloadURL, "/")
-	if idx < 0 {
-		return nil, fmt.Errorf("invalid download URL: %s", redactURLForError(info.DownloadURL))
+	sumsURL, ok := checksumURLForAsset(info.DownloadURL)
+	if !ok {
+		return nil, errors.New("invalid download URL: <invalid-url>")
 	}
-	sumsURL := info.DownloadURL[:idx+1] + "SHA256SUMS.txt"
 	sumsData, err := u.downloadFileWithLimit(ctx, sumsURL, maxChecksumDownloadSize)
 	if err != nil {
 		return nil, fmt.Errorf("download sha256sums: %w", err)
@@ -212,42 +212,97 @@ func shouldRestartAfterApply(goos string) bool {
 	return goos != "windows"
 }
 
+// requestFailureCategory maps a download failure to a fixed public category
+// string. It may inspect the error with errors.Is, but it must never place the
+// error text in the returned string.
+func requestFailureCategory(ctx context.Context, err error) string {
+	switch {
+	case errors.Is(err, context.Canceled), errors.Is(ctx.Err(), context.Canceled):
+		return "was canceled"
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return "timed out"
+	default:
+		return "failed"
+	}
+}
+
 func (u *Updater) downloadFile(ctx context.Context, url string) ([]byte, error) {
 	return u.downloadFileWithLimit(ctx, url, maxDownloadSize)
 }
 
-func (u *Updater) downloadFileWithLimit(ctx context.Context, url string, maxSize int) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func (u *Updater) downloadFileWithLimit(ctx context.Context, raw string, maxSize int) ([]byte, error) {
+	parsed, ok := parseDownloadURL(raw)
+	if !ok {
+		return nil, errors.New("invalid download URL: <invalid-url>")
+	}
+	target := safeURLOrigin(parsed)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create download request for %s failed", target)
 	}
 	resp, err := u.client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("download request to %s %s", target, requestFailureCategory(ctx, err))
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status %d for %s", resp.StatusCode, redactURLForError(url))
+		return nil, fmt.Errorf("unexpected status %d from %s", resp.StatusCode, target)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxSize)+1))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read download response from %s failed", target)
 	}
 	if len(data) > maxSize {
-		return nil, fmt.Errorf("download exceeds maximum size of %d bytes: %s", maxSize, redactURLForError(url))
+		return nil, fmt.Errorf("download from %s exceeds maximum size of %d bytes", target, maxSize)
 	}
 	return data, nil
 }
 
-func redactURLForError(raw string) string {
+// parseDownloadURL accepts only absolute hierarchical http/https URLs with a host.
+// The parser error is discarded so callers never format untrusted parse diagnostics.
+func parseDownloadURL(raw string) (*url.URL, bool) {
 	parsed, err := url.Parse(raw)
-	if err != nil {
+	if err != nil || parsed.Opaque != "" || parsed.Host == "" {
+		return nil, false
+	}
+	if !strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https") {
+		return nil, false
+	}
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	return parsed, true
+}
+
+// safeURLOrigin renders only the scheme + host (origin) of an already-validated URL.
+func safeURLOrigin(parsed *url.URL) string {
+	return (&url.URL{Scheme: parsed.Scheme, Host: parsed.Host}).String()
+}
+
+// redactURLForError returns the safe origin for a valid download URL, or the
+// fixed sentinel "<invalid-url>" for every rejected value. It must be the only
+// URL-derived data that appears in any error string.
+func redactURLForError(raw string) string {
+	parsed, ok := parseDownloadURL(raw)
+	if !ok {
 		return "<invalid-url>"
 	}
-	parsed.User = nil
-	parsed.RawQuery = ""
-	parsed.Fragment = ""
-	return parsed.String()
+	return safeURLOrigin(parsed)
+}
+
+// checksumURLForAsset derives the SHA256SUMS.txt URL from a valid download URL by
+// resolving against the parsed URL (dropping query/fragment) and replacing the
+// final path segment. The returned URL is a request URL, never a diagnostic.
+func checksumURLForAsset(raw string) (string, bool) {
+	base, ok := parseDownloadURL(raw)
+	if !ok {
+		return "", false
+	}
+	base.RawQuery = ""
+	base.ForceQuery = false
+	base.Fragment = ""
+	base.RawFragment = ""
+	return base.ResolveReference(&url.URL{Path: "SHA256SUMS.txt"}).String(), true
 }
 
 // replaceBinary swaps the running binary with newBinary.

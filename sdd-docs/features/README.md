@@ -148,6 +148,7 @@ Local page / proxy entry / reference sources / stack / last updated / progress
 | Node.js Client CA Trust Auto-Setup | `2026-07-04-node-extra-ca-certs-auto-setup/spec.md` | `2026-07-04-node-extra-ca-certs-auto-setup/spec_ZH.md` |
 | Cross-Provider Model Routing | `2026-07-08-cross-provider-model-routing/spec.md` | `2026-07-08-cross-provider-model-routing/spec_ZH.md` |
 | NPM Audit Fix | `2026-07-10-npm-audit-fix/spec.md` | `2026-07-10-npm-audit-fix/spec_ZH.md` |
+| Updater Download URL Redaction | `2026-07-10-updater-url-redaction/spec.md` | `2026-07-10-updater-url-redaction/spec_ZH.md` |
 
 ## 状态生命周期
 

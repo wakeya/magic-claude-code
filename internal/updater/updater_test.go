@@ -8,13 +8,16 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"magic-claude-code/internal/version"
 )
@@ -326,13 +329,18 @@ func TestDownloadFileRejectsOversizedResponses(t *testing.T) {
 	u := New()
 	u.client = server.Client()
 
-	_, err := u.downloadFile(t.Context(), server.URL+"/large")
+	raw := server.URL + "/" + markerPath + "?" + markerQueryKey + "=" + markerQuery + "#" + markerFragment
+	_, err := u.downloadFile(t.Context(), raw)
 	if err == nil {
 		t.Fatal("expected oversized download error")
 	}
 	if !strings.Contains(err.Error(), "exceeds maximum size") {
 		t.Fatalf("error = %v, want maximum size error", err)
 	}
+	if !strings.Contains(err.Error(), server.URL) {
+		t.Fatalf("error = %v, want server origin retained", err)
+	}
+	assertNoSensitiveMarkers(t, err.Error(), allSensitiveMarkers()...)
 }
 
 func TestDownloadFileWithLimitRejectsCustomLimit(t *testing.T) {
@@ -344,13 +352,347 @@ func TestDownloadFileWithLimitRejectsCustomLimit(t *testing.T) {
 	u := New()
 	u.client = server.Client()
 
-	_, err := u.downloadFileWithLimit(t.Context(), server.URL+"/small", 5)
+	raw := server.URL + "/" + markerPath + "?" + markerQueryKey + "=" + markerQuery
+	_, err := u.downloadFileWithLimit(t.Context(), raw, 5)
 	if err == nil {
 		t.Fatal("expected custom limit error")
 	}
-	if !strings.Contains(err.Error(), "5 bytes") {
+	if !strings.Contains(err.Error(), "exceeds maximum size of 5 bytes") {
 		t.Fatalf("error = %v, want custom byte limit", err)
 	}
+	if !strings.Contains(err.Error(), server.URL) {
+		t.Fatalf("error = %v, want server origin retained", err)
+	}
+	assertNoSensitiveMarkers(t, err.Error(), allSensitiveMarkers()...)
+}
+
+// Distinct sensitive markers used across the URL-redaction tests. Every marker
+// must be absent from each redacted error string. Relying only on "user:pass"
+// would be unsafe because Go's http client masks the password as "***" while
+// still exposing username, query, fragment, path, and redirect text.
+const (
+	markerUsername  = "username-secret"
+	markerPassword  = "password-secret"
+	markerPath      = "path-secret"
+	markerQueryKey  = "query-key"
+	markerQuery     = "query-secret"
+	markerFragment  = "fragment-secret"
+	markerRedirect  = "redirect-secret"
+	markerTransport = "transport-secret"
+	markerBody      = "body-secret"
+)
+
+func allSensitiveMarkers() []string {
+	return []string{
+		markerUsername, markerPassword, markerPath,
+		markerQueryKey, markerQuery, markerFragment,
+		markerRedirect, markerTransport, markerBody,
+	}
+}
+
+// validURLWithMarkers is a valid https URL carrying every URL-side marker; its
+// safe origin is https://example.com and it reaches the transport when used.
+func validURLWithMarkers() string {
+	return "https://" + markerUsername + ":" + markerPassword +
+		"@example.com/" + markerPath +
+		"?" + markerQueryKey + "=" + markerQuery +
+		"#" + markerFragment
+}
+
+// roundTripFunc adapts a function into an http.RoundTripper for hermetic tests.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+// errorReadCloser is an io.ReadCloser whose Read always fails with err.
+type errorReadCloser struct{ err error }
+
+func (r errorReadCloser) Read([]byte) (int, error) { return 0, r.err }
+func (errorReadCloser) Close() error               { return nil }
+
+func assertNoSensitiveMarkers(t *testing.T, got string, markers ...string) {
+	t.Helper()
+	for _, marker := range markers {
+		if strings.Contains(got, marker) {
+			t.Fatalf("output leaked %q: %s", marker, got)
+		}
+	}
+}
+
+func TestParseDownloadURL(t *testing.T) {
+	tests := []struct {
+		name   string
+		raw    string
+		ok     bool
+		origin string
+	}{
+		{"simple https", "https://example.com/a", true, "https://example.com"},
+		{"uppercase scheme with port", "HTTP://example.com:8080/a?x=y", true, "http://example.com:8080"},
+		{"full credentials and markers", validURLWithMarkers(), true, "https://example.com"},
+		{"opaque payload", "user:password-secret@example.com/path?query-key=query-secret", false, ""},
+		{"unsupported scheme", "ftp://example.com/file", false, ""},
+		{"relative path", "/relative/path?query-key=query-secret", false, ""},
+		{"missing host", "https:///missing-host", false, ""},
+		{"malformed escape", "https://example.com/%zz?query-key=query-secret", false, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parsed, ok := parseDownloadURL(tt.raw)
+			if ok != tt.ok {
+				t.Fatalf("parseDownloadURL(%q) ok = %v, want %v", tt.raw, ok, tt.ok)
+			}
+			if !ok {
+				if parsed != nil {
+					t.Fatalf("parseDownloadURL(%q) returned non-nil URL on rejection", tt.raw)
+				}
+				return
+			}
+			if got := safeURLOrigin(parsed); got != tt.origin {
+				t.Fatalf("safeURLOrigin = %q, want %q", got, tt.origin)
+			}
+			if parsed.Scheme != strings.ToLower(parsed.Scheme) {
+				t.Fatalf("scheme not normalized to lowercase: %q", parsed.Scheme)
+			}
+		})
+	}
+}
+
+func TestRedactURLForError(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		want    string
+		markers []string
+	}{
+		{"simple https", "https://example.com/a", "https://example.com", nil},
+		{"uppercase scheme with port", "HTTP://example.com:8080/a?x=y", "http://example.com:8080", nil},
+		{"full credentials", validURLWithMarkers(), "https://example.com",
+			[]string{markerUsername, markerPassword, markerPath, markerQueryKey, markerQuery, markerFragment}},
+		{"opaque payload", "user:password-secret@example.com/path?query-key=query-secret", "<invalid-url>",
+			[]string{markerPassword, markerPath, markerQueryKey, markerQuery, "example.com"}},
+		{"unsupported scheme", "ftp://example.com/file", "<invalid-url>", nil},
+		{"relative path", "/relative/path?query-key=query-secret", "<invalid-url>",
+			[]string{markerQueryKey, markerQuery}},
+		{"missing host", "https:///missing-host", "<invalid-url>", nil},
+		{"malformed escape", "https://example.com/%zz?query-key=query-secret", "<invalid-url>",
+			[]string{markerQueryKey, markerQuery, "%zz"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := redactURLForError(tt.raw)
+			if got != tt.want {
+				t.Fatalf("redactURLForError(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+			assertNoSensitiveMarkers(t, got, tt.markers...)
+		})
+	}
+}
+
+func TestDownloadFileRejectsUnsafeURL(t *testing.T) {
+	invalidURLs := []string{
+		"user:password-secret@example.com/path?query-key=query-secret",
+		"ftp://example.com/file",
+		"/relative/path?query-key=query-secret",
+		"https:///missing-host",
+		"https://example.com/%zz?query-key=query-secret",
+	}
+	for _, raw := range invalidURLs {
+		t.Run(raw, func(t *testing.T) {
+			var calls atomic.Int32
+			u := New()
+			u.client = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				calls.Add(1)
+				t.Fatalf("transport must not be called for invalid URL %q", raw)
+				return nil, nil
+			})}
+			_, err := u.downloadFileWithLimit(t.Context(), raw, maxDownloadSize)
+			if err == nil {
+				t.Fatal("expected invalid URL error")
+			}
+			if err.Error() != "invalid download URL: <invalid-url>" {
+				t.Fatalf("error = %q, want exact invalid URL message", err.Error())
+			}
+			if got := calls.Load(); got != 0 {
+				t.Fatalf("transport called %d times for invalid URL", got)
+			}
+			assertNoSensitiveMarkers(t, err.Error(), allSensitiveMarkers()...)
+		})
+	}
+}
+
+func TestChecksumURLForAsset(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		ok   bool
+		want string
+	}{
+		{
+			name: "credentials query and fragment",
+			raw:  "https://user:pass@example.com/releases/v1/asset.tar.gz?token=secret#fragment",
+			ok:   true,
+			want: "https://user:pass@example.com/releases/v1/SHA256SUMS.txt",
+		},
+		{
+			name: "simple asset",
+			raw:  "https://example.com/asset.tar.gz",
+			ok:   true,
+			want: "https://example.com/SHA256SUMS.txt",
+		},
+		{name: "opaque", raw: "user:password-secret@example.com/path", ok: false},
+		{name: "relative", raw: "/relative/asset.tar.gz", ok: false},
+		{name: "unsupported scheme", raw: "ftp://example.com/asset.tar.gz", ok: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := checksumURLForAsset(tt.raw)
+			if ok != tt.ok {
+				t.Fatalf("checksumURLForAsset(%q) ok = %v, want %v", tt.raw, ok, tt.ok)
+			}
+			if tt.ok {
+				if got != tt.want {
+					t.Fatalf("checksumURLForAsset(%q) = %q, want %q", tt.raw, got, tt.want)
+				}
+				return
+			}
+			if got != "" {
+				t.Fatalf("checksumURLForAsset(%q) = %q on rejection, want empty", tt.raw, got)
+			}
+		})
+	}
+}
+
+func TestRequestFailureCategory(t *testing.T) {
+	ctx := context.Background()
+	if got := requestFailureCategory(ctx, context.Canceled); got != "was canceled" {
+		t.Fatalf("canceled: got %q, want %q", got, "was canceled")
+	}
+	if got := requestFailureCategory(ctx, context.DeadlineExceeded); got != "timed out" {
+		t.Fatalf("deadline: got %q, want %q", got, "timed out")
+	}
+	if got := requestFailureCategory(ctx, errors.New(markerTransport)); got != "failed" {
+		t.Fatalf("other: got %q, want %q", got, "failed")
+	}
+
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := requestFailureCategory(canceledCtx, errors.New("any")); got != "was canceled" {
+		t.Fatalf("ctx canceled: got %q, want %q", got, "was canceled")
+	}
+
+	deadlineCtx, dcancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer dcancel()
+	if got := requestFailureCategory(deadlineCtx, errors.New("any")); got != "timed out" {
+		t.Fatalf("ctx deadline: got %q, want %q", got, "timed out")
+	}
+}
+
+func TestDownloadFileTransportErrorDiscardsRawCause(t *testing.T) {
+	u := New()
+	u.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return nil, errors.New(markerTransport + ": " + req.URL.String())
+	})}
+
+	_, err := u.downloadFile(t.Context(), validURLWithMarkers())
+	if err == nil {
+		t.Fatal("expected transport error")
+	}
+	want := "download request to https://example.com failed"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+	assertNoSensitiveMarkers(t, err.Error(), allSensitiveMarkers()...)
+	if strings.Contains(err.Error(), "token=") {
+		t.Fatalf("error leaked token= marker: %s", err.Error())
+	}
+	if errors.Unwrap(err) != nil {
+		t.Fatalf("error must not expose an unwrap chain: %v", errors.Unwrap(err))
+	}
+}
+
+func TestDownloadFileCanceledRequest(t *testing.T) {
+	u := New()
+	u.client = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, context.Canceled
+	})}
+
+	_, err := u.downloadFile(t.Context(), validURLWithMarkers())
+	if err == nil {
+		t.Fatal("expected canceled error")
+	}
+	want := "download request to https://example.com was canceled"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+	assertNoSensitiveMarkers(t, err.Error(), allSensitiveMarkers()...)
+}
+
+func TestDownloadFileDeadlineExceeded(t *testing.T) {
+	u := New()
+	u.client = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, context.DeadlineExceeded
+	})}
+
+	_, err := u.downloadFile(t.Context(), validURLWithMarkers())
+	if err == nil {
+		t.Fatal("expected deadline error")
+	}
+	want := "download request to https://example.com timed out"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+	assertNoSensitiveMarkers(t, err.Error(), allSensitiveMarkers()...)
+}
+
+func TestDownloadFileMalformedRedirectDiscardsLocation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Malformed redirect Location: %zz is an invalid escape, so Go places the
+		// raw Location into the nested client.Do error unless we discard it.
+		w.Header().Set("Location", "https://redirect.example/%zz?"+markerQueryKey+"="+markerRedirect)
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer server.Close()
+
+	u := New()
+	u.client = server.Client()
+
+	raw := server.URL + "/" + markerPath + "?" + markerQueryKey + "=" + markerQuery
+	_, err := u.downloadFile(t.Context(), raw)
+	if err == nil {
+		t.Fatal("expected redirect error")
+	}
+	// The original server origin (host:port) is retained; the redirect target is not.
+	if !strings.Contains(err.Error(), server.URL) {
+		t.Fatalf("error = %q, want original server origin %q retained", err.Error(), server.URL)
+	}
+	if strings.Contains(err.Error(), "redirect.example") || strings.Contains(err.Error(), "%zz") {
+		t.Fatalf("error leaked redirect location: %s", err.Error())
+	}
+	assertNoSensitiveMarkers(t, err.Error(), allSensitiveMarkers()...)
+}
+
+func TestDownloadFileBodyReadErrorDiscardsRawCause(t *testing.T) {
+	u := New()
+	u.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       errorReadCloser{err: errors.New(markerBody)},
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})}
+
+	_, err := u.downloadFile(t.Context(), validURLWithMarkers())
+	if err == nil {
+		t.Fatal("expected body read error")
+	}
+	want := "read download response from https://example.com failed"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+	assertNoSensitiveMarkers(t, err.Error(), allSensitiveMarkers()...)
 }
 
 func TestDownloadFileRedactsURLInStatusErrors(t *testing.T) {
@@ -362,42 +704,47 @@ func TestDownloadFileRedactsURLInStatusErrors(t *testing.T) {
 	u := New()
 	u.client = server.Client()
 
-	_, err := u.downloadFile(t.Context(), server.URL+"/asset?token=secret")
+	raw := server.URL + "/" + markerPath + "?" + markerQueryKey + "=" + markerQuery
+	_, err := u.downloadFile(t.Context(), raw)
 	if err == nil {
 		t.Fatal("expected status error")
 	}
-	if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "token=") {
-		t.Fatalf("error leaked sensitive query: %v", err)
+	if !strings.HasPrefix(err.Error(), "unexpected status 403 from ") {
+		t.Fatalf("error = %q, want unexpected status prefix", err.Error())
 	}
-	if !strings.Contains(err.Error(), server.URL+"/asset") {
-		t.Fatalf("error = %v, want redacted asset URL", err)
+	if !strings.Contains(err.Error(), server.URL) {
+		t.Fatalf("error = %q, want server origin retained", err.Error())
+	}
+	assertNoSensitiveMarkers(t, err.Error(), allSensitiveMarkers()...)
+	if strings.Contains(err.Error(), "token=") {
+		t.Fatalf("error leaked token=: %s", err.Error())
 	}
 }
 
 func TestDownloadAndApplyRedactsInvalidDownloadURL(t *testing.T) {
 	u := New()
+	u.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return nil, errors.New(markerTransport + ": " + req.URL.String())
+	})}
+
 	_, err := u.DownloadAndApply(t.Context(), &UpdateInfo{
 		LatestVersion: "v0.2.0",
 		AssetName:     "asset.tar.gz",
-		DownloadURL:   "https://user:pass@example.com?token=secret",
+		DownloadURL:   validURLWithMarkers(),
 	})
 	if err == nil {
-		t.Fatal("expected invalid download URL error")
+		t.Fatal("expected download error")
 	}
-	if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "user:pass") {
-		t.Fatalf("error leaked sensitive URL parts: %v", err)
+	if !strings.HasPrefix(err.Error(), "download asset:") {
+		t.Fatalf("error = %q, want download asset: prefix", err.Error())
 	}
-}
-
-func TestRedactURLForError(t *testing.T) {
-	got := redactURLForError("https://user:pass@example.com/path/file.tar.gz?token=secret#fragment")
-	want := "https://example.com/path/file.tar.gz"
-	if got != want {
-		t.Fatalf("redactURLForError() = %q, want %q", got, want)
+	// The only URL detail retained is the safe origin.
+	if !strings.Contains(err.Error(), "https://example.com") {
+		t.Fatalf("error = %q, want safe origin https://example.com", err.Error())
 	}
-
-	if got := redactURLForError("://bad-url"); got != "<invalid-url>" {
-		t.Fatalf("redactURLForError(invalid) = %q, want <invalid-url>", got)
+	assertNoSensitiveMarkers(t, err.Error(), allSensitiveMarkers()...)
+	if strings.Contains(err.Error(), "token=") {
+		t.Fatalf("error leaked token=: %s", err.Error())
 	}
 }
 
