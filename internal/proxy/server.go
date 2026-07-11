@@ -169,14 +169,22 @@ func (l *tlsListener) handleConn(conn net.Conn) {
 	defer l.inflight.Add(-1)
 	defer l.wg.Done()
 
+	// 增量解析客户端字节流，握手失败时检测客户端发来的明文 alert（如 unknown_ca）。
+	// 必要性：客户端校验证书失败后会发明文 fatal alert，代理用 handshake key 解这条
+	// 明文 alert 必然 AEAD 失败、日志误报为 "bad record MAC"。alertDetectingConn 让
+	// 真实原因（客户端主动拒绝）被如实记录。
+	ac := &alertDetectingConn{Conn: conn}
+	conn = ac
+
 	conn.SetDeadline(time.Now().Add(l.handshakeTimeout))
 	tlsConn := tls.Server(conn, l.tlsCfg)
 	if err := tlsConn.Handshake(); err != nil {
 		addr := conn.RemoteAddr().String()
+		extra := ac.hint()
 		if sniVal, ok := l.sniStore.LoadAndDelete(addr); ok {
-			l.logger.Printf("TLS handshake error from %s (SNI=%s): %v", addr, sniVal, err)
+			l.logger.Printf("TLS handshake error from %s (SNI=%s): %v%s", addr, sniVal, err, extra)
 		} else {
-			l.logger.Printf("TLS handshake error from %s (no SNI): %v", addr, err)
+			l.logger.Printf("TLS handshake error from %s (no SNI): %v%s", addr, err, extra)
 		}
 		conn.Close()
 		return
