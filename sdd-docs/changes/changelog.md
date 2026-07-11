@@ -7,6 +7,16 @@
 
 ---
 
+## v0.15.3 (2026-07-11)
+
+### Fixed
+- **TLS 握手失败时识别客户端明文 alert（避免 `unknown_ca` 被误报为 `bad record MAC`）**：新增 `alertDetectingConn`——一个增量 TLS record parser，在 `handleConn` 中包装每个入站连接，握手失败时检测客户端发来的明文 `ContentType=21, length=2` alert（如 `unknown_ca`、`bad_certificate`），把真实原因追加到失败日志。修复代理（TLS 终结）场景下，客户端证书校验失败后发明文 alert、代理用 handshake key 解明文 alert 必然 AEAD 失败、日志表现为误导性 `bad record MAC` 的问题。parser 无缓冲（只保留 2 字节 alert）、严格结构化解析 record header+payload（不搜 magic bytes，避免 handshake/AppData payload 内同序列误判）、热路径零分配。注意：这是诊断增强（让日志诚实），不是客户端 CA 信任修复——后者需把代理 CA 装进系统 CA 库（详见 CLAUDE.md 常见问题）。
+- **`alertName` 映射修正（111–117 区间错位）**：修正 `alertName` 在 111–117 区间的整体错位——补 111 (`certificate_unobtainable`)、112 (`unrecognized_name`)；修正 113–116；删除错误的 `case 117`；新增 116 (`certificate_required`)、121 (`encrypted_client_hello_required`)。与 Go 1.26 标准库 `crypto/tls` 对齐。
+
+### Docs
+- TLS 明文 alert 诊断 feature spec 与审查归档（中英双语）：`sdd-docs/features/2026-07-11-tls-plaintext-alert-diagnostics/`
+- 常见问题增加 "bad record MAC / unknown_ca" 条目：根因是客户端某条 TLS 路径不信任代理 CA（非代理/TLS 协议问题），修复是把代理 CA 装进系统 CA 库。
+
 ## v0.15.2 (2026-07-10)
 
 ### Security
