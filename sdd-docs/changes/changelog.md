@@ -279,7 +279,6 @@
 
 ### Docs
 - 新增 Windows 使用统计可靠性修复 feature specs：`sdd-docs/features/2026-06-12-windows-usage-statistics-fixes/`
-- 新增对应 change specs：`sdd-docs/changes/2026-06-12-windows-usage-statistics-fixes/`
 - 更新 `sdd-docs/features/README.md`，说明新的 `spec.md` / `spec_zh.md` 双语单文件规格格式
 
 ---
