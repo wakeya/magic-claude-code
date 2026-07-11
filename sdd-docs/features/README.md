@@ -149,6 +149,7 @@ Local page / proxy entry / reference sources / stack / last updated / progress
 | Cross-Provider Model Routing | `2026-07-08-cross-provider-model-routing/spec.md` | `2026-07-08-cross-provider-model-routing/spec_ZH.md` |
 | NPM Audit Fix | `2026-07-10-npm-audit-fix/spec.md` | `2026-07-10-npm-audit-fix/spec_ZH.md` |
 | Updater Download URL Redaction | `2026-07-10-updater-url-redaction/spec.md` | `2026-07-10-updater-url-redaction/spec_ZH.md` |
+| TLS Plaintext Alert Diagnostics | `2026-07-11-tls-plaintext-alert-diagnostics/spec.md` | `2026-07-11-tls-plaintext-alert-diagnostics/spec_ZH.md` |
 
 ## 状态生命周期
 

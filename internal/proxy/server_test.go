@@ -1631,7 +1631,7 @@ func TestTLSListenerAlertHintOnUntrustedCert(t *testing.T) {
 		conn.Close()
 	}
 	if dialErr == nil {
-		t.Skip("TLS handshake succeeded unexpectedly; cannot test alert hint logging")
+		t.Fatal("TLS handshake succeeded unexpectedly; expected certificate verification failure")
 	}
 
 	if !waitForLog(&logBuf, 2*time.Second, "client sent plaintext") {
@@ -1639,13 +1639,15 @@ func TestTLSListenerAlertHintOnUntrustedCert(t *testing.T) {
 	}
 
 	logStr := logBuf.String()
-	// alertDetectingConn 应检测到客户端的明文 alert 并追加 hint
-	if !strings.Contains(logStr, "client sent plaintext") {
-		t.Errorf("expected 'client sent plaintext' alert hint in log, got %q", logStr)
+	// Go 客户端在 TLS 1.2 证书校验失败时发明文 bad_certificate [42] alert
+	if !strings.Contains(logStr, "bad_certificate [42]") {
+		t.Errorf("expected 'bad_certificate [42]' in log, got %q", logStr)
 	}
-	// Go 原始握手错误仍保留（不被 hint 替换）
-	if !strings.Contains(logStr, "TLS handshake error") {
-		t.Errorf("expected original 'TLS handshake error' preserved, got %q", logStr)
+	// Go 原始握手错误保留：TLS 1.2 中服务端在 CCS 之前收到客户端明文 alert，
+	// 报 "remote error: tls: bad certificate"（生产环境 TLS 1.3 同场景因加密阶段
+	// 已开始，AEAD 解明文 alert 失败才报 bad record MAC）
+	if !strings.Contains(logStr, "remote error: tls: bad certificate") {
+		t.Errorf("expected original 'remote error: tls: bad certificate' preserved, got %q", logStr)
 	}
 }
 
