@@ -7,6 +7,19 @@
 
 ---
 
+## v0.15.2 (2026-07-10)
+
+### Security
+- **更新器下载 URL 脱敏（fail-closed，防凭据 / 签名 URL 泄露到管理 API）**：`Updater.DownloadAndApply` / `downloadFileWithLimit` 的所有错误路径（请求构造、`client.Do`、状态码、body 读取、大小限制）改为返回 origin-only 固定消息，仅暴露 URL origin（scheme + host + port）+ 稳定操作类别（`was canceled` / `timed out` / `failed`）+ HTTP 状态码 + 大小上限，丢弃底层错误文本与 unwrap 链。修复 `client.Do` 网络层失败时 `*url.Error` 嵌套字段泄露完整请求 URL（userinfo / path / query / fragment / redirect `Location`）到 `POST /api/update/apply` JSON 响应的问题（强制 HTTPS_PROXY 复现稳定暴露 query secret）。下载 URL 解析严格化：仅接受带 host 的绝对层级 http/https URL，transport 前拒绝 opaque / relative / 不支持 scheme / 缺 host / 畸形 escape；checksum URL 改用 `url.ResolveReference` 安全派生（替换 `strings.LastIndex` 切片，避免选到 query 内的斜杠）
+
+### Changed
+- **release.sh 平台连接失败健壮性**：`STATUS=$(curl ...)` 统一加 `|| true`，防止某平台（如关机的自托管 GitLab）连接失败时 curl 退出码经 `set -e` 导致整个发版脚本退出；连接失败时走 warn 分支跳过该平台
+
+### Docs
+- updater URL 脱敏 feature spec 与审查归档（中英双语，fail-closed origin-only 设计）：`sdd-docs/features/2026-07-10-updater-url-redaction/`
+
+---
+
 ## v0.15.1 (2026-07-10)
 
 ### Security
