@@ -374,6 +374,11 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request, id strin
 			return
 		}
 	}
+	// 凭据失效恢复钩子：仅当非空 API Token 实际改变时才清除 401 状态。
+	// 改名称/URL/模型/映射不触发恢复（无法证明凭据已修复）。
+	if s.failoverManager != nil && req.APIToken != "" && req.APIToken != oldAPIToken {
+		s.failoverManager.ClearCredentialFailure(id, true, false)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -413,6 +418,10 @@ func (s *Server) deleteProvider(w http.ResponseWriter, _ *http.Request, id strin
 	if err != nil {
 		writeConfigUpdateError(w, err)
 		return
+	}
+	// 清理已删除供应商的摘除状态（事件保留，列表展示时 ID 抹空）。
+	if s.failoverManager != nil {
+		s.failoverManager.OnProviderDeleted(id)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -687,8 +696,11 @@ func (s *Server) handleTestProviderByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// 测试连接
-	client := &http.Client{Timeout: 10 * time.Second}
+	// 测试连接（测试可注入客户端以绕过真实网络/SSRF）。
+	client := s.providerTestHTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
 	req2, _ := http.NewRequest("GET", provider.APIURL, nil)
 	if provider.APIToken != "" {
 		req2.Header.Set("Authorization", "Bearer "+provider.APIToken)
@@ -704,6 +716,12 @@ func (s *Server) handleTestProviderByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	defer resp.Body.Close()
+
+	// 凭据失效恢复钩子：测试连通且上游未回 401 时，视为凭据已修复，清除 401 摘除状态。
+	// 401 仍代表凭据无效，不清除（与额度快照恢复一样不触碰凭据状态）。
+	if s.failoverManager != nil && resp.StatusCode != http.StatusUnauthorized {
+		s.failoverManager.ClearCredentialFailure(id, false, true)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{

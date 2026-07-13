@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"magic-claude-code/internal/config"
+	"magic-claude-code/internal/failover"
 	"magic-claude-code/internal/providerquota"
 	"magic-claude-code/internal/updater"
 	"magic-claude-code/internal/usage"
@@ -38,6 +39,10 @@ type Server struct {
 	statsProvider              StatsProvider
 	usageHandler               *usage.Handler
 	quotaManager               *providerquota.Manager
+	failoverManager            *failover.Manager
+	// providerTestHTTPClient 仅测试注入：非 nil 时 handleTestProviderByID 用它代替默认客户端，
+	// 让测试在不绑定真实上游/不被 SSRF 拦截的情况下验证凭据恢复钩子。
+	providerTestHTTPClient *http.Client
 	updater                    *updater.Updater
 	updateApplyDisabledMessage string
 	gatewayRestarter           GatewayRestarter
@@ -98,7 +103,10 @@ func (s *Server) Start(addr string, frontendFS embed.FS) error {
 	mux.HandleFunc("/api/providers/export", s.authMiddlewareFunc(s.handleExportProviders))
 	mux.HandleFunc("/api/providers/import", s.authMiddlewareFunc(s.handleImportProviders))
 	mux.HandleFunc("/api/providers/usage", s.authMiddlewareFunc(s.handleProviderBatchUsage))
+	mux.HandleFunc("/api/providers/failover", s.authMiddlewareFunc(s.handleFailoverSettings))
 	mux.HandleFunc("/api/providers/", s.authMiddlewareFunc(s.handleProviderRoutes))
+	// 故障切换全局事件（独立于供应商子树，避免被 /api/providers/ 截获）。
+	mux.HandleFunc("/api/failover/events", s.authMiddlewareFunc(s.handleFailoverEvents))
 	// net/http ServeMux uses longest-pattern matching; keep exact session routes before the subtree handler for readability.
 	mux.HandleFunc("/api/sessions", s.authMiddlewareFunc(s.handleSessions))
 	mux.HandleFunc("/api/sessions/projects", s.authMiddlewareFunc(s.handleSessionProjects))
@@ -186,6 +194,17 @@ func (s *Server) SetGatewayRestarter(r GatewayRestarter) {
 // SetQuotaManager 注入额度查询管理器
 func (s *Server) SetQuotaManager(m *providerquota.Manager) {
 	s.quotaManager = m
+}
+
+// SetFailoverManager 注入故障切换管理器，启用 /api/providers/failover、
+// /api/failover/events 端点以及 Token 变更/测试成功/快照协调恢复钩子。
+func (s *Server) SetFailoverManager(m *failover.Manager) {
+	s.failoverManager = m
+}
+
+// setProviderTestHTTPClient 是测试专用注入：覆盖 handleTestProviderByID 的 HTTP 客户端。
+func (s *Server) setProviderTestHTTPClient(c *http.Client) {
+	s.providerTestHTTPClient = c
 }
 
 // SetEffectiveListenState records the proxy/admin listen addresses/ports that
