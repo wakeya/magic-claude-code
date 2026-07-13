@@ -68,15 +68,15 @@ Events cannot be associated reliably with a Claude `sessionId`. They are a globa
 
 Files: modify `internal/config/config.go`, `store.go`, `sqlite_store.go`; test `config_test.go`, `store_test.go`, `sqlite_store_test.go`.
 
-- [ ] Write failing `TestResolveRoute*` cases for exposed hit, fallback, disabled skip, and nil provider.
-- [ ] Run `go test ./internal/config -run TestResolveRoute -count=1`; expected: FAIL (`ResolveRoute` missing).
-- [ ] Add `ModelRoute`, `ResolveRoute`, and compatibility wrapper `ResolveModel` returning its provider/model.
-- [ ] Run the same command; expected: PASS.
-- [ ] Write failing persistence/concurrency tests for `AutoFailoverEnabled` and atomic active-ID plus toggle changes.
-- [ ] Run `go test ./internal/config -run 'TestAutoFailover|TestAtomicConfig' -count=1`; expected: FAIL.
-- [ ] Add the config field and store update function: lock, load newest config, apply `func(*Config) error`, validate, save, return committed copy; persist SQLite `0`/`1`; move every config writer to it.
-- [ ] Run `go test -v -race ./internal/config/...`; expected: PASS.
-- [ ] Commit: `git add internal/config && git commit -m "feat(config): add atomic failover settings"`.
+- [x] Write failing `TestResolveRoute*` cases for exposed hit, fallback, disabled skip, and nil provider.
+- [x] Run `go test ./internal/config -run TestResolveRoute -count=1`; expected: FAIL (`ResolveRoute` missing).
+- [x] Add `ModelRoute`, `ResolveRoute`, and compatibility wrapper `ResolveModel` returning its provider/model.
+- [x] Run the same command; expected: PASS.
+- [x] Write failing persistence/concurrency tests for `AutoFailoverEnabled` and atomic active-ID plus toggle changes.
+- [x] Run `go test ./internal/config -run 'TestAutoFailover|TestAtomicConfig' -count=1`; expected: FAIL.
+- [x] Add the config field and store update function: lock, load newest config, apply `func(*Config) error`, validate, save, return committed copy; persist SQLite `0`/`1`; move every config writer to it.
+- [x] Run `go test -v -race ./internal/config/...`; expected: PASS.
+- [x] Commit: `git add internal/config && git commit -m "feat(config): add atomic failover settings"`.
 
 #### Verification
 
@@ -86,11 +86,11 @@ go test -v -race ./internal/config/...
 
 Acceptance assertions:
 
-- [ ] `TestResolveRouteExposedModelIsNotDefaultRouted` returns the exposed provider/backend model with `DefaultRouted=false`.
-- [ ] `TestResolveRouteActiveFallbackIsDefaultRouted` returns the active provider `MapModel` value with `DefaultRouted=true`.
-- [ ] `TestResolveRouteSkipsDisabledExposedModel` and `TestResolveRouteWithoutActiveProvider` preserve fallback/nil behavior.
-- [ ] `TestAutoFailoverEnabledJSONRoundTrip` and `TestAutoFailoverEnabledSQLiteRoundTrip` reload true; an old database without the setting reloads false.
-- [ ] `TestAtomicConfigUpdatePreservesConcurrentActiveProviderAndFailoverSetting` repeatedly retains both changes under `-race`.
+- [x] `TestResolveRouteExposedModelIsNotDefaultRouted` returns the exposed provider/backend model with `DefaultRouted=false`.
+- [x] `TestResolveRouteActiveFallbackIsDefaultRouted` returns the active provider `MapModel` value with `DefaultRouted=true`.
+- [x] `TestResolveRouteSkipsDisabledExposedModel` and `TestResolveRouteWithoutActiveProvider` preserve fallback/nil behavior.
+- [x] `TestAutoFailoverEnabledJSONRoundTrip` and `TestAutoFailoverEnabledSQLiteRoundTrip` reload true; an old database without the setting reloads false.
+- [x] `TestAtomicConfigUpdatePreservesConcurrentActiveProviderAndFailoverSetting` repeatedly retains both changes under `-race`.
 
 Expected: exit 0, no data race, and existing `ResolveModel` tests remain green.
 
@@ -114,14 +114,14 @@ Expected: exit 0, no data race, and existing `ResolveModel` tests remain green.
 
 Files: create `internal/failover/types.go`, `classifier.go`, `store.go`, `manager.go` and tests; modify `internal/config/sqlite_store.go` migration.
 
-- [ ] Write failing `TestClassify` table rows for 1308, 1310, quota text, healthy deployment, 401, 403, 502/529/ECONNRESET, and all non-switch examples.
-- [ ] Run `go test ./internal/failover -run TestClassify -count=1`; expected: FAIL (package missing).
-- [ ] Implement `Classification{Eligible, Reason, UpstreamCode, DisabledUntil}` and `captureAndRestore`: read `io.LimitReader(resp.Body, 64*1024+1)`, parse only `error.code`, `error.message`, `code`, `message`, string `error`; restore exact bytes when not eligible.
-- [ ] Use 15m quota fallback, 1m deployment/502/529/reset, 5m Cloudflare, and credential state with no time-based recovery.
-- [ ] Write failing store tests for `provider_failover_state`, `provider_failover_events`, 30-day/1,000 retention, no secret fields, expiry, Token-change/test recovery, unchanged-token non-recovery, and snapshot recovery.
-- [ ] Implement CRUD/list/pruning, `ClearCredentialFailure(providerID, tokenChanged, testSucceeded)`, and manager selection under one mutex (same model pass then fallback pass).
-- [ ] Run `go test -v -race ./internal/failover/...`; expected: PASS.
-- [ ] Commit: `git add internal/failover internal/config/sqlite_store.go && git commit -m "feat(failover): classify and quarantine providers"`.
+- [x] Write failing `TestClassify` table rows for 1308, 1310, quota text, healthy deployment, 401, 403, 502/529/ECONNRESET, and all non-switch examples.
+- [x] Run `go test ./internal/failover -run TestClassify -count=1`; expected: FAIL (package missing).
+- [x] Implement `Classification{Eligible, Reason, UpstreamCode, DisabledUntil}` and `captureAndRestore`: read `io.LimitReader(resp.Body, 64*1024+1)`, parse only `error.code`, `error.message`, `code`, `message`, string `error`; restore exact bytes when not eligible.
+- [x] Use 15m quota fallback, 1m deployment/502/529/reset, 5m Cloudflare, and credential state with no time-based recovery.
+- [x] Write failing store tests for `provider_failover_state`, `provider_failover_events`, 30-day/1,000 retention, no secret fields, expiry, Token-change/test recovery, unchanged-token non-recovery, and snapshot recovery.
+- [x] Implement CRUD/list/pruning, `ClearCredentialFailure(providerID, tokenChanged, testSucceeded)`, and manager selection under one mutex (same model pass then fallback pass).
+- [x] Run `go test -v -race ./internal/failover/...`; expected: PASS.
+- [x] Commit: `git add internal/failover internal/config/sqlite_store.go && git commit -m "feat(failover): classify and quarantine providers"`.
 
 #### Verification
 
@@ -131,13 +131,13 @@ go test -v -race ./internal/failover/...
 
 Acceptance assertions:
 
-- [ ] `TestClassify1308WithReset` and `TestClassify1310WithReset` assert code, reason, and future reset; invalid/past/>7-day reset falls back to 15m.
-- [ ] `TestClassifyHealthyDeployment400`, `TestClassifyInvalidAPIKey401`, `TestClassifyCloudflare403`, and `TestClassifyAvailabilityFailures` produce only the specified cooldown/credential state.
-- [ ] `TestBare429DoesNotFailover`, `TestClassify1210DoesNotFailover`, `TestModelNotFoundDoesNotFailover`, `TestContextLimitDoesNotFailover`, and tool compatibility cases assert `Eligible=false`.
-- [ ] `TestClassifierRestoresNonEligibleBody` compares exact bytes; `TestOversizedBodyDoesNotFailover` rejects bodies over 64 KiB.
-- [ ] `TestFailoverEventRetention` proves 30-day/1,000-row pruning; `TestFailoverEventRedactsSecrets` excludes token, request body, and query.
-- [ ] `TestCredentialFailureRequiresTokenChangeOrSuccessfulTest` rejects name/mapping-only edit and failed test; accepts Token change and successful test.
-- [ ] `TestConcurrentFailoverSelectionHasSingleWinner` asserts one active update and one `switched` event under `-race`.
+- [x] `TestClassify1308WithReset` and `TestClassify1310WithReset` assert code, reason, and future reset; invalid/past/>7-day reset falls back to 15m.
+- [x] `TestClassifyHealthyDeployment400`, `TestClassifyInvalidAPIKey401`, `TestClassifyCloudflare403`, and `TestClassifyAvailabilityFailures` produce only the specified cooldown/credential state.
+- [x] `TestBare429DoesNotFailover`, `TestClassify1210DoesNotFailover`, `TestModelNotFoundDoesNotFailover`, `TestContextLimitDoesNotFailover`, and tool compatibility cases assert `Eligible=false`.
+- [x] `TestClassifierRestoresNonEligibleBody` compares exact bytes; `TestOversizedBodyDoesNotFailover` rejects bodies over 64 KiB.
+- [x] `TestFailoverEventRetention` proves 30-day/1,000-row pruning; `TestFailoverEventRedactsSecrets` excludes token, request body, and query.
+- [x] `TestCredentialFailureRequiresTokenChangeOrSuccessfulTest` rejects name/mapping-only edit and failed test; accepts Token change and successful test.
+- [x] `TestConcurrentFailoverSelectionHasSingleWinner` asserts one active update and one `switched` event under `-race`.
 
 Expected: exit 0; state/event transactions are consistent and race-free.
 
@@ -161,13 +161,13 @@ Expected: exit 0; state/event transactions are consistent and race-free.
 
 Files: modify `internal/proxy/handler.go`, `internal/proxy/ratelimit/retry429.go`, `cmd/server/main.go`; test `internal/proxy/server_test.go` and focused failover tests.
 
-- [ ] Write failing `TestFailover*` httptest cases from Evidence.
-- [ ] Run `go test ./internal/proxy -run TestFailover -count=1`; expected: FAIL.
-- [ ] Add `Handler.SetFailoverManager(*failover.Manager)` and a helper accepting `(originalBody, provider, backendModel)` that creates fresh transformed body, URL, token, headers, and API format.
-- [ ] Run same-provider retry first; classify its final response only; apply candidate queue/retry and close discarded responses.
-- [ ] Persist active provider only after `<400`, emit `switched`/`retry_failed`/`exhausted`, and record usage once for the final response.
-- [ ] Run `go test -v -race ./internal/proxy/...`; expected: PASS.
-- [ ] Commit: `git add internal/proxy cmd/server/main.go && git commit -m "feat(proxy): fail over default providers"`.
+- [x] Write failing `TestFailover*` httptest cases from Evidence.
+- [x] Run `go test ./internal/proxy -run TestFailover -count=1`; expected: FAIL.
+- [x] Add `Handler.SetFailoverManager(*failover.Manager)` and a helper accepting `(originalBody, provider, backendModel)` that creates fresh transformed body, URL, token, headers, and API format.
+- [x] Run same-provider retry first; classify its final response only; apply candidate queue/retry and close discarded responses.
+- [x] Persist active provider only after `<400`, emit `switched`/`retry_failed`/`exhausted`, and record usage once for the final response.
+- [x] Run `go test -v -race ./internal/proxy/...`; expected: PASS.
+- [x] Commit: `git add internal/proxy cmd/server/main.go && git commit -m "feat(proxy): fail over default providers"`.
 
 #### Verification
 
@@ -177,13 +177,13 @@ go test -v -race ./internal/proxy/...
 
 Acceptance assertions:
 
-- [ ] `TestFailoverDisabledPasses1308Through` returns original 429, leaves active ID unchanged, and emits no switch event.
-- [ ] `TestFailoverSwitchesSameMappedModelFirst` retries the first same-mapped-model provider, returns 2xx, and persists its active ID/event.
-- [ ] `TestFailoverFallsBackInProviderOrder` skips failed, disabled, and quarantined providers and follows config order.
-- [ ] `TestFailoverNeverChangesExposedModelRoute` proves an `ExposedModel.ID` request never retries or changes active provider.
-- [ ] `TestFailoverDoesNotSwitchRequestOrModelErrors` covers bare 429, 1210, 404, and tool errors; `TestFailoverSwitchesAvailabilityFailure` covers 502.
-- [ ] `TestFailoverRebuildsOpenAIAndAnthropicRequests` asserts candidate URL, auth, model mapping, and conversion are candidate-owned.
-- [ ] `TestFailoverRecordsOnlyFinalUsage` has one final-provider usage row; `TestFailoverAllCandidatesExhausted` does not double-write headers/body.
+- [x] `TestFailoverDisabledPasses1308Through` returns original 429, leaves active ID unchanged, and emits no switch event.
+- [x] `TestFailoverSwitchesSameMappedModelFirst` retries the first same-mapped-model provider, returns 2xx, and persists its active ID/event.
+- [x] `TestFailoverFallsBackInProviderOrder` skips failed, disabled, and quarantined providers and follows config order.
+- [x] `TestFailoverNeverChangesExposedModelRoute` proves an `ExposedModel.ID` request never retries or changes active provider.
+- [x] `TestFailoverDoesNotSwitchRequestOrModelErrors` covers bare 429, 1210, 404, and tool errors; `TestFailoverSwitchesAvailabilityFailure` covers 502.
+- [x] `TestFailoverRebuildsOpenAIAndAnthropicRequests` asserts candidate URL, auth, model mapping, and conversion are candidate-owned.
+- [x] `TestFailoverRecordsOnlyFinalUsage` has one final-provider usage row; `TestFailoverAllCandidatesExhausted` does not double-write headers/body.
 
 Expected: exit 0, full proxy regression green, and `-race` reports no race.
 
@@ -207,13 +207,13 @@ Expected: exit 0, full proxy regression green, and `-race` reports no race.
 
 Files: modify `internal/providerquota/manager.go`, `internal/admin/server.go`, `provider_handler.go`; create `internal/admin/failover_handler.go`; add admin/quota tests.
 
-- [ ] Write failing API/auth tests for `GET/PUT /api/providers/failover` and event list, including malformed body and limits.
-- [ ] Run `go test ./internal/admin -run TestFailover -count=1`; expected: FAIL.
-- [ ] Register routes and return only `{"enabled":bool}` / `{"events":[...]}` via Task 1 atomic update.
-- [ ] Write failing token-update and successful/failed provider-test recovery tests.
-- [ ] Compare old/new stored Token before update; clear credential state only when non-empty Token changed. Clear it after successful provider test only; failed test leaves state. Reconcile fresh snapshots after persistence and every 30s, clearing quota state only.
-- [ ] Run `go test -v -race ./internal/admin/... ./internal/providerquota/...`; expected: PASS.
-- [ ] Commit: `git add internal/admin internal/providerquota && git commit -m "feat(admin): expose failover controls and recovery"`.
+- [x] Write failing API/auth tests for `GET/PUT /api/providers/failover` and event list, including malformed body and limits.
+- [x] Run `go test ./internal/admin -run TestFailover -count=1`; expected: FAIL.
+- [x] Register routes and return only `{"enabled":bool}` / `{"events":[...]}` via Task 1 atomic update.
+- [x] Write failing token-update and successful/failed provider-test recovery tests.
+- [x] Compare old/new stored Token before update; clear credential state only when non-empty Token changed. Clear it after successful provider test only; failed test leaves state. Reconcile fresh snapshots after persistence and every 30s, clearing quota state only.
+- [x] Run `go test -v -race ./internal/admin/... ./internal/providerquota/...`; expected: PASS.
+- [x] Commit: `git add internal/admin internal/providerquota && git commit -m "feat(admin): expose failover controls and recovery"`.
 
 #### Verification
 
@@ -223,13 +223,13 @@ go test -v -race ./internal/admin/... ./internal/providerquota/...
 
 Acceptance assertions:
 
-- [ ] `TestFailoverSettingsRequireAuth` returns 401; `TestFailoverSettingsMethods` returns 405 for bad methods and 400 for bad JSON/unknown fields.
-- [ ] `TestFailoverSettingsRoundTrip` persists true across reload; `TestFailoverEventsLimitAndOrder` proves default 50, clamp 1..100, and `occurred_at DESC,id DESC` order.
-- [ ] `TestFailoverEventsDoNotExposeSecrets` excludes token, response body, and query URL.
-- [ ] `TestProviderTokenChangeClearsCredentialFailure` accepts only a non-empty changed Token; `TestProviderEditWithoutTokenChangeKeepsCredentialFailure` rejects name/URL/model-only edits.
-- [ ] `TestSuccessfulProviderTestClearsCredentialFailure` emits `recovered`; failed test remains quarantined.
-- [ ] `TestQuotaSnapshotRecoveryDoesNotClearCredentialFailure` and `TestQuotaSnapshotExhaustionQuarantinesUntilReset` distinguish quota and credential state.
-- [ ] `TestProviderDeleteLeavesNoDanglingFailoverEventIDs` proves returned events have no deleted provider IDs.
+- [x] `TestFailoverSettingsRequireAuth` returns 401; `TestFailoverSettingsMethods` returns 405 for bad methods and 400 for bad JSON/unknown fields.
+- [x] `TestFailoverSettingsRoundTrip` persists true across reload; `TestFailoverEventsLimitAndOrder` proves default 50, clamp 1..100, and `occurred_at DESC,id DESC` order.
+- [x] `TestFailoverEventsDoNotExposeSecrets` excludes token, response body, and query URL.
+- [x] `TestProviderTokenChangeClearsCredentialFailure` accepts only a non-empty changed Token; `TestProviderEditWithoutTokenChangeKeepsCredentialFailure` rejects name/URL/model-only edits.
+- [x] `TestSuccessfulProviderTestClearsCredentialFailure` emits `recovered`; failed test remains quarantined.
+- [x] `TestQuotaSnapshotRecoveryDoesNotClearCredentialFailure` and `TestQuotaSnapshotExhaustionQuarantinesUntilReset` distinguish quota and credential state.
+- [x] `TestProviderDeleteLeavesNoDanglingFailoverEventIDs` proves returned events have no deleted provider IDs.
 
 Expected: exit 0, all endpoints remain authenticated, and quota credentials never leak.
 
@@ -253,13 +253,13 @@ Expected: exit 0, all endpoints remain authenticated, and quota credentials neve
 
 Files: modify `internal/frontend/src/composables/useApi.ts`, `useI18n.ts`, `views/DashboardView.vue`; add `views/FailoverEventsView.vue`; add/update frontend tests. Do not edit `components/SessionBrowser.vue`, `components/SessionDetail.vue`, session export code, or JSONL rendering unless an existing type import must be adjusted by the compiler.
 
-- [ ] Write failing tests for `getFailoverSettings`, `setFailoverSettings`, `getFailoverEvents`, title switch, `tab.failover` immediately after `tab.sessions` in main navigation, independent event page, global transcript disclaimer, and source/target/model/reason/outcome fields.
-- [ ] Run `npm --prefix internal/frontend test -- --run`; expected: FAIL.
-- [ ] Add typed `FailoverEvent`/settings APIs, save-disabled optimistic switch with failure rollback, and 15s active-tab provider refresh.
-- [ ] Extend DashboardView `MainTab` with `'failover'`, put `{ key: 'failover', labelKey: 'tab.failover' }` immediately after `sessions`, keep the existing `activeTab === 'sessions'` branch and all `SessionBrowser` props/children exactly as they are today, and create `FailoverEventsView.vue` rendered only for `activeTab === 'failover'`; fetch on entering/refreshing it; never pass events to SessionBrowser/SessionDetail/export.
-- [ ] Add semantically matching Chinese/English i18n keys.
-- [ ] Run `npm --prefix internal/frontend test && npm --prefix internal/frontend run build`; expected: PASS.
-- [ ] Commit: `git add internal/frontend && git commit -m "feat(ui): show provider failover events"`.
+- [x] Write failing tests for `getFailoverSettings`, `setFailoverSettings`, `getFailoverEvents`, title switch, `tab.failover` immediately after `tab.sessions` in main navigation, independent event page, global transcript disclaimer, and source/target/model/reason/outcome fields.
+- [x] Run `npm --prefix internal/frontend test -- --run`; expected: FAIL.
+- [x] Add typed `FailoverEvent`/settings APIs, save-disabled optimistic switch with failure rollback, and 15s active-tab provider refresh.
+- [x] Extend DashboardView `MainTab` with `'failover'`, put `{ key: 'failover', labelKey: 'tab.failover' }` immediately after `sessions`, keep the existing `activeTab === 'sessions'` branch and all `SessionBrowser` props/children exactly as they are today, and create `FailoverEventsView.vue` rendered only for `activeTab === 'failover'`; fetch on entering/refreshing it; never pass events to SessionBrowser/SessionDetail/export.
+- [x] Add semantically matching Chinese/English i18n keys.
+- [x] Run `npm --prefix internal/frontend test && npm --prefix internal/frontend run build`; expected: PASS.
+- [x] Commit: `git add internal/frontend && git commit -m "feat(ui): show provider failover events"`.
 
 #### Verification
 
@@ -270,11 +270,11 @@ npm --prefix internal/frontend run build
 
 Acceptance assertions:
 
-- [ ] `useApi` tests assert GET settings, PUT JSON settings, and safely encoded event limit.
-- [ ] `DashboardFailoverSwitch` asserts a labelled adjacent switch, disabled save state, PUT failure rollback, and active-Providers-tab-only 15-second refresh.
-- [ ] `DashboardFailoverTab` asserts `tab.failover` immediately follows `tab.sessions`; `FailoverEventsView` asserts global disclaimer plus source→target, model, reason, status/code, outcome, and disabled-until; returning to Session Records does not mutate SessionBrowser state, DOM structure, selected session, filters, export behavior, or transcript rendering.
-- [ ] Tests prove events are not passed as `SessionDetail.messages` and export remains `/api/sessions/{id}/export` only.
-- [ ] Every new i18n key exists in both locales; API failure preserves existing error state and JSONL content.
+- [x] `useApi` tests assert GET settings, PUT JSON settings, and safely encoded event limit.
+- [x] `DashboardFailoverSwitch` asserts a labelled adjacent switch, disabled save state, PUT failure rollback, and active-Providers-tab-only 15-second refresh.
+- [x] `DashboardFailoverTab` asserts `tab.failover` immediately follows `tab.sessions`; `FailoverEventsView` asserts global disclaimer plus source→target, model, reason, status/code, outcome, and disabled-until; returning to Session Records does not mutate SessionBrowser state, DOM structure, selected session, filters, export behavior, or transcript rendering.
+- [x] Tests prove events are not passed as `SessionDetail.messages` and export remains `/api/sessions/{id}/export` only.
+- [x] Every new i18n key exists in both locales; API failure preserves existing error state and JSONL content.
 
 Expected: both commands exit 0 and generate `internal/frontend/dist` without TypeScript/Vite errors.
 

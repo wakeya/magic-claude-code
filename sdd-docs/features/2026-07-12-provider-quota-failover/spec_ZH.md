@@ -68,15 +68,15 @@
 
 文件：修改 `internal/config/config.go`、`store.go`、`sqlite_store.go`；测试 `config_test.go`、`store_test.go`、`sqlite_store_test.go`。
 
-- [ ] 写 `TestResolveRoute*` 失败测试：exposed hit、fallback、disabled skip、nil provider。
-- [ ] 执行 `go test ./internal/config -run TestResolveRoute -count=1`；预期：`ResolveRoute` 缺失而失败。
-- [ ] 加 `ModelRoute`、`ResolveRoute`；`ResolveModel` 包装返回其中 provider/model。
-- [ ] 再执行该命令；预期：通过。
-- [ ] 写 `AutoFailoverEnabled` 持久化和 active-ID/开关并发更新的失败测试。
-- [ ] 执行 `go test ./internal/config -run 'TestAutoFailover|TestAtomicConfig' -count=1`；预期：失败。
-- [ ] 加 config 字段与 Store 原子更新：锁定、读最新、执行 `func(*Config) error`、校验、保存、返回已提交副本；SQLite 保存 `0`/`1`；所有配置写入走此路径。
-- [ ] 执行 `go test -v -race ./internal/config/...`；预期：通过。
-- [ ] 提交：`git add internal/config && git commit -m "feat(config): add atomic failover settings"`。
+- [x] 写 `TestResolveRoute*` 失败测试：exposed hit、fallback、disabled skip、nil provider。
+- [x] 执行 `go test ./internal/config -run TestResolveRoute -count=1`；预期：`ResolveRoute` 缺失而失败。
+- [x] 加 `ModelRoute`、`ResolveRoute`；`ResolveModel` 包装返回其中 provider/model。
+- [x] 再执行该命令；预期：通过。
+- [x] 写 `AutoFailoverEnabled` 持久化和 active-ID/开关并发更新的失败测试。
+- [x] 执行 `go test ./internal/config -run 'TestAutoFailover|TestAtomicConfig' -count=1`；预期：失败。
+- [x] 加 config 字段与 Store 原子更新：锁定、读最新、执行 `func(*Config) error`、校验、保存、返回已提交副本；SQLite 保存 `0`/`1`；所有配置写入走此路径。
+- [x] 执行 `go test -v -race ./internal/config/...`；预期：通过。
+- [x] 提交：`git add internal/config && git commit -m "feat(config): add atomic failover settings"`。
 
 #### 验证
 
@@ -86,11 +86,11 @@ go test -v -race ./internal/config/...
 
 逐项验收：
 
-- [ ] `TestResolveRouteExposedModelIsNotDefaultRouted`：返回 exposed provider/`BackendModel`，且 `DefaultRouted=false`。
-- [ ] `TestResolveRouteActiveFallbackIsDefaultRouted`：返回 active provider 的 `MapModel` 值，且 `DefaultRouted=true`。
-- [ ] `TestResolveRouteSkipsDisabledExposedModel` 与 `TestResolveRouteWithoutActiveProvider` 保持既有 fallback/nil 语义。
-- [ ] `TestAutoFailoverEnabledJSONRoundTrip`、`TestAutoFailoverEnabledSQLiteRoundTrip` 保存后重载仍为 true；旧数据库缺少 setting 时为 false。
-- [ ] `TestAtomicConfigUpdatePreservesConcurrentActiveProviderAndFailoverSetting` 在 `-race` 下多次运行，最终同时保留新 active ID 和新开关值。
+- [x] `TestResolveRouteExposedModelIsNotDefaultRouted`：返回 exposed provider/`BackendModel`，且 `DefaultRouted=false`。
+- [x] `TestResolveRouteActiveFallbackIsDefaultRouted`：返回 active provider 的 `MapModel` 值，且 `DefaultRouted=true`。
+- [x] `TestResolveRouteSkipsDisabledExposedModel` 与 `TestResolveRouteWithoutActiveProvider` 保持既有 fallback/nil 语义。
+- [x] `TestAutoFailoverEnabledJSONRoundTrip`、`TestAutoFailoverEnabledSQLiteRoundTrip` 保存后重载仍为 true；旧数据库缺少 setting 时为 false。
+- [x] `TestAtomicConfigUpdatePreservesConcurrentActiveProviderAndFailoverSetting` 在 `-race` 下多次运行，最终同时保留新 active ID 和新开关值。
 
 预期：命令返回 0；没有 data race；`ResolveModel` 的既有测试仍全绿。
 
@@ -114,14 +114,14 @@ go test -v -race ./internal/config/...
 
 文件：新建 `internal/failover/types.go`、`classifier.go`、`store.go`、`manager.go` 与测试；修改 `internal/config/sqlite_store.go` migration。
 
-- [ ] 写 `TestClassify` 失败表：1308、1310、额度文字、healthy deployment、401、403、502/529/ECONNRESET 与所有不切换样例。
-- [ ] 执行 `go test ./internal/failover -run TestClassify -count=1`；预期：package 缺失失败。
-- [ ] 实现 `Classification{Eligible, Reason, UpstreamCode, DisabledUntil}` 与 `captureAndRestore`：用 `io.LimitReader(resp.Body, 64*1024+1)`，只解析 `error.code`、`error.message`、`code`、`message`、字符串 `error`；不合格时精确还原 bytes。
-- [ ] 使用额度无 reset 15m、deployment/502/529/reset 1m、Cloudflare 5m；credential state 无时间恢复。
-- [ ] 写 state/event 表、30 天/1,000、无 secret、过期、Token 改变/测试成功恢复、未改变不恢复、快照恢复的失败测试。
-- [ ] 实现 CRUD/list/prune、`ClearCredentialFailure(providerID, tokenChanged, testSucceeded)`，仅 `tokenChanged || testSucceeded` 才清 401；manager 在一个 mutex 内按同模型后 fallback 选择。
-- [ ] 执行 `go test -v -race ./internal/failover/...`；预期：通过。
-- [ ] 提交：`git add internal/failover internal/config/sqlite_store.go && git commit -m "feat(failover): classify and quarantine providers"`。
+- [x] 写 `TestClassify` 失败表：1308、1310、额度文字、healthy deployment、401、403、502/529/ECONNRESET 与所有不切换样例。
+- [x] 执行 `go test ./internal/failover -run TestClassify -count=1`；预期：package 缺失失败。
+- [x] 实现 `Classification{Eligible, Reason, UpstreamCode, DisabledUntil}` 与 `captureAndRestore`：用 `io.LimitReader(resp.Body, 64*1024+1)`，只解析 `error.code`、`error.message`、`code`、`message`、字符串 `error`；不合格时精确还原 bytes。
+- [x] 使用额度无 reset 15m、deployment/502/529/reset 1m、Cloudflare 5m；credential state 无时间恢复。
+- [x] 写 state/event 表、30 天/1,000、无 secret、过期、Token 改变/测试成功恢复、未改变不恢复、快照恢复的失败测试。
+- [x] 实现 CRUD/list/prune、`ClearCredentialFailure(providerID, tokenChanged, testSucceeded)`，仅 `tokenChanged || testSucceeded` 才清 401；manager 在一个 mutex 内按同模型后 fallback 选择。
+- [x] 执行 `go test -v -race ./internal/failover/...`；预期：通过。
+- [x] 提交：`git add internal/failover internal/config/sqlite_store.go && git commit -m "feat(failover): classify and quarantine providers"`。
 
 #### 验证
 
@@ -131,13 +131,13 @@ go test -v -race ./internal/failover/...
 
 逐项验收：
 
-- [ ] `TestClassify1308WithReset` 与 `TestClassify1310WithReset` 识别 code、原因和未来重置时间；无效/过去/超过 7 天 reset 回退到 15 分钟。
-- [ ] `TestClassifyHealthyDeployment400`、`TestClassifyInvalidAPIKey401`、`TestClassifyCloudflare403`、`TestClassifyAvailabilityFailures` 只对规定信号产生正确冷却或凭据 state。
-- [ ] `TestBare429DoesNotFailover`、`TestClassify1210DoesNotFailover`、`TestModelNotFoundDoesNotFailover`、`TestContextLimitDoesNotFailover` 与工具兼容错误均断言 `Eligible=false`。
-- [ ] `TestClassifierRestoresNonEligibleBody` 比较原始 response bytes；`TestOversizedBodyDoesNotFailover` 断言超过 64 KiB 不触发切换。
-- [ ] `TestFailoverEventRetention` 同时验证删除 30 天前行和仅保留 1,000 条；`TestFailoverEventRedactsSecrets` 断言 token、请求 body、query 不进入 event。
-- [ ] `TestCredentialFailureRequiresTokenChangeOrSuccessfulTest` 验证仅改名称/映射和失败测试不恢复；Token 改变、成功测试恢复。
-- [ ] `TestConcurrentFailoverSelectionHasSingleWinner` 在 `-race` 下断言一个 active 更新和一条 `switched`。
+- [x] `TestClassify1308WithReset` 与 `TestClassify1310WithReset` 识别 code、原因和未来重置时间；无效/过去/超过 7 天 reset 回退到 15 分钟。
+- [x] `TestClassifyHealthyDeployment400`、`TestClassifyInvalidAPIKey401`、`TestClassifyCloudflare403`、`TestClassifyAvailabilityFailures` 只对规定信号产生正确冷却或凭据 state。
+- [x] `TestBare429DoesNotFailover`、`TestClassify1210DoesNotFailover`、`TestModelNotFoundDoesNotFailover`、`TestContextLimitDoesNotFailover` 与工具兼容错误均断言 `Eligible=false`。
+- [x] `TestClassifierRestoresNonEligibleBody` 比较原始 response bytes；`TestOversizedBodyDoesNotFailover` 断言超过 64 KiB 不触发切换。
+- [x] `TestFailoverEventRetention` 同时验证删除 30 天前行和仅保留 1,000 条；`TestFailoverEventRedactsSecrets` 断言 token、请求 body、query 不进入 event。
+- [x] `TestCredentialFailureRequiresTokenChangeOrSuccessfulTest` 验证仅改名称/映射和失败测试不恢复；Token 改变、成功测试恢复。
+- [x] `TestConcurrentFailoverSelectionHasSingleWinner` 在 `-race` 下断言一个 active 更新和一条 `switched`。
 
 预期：命令返回 0；所有 state/event 事务一致，且无 race。
 
@@ -161,13 +161,13 @@ go test -v -race ./internal/failover/...
 
 文件：修改 `internal/proxy/handler.go`、`internal/proxy/ratelimit/retry429.go`、`cmd/server/main.go`；测试 `internal/proxy/server_test.go` 与 failover 聚焦测试。
 
-- [ ] 写 `TestFailover*` httptest 失败用例，覆盖 Evidence。
-- [ ] 执行 `go test ./internal/proxy -run TestFailover -count=1`；预期：失败。
-- [ ] 加 `Handler.SetFailoverManager(*failover.Manager)` 与输入 `(originalBody, provider, backendModel)` 的 helper，重新生成转换 body、URL、Token、header、format。
-- [ ] 先运行同 provider retry，仅分类最终 response；候选应用自身 queue/retry，丢弃 response 先关闭。
-- [ ] 仅 `<400` 保存 active，并写 `switched`/`retry_failed`/`exhausted`；usage 只记最终 response。
-- [ ] 执行 `go test -v -race ./internal/proxy/...`；预期：通过。
-- [ ] 提交：`git add internal/proxy cmd/server/main.go && git commit -m "feat(proxy): fail over default providers"`。
+- [x] 写 `TestFailover*` httptest 失败用例，覆盖 Evidence。
+- [x] 执行 `go test ./internal/proxy -run TestFailover -count=1`；预期：失败。
+- [x] 加 `Handler.SetFailoverManager(*failover.Manager)` 与输入 `(originalBody, provider, backendModel)` 的 helper，重新生成转换 body、URL、Token、header、format。
+- [x] 先运行同 provider retry，仅分类最终 response；候选应用自身 queue/retry，丢弃 response 先关闭。
+- [x] 仅 `<400` 保存 active，并写 `switched`/`retry_failed`/`exhausted`；usage 只记最终 response。
+- [x] 执行 `go test -v -race ./internal/proxy/...`；预期：通过。
+- [x] 提交：`git add internal/proxy cmd/server/main.go && git commit -m "feat(proxy): fail over default providers"`。
 
 #### 验证
 
@@ -177,13 +177,13 @@ go test -v -race ./internal/proxy/...
 
 逐项验收：
 
-- [ ] `TestFailoverDisabledPasses1308Through`：客户端仍收到原 429，`active_provider_id` 不变，且无切换事件。
-- [ ] `TestFailoverSwitchesSameMappedModelFirst`：1308 后首个同 mapped model 的 provider 收到重新构造的请求，响应为 2xx，active ID 和 `switched` event 指向它。
-- [ ] `TestFailoverFallsBackInProviderOrder`：无同模型候选时按配置顺序；已摘除、禁用、失败来源 provider 均不访问。
-- [ ] `TestFailoverNeverChangesExposedModelRoute`：`ExposedModel.ID` 请求收到 1308 时不重试、不改 active。
-- [ ] `TestFailoverDoesNotSwitchRequestOrModelErrors` 覆盖裸 429、1210、404、工具兼容错误；`TestFailoverSwitchesAvailabilityFailure` 覆盖 502。
-- [ ] `TestFailoverRebuildsOpenAIAndAnthropicRequests` 断言候选 URL、认证头、映射模型、格式转换来自候选而非失败 provider。
-- [ ] `TestFailoverRecordsOnlyFinalUsage` 断言 usage 只有最终成功 provider 一行；`TestFailoverAllCandidatesExhausted` 不双写 header/body。
+- [x] `TestFailoverDisabledPasses1308Through`：客户端仍收到原 429，`active_provider_id` 不变，且无切换事件。
+- [x] `TestFailoverSwitchesSameMappedModelFirst`：1308 后首个同 mapped model 的 provider 收到重新构造的请求，响应为 2xx，active ID 和 `switched` event 指向它。
+- [x] `TestFailoverFallsBackInProviderOrder`：无同模型候选时按配置顺序；已摘除、禁用、失败来源 provider 均不访问。
+- [x] `TestFailoverNeverChangesExposedModelRoute`：`ExposedModel.ID` 请求收到 1308 时不重试、不改 active。
+- [x] `TestFailoverDoesNotSwitchRequestOrModelErrors` 覆盖裸 429、1210、404、工具兼容错误；`TestFailoverSwitchesAvailabilityFailure` 覆盖 502。
+- [x] `TestFailoverRebuildsOpenAIAndAnthropicRequests` 断言候选 URL、认证头、映射模型、格式转换来自候选而非失败 provider。
+- [x] `TestFailoverRecordsOnlyFinalUsage` 断言 usage 只有最终成功 provider 一行；`TestFailoverAllCandidatesExhausted` 不双写 header/body。
 
 预期：命令返回 0；全量 proxy 回归通过，`go test -race` 不报 race。
 
@@ -207,13 +207,13 @@ go test -v -race ./internal/proxy/...
 
 文件：修改 `internal/providerquota/manager.go`、`internal/admin/server.go`、`provider_handler.go`；新建 `internal/admin/failover_handler.go`；添加 admin/quota 测试。
 
-- [ ] 写开关/event API、认证、坏 method/body/limit 的失败测试。
-- [ ] 执行 `go test ./internal/admin -run TestFailover -count=1`；预期：失败。
-- [ ] 注册路由，只返回 `{"enabled":bool}` / `{"events":[...]}`，通过任务 1 原子更新。
-- [ ] 写 Token 更新、成功/失败 provider test 恢复失败测试。
-- [ ] 更新前比较旧/新 Token；只有非空 Token 改变才清 credential state；只有成功 test 才清；snapshot 持久化后和 30s ticker 做 reconciliation，只清 quota state。
-- [ ] 执行 `go test -v -race ./internal/admin/... ./internal/providerquota/...`；预期：通过。
-- [ ] 提交：`git add internal/admin internal/providerquota && git commit -m "feat(admin): expose failover controls and recovery"`。
+- [x] 写开关/event API、认证、坏 method/body/limit 的失败测试。
+- [x] 执行 `go test ./internal/admin -run TestFailover -count=1`；预期：失败。
+- [x] 注册路由，只返回 `{"enabled":bool}` / `{"events":[...]}`，通过任务 1 原子更新。
+- [x] 写 Token 更新、成功/失败 provider test 恢复失败测试。
+- [x] 更新前比较旧/新 Token；只有非空 Token 改变才清 credential state；只有成功 test 才清；snapshot 持久化后和 30s ticker 做 reconciliation，只清 quota state。
+- [x] 执行 `go test -v -race ./internal/admin/... ./internal/providerquota/...`；预期：通过。
+- [x] 提交：`git add internal/admin internal/providerquota && git commit -m "feat(admin): expose failover controls and recovery"`。
 
 #### 验证
 
@@ -223,13 +223,13 @@ go test -v -race ./internal/admin/... ./internal/providerquota/...
 
 逐项验收：
 
-- [ ] `TestFailoverSettingsRequireAuth` 返回 401；`TestFailoverSettingsMethods` 对错误 method 返回 405；错误 JSON/未知字段返回 400。
-- [ ] `TestFailoverSettingsRoundTrip` PUT true 后 GET 为 true，重启/重载仍为 true；`TestFailoverEventsLimitAndOrder` 验证默认 50、1..100 钳制、按 `occurred_at DESC,id DESC`。
-- [ ] `TestFailoverEventsDoNotExposeSecrets` 响应不含 API token、响应 body、带 query URL。
-- [ ] `TestProviderTokenChangeClearsCredentialFailure` 仅非空且实际变更的 Token 清 401 state；`TestProviderEditWithoutTokenChangeKeepsCredentialFailure` 断言名称/URL/模型编辑不清。
-- [ ] `TestSuccessfulProviderTestClearsCredentialFailure` 清 state 并产生 `recovered`；失败 provider test 仍摘除。
-- [ ] `TestQuotaSnapshotRecoveryDoesNotClearCredentialFailure` 验证可用额度只恢复 quota state；`TestQuotaSnapshotExhaustionQuarantinesUntilReset` 验证 100% tier 的 reset。
-- [ ] `TestProviderDeleteLeavesNoDanglingFailoverEventIDs` 验证 API 返回的 event 不含已删除 provider ID。
+- [x] `TestFailoverSettingsRequireAuth` 返回 401；`TestFailoverSettingsMethods` 对错误 method 返回 405；错误 JSON/未知字段返回 400。
+- [x] `TestFailoverSettingsRoundTrip` PUT true 后 GET 为 true，重启/重载仍为 true；`TestFailoverEventsLimitAndOrder` 验证默认 50、1..100 钳制、按 `occurred_at DESC,id DESC`。
+- [x] `TestFailoverEventsDoNotExposeSecrets` 响应不含 API token、响应 body、带 query URL。
+- [x] `TestProviderTokenChangeClearsCredentialFailure` 仅非空且实际变更的 Token 清 401 state；`TestProviderEditWithoutTokenChangeKeepsCredentialFailure` 断言名称/URL/模型编辑不清。
+- [x] `TestSuccessfulProviderTestClearsCredentialFailure` 清 state 并产生 `recovered`；失败 provider test 仍摘除。
+- [x] `TestQuotaSnapshotRecoveryDoesNotClearCredentialFailure` 验证可用额度只恢复 quota state；`TestQuotaSnapshotExhaustionQuarantinesUntilReset` 验证 100% tier 的 reset。
+- [x] `TestProviderDeleteLeavesNoDanglingFailoverEventIDs` 验证 API 返回的 event 不含已删除 provider ID。
 
 预期：命令返回 0；所有新端点保持认证，且 quota 凭据不泄露。
 
@@ -253,13 +253,13 @@ go test -v -race ./internal/admin/... ./internal/providerquota/...
 
 文件：修改 `internal/frontend/src/composables/useApi.ts`、`useI18n.ts`、`views/DashboardView.vue`；新增 `views/FailoverEventsView.vue`；增加/修改前端测试。除非编译器要求调整已有 type import，不得编辑 `components/SessionBrowser.vue`、`components/SessionDetail.vue`、会话 export 代码或 JSONL 渲染代码。
 
-- [ ] 写 `getFailoverSettings`、`setFailoverSettings`、`getFailoverEvents`、标题 switch、主导航中紧邻 `tab.sessions` 的 `tab.failover`、独立切换事件页面、全局 transcript disclaimer、source/target/model/reason/outcome 的失败测试。
-- [ ] 执行 `npm --prefix internal/frontend test -- --run`；预期：失败。
-- [ ] 加 typed `FailoverEvent`/settings API、保存禁用/失败回滚 switch、active Providers tab 15s refresh。
-- [ ] 在 `DashboardView.vue` 将 `MainTab` 扩为含 `'failover'`，在 `tabs` 中把 `{ key: 'failover', labelKey: 'tab.failover' }` 放在 `sessions` 之后；保持现有 `activeTab === 'sessions'` 分支以及所有 `SessionBrowser` props/children 和当前代码完全一致；新建 `FailoverEventsView.vue`，只在 `activeTab === 'failover'` 渲染并在进入/刷新时 fetch；不得传给 SessionBrowser/SessionDetail/export。
-- [ ] 加语义一致中英文 i18n key。
-- [ ] 执行 `npm --prefix internal/frontend test && npm --prefix internal/frontend run build`；预期：通过。
-- [ ] 提交：`git add internal/frontend && git commit -m "feat(ui): show provider failover events"`。
+- [x] 写 `getFailoverSettings`、`setFailoverSettings`、`getFailoverEvents`、标题 switch、主导航中紧邻 `tab.sessions` 的 `tab.failover`、独立切换事件页面、全局 transcript disclaimer、source/target/model/reason/outcome 的失败测试。
+- [x] 执行 `npm --prefix internal/frontend test -- --run`；预期：失败。
+- [x] 加 typed `FailoverEvent`/settings API、保存禁用/失败回滚 switch、active Providers tab 15s refresh。
+- [x] 在 `DashboardView.vue` 将 `MainTab` 扩为含 `'failover'`，在 `tabs` 中把 `{ key: 'failover', labelKey: 'tab.failover' }` 放在 `sessions` 之后；保持现有 `activeTab === 'sessions'` 分支以及所有 `SessionBrowser` props/children 和当前代码完全一致；新建 `FailoverEventsView.vue`，只在 `activeTab === 'failover'` 渲染并在进入/刷新时 fetch；不得传给 SessionBrowser/SessionDetail/export。
+- [x] 加语义一致中英文 i18n key。
+- [x] 执行 `npm --prefix internal/frontend test && npm --prefix internal/frontend run build`；预期：通过。
+- [x] 提交：`git add internal/frontend && git commit -m "feat(ui): show provider failover events"`。
 
 #### 验证
 
@@ -270,11 +270,11 @@ npm --prefix internal/frontend run build
 
 逐项验收：
 
-- [ ] `useApi` 测试断言 `getFailoverSettings` 使用 GET、`setFailoverSettings` 使用 PUT JSON、`getFailoverEvents` 安全编码 limit。
-- [ ] `DashboardFailoverSwitch` 断言开关紧邻供应商管理标题，有 accessible label，保存中 disabled，PUT 失败时回滚，Providers tab 激活时才启动 15 秒刷新。
-- [ ] `DashboardFailoverTab` 断言主导航 `tab.sessions` 后紧邻 `tab.failover`；`FailoverEventsView` 断言全局“不关联 Claude Code 对话记录”说明、source→target、model、reason、status/code、outcome、disabled-until；切换回会话记录时 `SessionBrowser` 状态、DOM 结构、已选会话、筛选条件、导出行为和 transcript 渲染均不被事件页修改。
-- [ ] 断言 event 不作为 `SessionDetail.messages` 输入，导出调用仍只使用 `/api/sessions/{id}/export`。
-- [ ] 中文/英文所有新增 i18n key 存在；API 失败显示现有错误状态且不破坏 JSONL 会话内容。
+- [x] `useApi` 测试断言 `getFailoverSettings` 使用 GET、`setFailoverSettings` 使用 PUT JSON、`getFailoverEvents` 安全编码 limit。
+- [x] `DashboardFailoverSwitch` 断言开关紧邻供应商管理标题，有 accessible label，保存中 disabled，PUT 失败时回滚，Providers tab 激活时才启动 15 秒刷新。
+- [x] `DashboardFailoverTab` 断言主导航 `tab.sessions` 后紧邻 `tab.failover`；`FailoverEventsView` 断言全局“不关联 Claude Code 对话记录”说明、source→target、model、reason、status/code、outcome、disabled-until；切换回会话记录时 `SessionBrowser` 状态、DOM 结构、已选会话、筛选条件、导出行为和 transcript 渲染均不被事件页修改。
+- [x] 断言 event 不作为 `SessionDetail.messages` 输入，导出调用仍只使用 `/api/sessions/{id}/export`。
+- [x] 中文/英文所有新增 i18n key 存在；API 失败显示现有错误状态且不破坏 JSONL 会话内容。
 
 预期：两条命令均返回 0；产物生成到 `internal/frontend/dist`，无 TypeScript/Vite 错误。
 
