@@ -154,6 +154,18 @@
                 @change="toggleFailover"
               />
               <span>{{ failoverSaving ? t('failover.switch_saving') : t('failover.switch_label') }}</span>
+              <!-- 问号 tooltip：hover 和键盘 focus 均可展示说明（tabindex=0 + group-hover/group-focus）。 -->
+              <span
+                class="group relative inline-flex items-center"
+                tabindex="0"
+                role="img"
+                :aria-label="t('failover.switch_help')"
+              >
+                <svg class="h-3.5 w-3.5 text-text-secondary cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093M12 17h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                <span class="pointer-events-none absolute bottom-full left-1/2 z-40 mb-2 w-72 -translate-x-1/2 rounded-md bg-gray-900 px-3 py-2 text-xs leading-relaxed text-white opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus:opacity-100">
+                  {{ t('failover.switch_help') }}
+                </span>
+              </span>
               <span v-if="failoverSaveError" class="text-red-600">{{ t('failover.switch_save_failed') }}</span>
             </label>
           </div>
@@ -177,24 +189,39 @@
         </div>
 
         <div v-if="providers.length === 0" class="text-center py-12 text-text-secondary">{{ t('providers.empty') }}</div>
+        <div v-if="providerReorderError" class="mb-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700">{{ providerReorderError }}</div>
 
-        <ProviderCard
-          v-for="p in providers"
+        <div
+          v-for="(p, index) in providers"
           :key="p.id"
-          :provider="p"
-          :selected="selectedProviderIds.has(p.id)"
-          :quota-snapshot="quotaSnapshots[p.id]"
-          :refreshing="refreshingProviderId === p.id"
-          @edit="openEditModal(p)"
-          @delete="handleDelete(p.id)"
-          @activate="handleActivate(p.id)"
-          @toggle="handleToggle(p.id)"
-          @test="handleTest(p.id)"
-          @duplicate="handleDuplicate"
-          @usage="openProviderUsage(p.id)"
-          @toggle-select="toggleProviderSelect"
-          @refresh-quota="refreshProviderQuota(p.id)"
-        />
+          draggable="true"
+          :class="['mb-3', providerDragIndex === index ? 'opacity-40' : '', providerDragOverIndex === index && providerDragIndex !== null && providerDragIndex !== index ? 'ring-2 ring-primary rounded-lg' : '']"
+          @dragstart="onProviderDragStart(index)"
+          @dragover.prevent="onProviderDragOver(index)"
+          @drop.prevent="onProviderDrop(index)"
+          @dragend="onProviderDragEnd"
+        >
+          <ProviderCard
+            :provider="p"
+            :order-index="index"
+            :can-move-up="index > 0"
+            :can-move-down="index < providers.length - 1"
+            :selected="selectedProviderIds.has(p.id)"
+            :quota-snapshot="quotaSnapshots[p.id]"
+            :refreshing="refreshingProviderId === p.id"
+            @edit="openEditModal(p)"
+            @delete="handleDelete(p.id)"
+            @activate="handleActivate(p.id)"
+            @toggle="handleToggle(p.id)"
+            @test="handleTest(p.id)"
+            @duplicate="handleDuplicate"
+            @usage="openProviderUsage(p.id)"
+            @toggle-select="toggleProviderSelect"
+            @refresh-quota="refreshProviderQuota(p.id)"
+            @move-up="moveProvider(index, -1)"
+            @move-down="moveProvider(index, 1)"
+          />
+        </div>
       </div>
 
       <div v-if="activeTab === 'connection'" class="space-y-6">
@@ -1372,7 +1399,57 @@ async function toggleFailover(event: Event) {
   }
 }
 
-// 供应商卡片仅在 Providers tab 激活时每 15 秒刷新。
+// 供应商拖拽/键盘重排（= 自动切换优先级）。只改 providers 顺序，绝不改 ActiveProviderID。
+const providerDragIndex = ref<number | null>(null)
+const providerDragOverIndex = ref<number | null>(null)
+const providerReorderError = ref('')
+
+function onProviderDragStart(index: number) {
+  providerDragIndex.value = index
+}
+function onProviderDragOver(index: number) {
+  providerDragOverIndex.value = index
+}
+function onProviderDragEnd() {
+  providerDragIndex.value = null
+  providerDragOverIndex.value = null
+}
+async function onProviderDrop(targetIndex: number) {
+  const from = providerDragIndex.value
+  providerDragIndex.value = null
+  providerDragOverIndex.value = null
+  if (from === null) return
+  await reorderProvidersTo(from, targetIndex)
+}
+
+// moveProvider 用于上移/下移按钮（键盘/移动端可达性），复用同一持久化路径。
+async function moveProvider(index: number, delta: number) {
+  const target = index + delta
+  if (target < 0 || target >= providers.value.length) return
+  await reorderProvidersTo(index, target)
+}
+
+// reorderProvidersTo 把 from 位置的 provider 移到 to 位置：乐观重排本地 → 调 API →
+// 成功用服务端返回顺序替换；失败回滚到原始顺序并提示。selectedProviderIds 按 ID 跟踪，顺序变化不影响选中。
+async function reorderProvidersTo(from: number, to: number) {
+  if (from === to) return
+  const original = providers.value.slice()
+  const ordered = original.slice()
+  const [moved] = ordered.splice(from, 1)
+  ordered.splice(to, 0, moved)
+  providers.value = ordered
+  providerReorderError.value = ''
+  try {
+    const res = await api.reorderProviders(ordered.map((p) => p.id))
+    if (res && Array.isArray(res.providers) && res.providers.length > 0) {
+      providers.value = res.providers
+    }
+  } catch {
+    // 回滚到拖拽前顺序并提示。
+    providers.value = original
+    providerReorderError.value = t('providers.reorder_failed')
+  }
+}
 let providersRefreshTimer: number | undefined
 function ensureProvidersRefresh() {
   if (activeTab.value === 'providers' && providersRefreshTimer === undefined) {

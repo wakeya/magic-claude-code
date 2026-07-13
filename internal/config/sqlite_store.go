@@ -191,6 +191,9 @@ func (s *SQLiteStore) ensureProviderColumns() error {
 		"retry_429_max_delay_ms":       `ALTER TABLE providers ADD COLUMN retry_429_max_delay_ms INTEGER NOT NULL DEFAULT 10000`,
 		"quota_query_config":           `ALTER TABLE providers ADD COLUMN quota_query_config TEXT NOT NULL DEFAULT '{}'`,
 		"exposed_models":              `ALTER TABLE providers ADD COLUMN exposed_models TEXT NOT NULL DEFAULT '[]'`,
+		// sort_order 是供应商列表顺序（= 自动切换优先级）。保存时按 slice index 写入；
+		// 读取时 ORDER BY sort_order 优先。旧 DB 全 0 时退回 created_at ASC, id ASC。
+		"sort_order":                  `ALTER TABLE providers ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0`,
 	}
 	rows, err := s.db.Query(`PRAGMA table_info(providers)`)
 	if err != nil {
@@ -346,7 +349,7 @@ func (s *SQLiteStore) loadSettings() (map[string]string, error) {
 }
 
 func (s *SQLiteStore) loadProviders() ([]Provider, error) {
-	rows, err := s.db.Query(`SELECT id, name, api_url, api_token, api_format, openai_extra_params, supports_thinking, multimodal_switch, multimodal_model, claude_code_compat_hint, strip_unknown_content_blocks, rate_limit_queue_enabled, max_concurrent_requests, max_queue_size, queue_timeout_ms, retry_429_enabled, retry_429_max_attempts, retry_429_initial_delay_ms, retry_429_max_delay_ms, quota_query_config, exposed_models, enabled, created_at, updated_at FROM providers ORDER BY created_at ASC, id ASC`)
+	rows, err := s.db.Query(`SELECT id, name, api_url, api_token, api_format, openai_extra_params, supports_thinking, multimodal_switch, multimodal_model, claude_code_compat_hint, strip_unknown_content_blocks, rate_limit_queue_enabled, max_concurrent_requests, max_queue_size, queue_timeout_ms, retry_429_enabled, retry_429_max_attempts, retry_429_initial_delay_ms, retry_429_max_delay_ms, quota_query_config, exposed_models, enabled, created_at, updated_at FROM providers ORDER BY sort_order ASC, created_at ASC, id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -492,6 +495,12 @@ func saveProviders(tx *sql.Tx, providers []Provider) error {
 			if _, err := tx.Exec(`INSERT INTO provider_model_mappings(provider_id, source_model, target_model) VALUES (?, ?, ?)`, provider.ID, source, target); err != nil {
 				return err
 			}
+		}
+	}
+	// 写入 sort_order = slice index。列表顺序即自动切换优先级；每次保存都固化稳定顺序。
+	for idx, provider := range providers {
+		if _, err := tx.Exec(`UPDATE providers SET sort_order = ? WHERE id = ?`, idx, provider.ID); err != nil {
+			return err
 		}
 	}
 	return nil

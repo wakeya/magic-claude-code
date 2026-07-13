@@ -5,7 +5,7 @@
 参考源站：`~/.claude/projects/`（84 个 JSONL、53 条 API 失败记录）、现有额度查询/重试代码<br>
 技术栈：Go 1.26、SQLite、Vue 3<br>
 最后更新：2026-07-13<br>
-进度：5 / 6 implemented；任务 6 待实现（见文末「实现验证证据」）
+进度：6 / 6 implemented（见文末「实现验证证据」）
 
 ## 整体分析（源站分析）
 
@@ -32,7 +32,7 @@
 | 3 | Done | 代理集成 | replay、最终响应、active update | `go test ./internal/proxy/...` |
 | 4 | Done | 额度/管理端接入 | reconciliation、Token recovery、API | `go test ./internal/admin/... ./internal/providerquota/...` |
 | 5 | Done | 前端 | switch、global event panel | 前端测试/build |
-| 6 | Pending | 供应商排序与优先级可视化 | drag reorder、order badge、tooltip、排序 API | Go/admin/frontend 测试/build |
+| 6 | Done | 供应商排序与优先级可视化 | drag reorder、order badge、tooltip、排序 API | Go/admin/frontend 测试/build |
 
 ## 需求
 

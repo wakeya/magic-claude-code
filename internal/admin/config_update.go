@@ -19,6 +19,10 @@ var (
 	errAdminInvalidConnectionMode = errors.New("invalid connection_mode")
 	// errAdminProviderNotEnabled 表示激活时供应商未启用 → 400。
 	errAdminProviderNotEnabled = errors.New("provider is not enabled")
+	// errOrderUnknownID 表示排序请求包含当前不存在的供应商 ID → 400。
+	errOrderUnknownID = errors.New("unknown provider id")
+	// errOrderConflict 表示排序请求与当前供应商集合不一致（漏 ID / 长度不符 / 空数组对非空配置 / 并发增删）→ 409。
+	errOrderConflict = errors.New("provider set out of sync")
 )
 
 // writeConfigUpdateError 把 ConfigStore.Update 返回的错误映射为 HTTP 响应：

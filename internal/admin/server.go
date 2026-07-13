@@ -104,6 +104,7 @@ func (s *Server) Start(addr string, frontendFS embed.FS) error {
 	mux.HandleFunc("/api/providers/import", s.authMiddlewareFunc(s.handleImportProviders))
 	mux.HandleFunc("/api/providers/usage", s.authMiddlewareFunc(s.handleProviderBatchUsage))
 	mux.HandleFunc("/api/providers/failover", s.authMiddlewareFunc(s.handleFailoverSettings))
+	mux.HandleFunc("/api/providers/order", s.authMiddlewareFunc(s.handleProviderOrder))
 	mux.HandleFunc("/api/providers/", s.authMiddlewareFunc(s.handleProviderRoutes))
 	// 故障切换全局事件（独立于供应商子树，避免被 /api/providers/ 截获）。
 	mux.HandleFunc("/api/failover/events", s.authMiddlewareFunc(s.handleFailoverEvents))

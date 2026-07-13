@@ -40,7 +40,7 @@ test('failover switch sits adjacent to the providers title with accessible label
   // 开关紧邻 providers.title，有 aria-label、disabled 保存态、PUT 失败回滚文案。
   const switchBlock = dashboardSource.slice(
     dashboardSource.indexOf("{{ t('providers.title') }}"),
-    dashboardSource.indexOf("{{ t('providers.title') }}") + 900,
+    dashboardSource.indexOf("{{ t('providers.title') }}") + 2400,
   )
   assert.match(switchBlock, /aria-label="t\('failover\.switch_label'\)"/)
   assert.match(switchBlock, /:checked="failoverEnabled"/)

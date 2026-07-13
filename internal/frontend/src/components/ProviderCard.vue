@@ -5,6 +5,14 @@
       <span :class="['w-2.5 h-2.5 rounded-full flex-shrink-0', provider.enabled ? 'bg-secondary' : 'bg-gray-300']" />
       <span class="text-base font-bold flex-1 min-w-0 truncate">{{ provider.name }}</span>
 
+      <!-- 自动切换优先级 badge（列表 index + 1）；disabled provider 仍显示，因为编号表示列表位置。 -->
+      <span
+        v-if="orderIndex != null"
+        class="inline-flex h-6 w-6 items-center justify-center rounded-full bg-primary text-white text-xs font-bold flex-shrink-0"
+        :aria-label="t('providers.priority_label', { n: orderIndex + 1 })"
+        :title="t('providers.priority_label', { n: orderIndex + 1 })"
+      >{{ orderIndex + 1 }}</span>
+
       <!-- Quota display (title row, near Active badge) -->
       <template v-if="quotaDisplay">
         <span v-if="quotaDisplay.fiveHour != null" class="text-xs whitespace-nowrap" :class="utilizationColor(quotaDisplay.fiveHour)">
@@ -47,6 +55,16 @@
     </div>
 
     <div class="flex gap-2 flex-wrap">
+      <!-- 拖拽手柄：纯视觉 affordance（实际 draggable 由父级列表容器承担）。键盘/移动端用下方上移/下移按钮。 -->
+      <span class="inline-flex items-center px-1.5 text-text-secondary cursor-grab" :aria-label="t('providers.drag_handle')" :title="t('providers.drag_handle')">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5h.01M9 12h.01M9 19h.01M15 5h.01M15 12h.01M15 19h.01"/></svg>
+      </span>
+      <button class="flex items-center gap-1 px-3.5 py-1.5 border-none rounded-md text-xs font-semibold cursor-pointer transition-all duration-150 hover:scale-105 bg-transparent text-text-secondary hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100" :disabled="!canMoveUp" @click="$emit('move-up')" :aria-label="t('providers.move_up')" :title="t('providers.move_up')">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/></svg>
+      </button>
+      <button class="flex items-center gap-1 px-3.5 py-1.5 border-none rounded-md text-xs font-semibold cursor-pointer transition-all duration-150 hover:scale-105 bg-transparent text-text-secondary hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100" :disabled="!canMoveDown" @click="$emit('move-down')" :aria-label="t('providers.move_down')" :title="t('providers.move_down')">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+      </button>
       <button class="flex items-center gap-1 px-3.5 py-1.5 border-none rounded-md text-xs font-semibold cursor-pointer transition-all duration-150 hover:scale-105 bg-transparent text-text-secondary hover:bg-muted" @click="$emit('edit')">
         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
         {{ t('providers.edit') }}
@@ -80,6 +98,10 @@ const props = defineProps<{
   selected?: boolean
   quotaSnapshot?: QuotaSnapshot | null
   refreshing?: boolean
+  // orderIndex 仅用于展示优先级 badge（= 列表 index），不写入 provider 业务字段。
+  orderIndex?: number
+  canMoveUp?: boolean
+  canMoveDown?: boolean
 }>()
 defineEmits<{
   edit: []
@@ -91,6 +113,8 @@ defineEmits<{
   usage: []
   'toggle-select': [id: string]
   'refresh-quota': []
+  'move-up': []
+  'move-down': []
 }>()
 
 const { t } = useI18n()

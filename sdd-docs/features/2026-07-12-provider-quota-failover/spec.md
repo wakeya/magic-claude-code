@@ -5,7 +5,7 @@ Proxy entry: `internal/proxy/handler.go` (`POST /v1/messages`, `POST /anthropic/
 Reference sources: `~/.claude/projects/` (84 JSONL files; 53 API failures), current quota/retry code<br>
 Stack: Go 1.26, SQLite, Vue 3<br>
 Last updated: 2026-07-13<br>
-Progress: 5 / 6 implemented; Task 6 pending (see "Implementation verification evidence" at end)
+Progress: 6 / 6 implemented (see "Implementation verification evidence" at end)
 
 ## Overall Analysis (Source Analysis)
 
@@ -32,7 +32,7 @@ Events cannot be associated reliably with a Claude `sessionId`. They are a globa
 | 3 | Done | Proxy integration | replay, final response, active update | `go test ./internal/proxy/...` |
 | 4 | Done | Quota/admin integration | reconciliation, Token recovery, APIs | `go test ./internal/admin/... ./internal/providerquota/...` |
 | 5 | Done | Frontend | switch and global event panel | frontend tests/build |
-| 6 | Pending | Provider ordering and priority visibility | drag reorder, order badge, tooltip, ordering API | Go/admin/frontend tests/build |
+| 6 | Done | Provider ordering and priority visibility | drag reorder, order badge, tooltip, ordering API | Go/admin/frontend tests/build |
 
 ## Requirements
 

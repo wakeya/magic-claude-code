@@ -796,6 +796,17 @@ export function useApi() {
     return res.json()
   }
 
+  // reorderProviders 调整供应商列表顺序（= 自动切换优先级）。后端原子重排并返回脱敏列表。
+  async function reorderProviders(providerIds: string[]): Promise<{ success: boolean; providers: Provider[] }> {
+    const res = await fetch('/api/providers/order', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider_ids: providerIds }),
+    })
+    if (!res.ok) throw new Error('Failed to reorder providers')
+    return res.json()
+  }
+
   return {
     login,
     logout,
@@ -839,5 +850,6 @@ export function useApi() {
     getFailoverSettings,
     setFailoverSettings,
     getFailoverEvents,
+    reorderProviders,
   }
 }
