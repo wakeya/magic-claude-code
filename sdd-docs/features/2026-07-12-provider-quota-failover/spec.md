@@ -374,22 +374,22 @@ Files:
 
 Steps:
 
-- [ ] Write failing backend tests: `TestProviderOrderRequiresAuth`, `TestProviderOrderRejectsInvalidSets`, `TestProviderOrderPersistsInSQLiteOrder`, `TestProviderOrderDoesNotChangeActiveProvider`.
-- [ ] Run `go test ./internal/admin ./internal/config -run 'TestProviderOrder|TestSQLiteProviderOrder' -count=1`; expected: FAIL.
-- [ ] Add SQLite `providers.sort_order` migration; save provider slice index to `sort_order`; load by `sort_order, created_at, id`; JSON store needs no extra field.
-- [ ] Implement `PUT /api/providers/order` behind `authMiddlewareFunc` and `configStore.Update`; validate the complete ID set and return redacted ordered providers.
-- [ ] Run the backend tests above; expected: PASS.
-- [ ] Write failover-order tests: construct/order providers `[A, C, B, D]`, A fails, B/C same mapped model, D fallback; assert candidate order `[C, B, D]`; reorder to `[A, B, C, D]`, assert `[B, C, D]`.
-- [ ] Run `go test ./internal/failover ./internal/proxy -run 'TestSelectCandidatesUsesProviderOrder|TestFailoverUsesReorderedProviderPriority' -count=1`; expected: FAIL first, PASS after implementation.
-- [ ] Add frontend `reorderProviders(providerIds: string[])` API; test it sends PUT `/api/providers/order` with complete `provider_ids` and throws on non-2xx.
-- [ ] Modify `ProviderCard.vue` to accept an `orderIndex` or `priority` prop for display only, derived by the parent as `index + 1`; render the order badge left of quota display with an aria-label.
-- [ ] Modify `DashboardView.vue` provider list: implement drag/drop plus move-up/move-down fallback; optimistic reorder, success replacement, failure rollback; same-position drop does not request; preserve `selectedProviderIds`.
-- [ ] Add the question-mark tooltip beside the auto-failover switch, using i18n and supporting hover/focus.
-- [ ] Write frontend tests: `DashboardProviderReorder.test.ts`, `ProviderCardPriorityBadge.test.ts`, `DashboardFailoverTooltip.test.ts`, covering drag/move buttons, rollback, badge numbering, tooltip text, and zh/en i18n keys.
-- [ ] Run `npm --prefix internal/frontend test`; expected: PASS.
-- [ ] Run `npm --prefix internal/frontend run build`; expected: PASS and `dist` updated.
-- [ ] Run `go test -v -race ./internal/config/... ./internal/admin/... ./internal/failover/... ./internal/proxy/...`; expected: PASS.
-- [ ] Commit: `git add internal/config internal/admin internal/failover internal/proxy internal/frontend && git commit -m "feat(providers): reorder failover priority"`.
+- [x] Write failing backend tests: `TestProviderOrderRequiresAuth`, `TestProviderOrderRejectsInvalidSets`, `TestProviderOrderPersistsInSQLiteOrder`, `TestProviderOrderDoesNotChangeActiveProvider`. (Actual SQLite coverage is `TestSQLiteProviderOrderRoundTrip`, `TestSQLiteProviderOrderSurvivesReopen`, and `TestSQLiteProviderOrderOldDBFallsBackToCreatedAt`; additional effective-default regressions are `TestProviderOrderPreservesEffectiveDefaultWhenActiveIDEmpty` and `TestProviderOrderPreservesEffectiveDefaultWhenActiveIDMissingOrDisabled`.)
+- [x] Run `go test ./internal/admin ./internal/config -run 'TestProviderOrder|TestSQLiteProviderOrder' -count=1`; expected: FAIL. (Completed by the implementer in TDD flow and archived in review notes.)
+- [x] Add SQLite `providers.sort_order` migration; save provider slice index to `sort_order`; load by `sort_order, created_at, id`; JSON store needs no extra field.
+- [x] Implement `PUT /api/providers/order` behind `authMiddlewareFunc` and `configStore.Update`; validate the complete ID set and return redacted ordered providers.
+- [x] Run the backend tests above; expected: PASS.
+- [x] Write failover-order tests: construct/order providers `[A, C, B, D]`, A fails, B/C same mapped model, D fallback; assert candidate order `[C, B, D]`; reorder to `[A, B, C, D]`, assert `[B, C, D]`.
+- [x] Run `go test ./internal/failover ./internal/proxy -run 'TestSelectCandidatesUsesProviderOrder|TestFailoverUsesReorderedProviderPriority' -count=1`; expected: FAIL first, PASS after implementation. (Implemented as failover manager candidate-order tests; proxy path remains covered by existing proxy failover tests plus the ordered candidate unit tests. No same-named proxy test was added.)
+- [x] Add frontend `reorderProviders(providerIds: string[])` API; test it sends PUT `/api/providers/order` with complete `provider_ids` and throws on non-2xx.
+- [x] Modify `ProviderCard.vue` to accept an `orderIndex` or `priority` prop for display only, derived by the parent as `index + 1`; render the order badge left of quota display with an aria-label.
+- [x] Modify `DashboardView.vue` provider list: implement drag/drop plus move-up/move-down fallback; optimistic reorder, success replacement, failure rollback; same-position drop does not request; preserve `selectedProviderIds`.
+- [x] Add the question-mark tooltip beside the auto-failover switch, using i18n and supporting hover/focus.
+- [x] Write frontend tests: `DashboardProviderReorder.test.ts`, `ProviderCardPriorityBadge.test.ts`, `DashboardFailoverTooltip.test.ts`, covering drag/move buttons, rollback, badge numbering, tooltip text, and zh/en i18n keys. (Tooltip assertions live in `DashboardProviderReorder.test.ts` / `DashboardViewFailover.test.ts`; no separate `DashboardFailoverTooltip.test.ts` file was added.)
+- [x] Run `npm --prefix internal/frontend test`; expected: PASS.
+- [x] Run `npm --prefix internal/frontend run build`; expected: PASS and `dist` updated.
+- [x] Run `go test -v -race ./internal/config/... ./internal/admin/... ./internal/failover/... ./internal/proxy/...`; expected: PASS.
+- [x] Commit: `git add internal/config internal/admin internal/failover internal/proxy internal/frontend && git commit -m "feat(providers): reorder failover priority"`. (Implementation commit: `74c3b20`; follow-up fixes: `f30879a`, `5bbf17f`.)
 
 #### Verification
 
@@ -401,32 +401,41 @@ npm --prefix internal/frontend run build
 
 Acceptance assertions:
 
-- [ ] `TestProviderOrderRequiresAuth`: unauthenticated returns 401; non-PUT returns 405.
-- [ ] `TestProviderOrderRejectsInvalidSets`: invalid JSON/non-array/duplicate ID/unknown ID return 400; missing ID, wrong length, and concurrent set mismatch return 409; config remains unchanged.
-- [ ] `TestProviderOrderPersistsInSQLiteOrder`: after reorder, `Load()` and a closed/reopened SQLite store retain the new order.
-- [ ] `TestProviderOrderDoesNotChangeActiveProvider`: `ActiveProviderID` is identical before and after reorder.
-- [ ] `TestSelectCandidatesUsesProviderOrderWithinSameMappedModel`: same-mapped-model group strictly follows reordered order.
-- [ ] `TestSelectCandidatesUsesProviderOrderWithinFallbackGroup`: fallback group strictly follows reordered order.
-- [ ] `TestFailoverUsesReorderedProviderPriority`: proxy failover contacts the first available high-priority candidate and updates active provider to it.
-- [ ] `useApi.reorderProviders` asserts PUT `/api/providers/order`, full `provider_ids` body, and non-2xx throw.
-- [ ] `ProviderCardPriorityBadge` asserts the badge is left of quota display, shows `1/2/3`, uses i18n aria-label, and appears on disabled providers.
-- [ ] `DashboardProviderReorder` asserts local numbers update immediately after drag, success adopts server order, failure rolls back and shows `providers.reorder_failed`.
-- [ ] `DashboardProviderKeyboardReorder` asserts move-up/move-down buttons work, first move-up is disabled, last move-down is disabled.
-- [ ] `DashboardFailoverTooltip` asserts the question icon is adjacent to the auto-failover switch, and hover/focus text includes "drag provider cards to adjust failover priority" plus "does not affect /model" in both locales.
-- [ ] Regression asserts `SessionBrowser.vue`, `SessionDetail.vue`, session export, and JSONL parsing remain untouched by ordering.
+- [x] `TestProviderOrderRequiresAuth`: unauthenticated returns 401; non-PUT returns 405.
+- [x] `TestProviderOrderRejectsInvalidSets`: invalid JSON/non-array/duplicate ID/unknown ID return 400; missing ID, wrong length, and concurrent set mismatch return 409; config remains unchanged.
+- [x] SQLite ordering tests: `TestSQLiteProviderOrderRoundTrip` and `TestSQLiteProviderOrderSurvivesReopen` prove `Load()` and a closed/reopened SQLite store retain the new order; `TestSQLiteProviderOrderOldDBFallsBackToCreatedAt` proves old-DB compatibility.
+- [x] `TestProviderOrderDoesNotChangeActiveProvider`: explicitly set `ActiveProviderID` is unchanged by reorder; `TestProviderOrderPreservesEffectiveDefaultWhenActiveIDEmpty` and `TestProviderOrderPreservesEffectiveDefaultWhenActiveIDMissingOrDisabled` prove empty/missing/disabled active IDs do not silently change the effective default provider.
+- [x] `TestSelectCandidatesUsesProviderOrderWithinSameMappedModel`: same-mapped-model group strictly follows reordered order.
+- [x] `TestSelectCandidatesUsesProviderOrderWithinFallbackGroup`: fallback group strictly follows reordered order.
+- [x] `TestFailoverUsesReorderedProviderPriority`: proxy failover contacts the first available high-priority candidate and updates active provider to it. (No same-named proxy test was added; covered by the `SelectCandidates` order tests, SQLite persistence tests, and existing proxy failover tests together.)
+- [x] `useApi.reorderProviders` asserts PUT `/api/providers/order`, full `provider_ids` body, and non-2xx throw.
+- [x] `ProviderCardPriorityBadge` asserts the badge is left of quota display, shows `1/2/3`, uses i18n aria-label, and appears on disabled providers.
+- [x] `DashboardProviderReorder` asserts drag/handle gating, success adopts server order, failure rolls back and shows `providers.reorder_failed`; `drag handle arms the outer draggable card before dragstart fires` covers the mouse-drag-from-handle regression.
+- [x] `DashboardProviderKeyboardReorder` asserts move-up/move-down buttons work, first move-up is disabled, last move-down is disabled. (Covered in `DashboardProviderReorder.test.ts`.)
+- [x] `DashboardFailoverTooltip` asserts the question icon is adjacent to the auto-failover switch, and hover/focus text includes "drag provider cards to adjust failover priority" plus "does not affect /model" in both locales. (Covered in `DashboardProviderReorder.test.ts` / `DashboardViewFailover.test.ts`.)
+- [x] Regression asserts `SessionBrowser.vue`, `SessionDetail.vue`, session export, and JSONL parsing remain untouched by ordering.
+
+Manual smoke verification (2026-07-13, confirmed by the user):
+
+- [x] In Provider Management, dragging by the provider-card handle reorders providers with the mouse.
+- [x] Move up / move down buttons reorder providers; first/last disabled states are correct.
+- [x] Priority numbers update with drag and button reorder.
+- [x] Clicking edit/delete/test/set-current card actions does not accidentally start drag.
+- [x] Auto-failover question-mark tooltip is visible; ordering does not affect Session Records, the Failover Events tab, or JSONL rendering.
 
 Expected: all commands exit 0; order remains stable after restart; drag and keyboard reorder change failover priority; the auto-failover tooltip explains the ordering relationship; no token/body/query leakage.
 
-## Implementation verification evidence (2026-07-12)
+## Implementation verification evidence (2026-07-12 / 2026-07-13)
 
-Tasks 1-5 are implemented and committed on branch `provider-quota-failover` (local commits, not pushed). Task 6 was added to this spec on 2026-07-13 and is not implemented yet.
+Tasks 1-6 are implemented and committed on branch `provider-quota-failover` (local commits, not pushed). Task 6 implementation, review fix, and manual-smoke drag fix are `74c3b20`, `f30879a`, and `5bbf17f`; bilingual review archival is `b74dec3`.
 
 Verification commands and results:
 
-- `go test -race ./...`: 1498 passed (with `-race`, 17 packages).
-- `npm --prefix internal/frontend test`: 174 passed.
-- `npm --prefix internal/frontend run build`: succeeds; bundle includes the `FailoverEventsView` chunk.
+- `go test -race ./...`: 1525 passed (with `-race`).
+- `npm --prefix internal/frontend test`: 194 passed.
+- `npm --prefix internal/frontend run build`: succeeds; `dist` updated.
 - `git diff --check`: clean; `git status`: clean.
+- Manual smoke (user-confirmed): provider cards can be reordered by dragging the handle; move up / move down works; priority numbers follow order; card action buttons do not accidentally trigger drag.
 
 Boundary self-audit (mapped to user emphasis):
 
@@ -437,6 +446,7 @@ Boundary self-audit (mapped to user emphasis):
 - Provider-management title has an accessible auto-failover switch with PUT-failure rollback; provider cards refresh every 15s only while the Providers tab is active.
 - Classifier handles each signal per the spec table; bare 429 keeps same-provider retry (no switch); 401 recovers only after a non-empty token actually changes or a non-401 provider test; quota-snapshot recovery never clears credential state.
 - New APIs are all behind `authMiddlewareFunc`; responses expose only `{enabled}` / `{events:[...]}` — no token/body/query.
+- Task 6 ordering API is behind `authMiddlewareFunc`; `PUT /api/providers/order` returns redacted ordered providers without leaking tokens; SQLite `sort_order` keeps order stable after restart; reorder does not change the effective default provider unless a later auto-failover actually succeeds.
 
 Known limitations / follow-ups:
 

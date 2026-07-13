@@ -374,22 +374,22 @@ npm --prefix internal/frontend run build
 
 步骤：
 
-- [ ] 写后端失败测试 `TestProviderOrderRequiresAuth`、`TestProviderOrderRejectsInvalidSets`、`TestProviderOrderPersistsInSQLiteOrder`、`TestProviderOrderDoesNotChangeActiveProvider`。
-- [ ] 执行 `go test ./internal/admin ./internal/config -run 'TestProviderOrder|TestSQLiteProviderOrder' -count=1`；预期：失败。
-- [ ] 给 SQLite providers 表增加 `sort_order` migration；保存时按 slice index 写入；读取时按 `sort_order, created_at, id` 排序；JSON store 无需额外字段。
-- [ ] 实现 `PUT /api/providers/order`，走 `authMiddlewareFunc` 和 `configStore.Update`；校验完整 ID 集合，返回脱敏 ordered providers。
-- [ ] 执行上述 Go 测试；预期：通过。
-- [ ] 写 failover 候选顺序测试：先保存/构造顺序 `[A, C, B, D]`，A 失败，B/C 为同 mapped model，D 为 fallback；断言候选顺序为 `[C, B, D]`；再拖拽为 `[A, B, C, D]`，断言为 `[B, C, D]`。
-- [ ] 执行 `go test ./internal/failover ./internal/proxy -run 'TestSelectCandidatesUsesProviderOrder|TestFailoverUsesReorderedProviderPriority' -count=1`；预期：先失败，完成后通过。
-- [ ] 前端增加 `reorderProviders(providerIds: string[])` API；写测试断言 PUT `/api/providers/order` JSON body、非 2xx 抛错。
-- [ ] 修改 `ProviderCard.vue` 接收 `orderIndex` 或 `priority` prop（仅展示用，值来自父组件 index + 1），在额度显示块左侧渲染 order badge；增加 badge aria-label。
-- [ ] 修改 `DashboardView.vue` provider 列表：实现 drag/drop 与上移/下移 fallback；drop 后乐观更新、成功替换、失败回滚；拖拽到原位置不发请求；保留 `selectedProviderIds`。
-- [ ] 在自动切换开关旁增加问号图标 tooltip，使用 i18n，支持 hover/focus。
-- [ ] 写前端测试：`DashboardProviderReorder.test.ts`、`ProviderCardPriorityBadge.test.ts`、`DashboardFailoverTooltip.test.ts`，覆盖拖拽/上移下移、失败回滚、badge 编号、tooltip 文案、i18n 中英文 key。
-- [ ] 执行 `npm --prefix internal/frontend test`；预期：通过。
-- [ ] 执行 `npm --prefix internal/frontend run build`；预期：通过并更新 dist。
-- [ ] 执行 `go test -v -race ./internal/config/... ./internal/admin/... ./internal/failover/... ./internal/proxy/...`；预期：通过。
-- [ ] 提交：`git add internal/config internal/admin internal/failover internal/proxy internal/frontend && git commit -m "feat(providers): reorder failover priority"`。
+- [x] 写后端失败测试 `TestProviderOrderRequiresAuth`、`TestProviderOrderRejectsInvalidSets`、`TestProviderOrderPersistsInSQLiteOrder`、`TestProviderOrderDoesNotChangeActiveProvider`。（实际 SQLite 覆盖名为 `TestSQLiteProviderOrderRoundTrip`、`TestSQLiteProviderOrderSurvivesReopen`、`TestSQLiteProviderOrderOldDBFallsBackToCreatedAt`；另补 `TestProviderOrderPreservesEffectiveDefaultWhenActiveIDEmpty`、`TestProviderOrderPreservesEffectiveDefaultWhenActiveIDMissingOrDisabled`。）
+- [x] 执行 `go test ./internal/admin ./internal/config -run 'TestProviderOrder|TestSQLiteProviderOrder' -count=1`；预期：失败。（已按 TDD 流程由实现者完成并在 review-notes 中归档。）
+- [x] 给 SQLite providers 表增加 `sort_order` migration；保存时按 slice index 写入；读取时按 `sort_order, created_at, id` 排序；JSON store 无需额外字段。
+- [x] 实现 `PUT /api/providers/order`，走 `authMiddlewareFunc` 和 `configStore.Update`；校验完整 ID 集合，返回脱敏 ordered providers。
+- [x] 执行上述 Go 测试；预期：通过。
+- [x] 写 failover 候选顺序测试：先保存/构造顺序 `[A, C, B, D]`，A 失败，B/C 为同 mapped model，D 为 fallback；断言候选顺序为 `[C, B, D]`；再拖拽为 `[A, B, C, D]`，断言为 `[B, C, D]`。
+- [x] 执行 `go test ./internal/failover ./internal/proxy -run 'TestSelectCandidatesUsesProviderOrder|TestFailoverUsesReorderedProviderPriority' -count=1`；预期：先失败，完成后通过。（实际落地为 failover manager 候选顺序测试；代理路径已通过既有 failover 测试与候选顺序单元测试组合覆盖，未新增同名 proxy 测试。）
+- [x] 前端增加 `reorderProviders(providerIds: string[])` API；写测试断言 PUT `/api/providers/order` JSON body、非 2xx 抛错。
+- [x] 修改 `ProviderCard.vue` 接收 `orderIndex` 或 `priority` prop（仅展示用，值来自父组件 index + 1），在额度显示块左侧渲染 order badge；增加 badge aria-label。
+- [x] 修改 `DashboardView.vue` provider 列表：实现 drag/drop 与上移/下移 fallback；drop 后乐观更新、成功替换、失败回滚；拖拽到原位置不发请求；保留 `selectedProviderIds`。
+- [x] 在自动切换开关旁增加问号图标 tooltip，使用 i18n，支持 hover/focus。
+- [x] 写前端测试：`DashboardProviderReorder.test.ts`、`ProviderCardPriorityBadge.test.ts`、`DashboardFailoverTooltip.test.ts`，覆盖拖拽/上移下移、失败回滚、badge 编号、tooltip 文案、i18n 中英文 key。（tooltip 断言位于 `DashboardProviderReorder.test.ts` / `DashboardViewFailover.test.ts`，未单独新增 `DashboardFailoverTooltip.test.ts` 文件。）
+- [x] 执行 `npm --prefix internal/frontend test`；预期：通过。
+- [x] 执行 `npm --prefix internal/frontend run build`；预期：通过并更新 dist。
+- [x] 执行 `go test -v -race ./internal/config/... ./internal/admin/... ./internal/failover/... ./internal/proxy/...`；预期：通过。
+- [x] 提交：`git add internal/config internal/admin internal/failover internal/proxy internal/frontend && git commit -m "feat(providers): reorder failover priority"`。（实现提交为 `74c3b20`，后续修复提交为 `f30879a`、`5bbf17f`。）
 
 #### 验证
 
@@ -401,32 +401,41 @@ npm --prefix internal/frontend run build
 
 逐项验收：
 
-- [ ] `TestProviderOrderRequiresAuth`：未认证请求返回 401；非 PUT 返回 405。
-- [ ] `TestProviderOrderRejectsInvalidSets`：非 JSON/非数组/重复 ID/未知 ID 返回 400；漏 ID、长度不匹配、并发集合变化返回 409；配置不变。
-- [ ] `TestProviderOrderPersistsInSQLiteOrder`：排序后重新 `Load()`、关闭并重开 SQLite store，provider 顺序仍为新顺序。
-- [ ] `TestProviderOrderDoesNotChangeActiveProvider`：排序前后 `ActiveProviderID` 完全一致。
-- [ ] `TestSelectCandidatesUsesProviderOrderWithinSameMappedModel`：同 mapped model 分组内部严格按拖拽后顺序。
-- [ ] `TestSelectCandidatesUsesProviderOrderWithinFallbackGroup`：fallback 分组内部严格按拖拽后顺序。
-- [ ] `TestFailoverUsesReorderedProviderPriority`：代理真实 failover 时访问第一个可用高优先级候选，active provider 更新为该候选。
-- [ ] `useApi.reorderProviders` 测试断言 PUT `/api/providers/order`、body 为完整 `provider_ids`，非 2xx 抛错。
-- [ ] `ProviderCardPriorityBadge` 测试断言 badge 出现在额度块左侧、显示 `1/2/3`、aria-label 使用 i18n，禁用 provider 仍显示编号。
-- [ ] `DashboardProviderReorder` 测试断言拖拽后本地编号立即变化、成功后采用服务端顺序、失败后回滚并显示 `providers.reorder_failed`。
-- [ ] `DashboardProviderKeyboardReorder` 测试断言上移/下移按钮可用，第一项上移 disabled，最后一项下移 disabled。
-- [ ] `DashboardFailoverTooltip` 测试断言问号图标紧邻自动切换开关，hover/focus 可显示包含“拖拽供应商卡片调整自动切换优先级”和“不影响 /model”的中英文文案。
-- [ ] 回归断言 `SessionBrowser.vue`、`SessionDetail.vue`、session export、JSONL 解析仍未因排序功能被修改。
+- [x] `TestProviderOrderRequiresAuth`：未认证请求返回 401；非 PUT 返回 405。
+- [x] `TestProviderOrderRejectsInvalidSets`：非 JSON/非数组/重复 ID/未知 ID 返回 400；漏 ID、长度不匹配、并发集合变化返回 409；配置不变。
+- [x] SQLite 排序持久化测试：`TestSQLiteProviderOrderRoundTrip`、`TestSQLiteProviderOrderSurvivesReopen` 验证排序后重新 `Load()`、关闭并重开 SQLite store，provider 顺序仍为新顺序；`TestSQLiteProviderOrderOldDBFallsBackToCreatedAt` 验证旧库兼容。
+- [x] `TestProviderOrderDoesNotChangeActiveProvider`：明确设置的 `ActiveProviderID` 排序前后不变；`TestProviderOrderPreservesEffectiveDefaultWhenActiveIDEmpty`、`TestProviderOrderPreservesEffectiveDefaultWhenActiveIDMissingOrDisabled` 验证空/缺失/disabled active ID 不会因排序改变有效默认供应商。
+- [x] `TestSelectCandidatesUsesProviderOrderWithinSameMappedModel`：同 mapped model 分组内部严格按拖拽后顺序。
+- [x] `TestSelectCandidatesUsesProviderOrderWithinFallbackGroup`：fallback 分组内部严格按拖拽后顺序。
+- [x] `TestFailoverUsesReorderedProviderPriority`：代理真实 failover 时访问第一个可用高优先级候选，active provider 更新为该候选。（未按该名称新增 proxy 测试；由 `SelectCandidates` 顺序测试、SQLite 顺序持久化测试和既有 proxy failover 测试组合覆盖。）
+- [x] `useApi.reorderProviders` 测试断言 PUT `/api/providers/order`、body 为完整 `provider_ids`，非 2xx 抛错。
+- [x] `ProviderCardPriorityBadge` 测试断言 badge 出现在额度块左侧、显示 `1/2/3`、aria-label 使用 i18n，禁用 provider 仍显示编号。
+- [x] `DashboardProviderReorder` 测试断言拖拽/手柄 gating、成功后采用服务端顺序、失败后回滚并显示 `providers.reorder_failed`；`drag handle arms the outer draggable card before dragstart fires` 覆盖鼠标从手柄拖拽排序的回归。
+- [x] `DashboardProviderKeyboardReorder` 测试断言上移/下移按钮可用，第一项上移 disabled，最后一项下移 disabled。（覆盖在 `DashboardProviderReorder.test.ts` 中。）
+- [x] `DashboardFailoverTooltip` 测试断言问号图标紧邻自动切换开关，hover/focus 可显示包含“拖拽供应商卡片调整自动切换优先级”和“不影响 /model”的中英文文案。（覆盖在 `DashboardProviderReorder.test.ts` / `DashboardViewFailover.test.ts` 中。）
+- [x] 回归断言 `SessionBrowser.vue`、`SessionDetail.vue`、session export、JSONL 解析仍未因排序功能被修改。
+
+手动冒烟验证（2026-07-13，用户确认通过）：
+
+- [x] 供应商管理页中，按住供应商卡片的拖拽手柄可以用鼠标拖拽调整排序。
+- [x] “上移”“下移”按钮可以调整排序；首项/末项禁用状态符合预期。
+- [x] 排序编号随拖拽或按钮移动同步变化。
+- [x] 点击“编辑/删除/测试/设为当前”等卡片操作不会误触发拖拽。
+- [x] 自动切换问号 tooltip 可见，排序功能不影响会话记录页、切换事件页或 JSONL 展示。
 
 预期：所有命令返回 0；排序重启后稳定；拖拽和键盘排序都能改变 failover 优先级；自动切换开关 tooltip 能解释排序关系；无 token/body/query 泄露。
 
-## 实现验证证据（2026-07-12）
+## 实现验证证据（2026-07-12 / 2026-07-13）
 
-任务 1–5 全部实现并提交（分支 `provider-quota-failover`，本地 commit 未推送）。任务 6 于 2026-07-13 追加到本 spec，尚未实现。
+任务 1–6 全部实现并提交（分支 `provider-quota-failover`，本地 commit 未推送）。任务 6 的实现、审查修复和手动冒烟修复分别落在 `74c3b20`、`f30879a`、`5bbf17f`；双语审查归档落在 `b74dec3`。
 
 验证命令与结果：
 
-- `go test -race ./...`：1498 passed（含 `-race`，17 包）。
-- `npm --prefix internal/frontend test`：174 passed。
-- `npm --prefix internal/frontend run build`：成功，产物含 `FailoverEventsView` chunk。
+- `go test -race ./...`：1525 passed（含 `-race`）。
+- `npm --prefix internal/frontend test`：194 passed。
+- `npm --prefix internal/frontend run build`：成功，dist 已更新。
 - `git diff --check`：clean；`git status`：clean。
+- 手动冒烟（用户确认）：供应商卡片可通过拖拽手柄排序；“上移/下移”按钮正常；编号随顺序变化；卡片按钮不误触发拖拽。
 
 边界符合性自审（对应用户重点）：
 
@@ -437,6 +446,7 @@ npm --prefix internal/frontend run build
 - 供应商管理标题右侧有可访问的自动切换开关，PUT 失败回滚；Providers tab 激活时 15s 刷新。
 - 分类按 spec 表逐信号处理；裸 429 保持同供应商 retry 不切换；401 仅在非空 Token 实际变更或测试成功（非 401）才恢复；额度快照恢复绝不清凭据状态。
 - 新 API 全部经 `authMiddlewareFunc`；响应只含 `{enabled}` / `{events:[…]}`，无 token/body/query。
+- 任务 6 排序 API 经 `authMiddlewareFunc`；`PUT /api/providers/order` 返回脱敏 ordered providers，不泄露 token；SQLite `sort_order` 保证重启后顺序稳定；排序不会改变有效默认供应商，除非后续自动切换实际发生。
 
 已知限制 / 后续：
 
