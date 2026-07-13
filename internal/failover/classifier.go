@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	// classifyMaxBodyBytes 是分类器最多读取的响应体字节数。超过即视为非合格（不切换）。
-	classifyMaxBodyBytes = 64 * 1024
+	// MaxClassifyBodyBytes 是分类器最多读取的响应体字节数。超过即视为非合格（不切换）。
+	// 导出供代理（handler）与测试复用，避免 64KiB 阈值在多处定义产生漂移。
+	MaxClassifyBodyBytes = 64 * 1024
 
 	cooldownQuotaFallback = 15 * time.Minute // 额度耗尽但无可信 reset 时间时的回退冷却
 	cooldownDeployment    = 1 * time.Minute  // 模型部署不可用

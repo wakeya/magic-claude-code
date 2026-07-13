@@ -24,9 +24,6 @@ import (
 // 请求体大小限制 (10MB)
 const maxRequestBodySize = 10 * 1024 * 1024
 
-// failoverBodyCap 是故障切换分类时读取响应体的上限（与 failover.classifyMaxBodyBytes 对齐）。
-const failoverBodyCap = 64 * 1024
-
 // Handler 代理处理器
 type Handler struct {
 	configStore config.ConfigStore
@@ -473,7 +470,7 @@ func (h *Handler) replayToProvider(ctx context.Context, r *http.Request, origina
 //   - 切换成功时关闭原响应体副本，返回候选响应；候选响应的关闭与队列释放由调用方 defer。
 //   - 所有被跳过/失败的候选响应在此函数内关闭并释放。
 func (h *Handler) attemptFailover(r *http.Request, originalBody []byte, originalModel, mappedModel string, failed *config.Provider, origResp *http.Response, cfg *config.Config, client *http.Client, reqID string) (candResp *http.Response, release func(), winner *config.Provider, switched bool) {
-	captured, restored, oversize := failover.CaptureBody(origResp.Body, failoverBodyCap)
+	captured, restored, oversize := failover.CaptureBody(origResp.Body, failover.MaxClassifyBodyBytes)
 	cls := failover.ClassifyResponse(origResp.StatusCode, captured, oversize)
 	// 还原 body：非合格或全部耗尽时，原响应需完整透传给客户端。
 	origResp.Body = io.NopCloser(restored)
