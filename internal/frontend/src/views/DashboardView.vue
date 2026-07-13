@@ -141,6 +141,21 @@
               <rect x="2" y="2" width="20" height="8" rx="2" /><rect x="2" y="14" width="20" height="8" rx="2" /><circle cx="6" cy="6" r="1" /><circle cx="6" cy="18" r="1" />
             </svg>
             {{ t('providers.title') }}
+            <label
+              class="flex items-center gap-1.5 ml-2 text-xs font-normal text-text-secondary cursor-pointer"
+              :title="t('failover.switch_hint')"
+              :aria-label="t('failover.switch_label')"
+            >
+              <input
+                type="checkbox"
+                class="w-4 h-4 accent-primary"
+                :checked="failoverEnabled"
+                :disabled="failoverSaving"
+                @change="toggleFailover"
+              />
+              <span>{{ failoverSaving ? t('failover.switch_saving') : t('failover.switch_label') }}</span>
+              <span v-if="failoverSaveError" class="text-red-600">{{ t('failover.switch_save_failed') }}</span>
+            </label>
           </div>
           <div class="flex items-center gap-2">
             <button class="flex items-center gap-1.5 px-3 py-2 border-none rounded-lg text-sm font-semibold cursor-pointer transition-all duration-200 hover:scale-[1.02] app-muted hover:text-fg" :disabled="selectedProviderIds.size === 0" :class="{ 'opacity-40 cursor-not-allowed hover:scale-100': selectedProviderIds.size === 0 }" @click="handleExport">
@@ -778,6 +793,10 @@
           @refreshed="handleSessionsRefreshed"
         />
       </div>
+
+      <div v-if="activeTab === 'failover'">
+        <FailoverEventsView />
+      </div>
     </div>
 
     <button
@@ -878,6 +897,8 @@ import { formatPercent } from '@/utils/formatters'
 import { runProviderImportFlow } from '@/utils/providerImportFlow'
 
 const ProviderUsageModal = defineAsyncComponent(() => import('@/components/ProviderUsageModal.vue'))
+// FailoverEventsView 只在 activeTab === 'failover' 时渲染；事件不传入 SessionBrowser/SessionDetail/export。
+const FailoverEventsView = defineAsyncComponent(() => import('@/views/FailoverEventsView.vue'))
 
 /** Format listen address as a canonical addr:port string (brackets for IPv6). */
 function formatListenAddress(addr: string, port: number): string {
@@ -891,7 +912,7 @@ const api = useApi()
 const { t, locale } = useI18n()
 const { syncTheme, themeMode } = useTheme()
 
-type MainTab = 'status' | 'providers' | 'connection' | 'certs' | 'usage' | 'sessions'
+type MainTab = 'status' | 'providers' | 'connection' | 'certs' | 'usage' | 'sessions' | 'failover'
 type UsageTab = 'overview' | 'requests' | 'providers' | 'models' | 'coverage'
 type UsageDateRangePreset = 'today' | 'last_7_days' | 'last_30_days'
 
@@ -902,6 +923,8 @@ const tabs: Array<{ key: MainTab; labelKey: string }> = [
   { key: 'certs', labelKey: 'tab.certs' },
   { key: 'usage', labelKey: 'tab.usage' },
   { key: 'sessions', labelKey: 'tab.sessions' },
+  // 切换事件紧邻会话记录：全局事件，不关联 JSONL 会话。
+  { key: 'failover', labelKey: 'tab.failover' },
 ]
 
 const usageTabs: Array<{ key: UsageTab; labelKey: string }> = [
@@ -1312,6 +1335,53 @@ async function loadProviders() {
     activeProviderId.value = data.active_provider_id
   } catch {
     // keep last value
+  }
+}
+
+// ---- 自动故障切换开关（仅影响全局默认供应商，不影响 /model 会话路由）----
+const failoverEnabled = ref(false)
+const failoverSaving = ref(false)
+const failoverSaveError = ref(false)
+
+async function loadFailoverSettings() {
+  try {
+    const data = await api.getFailoverSettings()
+    failoverEnabled.value = !!data.enabled
+    failoverSaveError.value = false
+  } catch {
+    // 保持默认关闭；不阻塞其它加载。
+  }
+}
+
+async function toggleFailover(event: Event) {
+  const target = event.target as HTMLInputElement
+  const next = target.checked
+  const previous = failoverEnabled.value
+  failoverEnabled.value = next // 乐观更新
+  failoverSaving.value = true
+  failoverSaveError.value = false
+  try {
+    const data = await api.setFailoverSettings(next)
+    failoverEnabled.value = !!data.enabled
+  } catch {
+    // PUT 失败：回滚到先前状态。
+    failoverEnabled.value = previous
+    failoverSaveError.value = true
+  } finally {
+    failoverSaving.value = false
+  }
+}
+
+// 供应商卡片仅在 Providers tab 激活时每 15 秒刷新。
+let providersRefreshTimer: number | undefined
+function ensureProvidersRefresh() {
+  if (activeTab.value === 'providers' && providersRefreshTimer === undefined) {
+    providersRefreshTimer = window.setInterval(() => {
+      if (activeTab.value === 'providers') void loadProviders()
+    }, 15000)
+  } else if (activeTab.value !== 'providers' && providersRefreshTimer !== undefined) {
+    window.clearInterval(providersRefreshTimer)
+    providersRefreshTimer = undefined
   }
 }
 
@@ -1935,7 +2005,7 @@ watch(themeMode, () => {
 onMounted(async () => {
   // Initialize tab from query parameter.
   const urlTab = Array.isArray(route.query.tab) ? route.query.tab[0] : route.query.tab
-  if (!usageProviderId.value && urlTab && ['status', 'providers', 'connection', 'certs', 'usage', 'sessions'].includes(urlTab)) {
+  if (!usageProviderId.value && urlTab && ['status', 'providers', 'connection', 'certs', 'usage', 'sessions', 'failover'].includes(urlTab)) {
     activeTab.value = urlTab as MainTab
   }
 
@@ -1943,6 +2013,8 @@ onMounted(async () => {
   await Promise.all([loadStatus(), loadProviders(), loadCerts(), loadConnectionMode(), loadSessionsList()])
   void loadUsageData()
   void loadQuotaSnapshots()
+  void loadFailoverSettings()
+  ensureProvidersRefresh()
   statusRefreshTimer = window.setInterval(() => {
     void loadStatus()
     void loadQuotaSnapshots()
@@ -1951,8 +2023,12 @@ onMounted(async () => {
   window.addEventListener('scroll', onScroll, { passive: true })
 })
 
+// 切换 tab 时启动/停止供应商卡片 15s 刷新（仅 Providers tab 激活时）。
+watch(activeTab, () => ensureProvidersRefresh())
+
 onBeforeUnmount(() => {
   if (statusRefreshTimer) window.clearInterval(statusRefreshTimer)
+  if (providersRefreshTimer) window.clearInterval(providersRefreshTimer)
   if (filterTimer) window.clearTimeout(filterTimer)
   window.removeEventListener('resize', handleUsageChartResize)
   window.removeEventListener('scroll', onScroll)
