@@ -22,6 +22,16 @@ test('drag starts only from the drag handle, not from card content/buttons', () 
   assert.match(dashSource, /preventDefault\(\)/)
 })
 
+test('drag handle arms the outer draggable card before dragstart fires', () => {
+  // 浏览器 dragstart 的 target 通常是 draggable 外层容器，不是内部手柄。
+  // 因此必须在 pointerdown 阶段记录“本次拖拽从手柄发起”，dragstart 再读取该状态。
+  assert.match(dashSource, /@pointerdown\.capture="onProviderPointerDown\(\$event,\s*index\)"/)
+  assert.match(dashSource, /providerDragHandleIndex/)
+  assert.match(dashSource, /function\s+onProviderPointerDown\(event:\s*PointerEvent,\s*index:\s*number\)/)
+  assert.match(dashSource, /providerDragHandleIndex\.value\s*=\s*index/)
+  assert.match(dashSource, /providerDragHandleIndex\.value\s*!==\s*index/)
+})
+
 test('DashboardView passes orderIndex (index) to ProviderCard', () => {
   assert.match(dashSource, /:order-index="index"|:order-index="idx"/)
 })

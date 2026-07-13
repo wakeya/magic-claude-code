@@ -196,6 +196,7 @@
           :key="p.id"
           draggable="true"
           :class="['mb-3', providerDragIndex === index ? 'opacity-40' : '', providerDragOverIndex === index && providerDragIndex !== null && providerDragIndex !== index ? 'ring-2 ring-primary rounded-lg' : '']"
+          @pointerdown.capture="onProviderPointerDown($event, index)"
           @dragstart="onProviderDragStart($event, index)"
           @dragover.prevent="onProviderDragOver(index)"
           @drop.prevent="onProviderDrop(index)"
@@ -1402,13 +1403,22 @@ async function toggleFailover(event: Event) {
 // 供应商拖拽/键盘重排（= 自动切换优先级）。只改 providers 顺序，绝不改 ActiveProviderID。
 const providerDragIndex = ref<number | null>(null)
 const providerDragOverIndex = ref<number | null>(null)
+const providerDragHandleIndex = ref<number | null>(null)
 const providerReorderError = ref('')
 
-function onProviderDragStart(event: DragEvent, index: number) {
-  // 只允许从拖拽手柄（data-provider-drag-handle）发起拖拽，
-  // 避免误从按钮/文本/Token 区域拖动触发卡片拖拽。
+function onProviderPointerDown(event: PointerEvent, index: number) {
   const target = event.target as Element | null
-  if (!target || !target.closest('[data-provider-drag-handle]')) {
+  if (target?.closest('[data-provider-drag-handle]')) {
+    providerDragHandleIndex.value = index
+    return
+  }
+  providerDragHandleIndex.value = null
+}
+
+function onProviderDragStart(event: DragEvent, index: number) {
+  // 浏览器 dragstart 的 target 通常是 draggable 外层容器，而不是内部手柄。
+  // 因此在 pointerdown 阶段记录手柄来源，并在这里校验，避免按钮/文本/Token 区域误触发拖拽。
+  if (providerDragHandleIndex.value !== index) {
     event.preventDefault()
     return
   }
@@ -1420,11 +1430,13 @@ function onProviderDragOver(index: number) {
 function onProviderDragEnd() {
   providerDragIndex.value = null
   providerDragOverIndex.value = null
+  providerDragHandleIndex.value = null
 }
 async function onProviderDrop(targetIndex: number) {
   const from = providerDragIndex.value
   providerDragIndex.value = null
   providerDragOverIndex.value = null
+  providerDragHandleIndex.value = null
   if (from === null) return
   await reorderProvidersTo(from, targetIndex)
 }
