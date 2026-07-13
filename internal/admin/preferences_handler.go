@@ -58,13 +58,10 @@ func (s *Server) updatePreferences(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cfg, err := s.configStore.Load()
-	if err != nil {
-		writePreferencesError(w, http.StatusInternalServerError, "failed to load preferences")
-		return
-	}
-	cfg.AdminThemeMode = req.ThemeMode
-	if err := s.configStore.Save(cfg); err != nil {
+	if _, err := s.configStore.Update(func(cfg *config.Config) error {
+		cfg.AdminThemeMode = req.ThemeMode
+		return nil
+	}); err != nil {
 		writePreferencesError(w, http.StatusInternalServerError, "failed to save preferences")
 		return
 	}

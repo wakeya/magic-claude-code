@@ -28,6 +28,12 @@ func (s *quotaSaveTrackingStore) Save(cfg *config.Config) error {
 	return s.MockStore.Save(cfg)
 }
 
+// Update 同样计数：handler 现在走原子 Update 路径，测试用 saveCalls 断言配置确实落库。
+func (s *quotaSaveTrackingStore) Update(mutator func(*config.Config) error) (*config.Config, error) {
+	s.saveCalls++
+	return s.MockStore.Update(mutator)
+}
+
 func (g *adminQuotaConfigGetter) GetProviderByID(id string) *providerquota.ProviderConfig {
 	if g.provider.ID != id {
 		return nil

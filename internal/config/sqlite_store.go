@@ -243,7 +243,11 @@ func (s *SQLiteStore) hasSchemaVersion() (bool, error) {
 func (s *SQLiteStore) Load() (*Config, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.loadLocked()
+}
 
+// loadLocked 读取最新配置，调用方必须持有 s.mu。
+func (s *SQLiteStore) loadLocked() (*Config, error) {
 	cfg := DefaultConfig()
 
 	settings, err := s.loadSettings()
@@ -270,6 +274,7 @@ func (s *SQLiteStore) Load() (*Config, error) {
 	cfg.ActiveProviderID = settings["active_provider_id"]
 	cfg.AdminThemeMode = NormalizeThemeMode(settings["admin_theme_mode"])
 	cfg.ConnectionMode = NormalizeConnectionMode(settings["connection_mode"])
+	cfg.AutoFailoverEnabled = settings["auto_failover_enabled"] == "1"
 
 	providers, err := s.loadProviders()
 	if err != nil {
@@ -283,6 +288,27 @@ func (s *SQLiteStore) Save(cfg *Config) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.save(cfg)
+}
+
+// Update 原子地读-改-写配置：持有 s.mu 的整个周期内读最新配置、应用 mutator、
+// 校验、保存并返回已提交副本。校验失败返回 *ValidationError，存储失败返回原错误。
+func (s *SQLiteStore) Update(mutator func(*Config) error) (*Config, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cfg, err := s.loadLocked()
+	if err != nil {
+		return nil, err
+	}
+	if err := mutator(cfg); err != nil {
+		return nil, err
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, &ValidationError{Inner: err}
+	}
+	if err := s.save(cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
 }
 
 func (s *SQLiteStore) save(cfg *Config) error {
@@ -404,14 +430,15 @@ func (s *SQLiteStore) loadModelMappings(providerID string) (map[string]string, e
 
 func saveSettings(tx *sql.Tx, cfg *Config) error {
 	settings := map[string]string{
-		"backend_url":         cfg.BackendURL,
-		"proxy_port":          strconv.Itoa(cfg.ProxyPort),
-		"admin_port":          strconv.Itoa(cfg.AdminPort),
-		"admin_password_hash": cfg.AdminPasswordHash,
-		"data_dir":            cfg.DataDir,
-		"active_provider_id":  cfg.ActiveProviderID,
-		"admin_theme_mode":    NormalizeThemeMode(cfg.AdminThemeMode),
-		"connection_mode":     NormalizeConnectionMode(cfg.ConnectionMode),
+		"backend_url":            cfg.BackendURL,
+		"proxy_port":             strconv.Itoa(cfg.ProxyPort),
+		"admin_port":             strconv.Itoa(cfg.AdminPort),
+		"admin_password_hash":    cfg.AdminPasswordHash,
+		"data_dir":               cfg.DataDir,
+		"active_provider_id":     cfg.ActiveProviderID,
+		"admin_theme_mode":       NormalizeThemeMode(cfg.AdminThemeMode),
+		"connection_mode":        NormalizeConnectionMode(cfg.ConnectionMode),
+		"auto_failover_enabled":  strconv.Itoa(boolToInt(cfg.AutoFailoverEnabled)),
 	}
 	for key, value := range settings {
 		if _, err := tx.Exec(`INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value); err != nil {

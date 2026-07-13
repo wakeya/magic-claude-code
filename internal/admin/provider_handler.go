@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -137,13 +138,6 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 加载配置
-	cfg, err := s.configStore.Load()
-	if err != nil {
-		http.Error(w, `{"error": "failed to load config"}`, http.StatusInternalServerError)
-		return
-	}
-
 	// 创建新供应商
 	now := time.Now()
 	provider := config.Provider{
@@ -173,30 +167,32 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:                 now,
 	}
 
-	cfg.Providers = append(cfg.Providers, provider)
-
-	// 如果是第一个供应商，自动激活
-	if len(cfg.Providers) == 1 {
-		cfg.ActiveProviderID = provider.ID
-	}
-
-	if err := cfg.Validate(); err != nil {
-		jsonErr, _ := json.Marshal(map[string]string{"error": err.Error()})
-		http.Error(w, string(jsonErr), http.StatusBadRequest)
-		return
-	}
-
-	if err := s.configStore.Save(cfg); err != nil {
+	// 加载配置并原子追加供应商。Update 在锁内完成读-改-校验-写，
+	// 避免与代理自动故障切换改 ActiveProviderID 并发时互相覆盖。
+	committed, err := s.configStore.Update(func(cfg *config.Config) error {
+		cfg.Providers = append(cfg.Providers, provider)
+		// 如果是第一个供应商，自动激活
+		if len(cfg.Providers) == 1 {
+			cfg.ActiveProviderID = provider.ID
+		}
+		return nil
+	})
+	if err != nil {
+		if config.IsValidationError(err) {
+			jsonErr, _ := json.Marshal(map[string]string{"error": err.Error()})
+			http.Error(w, string(jsonErr), http.StatusBadRequest)
+			return
+		}
 		http.Error(w, `{"error": "failed to save config"}`, http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	// 用 cfg.Providers 的最后一个元素构造响应：cfg.Validate 会 trim exposed_models
+	// 用 committed.Providers 的最后一个元素构造响应：cfg.Validate 会 trim exposed_models
 	// 等字段并写回 slice 内的副本（append 后局部 provider 变量与 slice 元素是不同副本）。
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success":  true,
-		"provider": providerResponseMap(cfg.Providers[len(cfg.Providers)-1], len(cfg.Providers) == 1),
+		"provider": providerResponseMap(committed.Providers[len(committed.Providers)-1], len(committed.Providers) == 1),
 	})
 }
 
@@ -272,26 +268,8 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request, id strin
 		return
 	}
 
-	cfg, err := s.configStore.Load()
-	if err != nil {
-		http.Error(w, `{"error": "failed to load config"}`, http.StatusInternalServerError)
-		return
-	}
-
-	provider := cfg.GetProviderByID(id)
-	if provider == nil {
-		http.Error(w, `{"error": "provider not found"}`, http.StatusNotFound)
-		return
-	}
-	oldAPIURL := provider.APIURL
-	oldAPIToken := provider.APIToken
-
-	// 更新字段
-	if req.Name != "" {
-		provider.Name = req.Name
-	}
+	// 请求级 URL 校验（不依赖配置状态，放在原子更新之前）。
 	if req.APIURL != "" {
-		// 验证 URL 格式
 		parsedURL, err := url.Parse(req.APIURL)
 		if err != nil {
 			http.Error(w, `{"error": "invalid api_url format"}`, http.StatusBadRequest)
@@ -301,80 +279,94 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request, id strin
 			http.Error(w, `{"error": "api_url must use http or https scheme"}`, http.StatusBadRequest)
 			return
 		}
-		provider.APIURL = req.APIURL
 	}
-	if req.APIToken != "" {
-		provider.APIToken = req.APIToken
-	}
-	if req.APIFormat != nil {
-		provider.APIFormat = *req.APIFormat
-	}
-	if req.OpenAIExtraParams != nil {
-		provider.OpenAIExtraParams = req.OpenAIExtraParams
-	}
-	if req.ClaudeCodeCompatHint != nil {
-		provider.ClaudeCodeCompatHint = req.ClaudeCodeCompatHint
-	}
-	if req.ModelMappings != nil {
-		provider.ModelMappings = req.ModelMappings
-	}
-	if req.ExposedModels != nil {
-		provider.ExposedModels = *req.ExposedModels
-	}
-	if req.Enabled != nil {
-		provider.Enabled = *req.Enabled
-	}
-	if req.SupportsThinking != nil {
-		provider.SupportsThinking = *req.SupportsThinking
-	}
-	if req.MultimodalModel != nil {
-		provider.MultimodalModel = strings.TrimSpace(*req.MultimodalModel)
-	}
-	if req.MultimodalSwitch != nil {
-		provider.MultimodalSwitch = *req.MultimodalSwitch
-	}
-	if req.StripUnknownContentBlocks != nil {
-		provider.StripUnknownContentBlocks = *req.StripUnknownContentBlocks
-	}
-	if req.RateLimitQueueEnabled != nil {
-		provider.RateLimitQueueEnabled = *req.RateLimitQueueEnabled
-	}
-	if req.MaxConcurrentRequests != nil {
-		provider.MaxConcurrentRequests = *req.MaxConcurrentRequests
-	}
-	if req.MaxQueueSize != nil {
-		provider.MaxQueueSize = *req.MaxQueueSize
-	}
-	if req.QueueTimeoutMS != nil {
-		provider.QueueTimeoutMS = *req.QueueTimeoutMS
-	}
-	if req.Retry429Enabled != nil {
-		provider.Retry429Enabled = *req.Retry429Enabled
-	}
-	if req.Retry429MaxAttempts != nil {
-		provider.Retry429MaxAttempts = *req.Retry429MaxAttempts
-	}
-	if req.Retry429InitialDelayMS != nil {
-		provider.Retry429InitialDelayMS = *req.Retry429InitialDelayMS
-	}
-	if req.Retry429MaxDelayMS != nil {
-		provider.Retry429MaxDelayMS = *req.Retry429MaxDelayMS
-	}
-	if provider.MultimodalSwitch && strings.TrimSpace(provider.MultimodalModel) == "" {
-		http.Error(w, `{"error": "multimodal_model is required when multimodal_switch is enabled"}`, http.StatusBadRequest)
-		return
-	}
-	if err := cfg.Validate(); err != nil {
-		jsonErr, _ := json.Marshal(map[string]string{"error": err.Error()})
-		http.Error(w, string(jsonErr), http.StatusBadRequest)
-		return
-	}
-	provider.UpdatedAt = time.Now()
 
-	if err := s.configStore.Save(cfg); err != nil {
-		http.Error(w, `{"error": "failed to save config"}`, http.StatusInternalServerError)
+	// 原子读-改-校验-写：在锁内找到 provider、记录旧凭据、应用字段、校验并保存，
+	// 避免与代理自动故障切换并发改写时互相覆盖。
+	var oldAPIURL, oldAPIToken string
+	committed, err := s.configStore.Update(func(cfg *config.Config) error {
+		provider := cfg.GetProviderByID(id)
+		if provider == nil {
+			return errAdminProviderNotFound
+		}
+		oldAPIURL = provider.APIURL
+		oldAPIToken = provider.APIToken
+
+		// 更新字段
+		if req.Name != "" {
+			provider.Name = req.Name
+		}
+		if req.APIURL != "" {
+			provider.APIURL = req.APIURL
+		}
+		if req.APIToken != "" {
+			provider.APIToken = req.APIToken
+		}
+		if req.APIFormat != nil {
+			provider.APIFormat = *req.APIFormat
+		}
+		if req.OpenAIExtraParams != nil {
+			provider.OpenAIExtraParams = req.OpenAIExtraParams
+		}
+		if req.ClaudeCodeCompatHint != nil {
+			provider.ClaudeCodeCompatHint = req.ClaudeCodeCompatHint
+		}
+		if req.ModelMappings != nil {
+			provider.ModelMappings = req.ModelMappings
+		}
+		if req.ExposedModels != nil {
+			provider.ExposedModels = *req.ExposedModels
+		}
+		if req.Enabled != nil {
+			provider.Enabled = *req.Enabled
+		}
+		if req.SupportsThinking != nil {
+			provider.SupportsThinking = *req.SupportsThinking
+		}
+		if req.MultimodalModel != nil {
+			provider.MultimodalModel = strings.TrimSpace(*req.MultimodalModel)
+		}
+		if req.MultimodalSwitch != nil {
+			provider.MultimodalSwitch = *req.MultimodalSwitch
+		}
+		if req.StripUnknownContentBlocks != nil {
+			provider.StripUnknownContentBlocks = *req.StripUnknownContentBlocks
+		}
+		if req.RateLimitQueueEnabled != nil {
+			provider.RateLimitQueueEnabled = *req.RateLimitQueueEnabled
+		}
+		if req.MaxConcurrentRequests != nil {
+			provider.MaxConcurrentRequests = *req.MaxConcurrentRequests
+		}
+		if req.MaxQueueSize != nil {
+			provider.MaxQueueSize = *req.MaxQueueSize
+		}
+		if req.QueueTimeoutMS != nil {
+			provider.QueueTimeoutMS = *req.QueueTimeoutMS
+		}
+		if req.Retry429Enabled != nil {
+			provider.Retry429Enabled = *req.Retry429Enabled
+		}
+		if req.Retry429MaxAttempts != nil {
+			provider.Retry429MaxAttempts = *req.Retry429MaxAttempts
+		}
+		if req.Retry429InitialDelayMS != nil {
+			provider.Retry429InitialDelayMS = *req.Retry429InitialDelayMS
+		}
+		if req.Retry429MaxDelayMS != nil {
+			provider.Retry429MaxDelayMS = *req.Retry429MaxDelayMS
+		}
+		if provider.MultimodalSwitch && strings.TrimSpace(provider.MultimodalModel) == "" {
+			return errAdminMultimodalModelRequired
+		}
+		provider.UpdatedAt = time.Now()
+		return nil
+	})
+	if err != nil {
+		writeConfigUpdateError(w, err)
 		return
 	}
+	provider := committed.GetProviderByID(id)
 	if provider.QuotaQuery != nil && s.quotaManager != nil &&
 		(oldAPIURL != provider.APIURL || oldAPIToken != provider.APIToken) {
 		if err := s.quotaManager.DeleteSnapshot(id); err != nil {
@@ -386,47 +378,40 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request, id strin
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success":  true,
-		"provider": providerResponseMap(*provider, provider.ID == cfg.ActiveProviderID),
+		"provider": providerResponseMap(*provider, provider.ID == committed.ActiveProviderID),
 	})
 }
 
 // deleteProvider 删除供应商
 func (s *Server) deleteProvider(w http.ResponseWriter, _ *http.Request, id string) {
-	cfg, err := s.configStore.Load()
+	_, err := s.configStore.Update(func(cfg *config.Config) error {
+		// 查找并删除供应商
+		found := false
+		newProviders := make([]config.Provider, 0, len(cfg.Providers))
+		for _, p := range cfg.Providers {
+			if p.ID == id {
+				found = true
+				continue
+			}
+			newProviders = append(newProviders, p)
+		}
+		if !found {
+			return errAdminProviderNotFound
+		}
+
+		cfg.Providers = newProviders
+		// 如果删除的是当前激活的供应商，清除 ActiveProviderID
+		if cfg.ActiveProviderID == id {
+			cfg.ActiveProviderID = ""
+			// 如果还有其他供应商，自动激活第一个
+			if len(newProviders) > 0 {
+				cfg.ActiveProviderID = newProviders[0].ID
+			}
+		}
+		return nil
+	})
 	if err != nil {
-		http.Error(w, `{"error": "failed to load config"}`, http.StatusInternalServerError)
-		return
-	}
-
-	// 查找并删除供应商
-	found := false
-	newProviders := make([]config.Provider, 0, len(cfg.Providers))
-	for _, p := range cfg.Providers {
-		if p.ID == id {
-			found = true
-			continue
-		}
-		newProviders = append(newProviders, p)
-	}
-
-	if !found {
-		http.Error(w, `{"error": "provider not found"}`, http.StatusNotFound)
-		return
-	}
-
-	cfg.Providers = newProviders
-
-	// 如果删除的是当前激活的供应商，清除 ActiveProviderID
-	if cfg.ActiveProviderID == id {
-		cfg.ActiveProviderID = ""
-		// 如果还有其他供应商，自动激活第一个
-		if len(newProviders) > 0 {
-			cfg.ActiveProviderID = newProviders[0].ID
-		}
-	}
-
-	if err := s.configStore.Save(cfg); err != nil {
-		http.Error(w, `{"error": "failed to save config"}`, http.StatusInternalServerError)
+		writeConfigUpdateError(w, err)
 		return
 	}
 
@@ -446,29 +431,25 @@ func (s *Server) handleProviderActivate(w http.ResponseWriter, r *http.Request) 
 	path = strings.TrimSuffix(path, "/activate")
 	id := path
 
-	cfg, err := s.configStore.Load()
+	_, err := s.configStore.Update(func(cfg *config.Config) error {
+		provider := cfg.GetProviderByID(id)
+		if provider == nil {
+			return errAdminProviderNotFound
+		}
+		// 检查供应商是否已启用
+		if !provider.Enabled {
+			return errAdminProviderNotEnabled
+		}
+		cfg.ActiveProviderID = id
+		return nil
+	})
 	if err != nil {
-		http.Error(w, `{"error": "failed to load config"}`, http.StatusInternalServerError)
-		return
-	}
-
-	// 查找供应商
-	provider := cfg.GetProviderByID(id)
-	if provider == nil {
-		http.Error(w, `{"error": "provider not found"}`, http.StatusNotFound)
-		return
-	}
-
-	// 检查供应商是否已启用
-	if !provider.Enabled {
-		http.Error(w, `{"error": "provider is not enabled"}`, http.StatusBadRequest)
-		return
-	}
-
-	cfg.ActiveProviderID = id
-
-	if err := s.configStore.Save(cfg); err != nil {
-		http.Error(w, `{"error": "failed to save config"}`, http.StatusInternalServerError)
+		switch {
+		case errors.Is(err, errAdminProviderNotEnabled):
+			http.Error(w, `{"error": "provider is not enabled"}`, http.StatusBadRequest)
+		default:
+			writeConfigUpdateError(w, err)
+		}
 		return
 	}
 
@@ -488,36 +469,31 @@ func (s *Server) handleProviderToggle(w http.ResponseWriter, r *http.Request) {
 	path = strings.TrimSuffix(path, "/toggle")
 	id := path
 
-	cfg, err := s.configStore.Load()
+	var newEnabled bool
+	_, err := s.configStore.Update(func(cfg *config.Config) error {
+		provider := cfg.GetProviderByID(id)
+		if provider == nil {
+			return errAdminProviderNotFound
+		}
+		// 切换状态
+		provider.Enabled = !provider.Enabled
+		provider.UpdatedAt = time.Now()
+		newEnabled = provider.Enabled
+		// 如果禁用的是当前激活的供应商，清除激活状态
+		if !provider.Enabled && cfg.ActiveProviderID == id {
+			cfg.ActiveProviderID = ""
+		}
+		return nil
+	})
 	if err != nil {
-		http.Error(w, `{"error": "failed to load config"}`, http.StatusInternalServerError)
-		return
-	}
-
-	provider := cfg.GetProviderByID(id)
-	if provider == nil {
-		http.Error(w, `{"error": "provider not found"}`, http.StatusNotFound)
-		return
-	}
-
-	// 切换状态
-	provider.Enabled = !provider.Enabled
-	provider.UpdatedAt = time.Now()
-
-	// 如果禁用的是当前激活的供应商，清除激活状态
-	if !provider.Enabled && cfg.ActiveProviderID == id {
-		cfg.ActiveProviderID = ""
-	}
-
-	if err := s.configStore.Save(cfg); err != nil {
-		http.Error(w, `{"error": "failed to save config"}`, http.StatusInternalServerError)
+		writeConfigUpdateError(w, err)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
-		"enabled": provider.Enabled,
+		"enabled": newEnabled,
 	})
 }
 
@@ -775,55 +751,45 @@ func (s *Server) handleProviderDuplicate(w http.ResponseWriter, r *http.Request)
 	path := strings.TrimSuffix(r.URL.Path, "/duplicate")
 	id := strings.TrimPrefix(path, "/api/providers/")
 
-	cfg, err := s.configStore.Load()
+	var newProvider config.Provider
+	_, err := s.configStore.Update(func(cfg *config.Config) error {
+		provider := cfg.GetProviderByID(id)
+		if provider == nil {
+			return errAdminProviderNotFound
+		}
+
+		now := time.Now()
+		newProvider = config.Provider{
+			ID:                        generateProviderID(),
+			Name:                      provider.Name + " 复制",
+			APIURL:                    provider.APIURL,
+			APIToken:                  provider.APIToken,
+			APIFormat:                 provider.APIFormat,
+			OpenAIExtraParams:         provider.OpenAIExtraParams,
+			ClaudeCodeCompatHint:      provider.ClaudeCodeCompatHint,
+			ModelMappings:             provider.ModelMappings,
+			SupportsThinking:          provider.SupportsThinking,
+			MultimodalSwitch:          provider.MultimodalSwitch,
+			MultimodalModel:           provider.MultimodalModel,
+			StripUnknownContentBlocks: provider.StripUnknownContentBlocks,
+			RateLimitQueueEnabled:     provider.RateLimitQueueEnabled,
+			MaxConcurrentRequests:     provider.MaxConcurrentRequests,
+			MaxQueueSize:              provider.MaxQueueSize,
+			QueueTimeoutMS:            provider.QueueTimeoutMS,
+			Retry429Enabled:           provider.Retry429Enabled,
+			Retry429MaxAttempts:       provider.Retry429MaxAttempts,
+			Retry429InitialDelayMS:    provider.Retry429InitialDelayMS,
+			Retry429MaxDelayMS:        provider.Retry429MaxDelayMS,
+			QuotaQuery:                copyQuotaQueryConfig(provider.QuotaQuery, provider.APIURL),
+			Enabled:                   true,
+			CreatedAt:                 now,
+			UpdatedAt:                 now,
+		}
+		cfg.Providers = append(cfg.Providers, newProvider)
+		return nil
+	})
 	if err != nil {
-		http.Error(w, `{"error": "failed to load config"}`, http.StatusInternalServerError)
-		return
-	}
-
-	provider := cfg.GetProviderByID(id)
-	if provider == nil {
-		http.Error(w, `{"error": "provider not found"}`, http.StatusNotFound)
-		return
-	}
-
-	now := time.Now()
-	newProvider := config.Provider{
-		ID:                        generateProviderID(),
-		Name:                      provider.Name + " 复制",
-		APIURL:                    provider.APIURL,
-		APIToken:                  provider.APIToken,
-		APIFormat:                 provider.APIFormat,
-		OpenAIExtraParams:         provider.OpenAIExtraParams,
-		ClaudeCodeCompatHint:      provider.ClaudeCodeCompatHint,
-		ModelMappings:             provider.ModelMappings,
-		SupportsThinking:          provider.SupportsThinking,
-		MultimodalSwitch:          provider.MultimodalSwitch,
-		MultimodalModel:           provider.MultimodalModel,
-		StripUnknownContentBlocks: provider.StripUnknownContentBlocks,
-		RateLimitQueueEnabled:     provider.RateLimitQueueEnabled,
-		MaxConcurrentRequests:     provider.MaxConcurrentRequests,
-		MaxQueueSize:              provider.MaxQueueSize,
-		QueueTimeoutMS:            provider.QueueTimeoutMS,
-		Retry429Enabled:           provider.Retry429Enabled,
-		Retry429MaxAttempts:       provider.Retry429MaxAttempts,
-		Retry429InitialDelayMS:    provider.Retry429InitialDelayMS,
-		Retry429MaxDelayMS:        provider.Retry429MaxDelayMS,
-		QuotaQuery:                copyQuotaQueryConfig(provider.QuotaQuery, provider.APIURL),
-		Enabled:                   true,
-		CreatedAt:                 now,
-		UpdatedAt:                 now,
-	}
-	cfg.Providers = append(cfg.Providers, newProvider)
-
-	if err := cfg.Validate(); err != nil {
-		jsonErr, _ := json.Marshal(map[string]string{"error": err.Error()})
-		http.Error(w, string(jsonErr), http.StatusBadRequest)
-		return
-	}
-
-	if err := s.configStore.Save(cfg); err != nil {
-		http.Error(w, `{"error": "failed to save config"}`, http.StatusInternalServerError)
+		writeConfigUpdateError(w, err)
 		return
 	}
 
@@ -914,18 +880,6 @@ func (s *Server) handleImportProviders(w http.ResponseWriter, r *http.Request) {
 		strategy = "skip" // 未知策略默认 skip
 	}
 
-	cfg, err := s.configStore.Load()
-	if err != nil {
-		http.Error(w, `{"error": "failed to load config"}`, http.StatusInternalServerError)
-		return
-	}
-
-	// 建立现有 ID 索引
-	existingIdx := make(map[string]int, len(cfg.Providers))
-	for i, p := range cfg.Providers {
-		existingIdx[p.ID] = i
-	}
-
 	now := time.Now()
 	summary := struct {
 		Success     bool     `json:"success"`
@@ -937,69 +891,77 @@ func (s *Server) handleImportProviders(w http.ResponseWriter, r *http.Request) {
 	}{Success: true, Errors: []string{}}
 	invalidateSnapshots := make(map[string]bool)
 
-	// 文件内去重：skip/overwrite 策略下同一 ID 只处理首次出现；
-	// duplicate 策略下每条都生成新 ID，无需去重。
-	seenInFile := make(map[string]bool)
-	dedup := strategy != "duplicate"
-
-	for _, p := range req.Providers {
-		if dedup && seenInFile[p.ID] {
-			continue
-		}
-		seenInFile[p.ID] = true
-
-		// 校验；无效则跳过并记录
-		cp := p
-		if err := cp.Validate(); err != nil {
-			summary.Errors = append(summary.Errors, fmt.Sprintf("%s: %v", p.Name, err))
-			continue
+	_, err := s.configStore.Update(func(cfg *config.Config) error {
+		// 建立现有 ID 索引
+		existingIdx := make(map[string]int, len(cfg.Providers))
+		for i, p := range cfg.Providers {
+			existingIdx[p.ID] = i
 		}
 
-		if _, conflict := existingIdx[p.ID]; conflict {
-			switch strategy {
-			case "skip":
-				summary.Skipped++
-			case "overwrite":
-				orig := cfg.Providers[existingIdx[p.ID]]
-				cp.CreatedAt = orig.CreatedAt // 保留原创建时间
-				cp.UpdatedAt = now
-				if orig.APIURL != cp.APIURL || orig.APIToken != cp.APIToken ||
-					isMaterialQuotaChange(orig.QuotaQuery, cp.QuotaQuery) {
-					invalidateSnapshots[p.ID] = true
+		// 文件内去重：skip/overwrite 策略下同一 ID 只处理首次出现；
+		// duplicate 策略下每条都生成新 ID，无需去重。
+		seenInFile := make(map[string]bool)
+		dedup := strategy != "duplicate"
+
+		for _, p := range req.Providers {
+			if dedup && seenInFile[p.ID] {
+				continue
+			}
+			seenInFile[p.ID] = true
+
+			// 校验；无效则跳过并记录
+			cp := p
+			if err := cp.Validate(); err != nil {
+				summary.Errors = append(summary.Errors, fmt.Sprintf("%s: %v", p.Name, err))
+				continue
+			}
+
+			if _, conflict := existingIdx[p.ID]; conflict {
+				switch strategy {
+				case "skip":
+					summary.Skipped++
+				case "overwrite":
+					orig := cfg.Providers[existingIdx[p.ID]]
+					cp.CreatedAt = orig.CreatedAt // 保留原创建时间
+					cp.UpdatedAt = now
+					if orig.APIURL != cp.APIURL || orig.APIToken != cp.APIToken ||
+						isMaterialQuotaChange(orig.QuotaQuery, cp.QuotaQuery) {
+						invalidateSnapshots[p.ID] = true
+					}
+					cfg.Providers[existingIdx[p.ID]] = cp
+					summary.Overwritten++
+				case "duplicate":
+					// 冲突项生成新 ID 追加，原供应商不变。
+					// 清空 ExposedModels：ID 需要全局唯一，保留会导致与原 provider 冲突。
+					// 与 handleProviderDuplicate 语义一致。
+					cp.ID = generateProviderID()
+					cp.ExposedModels = nil
+					cp.CreatedAt = now
+					cp.UpdatedAt = now
+					cfg.Providers = append(cfg.Providers, cp)
+					summary.Duplicated++
 				}
-				cfg.Providers[existingIdx[p.ID]] = cp
-				summary.Overwritten++
-			case "duplicate":
-				// 冲突项生成新 ID 追加，原供应商不变。
-				// 清空 ExposedModels：ID 需要全局唯一，保留会导致与原 provider 冲突。
-				// 与 handleProviderDuplicate 语义一致。
-				cp.ID = generateProviderID()
-				cp.ExposedModels = nil
-				cp.CreatedAt = now
-				cp.UpdatedAt = now
+			} else {
+				if cp.CreatedAt.IsZero() {
+					cp.CreatedAt = now
+				}
+				if cp.UpdatedAt.IsZero() {
+					cp.UpdatedAt = now
+				}
 				cfg.Providers = append(cfg.Providers, cp)
-				summary.Duplicated++
+				existingIdx[cp.ID] = len(cfg.Providers) - 1
+				summary.Imported++
 			}
-		} else {
-			if cp.CreatedAt.IsZero() {
-				cp.CreatedAt = now
-			}
-			if cp.UpdatedAt.IsZero() {
-				cp.UpdatedAt = now
-			}
-			cfg.Providers = append(cfg.Providers, cp)
-			existingIdx[cp.ID] = len(cfg.Providers) - 1
-			summary.Imported++
 		}
-	}
-
-	// 全局校验（含跨 provider ExposedModel ID 唯一性）
-	if err := cfg.Validate(); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error": %q}`, err.Error()), http.StatusBadRequest)
-		return
-	}
-
-	if err := s.configStore.Save(cfg); err != nil {
+		return nil
+	})
+	if err != nil {
+		// Update 内 cfg.Validate() 失败 → 400（含跨 provider ExposedModel ID 唯一性等）；
+		// Load/Save 失败 → 500。
+		if config.IsValidationError(err) {
+			http.Error(w, fmt.Sprintf(`{"error": %q}`, err.Error()), http.StatusBadRequest)
+			return
+		}
 		http.Error(w, `{"error": "failed to save config"}`, http.StatusInternalServerError)
 		return
 	}
