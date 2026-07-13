@@ -94,9 +94,18 @@ func eligible(kind StateKind, reason string, statusCode int, pe parsedError, dis
 		Kind:          kind,
 		Reason:        reason,
 		UpstreamCode:  statusCode,
+		BusinessCode:  businessCodeFrom(pe),
 		UpstreamError: safeSummary(pe),
 		DisabledUntil: disabledUntil,
 	}
+}
+
+// businessCodeFrom 返回脱敏后的业务错误码字符串（来自 error.code），无则为空。
+func businessCodeFrom(pe parsedError) string {
+	if pe.code != 0 {
+		return strconv.Itoa(pe.code)
+	}
+	return pe.codeStr
 }
 
 func availabilityReason(statusCode int) string {

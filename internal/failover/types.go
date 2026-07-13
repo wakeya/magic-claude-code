@@ -31,6 +31,9 @@ type Classification struct {
 	Reason string
 	// UpstreamCode 上游 HTTP 状态码（网络错误时为 0）。
 	UpstreamCode int
+	// BusinessCode 上游业务错误码（如 1308/1310/1210），来自 error.code，无则为空。
+	// 与 UpstreamCode（HTTP 状态码）分开存储，满足事件展示「HTTP 状态码 / 业务码」。
+	BusinessCode string
 	// UpstreamError 上游错误摘要（脱敏后的 code/message 片段，进入事件展示）。
 	UpstreamError string
 	// DisabledUntil 摘除截止时间。零值表示无时间恢复（凭据失效）。
@@ -82,6 +85,7 @@ type FailoverEvent struct {
 	OriginalModel    string    `json:"original_model"`
 	MappedModel      string    `json:"mapped_model"`
 	UpstreamCode     int       `json:"upstream_code"`
+	BusinessCode     string    `json:"business_code"`
 	Reason           string    `json:"reason"`
 	Outcome          Outcome   `json:"outcome"`
 	DisabledUntil    *time.Time `json:"disabled_until,omitempty"`

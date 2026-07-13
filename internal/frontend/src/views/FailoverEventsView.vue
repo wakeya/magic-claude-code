@@ -129,13 +129,18 @@ function modelLabel(event: FailoverEvent): string {
 }
 
 function signalLabel(event: FailoverEvent): string {
-  if (event.upstream_code && event.reason) return `${event.upstream_code} / ${event.reason}`
+  // HTTP 状态码 / 业务码（如 429 / 1308）；无业务码时只显示状态码。
+  if (event.upstream_code && event.business_code) return `${event.upstream_code} / ${event.business_code}`
   if (event.upstream_code) return String(event.upstream_code)
-  return event.reason || '—'
+  return event.business_code || '—'
 }
 
 function reasonLabel(event: FailoverEvent): string {
-  return event.reason || '—'
+  // 已知原因码走 i18n（中英双语）；未知码原样展示。
+  if (!event.reason) return '—'
+  const key = `failover.reason_${event.reason}`
+  const translated = t(key)
+  return translated === key ? event.reason : translated
 }
 
 function outcomeLabel(outcome: FailoverEvent['outcome']): string {

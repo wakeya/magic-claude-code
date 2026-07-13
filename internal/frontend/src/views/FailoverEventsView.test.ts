@@ -35,6 +35,14 @@ test('FailoverEventsView never mutates SessionDetail/export/JSONL', () => {
   assert.match(viewSource, /void err/)
 })
 
+test('FailoverEventsView surfaces business_code in the signal column', () => {
+  // signalLabel 同时展示 HTTP 状态码与业务码；组件引用 event.business_code。
+  assert.match(viewSource, /event\.business_code/)
+  assert.match(viewSource, /upstream_code/)
+  // 原因列对已知码走 i18n。
+  assert.match(viewSource, /reason_/)
+})
+
 test('FailoverEventsView outcome labels cover switched/exhausted/retry_failed/recovered', () => {
   for (const o of ['switched', 'exhausted', 'retry_failed', 'recovered']) {
     const pattern = new RegExp("case '" + o + "': return t\\('failover\\.outcome_" + o + "'\\)")

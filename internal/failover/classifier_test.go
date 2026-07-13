@@ -32,6 +32,9 @@ func TestClassify1308WithReset(t *testing.T) {
 	if !c.DisabledUntil.After(time.Now().Add(time.Hour)) {
 		t.Fatalf("DisabledUntil = %v, want near the parsed reset (~2h future)", c.DisabledUntil)
 	}
+	if c.BusinessCode != "1308" {
+		t.Fatalf("BusinessCode = %q, want 1308", c.BusinessCode)
+	}
 }
 
 func TestClassify1308InvalidResetFallsBackTo15m(t *testing.T) {

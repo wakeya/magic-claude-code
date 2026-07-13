@@ -205,6 +205,22 @@ func TestQuotaSnapshotRecoveryClearsQuotaState(t *testing.T) {
 	}
 }
 
+func TestCommitSwitchRecordsBusinessCode(t *testing.T) {
+	m, _ := newTestManager(t, providersForTest(), "a")
+	cls := Classification{Eligible: true, Kind: StateKindQuota, Reason: "five_hour_quota_exhausted", UpstreamCode: 429, BusinessCode: "1308"}
+	m.CommitSwitch("a", "b", "claude-opus-4-8", "glm-5.2", cls)
+	got := m.Events(10, nil)
+	if len(got) != 1 {
+		t.Fatalf("events = %d, want 1", len(got))
+	}
+	if got[0].BusinessCode != "1308" || got[0].UpstreamCode != 429 {
+		t.Fatalf("event upstream=%d business=%q, want 429/1308", got[0].UpstreamCode, got[0].BusinessCode)
+	}
+	if got[0].Reason != "five_hour_quota_exhausted" {
+		t.Fatalf("reason = %q", got[0].Reason)
+	}
+}
+
 func TestOnProviderDeletedClearsState(t *testing.T) {
 	m, _ := newTestManager(t, providersForTest(), "a")
 	m.QuarantineFailed("b", Classification{Eligible: true, Kind: StateKindAvailability, Reason: "bad_gateway", UpstreamCode: 502, DisabledUntil: time.Now().Add(time.Minute)})

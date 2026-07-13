@@ -44,6 +44,7 @@ func (s *Store) Migrate() error {
 			original_model TEXT NOT NULL DEFAULT '',
 			mapped_model TEXT NOT NULL DEFAULT '',
 			upstream_code INTEGER NOT NULL DEFAULT 0,
+			business_code TEXT NOT NULL DEFAULT '',
 			reason TEXT NOT NULL DEFAULT '',
 			outcome TEXT NOT NULL,
 			disabled_until TEXT NOT NULL DEFAULT ''
@@ -53,6 +54,41 @@ func (s *Store) Migrate() error {
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {
 			return err
+		}
+	}
+	return s.ensureEventColumns()
+}
+
+// ensureEventColumns 给已存在的 provider_failover_events 表补齐后续新增列（向前兼容早期 dev DB）。
+func (s *Store) ensureEventColumns() error {
+	rows, err := s.db.Query(`PRAGMA table_info(provider_failover_events)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	existing := make(map[string]struct{})
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return err
+		}
+		existing[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	add := map[string]string{
+		"business_code": `ALTER TABLE provider_failover_events ADD COLUMN business_code TEXT NOT NULL DEFAULT ''`,
+	}
+	for name, stmt := range add {
+		if _, ok := existing[name]; !ok {
+			if _, err := s.db.Exec(stmt); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -137,6 +173,7 @@ type EventInput struct {
 	OriginalModel    string
 	MappedModel      string
 	UpstreamCode     int
+	BusinessCode     string
 	Reason           string
 	Outcome          Outcome
 	DisabledUntil    time.Time // 零值表示无
@@ -148,13 +185,13 @@ func (s *Store) InsertEvent(in EventInput) error {
 		in.OccurredAt = time.Now().UTC()
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO provider_failover_events(occurred_at, from_provider_id, to_provider_id, from_provider_name, to_provider_name, original_model, mapped_model, upstream_code, reason, outcome, disabled_until)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO provider_failover_events(occurred_at, from_provider_id, to_provider_id, from_provider_name, to_provider_name, original_model, mapped_model, upstream_code, business_code, reason, outcome, disabled_until)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		formatStoreTime(in.OccurredAt),
 		in.FromProviderID, in.ToProviderID,
 		in.FromProviderName, in.ToProviderName,
 		in.OriginalModel, in.MappedModel,
-		in.UpstreamCode, in.Reason, string(in.Outcome),
+		in.UpstreamCode, in.BusinessCode, in.Reason, string(in.Outcome),
 		formatStoreTime(in.DisabledUntil),
 	)
 	if err != nil {
@@ -190,7 +227,7 @@ func (s *Store) ListEvents(limit int, knownProviderIDs map[string]bool) []Failov
 		limit = eventListMaxLimit
 	}
 	rows, err := s.db.Query(
-		`SELECT id, occurred_at, from_provider_id, to_provider_id, from_provider_name, to_provider_name, original_model, mapped_model, upstream_code, reason, outcome, disabled_until
+		`SELECT id, occurred_at, from_provider_id, to_provider_id, from_provider_name, to_provider_name, original_model, mapped_model, upstream_code, business_code, reason, outcome, disabled_until
 		 FROM provider_failover_events ORDER BY occurred_at DESC, id DESC LIMIT ?`,
 		limit,
 	)
@@ -202,7 +239,7 @@ func (s *Store) ListEvents(limit int, knownProviderIDs map[string]bool) []Failov
 	for rows.Next() {
 		var e FailoverEvent
 		var occurredAt, fromID, toID, fromName, toName, origModel, mappedModel, reason, outcome, disabledUntil string
-		if err := rows.Scan(&e.ID, &occurredAt, &fromID, &toID, &fromName, &toName, &origModel, &mappedModel, &e.UpstreamCode, &reason, &outcome, &disabledUntil); err != nil {
+		if err := rows.Scan(&e.ID, &occurredAt, &fromID, &toID, &fromName, &toName, &origModel, &mappedModel, &e.UpstreamCode, &e.BusinessCode, &reason, &outcome, &disabledUntil); err != nil {
 			return nil
 		}
 		e.OccurredAt = parseStoreTime(occurredAt)

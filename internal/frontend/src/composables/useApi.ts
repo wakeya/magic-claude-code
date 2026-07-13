@@ -357,6 +357,7 @@ export interface FailoverEvent {
   original_model: string
   mapped_model: string
   upstream_code: number
+  business_code: string
   reason: string
   outcome: 'switched' | 'exhausted' | 'retry_failed' | 'recovered'
   disabled_until?: string | null
