@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"magic-claude-code/internal/config"
+	"magic-claude-code/internal/failover"
 )
 
 // Server 代理服务器
@@ -20,6 +21,8 @@ type Server struct {
 	server      *http.Server
 	transport   *http.Transport
 	recorder    UsageRecorder
+	// failoverManager 注入后，模型推理端点的默认路由在 >=400 时可自动切换全局默认供应商。
+	failoverManager *failover.Manager
 
 	// 统计
 	requestsTotal atomic.Int64
@@ -52,9 +55,24 @@ func NewServer(store config.ConfigStore, recorders ...UsageRecorder) *Server {
 	return server
 }
 
+// SetFailoverManager 注入故障切换管理器，使所有 Handler 实例（TLS / gateway / restart）
+// 都获得同一管理器。未注入时自动故障切换保持关闭。
+func (s *Server) SetFailoverManager(m *failover.Manager) {
+	s.failoverManager = m
+}
+
+// newConfiguredHandler 创建并配置一个带故障切换管理器的 Handler。
+func (s *Server) newConfiguredHandler() *Handler {
+	h := NewHandler(s.configStore, s.transport, s.recorder)
+	if s.failoverManager != nil {
+		h.SetFailoverManager(s.failoverManager)
+	}
+	return h
+}
+
 // Start 启动代理服务器
 func (s *Server) Start(addr string, certFile, keyFile string) error {
-	handler := NewHandler(s.configStore, s.transport, s.recorder)
+	handler := s.newConfiguredHandler()
 
 	certPair, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
@@ -273,7 +291,7 @@ func (s *Server) Stop(ctx context.Context) error {
 
 // StartGateway 启动路由模式 HTTP 服务器（阻塞调用，应在 goroutine 中运行）
 func (s *Server) StartGateway(addr string) error {
-	handler := NewHandler(s.configStore, s.transport, s.recorder)
+	handler := s.newConfiguredHandler()
 
 	s.gatewayMu.Lock()
 	s.gatewayServer = &http.Server{
@@ -321,7 +339,7 @@ func (s *Server) RestartGateway(addr string) error {
 		return fmt.Errorf("listen %s: %w", addr, err)
 	}
 
-	handler := NewHandler(s.configStore, s.transport, s.recorder)
+	handler := s.newConfiguredHandler()
 
 	s.gatewayMu.Lock()
 	old := s.gatewayServer

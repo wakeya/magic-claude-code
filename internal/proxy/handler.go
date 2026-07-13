@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"magic-claude-code/internal/config"
+	"magic-claude-code/internal/failover"
 	"magic-claude-code/internal/proxy/ratelimit"
 	apitransform "magic-claude-code/internal/proxy/transform"
 	"magic-claude-code/internal/usage"
@@ -22,13 +24,22 @@ import (
 // 请求体大小限制 (10MB)
 const maxRequestBodySize = 10 * 1024 * 1024
 
+// failoverBodyCap 是故障切换分类时读取响应体的上限（与 failover.classifyMaxBodyBytes 对齐）。
+const failoverBodyCap = 64 * 1024
+
 // Handler 代理处理器
 type Handler struct {
 	configStore config.ConfigStore
 	transport   *http.Transport
 	recorder    UsageRecorder
 	rateLimiter *ratelimit.Manager
+	// failoverManager 为 nil 时自动故障切换关闭（仅当 Config.AutoFailoverEnabled
+	// 且路由为默认路由时才生效）。绝不影响 ExposedModel（/model 会话路由）。
+	failoverManager *failover.Manager
 }
+
+// SetFailoverManager 注入故障切换管理器。
+func (h *Handler) SetFailoverManager(m *failover.Manager) { h.failoverManager = m }
 
 type UsageRecorder interface {
 	Record(req usage.RequestRecord, tok usage.TokenRecord) error
@@ -101,8 +112,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	metadata := usage.ParseRequestMetadata(body, r.Header)
 
-	// 按 model 路由：命中暴露模型 → 对应 provider；否则 fallback active
-	selectedProvider, backendModel := cfg.ResolveModel(metadata.OriginalModel)
+	// 按 model 路由：命中暴露模型 → 对应 provider（固定路由，不参与故障切换）；
+	// 否则 fallback active（默认路由，唯一允许自动切换的路径）。
+	route := cfg.ResolveRoute(metadata.OriginalModel)
+	selectedProvider := route.Provider
+	backendModel := route.BackendModel
 
 	var backendURL string
 	var apiToken string
@@ -246,6 +260,37 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 自动故障切换：仅对默认路由（非 ExposedModel）+ 模型推理端点 + POST + >=400 响应生效。
+	// 在向客户端写入任何字节之前完成，确保失败时不会双写响应。
+	if h.shouldFailover(cfg, r, route, selectedProvider, resp) {
+		if candResp, candRelease, winner, switched := h.attemptFailover(r, body, metadata.OriginalModel, mappedModel, selectedProvider, resp, cfg, client, reqID); candResp != nil {
+			// 已在 attemptFailover 内关闭原 resp.Body；这里接管候选响应。
+			resp = candResp
+			defer resp.Body.Close()
+			if candRelease != nil {
+				defer candRelease()
+			}
+			usageReq.StatusCode = &resp.StatusCode
+			if winner != nil {
+				// usage / 日志口径切到最终成功供应商。
+				selectedProvider = winner
+				backendModel = winner.MapModel(metadata.OriginalModel)
+				mappedModel = backendModel
+				backendURL = buildUpstreamURL(winner.APIURL, r.URL.Path, providerAPIFormat(winner))
+				apiToken = winner.APIToken
+				usageReq.ProviderID = winner.ID
+				usageReq.ProviderName = winner.Name
+				usageReq.ProviderAPIURL = usage.RedactURL(winner.APIURL)
+				usageReq.BackendURL = usage.RedactURL(backendURL)
+				usageReq.MappedModel = mappedModel
+				modelStr = mappedModel
+				headerMS = time.Since(upstreamStarted).Milliseconds()
+				usageReq.UpstreamResponseHeaderMS = &headerMS
+				log.Printf("[%s] failover switched to provider=%q (active updated=%v)", reqID, winner.Name, switched)
+			}
+		}
+	}
+
 	// 复制响应 header
 	for key, values := range resp.Header {
 		if !shouldForwardResponseHeader(key, providerAPIFormat(selectedProvider)) {
@@ -335,6 +380,134 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func shouldRecordUsagePath(path string) bool {
 	return path == "/v1/messages" || path == "/anthropic/v1/messages"
+}
+
+// shouldFailover 报告当前响应是否应进入自动故障切换流程。
+// 准入条件：管理器已注入 + 配置开启 + 默认路由（非 ExposedModel）+ 模型推理端点 + POST + 响应 >=400。
+// 任何一项不满足都返回 false，确保 ExposedModel /model 路由、非推理端点、安全方法永不切换。
+func (h *Handler) shouldFailover(cfg *config.Config, r *http.Request, route config.ModelRoute, provider *config.Provider, resp *http.Response) bool {
+	if h.failoverManager == nil || !cfg.AutoFailoverEnabled {
+		return false
+	}
+	if !route.DefaultRouted {
+		return false
+	}
+	if provider == nil || provider.ID == "" {
+		return false
+	}
+	if !shouldRecordUsagePath(r.URL.Path) {
+		return false
+	}
+	if r.Method != http.MethodPost {
+		return false
+	}
+	if resp == nil || resp.StatusCode < 400 {
+		return false
+	}
+	return true
+}
+
+// replayToProvider 用不可变的原始客户端输入为指定候选供应商重新构造转换 body、URL、
+// Token、header 与格式，并应用该候选自身的并发队列与 429 重试。返回响应 + 队列释放函数。
+func (h *Handler) replayToProvider(ctx context.Context, r *http.Request, originalBody []byte, originalModel string, provider *config.Provider, client *http.Client, reqID string) (*http.Response, func(), error) {
+	backendModel := provider.MapModel(originalModel)
+	if provider.MultimodalSwitch && provider.MultimodalModel != "" {
+		var peek map[string]any
+		if json.Unmarshal(originalBody, &peek) == nil && requestContainsNonTextContent(peek) {
+			backendModel = provider.MultimodalModel
+		}
+	}
+	modifiedBody, err := h.transformRequest(originalBody, provider, backendModel)
+	if err != nil {
+		return nil, nil, err
+	}
+	apiFmt := providerAPIFormat(provider)
+	backendURL := buildUpstreamURL(provider.APIURL, r.URL.Path, apiFmt)
+	if r.URL.RawQuery != "" {
+		if q := stripAnthropicQueryParams(r.URL.RawQuery, apiFmt); q != "" {
+			backendURL += "?" + q
+		}
+	}
+	doOnce := func() (*http.Response, error) {
+		upReq, upErr := http.NewRequestWithContext(ctx, r.Method, backendURL, bytes.NewReader(modifiedBody))
+		if upErr != nil {
+			return nil, upErr
+		}
+		copyUpstreamHeaders(upReq, r.Header, provider.APIToken, apiFmt)
+		return client.Do(upReq)
+	}
+	release := func() {}
+	if provider.RateLimitQueueEnabled && provider.MaxConcurrentRequests > 0 {
+		result, acquireErr := h.rateLimiter.Acquire(ctx, provider.ID, provider.MaxConcurrentRequests, provider.MaxQueueSize, provider.QueueTimeoutMS)
+		if acquireErr != nil {
+			return nil, nil, acquireErr
+		}
+		release = result.Release
+	}
+	log.Printf("[%s] failover replay provider=%q model=%s->%s", reqID, provider.Name, originalModel, backendModel)
+	if provider.Retry429Enabled {
+		resp, err := ratelimit.DoWithRetry429(ctx, doOnce, provider.Retry429Enabled, provider.Retry429MaxAttempts, provider.Retry429InitialDelayMS, provider.Retry429MaxDelayMS, func(format string, args ...any) {
+			log.Printf("[%s] "+format, append([]any{reqID}, args...)...)
+		})
+		if err != nil {
+			release()
+			return nil, nil, err
+		}
+		return resp, release, nil
+	}
+	resp, err := doOnce()
+	if err != nil {
+		release()
+		return nil, nil, err
+	}
+	return resp, release, nil
+}
+
+// attemptFailover 对已失败的默认路由响应执行故障切换：分类 → 摘除失败供应商 →
+// 按候选顺序逐个重放（同映射模型优先）→ 第一个 <400 的响应作为最终客户端响应，
+// 并原子提交默认供应商切换。返回最终响应（nil 表示未切换，调用方沿用原响应）。
+//
+// 资源契约：
+//   - 进入时读取并还原 origResp.Body（用 NopCloser 包裹完整重放流），原网络流由
+//     调用方既有的 defer resp.Body.Close() 在函数结束时关闭。
+//   - 切换成功时关闭原响应体副本，返回候选响应；候选响应的关闭与队列释放由调用方 defer。
+//   - 所有被跳过/失败的候选响应在此函数内关闭并释放。
+func (h *Handler) attemptFailover(r *http.Request, originalBody []byte, originalModel, mappedModel string, failed *config.Provider, origResp *http.Response, cfg *config.Config, client *http.Client, reqID string) (candResp *http.Response, release func(), winner *config.Provider, switched bool) {
+	captured, restored, oversize := failover.CaptureBody(origResp.Body, failoverBodyCap)
+	cls := failover.ClassifyResponse(origResp.StatusCode, captured, oversize)
+	// 还原 body：非合格或全部耗尽时，原响应需完整透传给客户端。
+	origResp.Body = io.NopCloser(restored)
+	if !cls.Eligible {
+		log.Printf("[%s] failover skipped: not eligible (status=%d)", reqID, origResp.StatusCode)
+		return nil, nil, nil, false
+	}
+
+	h.failoverManager.QuarantineFailed(failed.ID, cls)
+	candidates := h.failoverManager.SelectCandidates(failed.ID, originalModel, mappedModel, cfg.Providers)
+	if len(candidates) == 0 {
+		h.failoverManager.RecordExhausted(failed.ID, originalModel, mappedModel, cls, candidates)
+		log.Printf("[%s] failover exhausted: no candidates", reqID)
+		return nil, nil, nil, false
+	}
+	for i := range candidates {
+		c := candidates[i]
+		resp, rel, err := h.replayToProvider(r.Context(), r, originalBody, originalModel, &c, client, reqID)
+		if err != nil {
+			log.Printf("[%s] failover candidate %q error: %v", reqID, c.Name, err)
+			continue
+		}
+		if resp.StatusCode < 400 {
+			sw := h.failoverManager.CommitSwitch(failed.ID, c.ID, originalModel, mappedModel, cls)
+			origResp.Body.Close()
+			return resp, rel, &c, sw
+		}
+		resp.Body.Close()
+		rel()
+		log.Printf("[%s] failover candidate %q returned %d, trying next", reqID, c.Name, resp.StatusCode)
+	}
+	h.failoverManager.RecordExhausted(failed.ID, originalModel, mappedModel, cls, candidates)
+	log.Printf("[%s] failover exhausted: all candidates failed", reqID)
+	return nil, nil, nil, false
 }
 
 func providerAPIFormat(provider *config.Provider) config.APIFormat {

@@ -22,6 +22,7 @@ import (
 	"magic-claude-code/internal/bootstrap"
 	"magic-claude-code/internal/cert"
 	"magic-claude-code/internal/config"
+	"magic-claude-code/internal/failover"
 	"magic-claude-code/internal/frontend"
 	"magic-claude-code/internal/i18n"
 	"magic-claude-code/internal/providerquota"
@@ -227,6 +228,14 @@ func main() {
 
 	// 创建代理服务器
 	proxyServer := proxy.NewServer(configStore, usageStore)
+
+	// 故障切换：在 proxy.db 建表 + 创建管理器，注入代理与管理端。
+	failoverStore := failover.NewStore(configStore.DB())
+	if err := failoverStore.Migrate(); err != nil {
+		log.Fatalf("Failed to initialize failover store: %v", err)
+	}
+	failoverManager := failover.NewManager(failoverStore, configStore)
+	proxyServer.SetFailoverManager(failoverManager)
 
 	// 创建配置服务
 	adminServer := admin.NewServer(&admin.AdminConfig{
