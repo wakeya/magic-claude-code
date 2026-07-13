@@ -5,7 +5,7 @@ Proxy entry: `internal/proxy/handler.go` (`POST /v1/messages`, `POST /anthropic/
 Reference sources: `~/.claude/projects/` (84 JSONL files; 53 API failures), current quota/retry code<br>
 Stack: Go 1.26, SQLite, Vue 3<br>
 Last updated: 2026-07-12<br>
-Progress: 0 / 5 planned
+Progress: 5 / 5 implemented (see "Implementation verification evidence" at end)
 
 ## Overall Analysis (Source Analysis)
 
@@ -27,11 +27,11 @@ Events cannot be associated reliably with a Claude `sessionId`. They are a globa
 
 | # | Status | Task | Deliverable | Verification |
 |---|---|---|---|---|
-| 1 | Planned | Config routing and atomic updates | setting, route marker, atomic mutation | `go test ./internal/config/...` |
-| 2 | Planned | Failover domain | classifier, SQLite state/events, recovery | `go test ./internal/failover/...` |
-| 3 | Planned | Proxy integration | replay, final response, active update | `go test ./internal/proxy/...` |
-| 4 | Planned | Quota/admin integration | reconciliation, Token recovery, APIs | `go test ./internal/admin/... ./internal/providerquota/...` |
-| 5 | Planned | Frontend | switch and global event panel | frontend tests/build |
+| 1 | Done | Config routing and atomic updates | setting, route marker, atomic mutation | `go test ./internal/config/...` |
+| 2 | Done | Failover domain | classifier, SQLite state/events, recovery | `go test ./internal/failover/...` |
+| 3 | Done | Proxy integration | replay, final response, active update | `go test ./internal/proxy/...` |
+| 4 | Done | Quota/admin integration | reconciliation, Token recovery, APIs | `go test ./internal/admin/... ./internal/providerquota/...` |
+| 5 | Done | Frontend | switch and global event panel | frontend tests/build |
 
 ## Requirements
 
@@ -275,3 +275,29 @@ Acceptance assertions:
 - [ ] Every new i18n key exists in both locales; API failure preserves existing error state and JSONL content.
 
 Expected: both commands exit 0 and generate `internal/frontend/dist` without TypeScript/Vite errors.
+
+## Implementation verification evidence (2026-07-12)
+
+All five tasks implemented and committed on branch `provider-quota-failover` (local commits, not pushed).
+
+Verification commands and results:
+
+- `go test -race ./...`: 1498 passed (with `-race`, 17 packages).
+- `npm --prefix internal/frontend test`: 174 passed.
+- `npm --prefix internal/frontend run build`: succeeds; bundle includes the `FailoverEventsView` chunk.
+- `git diff --check`: clean; `git status`: clean.
+
+Boundary self-audit (mapped to user emphasis):
+
+- Auto-switch changes only `ActiveProviderID` (default route); `ExposedModel` (/model session route) has `DefaultRouted=false` and never fails over (`TestFailoverNeverChangesExposedModelRoute`).
+- Events live in MCC-owned SQLite (`provider_failover_state` / `provider_failover_events`); no writes/edits to any `~/.claude/projects/**/*.jsonl` (grep confirms the failover code has no JSONL/file writes).
+- Event fields are complete: time, source/target provider, original/mapped model, HTTP status, business code, reason, disabled-until, outcome (`FailoverEventsView`).
+- Dashboard main nav has `tab.failover` immediately after `tab.sessions`; `SessionBrowser`/`SessionDetail`/session export are untouched.
+- Provider-management title has an accessible auto-failover switch with PUT-failure rollback; provider cards refresh every 15s only while the Providers tab is active.
+- Classifier handles each signal per the spec table; bare 429 keeps same-provider retry (no switch); 401 recovers only after a non-empty token actually changes or a non-401 provider test; quota-snapshot recovery never clears credential state.
+- New APIs are all behind `authMiddlewareFunc`; responses expose only `{enabled}` / `{events:[...]}` — no token/body/query.
+
+Known limitations / follow-ups:
+
+- On a failover hit, the original failed upstream connection is closed at handler return (covered by the existing `defer resp.Body.Close()`; no leak — only connection reuse is slightly delayed).
+- "Successful provider test" for credential recovery is defined as: the test request completed and the upstream returned non-401 (matches the existing test endpoint semantics).

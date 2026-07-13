@@ -5,7 +5,7 @@
 参考源站：`~/.claude/projects/`（84 个 JSONL、53 条 API 失败记录）、现有额度查询/重试代码<br>
 技术栈：Go 1.26、SQLite、Vue 3<br>
 最后更新：2026-07-12<br>
-进度：0 / 5 planned
+进度：5 / 5 implemented（见文末「实现验证证据」）
 
 ## 整体分析（源站分析）
 
@@ -27,11 +27,11 @@
 
 | 序号 | 状态 | 任务 | 产出 | 验证 |
 |---|---|---|---|---|
-| 1 | Planned | 配置路由与原子更新 | setting、route marker、atomic mutation | `go test ./internal/config/...` |
-| 2 | Planned | Failover 领域 | classifier、SQLite state/events、recovery | `go test ./internal/failover/...` |
-| 3 | Planned | 代理集成 | replay、最终响应、active update | `go test ./internal/proxy/...` |
-| 4 | Planned | 额度/管理端接入 | reconciliation、Token recovery、API | `go test ./internal/admin/... ./internal/providerquota/...` |
-| 5 | Planned | 前端 | switch、global event panel | 前端测试/build |
+| 1 | Done | 配置路由与原子更新 | setting、route marker、atomic mutation | `go test ./internal/config/...` |
+| 2 | Done | Failover 领域 | classifier、SQLite state/events、recovery | `go test ./internal/failover/...` |
+| 3 | Done | 代理集成 | replay、最终响应、active update | `go test ./internal/proxy/...` |
+| 4 | Done | 额度/管理端接入 | reconciliation、Token recovery、API | `go test ./internal/admin/... ./internal/providerquota/...` |
+| 5 | Done | 前端 | switch、global event panel | 前端测试/build |
 
 ## 需求
 
@@ -275,3 +275,29 @@ npm --prefix internal/frontend run build
 - [ ] 中文/英文所有新增 i18n key 存在；API 失败显示现有错误状态且不破坏 JSONL 会话内容。
 
 预期：两条命令均返回 0；产物生成到 `internal/frontend/dist`，无 TypeScript/Vite 错误。
+
+## 实现验证证据（2026-07-12）
+
+任务 1–5 全部实现并提交（分支 `provider-quota-failover`，本地 commit 未推送）。
+
+验证命令与结果：
+
+- `go test -race ./...`：1498 passed（含 `-race`，17 包）。
+- `npm --prefix internal/frontend test`：174 passed。
+- `npm --prefix internal/frontend run build`：成功，产物含 `FailoverEventsView` chunk。
+- `git diff --check`：clean；`git status`：clean。
+
+边界符合性自审（对应用户重点）：
+
+- 自动切换只改 `ActiveProviderID`（默认路由）；`ExposedModel`（/model 会话路由）`DefaultRouted=false`，永不切换（`TestFailoverNeverChangesExposedModelRoute`）。
+- 事件存 MCC 自己的 SQLite（`provider_failover_state` / `provider_failover_events`），不写、不改任何 `~/.claude/projects/**/*.jsonl`（grep 确认 failover 代码无 JSONL/文件写）。
+- 事件字段完整：时间、原/目标供应商、原/映射模型、HTTP 状态码、业务码、原因、摘除至何时、结果（`FailoverEventsView`）。
+- Dashboard 主导航 `tab.failover` 紧邻 `tab.sessions`；`SessionBrowser`/`SessionDetail`/会话导出未修改。
+- 供应商管理标题右侧有可访问的自动切换开关，PUT 失败回滚；Providers tab 激活时 15s 刷新。
+- 分类按 spec 表逐信号处理；裸 429 保持同供应商 retry 不切换；401 仅在非空 Token 实际变更或测试成功（非 401）才恢复；额度快照恢复绝不清凭据状态。
+- 新 API 全部经 `authMiddlewareFunc`；响应只含 `{enabled}` / `{events:[…]}`，无 token/body/query。
+
+已知限制 / 后续：
+
+- 代理在故障切换命中后，原失败响应的上游连接在函数返回时才关闭（被既有 `defer resp.Body.Close()` 兜底，无泄露；仅是连接复用稍延后）。
+- 供应商测试「成功」的凭据恢复判定为：测试请求完成且上游非 401（与既有测试端点语义一致）。
