@@ -58,7 +58,19 @@ type Manager struct {
 	// adapterHTTPClient, when non-nil, is used by all adapters instead of the
 	// default per-query client. Test seam for Manager → adapter integration.
 	adapterHTTPClient *http.Client
+
+	// snapshotHook, when set, is invoked after a snapshot is successfully
+	// persisted. Used to drive provider failover reconciliation (e.g. quarantine
+	// when a tier shows 100% utilization, or release quota state on recovery).
+	snapshotHook SnapshotPersistedHook
 }
+
+// SnapshotPersistedHook is called after a fresh snapshot is persisted.
+// result is the just-stored query result (Success may be false).
+type SnapshotPersistedHook func(providerID string, result *ProviderQuotaResult)
+
+// SetSnapshotPersistedHook installs a callback fired after each snapshot persistence.
+func (m *Manager) SetSnapshotPersistedHook(h SnapshotPersistedHook) { m.snapshotHook = h }
 
 type inflightEntry struct {
 	done   chan struct{}
@@ -279,6 +291,8 @@ func (m *Manager) executeQuery(ctx context.Context, providerID string, opts Quer
 		m.snapshotMu.Unlock()
 		if saveErr != nil {
 			log.Printf("providerquota: failed to save snapshot for %s: %v", providerID, saveErr)
+		} else if m.snapshotHook != nil {
+			m.snapshotHook(providerID, result)
 		}
 	}
 

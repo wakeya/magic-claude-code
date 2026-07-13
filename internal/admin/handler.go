@@ -2,6 +2,7 @@ package admin
 
 import (
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/url"
@@ -147,37 +148,38 @@ func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error": "config store not available"}`, http.StatusInternalServerError)
 		return
 	}
-	cfg, err := s.configStore.Load()
-	if err != nil {
-		http.Error(w, `{"error": "failed to load config"}`, http.StatusInternalServerError)
-		return
-	}
-	if req.BackendURL != "" {
-		cfg.BackendURL = req.BackendURL
-	}
-	if req.ConnectionMode != "" {
-		switch req.ConnectionMode {
-		case config.ConnectionModeTransparent, config.ConnectionModeTunnel, config.ConnectionModeGateway:
-			cfg.ConnectionMode = req.ConnectionMode
-		default:
-			http.Error(w, `{"error": "invalid connection_mode"}`, http.StatusBadRequest)
-			return
+	committed, err := s.configStore.Update(func(cfg *config.Config) error {
+		if req.BackendURL != "" {
+			cfg.BackendURL = req.BackendURL
 		}
-	}
-	if req.GatewayListenAddr != "" {
-		cfg.GatewayListenAddr = req.GatewayListenAddr
-	}
-	if req.GatewayListenPort > 0 {
-		cfg.GatewayListenPort = req.GatewayListenPort
-	}
-	if err := cfg.Validate(); err != nil {
-		http.Error(w, `{"error": "invalid config"}`, http.StatusBadRequest)
+		if req.ConnectionMode != "" {
+			switch req.ConnectionMode {
+			case config.ConnectionModeTransparent, config.ConnectionModeTunnel, config.ConnectionModeGateway:
+				cfg.ConnectionMode = req.ConnectionMode
+			default:
+				return errAdminInvalidConnectionMode
+			}
+		}
+		if req.GatewayListenAddr != "" {
+			cfg.GatewayListenAddr = req.GatewayListenAddr
+		}
+		if req.GatewayListenPort > 0 {
+			cfg.GatewayListenPort = req.GatewayListenPort
+		}
+		return nil
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, errAdminInvalidConnectionMode):
+			http.Error(w, `{"error": "invalid connection_mode"}`, http.StatusBadRequest)
+		case config.IsValidationError(err):
+			http.Error(w, `{"error": "invalid config"}`, http.StatusBadRequest)
+		default:
+			http.Error(w, `{"error": "failed to save config"}`, http.StatusInternalServerError)
+		}
 		return
 	}
-	if err := s.configStore.Save(cfg); err != nil {
-		http.Error(w, `{"error": "failed to save config"}`, http.StatusInternalServerError)
-		return
-	}
+	cfg := committed
 	s.modeMu.Lock()
 	if s.config != nil {
 		s.config.ConfiguredMode = cfg.ConnectionMode

@@ -191,6 +191,9 @@ func (s *SQLiteStore) ensureProviderColumns() error {
 		"retry_429_max_delay_ms":       `ALTER TABLE providers ADD COLUMN retry_429_max_delay_ms INTEGER NOT NULL DEFAULT 10000`,
 		"quota_query_config":           `ALTER TABLE providers ADD COLUMN quota_query_config TEXT NOT NULL DEFAULT '{}'`,
 		"exposed_models":              `ALTER TABLE providers ADD COLUMN exposed_models TEXT NOT NULL DEFAULT '[]'`,
+		// sort_order 是供应商列表顺序（= 自动切换优先级）。保存时按 slice index 写入；
+		// 读取时 ORDER BY sort_order 优先。旧 DB 全 0 时退回 created_at ASC, id ASC。
+		"sort_order":                  `ALTER TABLE providers ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0`,
 	}
 	rows, err := s.db.Query(`PRAGMA table_info(providers)`)
 	if err != nil {
@@ -243,7 +246,11 @@ func (s *SQLiteStore) hasSchemaVersion() (bool, error) {
 func (s *SQLiteStore) Load() (*Config, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.loadLocked()
+}
 
+// loadLocked 读取最新配置，调用方必须持有 s.mu。
+func (s *SQLiteStore) loadLocked() (*Config, error) {
 	cfg := DefaultConfig()
 
 	settings, err := s.loadSettings()
@@ -270,6 +277,7 @@ func (s *SQLiteStore) Load() (*Config, error) {
 	cfg.ActiveProviderID = settings["active_provider_id"]
 	cfg.AdminThemeMode = NormalizeThemeMode(settings["admin_theme_mode"])
 	cfg.ConnectionMode = NormalizeConnectionMode(settings["connection_mode"])
+	cfg.AutoFailoverEnabled = settings["auto_failover_enabled"] == "1"
 
 	providers, err := s.loadProviders()
 	if err != nil {
@@ -283,6 +291,27 @@ func (s *SQLiteStore) Save(cfg *Config) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.save(cfg)
+}
+
+// Update 原子地读-改-写配置：持有 s.mu 的整个周期内读最新配置、应用 mutator、
+// 校验、保存并返回已提交副本。校验失败返回 *ValidationError，存储失败返回原错误。
+func (s *SQLiteStore) Update(mutator func(*Config) error) (*Config, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cfg, err := s.loadLocked()
+	if err != nil {
+		return nil, err
+	}
+	if err := mutator(cfg); err != nil {
+		return nil, err
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, &ValidationError{Inner: err}
+	}
+	if err := s.save(cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
 }
 
 func (s *SQLiteStore) save(cfg *Config) error {
@@ -320,7 +349,7 @@ func (s *SQLiteStore) loadSettings() (map[string]string, error) {
 }
 
 func (s *SQLiteStore) loadProviders() ([]Provider, error) {
-	rows, err := s.db.Query(`SELECT id, name, api_url, api_token, api_format, openai_extra_params, supports_thinking, multimodal_switch, multimodal_model, claude_code_compat_hint, strip_unknown_content_blocks, rate_limit_queue_enabled, max_concurrent_requests, max_queue_size, queue_timeout_ms, retry_429_enabled, retry_429_max_attempts, retry_429_initial_delay_ms, retry_429_max_delay_ms, quota_query_config, exposed_models, enabled, created_at, updated_at FROM providers ORDER BY created_at ASC, id ASC`)
+	rows, err := s.db.Query(`SELECT id, name, api_url, api_token, api_format, openai_extra_params, supports_thinking, multimodal_switch, multimodal_model, claude_code_compat_hint, strip_unknown_content_blocks, rate_limit_queue_enabled, max_concurrent_requests, max_queue_size, queue_timeout_ms, retry_429_enabled, retry_429_max_attempts, retry_429_initial_delay_ms, retry_429_max_delay_ms, quota_query_config, exposed_models, enabled, created_at, updated_at FROM providers ORDER BY sort_order ASC, created_at ASC, id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -404,14 +433,15 @@ func (s *SQLiteStore) loadModelMappings(providerID string) (map[string]string, e
 
 func saveSettings(tx *sql.Tx, cfg *Config) error {
 	settings := map[string]string{
-		"backend_url":         cfg.BackendURL,
-		"proxy_port":          strconv.Itoa(cfg.ProxyPort),
-		"admin_port":          strconv.Itoa(cfg.AdminPort),
-		"admin_password_hash": cfg.AdminPasswordHash,
-		"data_dir":            cfg.DataDir,
-		"active_provider_id":  cfg.ActiveProviderID,
-		"admin_theme_mode":    NormalizeThemeMode(cfg.AdminThemeMode),
-		"connection_mode":     NormalizeConnectionMode(cfg.ConnectionMode),
+		"backend_url":            cfg.BackendURL,
+		"proxy_port":             strconv.Itoa(cfg.ProxyPort),
+		"admin_port":             strconv.Itoa(cfg.AdminPort),
+		"admin_password_hash":    cfg.AdminPasswordHash,
+		"data_dir":               cfg.DataDir,
+		"active_provider_id":     cfg.ActiveProviderID,
+		"admin_theme_mode":       NormalizeThemeMode(cfg.AdminThemeMode),
+		"connection_mode":        NormalizeConnectionMode(cfg.ConnectionMode),
+		"auto_failover_enabled":  strconv.Itoa(boolToInt(cfg.AutoFailoverEnabled)),
 	}
 	for key, value := range settings {
 		if _, err := tx.Exec(`INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value); err != nil {
@@ -465,6 +495,12 @@ func saveProviders(tx *sql.Tx, providers []Provider) error {
 			if _, err := tx.Exec(`INSERT INTO provider_model_mappings(provider_id, source_model, target_model) VALUES (?, ?, ?)`, provider.ID, source, target); err != nil {
 				return err
 			}
+		}
+	}
+	// 写入 sort_order = slice index。列表顺序即自动切换优先级；每次保存都固化稳定顺序。
+	for idx, provider := range providers {
+		if _, err := tx.Exec(`UPDATE providers SET sort_order = ? WHERE id = ?`, idx, provider.ID); err != nil {
+			return err
 		}
 	}
 	return nil

@@ -22,6 +22,7 @@ import (
 	"magic-claude-code/internal/bootstrap"
 	"magic-claude-code/internal/cert"
 	"magic-claude-code/internal/config"
+	"magic-claude-code/internal/failover"
 	"magic-claude-code/internal/frontend"
 	"magic-claude-code/internal/i18n"
 	"magic-claude-code/internal/providerquota"
@@ -228,6 +229,14 @@ func main() {
 	// 创建代理服务器
 	proxyServer := proxy.NewServer(configStore, usageStore)
 
+	// 故障切换：在 proxy.db 建表 + 创建管理器，注入代理与管理端。
+	failoverStore := failover.NewStore(configStore.DB())
+	if err := failoverStore.Migrate(); err != nil {
+		log.Fatalf("Failed to initialize failover store: %v", err)
+	}
+	failoverManager := failover.NewManager(failoverStore, configStore)
+	proxyServer.SetFailoverManager(failoverManager)
+
 	// 创建配置服务
 	adminServer := admin.NewServer(&admin.AdminConfig{
 		Password:       passwordState.Value,
@@ -239,6 +248,7 @@ func main() {
 		ModeRationale:  bootResult.Rationale,
 	}, configStore, proxyServer, usageHandler)
 	adminServer.SetEffectiveListenState(cfg)
+	adminServer.SetFailoverManager(failoverManager)
 
 	adminServer.SetGatewayRestarter(proxyServer)
 
@@ -247,6 +257,12 @@ func main() {
 	quotaConfigGet := &quotaConfigGetter{configStore: configStore}
 	quotaManager := providerquota.NewManager(quotaSnapshotStore, quotaConfigGet, 4)
 	adminServer.SetQuotaManager(quotaManager)
+	// 额度快照协调：快照持久化后，100% 耗尽则额度摘除、容量恢复则清额度状态。
+	// 绝不清除凭据失效状态（额度恢复 ≠ 凭据恢复）。
+	quotaManager.SetSnapshotPersistedHook(func(providerID string, result *providerquota.ProviderQuotaResult) {
+		exhausted, reset := interpretQuotaSnapshotForFailover(result)
+		failoverManager.ReconcileQuotaSnapshot(providerID, exhausted, reset)
+	})
 	quotaManagerCtx, stopQuotaManager := context.WithCancel(context.Background())
 	quotaManager.Start(quotaManagerCtx)
 
@@ -327,6 +343,25 @@ func main() {
 	}
 
 	log.Println(msg.ServerStopped)
+}
+
+// interpretQuotaSnapshotForFailover 把额度快照结果转换为故障切换协调信号。
+// 任一 tier 利用率 >= 100% 视为额度耗尽；reset 取该 tier 的未来 ResetsAt（无则零值，
+// 由 ReconcileQuotaSnapshot 回退到默认冷却）。失败/空结果不产生信号。
+func interpretQuotaSnapshotForFailover(result *providerquota.ProviderQuotaResult) (exhausted bool, reset time.Time) {
+	if result == nil || !result.Success {
+		return false, time.Time{}
+	}
+	now := time.Now()
+	for _, tier := range result.Tiers {
+		if tier.Utilization >= 100 {
+			exhausted = true
+			if tier.ResetsAt != nil && tier.ResetsAt.After(now) && tier.ResetsAt.After(reset) {
+				reset = *tier.ResetsAt
+			}
+		}
+	}
+	return exhausted, reset
 }
 
 // quotaConfigGetter adapts config.ConfigStore to providerquota.ProviderConfigGetter.

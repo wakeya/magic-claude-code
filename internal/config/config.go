@@ -46,6 +46,11 @@ type Config struct {
 	// ActiveProviderID 当前激活的供应商 ID
 	ActiveProviderID string `json:"active_provider_id"`
 
+	// AutoFailoverEnabled 控制是否在额度耗尽 / 凭据失效 / 供应商不可用时自动切换全局默认供应商。
+	// 仅影响 ActiveProviderID 回退路由；ExposedModel（/model 会话选择）固定路由绝不参与切换。
+	// 默认关闭，JSON 直接持久化，SQLite settings 键 auto_failover_enabled 存 0/1。
+	AutoFailoverEnabled bool `json:"auto_failover_enabled"`
+
 	// AdminThemeMode 管理端主题模式: light 或 dark
 	AdminThemeMode string `json:"admin_theme_mode"`
 
@@ -255,7 +260,54 @@ func (c *Config) GetProviderByID(id string) *Provider {
 	return nil
 }
 
-// ResolveModel 根据请求的 model 字段解析出 provider 和应写入后端请求体的模型名。
+// ModelRoute 描述一次模型路由解析的完整决策。
+//
+// Provider/BackendModel 与原 ResolveModel 返回值语义一致；DefaultRouted 标记
+// 本次路由是否走的是 ActiveProviderID 回退路径：
+//   - ExposedModel 命中 → DefaultRouted=false（/model 会话选择，固定路由，
+//     绝不参与自动故障切换，也不改默认供应商）。
+//   - ActiveProviderID 回退 → DefaultRouted=true（默认路由，唯一允许自动切换的路径）。
+//   - 无 active provider → Provider=nil，DefaultRouted=false（无可切换目标）。
+type ModelRoute struct {
+	Provider      *Provider
+	BackendModel  string
+	DefaultRouted bool
+}
+
+// ResolveRoute 根据请求的 model 字段解析出完整路由决策。
+//
+// 查找顺序：
+//  1. 扫描所有 enabled provider 的 ExposedModels，命中 ID 匹配项（统一剥离请求 model
+//     的 [1m] 后缀以兼容 Context1M）→ 返回该 provider、其 BackendModel 与 DefaultRouted=false。
+//  2. 未命中 → 返回 active provider、active.MapModel(model) 与 DefaultRouted=true。
+//  3. 无 active provider → 返回 (nil, model, false)。
+func (c *Config) ResolveRoute(model string) ModelRoute {
+	model = strings.TrimSpace(model)
+	// Context1M 暴露模型：Claude Code 菜单 value 含 [1m]，但发往后端的 model 通常已剥离。
+	// 为兼容两种情况，暴露模型匹配时统一剥离 [1m] 后缀（ID 本身不含 [1m]，由校验保证）。
+	pureModel := strings.TrimSuffix(model, "[1m]")
+	// 1. 暴露模型命中：固定路由，绝不参与自动故障切换。
+	for i := range c.Providers {
+		p := &c.Providers[i]
+		if !p.Enabled {
+			continue
+		}
+		for _, em := range p.ExposedModels {
+			if em.ID == pureModel {
+				return ModelRoute{Provider: p, BackendModel: em.BackendModel, DefaultRouted: false}
+			}
+		}
+	}
+	// 2. fallback：active provider + MapModel，默认路由（可故障切换）。
+	if active := c.GetActiveProvider(); active != nil {
+		return ModelRoute{Provider: active, BackendModel: active.MapModel(model), DefaultRouted: true}
+	}
+	// 3. 无 active
+	return ModelRoute{Provider: nil, BackendModel: model, DefaultRouted: false}
+}
+
+// ResolveModel 是 ResolveRoute 的向后兼容包装，返回 provider 与后端模型名。
+// 新代码应使用 ResolveRoute 以获取 DefaultRouted 标记（故障切换依赖它区分固定路由）。
 //
 // 查找顺序：
 //  1. 扫描所有 enabled provider 的 ExposedModels，命中 ID 匹配项（统一剥离请求 model
@@ -266,27 +318,6 @@ func (c *Config) GetProviderByID(id string) *Provider {
 //
 // 调用方需处理 provider == nil 的情况（对应"无可用 provider"错误路径）。
 func (c *Config) ResolveModel(model string) (*Provider, string) {
-	model = strings.TrimSpace(model)
-	// Context1M 暴露模型：Claude Code 菜单 value 含 [1m]，但发往后端的 model 通常已剥离。
-	// 为兼容两种情况，暴露模型匹配时统一剥离 [1m] 后缀（ID 本身不含 [1m]，由校验保证）。
-	pureModel := strings.TrimSuffix(model, "[1m]")
-	// 1. 暴露模型命中
-	for i := range c.Providers {
-		p := &c.Providers[i]
-		if !p.Enabled {
-			continue
-		}
-		for _, em := range p.ExposedModels {
-			if em.ID == pureModel {
-				// BackendModel 由 Provider.Validate 校验非空
-				return p, em.BackendModel
-			}
-		}
-	}
-	// 2. fallback：active provider + MapModel
-	if active := c.GetActiveProvider(); active != nil {
-		return active, active.MapModel(model)
-	}
-	// 3. 无 active
-	return nil, model
+	r := c.ResolveRoute(model)
+	return r.Provider, r.BackendModel
 }

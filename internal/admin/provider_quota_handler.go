@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"magic-claude-code/internal/config"
 	"magic-claude-code/internal/providerquota"
 )
 
@@ -138,13 +139,15 @@ func (s *Server) updateProviderUsage(w http.ResponseWriter, r *http.Request, id 
 		return
 	}
 
-	cfg, err := s.configStore.Load()
+	// 只读加载用于请求级校验（ValidateForCard 依赖 provider 的 APIURL/APIToken/旧 QuotaQuery）。
+	// 真正的写入手走下面的原子 Update，避免与代理自动故障切换并发写互相覆盖。
+	checkCfg, err := s.configStore.Load()
 	if err != nil {
 		http.Error(w, `{"error": "failed to load config"}`, http.StatusInternalServerError)
 		return
 	}
 
-	provider := cfg.GetProviderByID(id)
+	provider := checkCfg.GetProviderByID(id)
 	if provider == nil {
 		http.Error(w, `{"error": "provider not found"}`, http.StatusNotFound)
 		return
@@ -161,11 +164,17 @@ func (s *Server) updateProviderUsage(w http.ResponseWriter, r *http.Request, id 
 	// Check if this is a material config change (not just interval).
 	material := isMaterialQuotaChange(provider.QuotaQuery, newCfg)
 
-	provider.QuotaQuery = newCfg
-	provider.UpdatedAt = time.Now()
-
-	if err := s.configStore.Save(cfg); err != nil {
-		http.Error(w, `{"error": "failed to save config"}`, http.StatusInternalServerError)
+	// 原子写入：在锁内重新查找 provider（防止并发删除）并写入新 QuotaQuery。
+	if _, err := s.configStore.Update(func(cfg *config.Config) error {
+		p := cfg.GetProviderByID(id)
+		if p == nil {
+			return errAdminProviderNotFound
+		}
+		p.QuotaQuery = newCfg
+		p.UpdatedAt = time.Now()
+		return nil
+	}); err != nil {
+		writeConfigUpdateError(w, err)
 		return
 	}
 

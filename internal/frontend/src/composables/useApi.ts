@@ -345,6 +345,32 @@ export interface QuotaSnapshot {
   is_stale: boolean
 }
 
+// FailoverEvent 描述一条全局供应商自动切换事件。
+// 事件是 MCC 全局观测数据：不绑定 Claude Code 会话、不写入 JSONL、不含 token/请求体/query。
+export interface FailoverEvent {
+  id: number
+  occurred_at: string
+  from_provider_id: string
+  to_provider_id: string
+  from_provider_name: string
+  to_provider_name: string
+  original_model: string
+  mapped_model: string
+  upstream_code: number
+  business_code: string
+  reason: string
+  outcome: 'switched' | 'exhausted' | 'retry_failed' | 'recovered'
+  disabled_until?: string | null
+}
+
+export interface FailoverSettings {
+  enabled: boolean
+}
+
+export interface FailoverEventsResponse {
+  events: FailoverEvent[]
+}
+
 export interface ProviderUsageResponse {
   config: PublicQuotaConfig
   snapshot?: QuotaSnapshot
@@ -744,6 +770,43 @@ export function useApi() {
     return res.json()
   }
 
+  // ---- 故障切换（全局事件 + 自动切换开关）----
+  // 事件是 MCC 全局观测数据，不关联 Claude Code 会话，不写入 JSONL。
+
+  async function getFailoverSettings(): Promise<FailoverSettings> {
+    const res = await fetch('/api/providers/failover')
+    if (!res.ok) throw new Error('Failed to fetch failover settings')
+    return res.json()
+  }
+
+  async function setFailoverSettings(enabled: boolean): Promise<FailoverSettings> {
+    const res = await fetch('/api/providers/failover', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    })
+    if (!res.ok) throw new Error('Failed to update failover settings')
+    return res.json()
+  }
+
+  async function getFailoverEvents(limit?: number): Promise<FailoverEventsResponse> {
+    const query = limit && limit > 0 ? `?limit=${encodeURIComponent(Math.min(100, Math.max(1, limit)))}` : ''
+    const res = await fetch(`/api/failover/events${query}`)
+    if (!res.ok) throw new Error('Failed to fetch failover events')
+    return res.json()
+  }
+
+  // reorderProviders 调整供应商列表顺序（= 自动切换优先级）。后端原子重排并返回脱敏列表。
+  async function reorderProviders(providerIds: string[]): Promise<{ success: boolean; providers: Provider[] }> {
+    const res = await fetch('/api/providers/order', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider_ids: providerIds }),
+    })
+    if (!res.ok) throw new Error('Failed to reorder providers')
+    return res.json()
+  }
+
   return {
     login,
     logout,
@@ -784,5 +847,9 @@ export function useApi() {
     testProviderUsage,
     queryProviderUsage,
     getAllProviderUsageSnapshots,
+    getFailoverSettings,
+    setFailoverSettings,
+    getFailoverEvents,
+    reorderProviders,
   }
 }
