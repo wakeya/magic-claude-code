@@ -43,3 +43,22 @@ All three functional defects raised by the Codex review have been fixed and veri
 - "Successful provider test" for credential recovery = the test request completed and the upstream returned non-401 (matches the existing test endpoint's "connectivity succeeded" semantics).
 - Concurrent failures of the same provider may replay once to the same candidate (functionally correct; the compare-and-set still guarantees a single `switched` event).
 - Not pushed: commits are local on `provider-quota-failover`, awaiting user confirmation.
+
+---
+
+## Task 6 review (GPT-5.5, 2026-07-13)
+
+Scope: provider ordering and priority visibility (drag reorder, order badge, tooltip, `PUT /api/providers/order`, SQLite `sort_order`).
+
+Key findings and resolutions:
+
+1. Functional defect: reorder changed the *effective* default provider when `ActiveProviderID` was empty/missing/disabled.
+   - Evidence: `GetActiveProvider()` falls back to the first enabled provider when `ActiveProviderID` does not point to an enabled one; the order handler only avoided touching the `ActiveProviderID` field, so reordering silently shifted the effective default ([A,B,C] active="" -> effective A; drag to [B,A,C] -> effective B).
+   - Resolution: **Fixed.** The order handler captures `effectiveBefore := cfg.GetActiveProvider()` before reordering; after reordering, only when the stored `ActiveProviderID` does not point to an enabled provider does it pin the field to that effective default (`cfg.ActiveProviderID = effectiveBefore.ID`). Explicitly-set active providers are untouched. Regression tests: `TestProviderOrderPreservesEffectiveDefaultWhenActiveIDEmpty`, `TestProviderOrderPreservesEffectiveDefaultWhenActiveIDMissingOrDisabled`.
+
+2. Suggested improvement: drag was bound to the whole card and the handle was only visual, so drags could start from button/text/token areas.
+   - Resolution: **Fixed.** The handle now carries `data-provider-drag-handle`; `onProviderDragStart($event, index)` checks `closest('[data-provider-drag-handle]')` and calls `preventDefault()` when the drag did not start from the handle. Regression test: `DashboardProviderReorder` "drag starts only from the drag handle".
+
+Other conclusions: the order API auth, 400/409 validation, redacted response, and SQLite `sort_order` persistence are correct; failover candidate-order tests cover same-mapped-model and fallback groups ordered by provider list; tooltip, priority badge, and move-up/move-down accessibility are implemented; no token leak or unauthenticated writes.
+
+Verification: `go test -race ./...` 1525 passed; `npm test` 193 passed; `npm run build` passed; `git diff --check` clean.

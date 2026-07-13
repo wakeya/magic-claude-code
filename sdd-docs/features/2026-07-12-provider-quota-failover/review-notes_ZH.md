@@ -43,3 +43,22 @@ Codex 审查发现的 3 个功能缺陷均已修复并通过 TDD 回归测试（
 - 凭据恢复的「测试成功」= 测试请求完成且上游非 401（与既有测试端点「连通即成功」语义一致）。
 - 同一供应商的并发失败可能向同一候选多发一次重放（功能正确；compare-and-set 仍保证单一 `switched` 事件）。
 - 未推送：提交在 `provider-quota-failover` 分支本地，待用户确认。
+
+---
+
+## 任务 6 审查（GPT-5.5，2026-07-13）
+
+范围：供应商排序与优先级可视化（拖拽排序、序号 badge、tooltip、`PUT /api/providers/order`、SQLite `sort_order`）。
+
+主要发现与处置：
+
+1. 功能缺陷：排序会在 `ActiveProviderID` 为空/缺失/disabled 时改变「有效默认供应商」。
+   - 证据：`GetActiveProvider()` 在 `ActiveProviderID` 不指向 enabled provider 时回退到首位 enabled；原 order handler 只是不改 `ActiveProviderID` 字段，但重排会静默改变有效默认（[A,B,C] active="" → 有效 A；拖成 [B,A,C] → 有效 B）。
+   - 处置：**已修复**。order handler 在重排前捕获 `effectiveBefore := cfg.GetActiveProvider()`；重排后仅当存储的 `ActiveProviderID` 未指向 enabled provider 时，把旧有效默认固化进去（`cfg.ActiveProviderID = effectiveBefore.ID`）。已明确设置的 active provider 不受影响。回归测试：`TestProviderOrderPreservesEffectiveDefaultWhenActiveIDEmpty`、`TestProviderOrderPreservesEffectiveDefaultWhenActiveIDMissingOrDisabled`。
+
+2. 建议改进：拖拽绑定在整张卡片，手柄只是视觉元素，可能从按钮/文本/Token 区域误发起拖拽。
+   - 处置：**已修复**。拖拽手柄加 `data-provider-drag-handle`；`onProviderDragStart($event, index)` 校验事件来源 `closest('[data-provider-drag-handle]')`，非手柄发起则 `preventDefault()`。回归测试：`DashboardProviderReorder` 的「drag starts only from the drag handle」。
+
+其它结论：排序 API 认证、400/409 校验、脱敏返回、SQLite `sort_order` 持久化方向正确；failover 候选顺序测试覆盖同映射模型段与 fallback 段内部按 provider 顺序；tooltip、序号 badge、上移/下移可达性已实现；无 token 泄露或未认证写入。
+
+验证：`go test -race ./...` 1525 passed；`npm test` 193 passed；`npm run build` 通过；`git diff --check` clean。
