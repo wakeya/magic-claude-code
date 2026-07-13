@@ -62,3 +62,31 @@ Key findings and resolutions:
 Other conclusions: the order API auth, 400/409 validation, redacted response, and SQLite `sort_order` persistence are correct; failover candidate-order tests cover same-mapped-model and fallback groups ordered by provider list; tooltip, priority badge, and move-up/move-down accessibility are implemented; no token leak or unauthenticated writes.
 
 Verification: `go test -race ./...` 1525 passed; `npm test` 193 passed; `npm run build` passed; `git diff --check` clean.
+
+---
+
+## Provider event display review (Codex, 2026-07-13)
+
+Scope: commit `8954320` (`fix(failover): show provider names and ids in events`), covering `/api/failover/events` provider-name backfill and the frontend Failover Events table split into `Provider` and `Provider ID` columns.
+
+Key findings and resolutions:
+
+1. Logic review: the implemented display behavior is correct for current providers.
+   - Evidence: `handleFailoverEvents` still passes the current known-provider ID set into `failoverManager.Events`, so deleted-provider IDs remain blanked by the store before any backfill happens. The new `providerNames` map only fills missing names when the returned event still contains a known current provider ID.
+   - Resolution: No code change required. This preserves the existing dangling-ID protection while letting events such as exhausted/recovered records display names instead of only `provider-*` IDs.
+
+2. Security review: no token, body, query, or raw HTML exposure was introduced.
+   - Evidence: the API response still contains only existing event fields (provider IDs/names, models, status/code/reason/outcome, timestamps). The endpoint remains behind the existing authenticated admin route. Provider names and IDs are rendered via Vue interpolation in `FailoverEventsView`, not `v-html`, so user-controlled names are HTML-escaped. No SessionBrowser, SessionDetail, export, or JSONL code was changed.
+   - Resolution: No security defect found.
+
+3. Residual semantic note: backfilled names for events that did not store a historical provider name use the current config name.
+   - Evidence: the backfill happens at API read time from `cfg.Providers`. If an old event lacks a stored name and the provider is later deleted, the ID is intentionally blanked and the missing name cannot be recovered.
+   - Resolution: Acceptable for this fix because it preserves privacy for deleted providers and addresses the observed current-provider display issue. If historical names after deletion become a requirement, future event writers should persist provider names for all outcomes at insert time.
+
+Verification:
+
+- `go test ./internal/admin -run 'TestFailoverEvents|TestProviderDeleteLeavesNoDanglingFailoverEventIDs' -count=1` passed.
+- `npm --prefix internal/frontend test -- src/views/FailoverEventsView.test.ts` passed (195/195).
+- `git diff --check` passed.
+
+Conclusion: no functional logic defect or security defect remains in commit `8954320`. The only residual note is historical-name fidelity for old events with no stored provider name after the provider has been deleted.
