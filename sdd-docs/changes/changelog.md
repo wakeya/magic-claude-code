@@ -7,6 +7,31 @@
 
 ---
 
+## v0.16.0 (2026-07-13)
+
+### Added
+- **供应商额度自动故障切换（默认关闭）**：新增 `AutoFailoverEnabled` 配置与认证后的 `GET/PUT /api/providers/failover` 开关。开启后，仅对默认路由的模型请求生效：当当前默认 Provider 出现明确的额度耗尽、凭据失效、模型部署不可用或供应商可用性故障时，代理会在响应写回客户端前尝试候选 Provider；第一个返回 `<400` 的候选成为新的全局默认 Provider，并且客户端只收到最终成功响应。会话内 `/model` 选择产生的 `ExposedModel` 路由不会被自动切换，避免覆盖用户在当前会话中的显式模型选择。
+- **故障分类与供应商摘除状态**：新增 `internal/failover`，基于结构化错误信号而非裸 HTTP 状态码判断是否可切换。支持识别 1308（5 小时额度耗尽）、1310（周/月额度耗尽）、`quota exhausted`、`no healthy deployments for this model`、invalid API key、Cloudflare 拦截、502/529、连接重置/超时等信号；明确不切换 1210 工具参数错误、tool_reference/工具兼容错误、普通请求错误、404 model_not_found、上下文窗口满等请求/模型问题。额度/部署/可用性故障按重置时间或短冷却自动恢复；凭据失效必须等待 Token 实际变更或供应商测试成功后恢复。
+- **默认 Provider 回放与持久化切换**：`ResolveRoute` 标识默认路由与 exposed route，代理在自动切换时从原始客户端输入重新构造候选请求，重新应用候选 Provider 的 URL、Token、header、模型映射与 Anthropic/OpenAI 格式转换；既有同 Provider 429 retry 仍先运行。切换成功通过原子配置更新持久化 `ActiveProviderID`，并处理 `ActiveProviderID` 为空、缺失或指向 disabled Provider 时的 fallback 默认供应商场景。
+- **全局切换事件审计**：新增认证后的 `GET /api/failover/events?limit=1..100` 与管理面板“切换事件”一级 tab。事件记录 `switched`、`retry_failed`、`exhausted`、`recovered` 等结果，按最新优先展示，最多保留 1,000 条且最长 30 天；事件是 MCC 全局观测数据，不绑定 Claude Code 会话，不写入 `~/.claude/projects` JSONL，也不进入会话导出。
+- **供应商排序作为自动切换优先级**：新增 `PUT /api/providers/order` 与供应商管理页拖拽排序。自动切换候选先按“同映射模型”分组，再按 fallback 分组，两个分组内部均遵循用户拖拽后的 Provider 列表顺序。供应商卡片新增优先级编号、拖拽手柄、上移/下移可达性文案与自动切换说明 tooltip；排序后立即重新编号。
+
+### Security
+- **切换事件脱敏与认证边界**：failover 开关、事件查询和排序 API 均走管理端认证；事件表和 API 响应不保存/返回 API Token、请求体、响应体或带 query 的原始 URL。删除 Provider 后，历史事件保留名称用于展示，但响应中抹空已删除 Provider ID，避免悬空引用继续被当成有效配置。
+- **凭据恢复 fail-closed**：额度快照只能清除额度类摘除状态，不能清除 401 凭据失效；编辑名称、模型、Base URL 或测试失败也不会恢复凭据状态。只有已保存的非空 API Token 实际改变，或 `POST /api/providers/{id}/test` 成功，才清除 credential failure。
+
+### Changed
+- **配置写入改为原子更新路径**：开关更新、Provider 排序和自动切换持久化 active provider 均走 `configStore.Update(func(*Config) error)`，避免管理端保存与代理自动切换并发时互相覆盖。
+- **供应商排序不再静默改变有效默认 Provider**：当 `ActiveProviderID` 为空、缺失或指向 disabled Provider 时，排序前会捕获当前有效默认供应商，并在排序后将其固化为 `ActiveProviderID`，避免单纯拖拽排序导致默认 Provider 被意外切换。
+- **额度快照参与摘除/恢复协调**：新鲜的 100% 额度快照可摘除对应 Provider 至重置时间；容量恢复后可清除额度类摘除状态，并写入 `recovered` 事件。
+
+### Docs
+- 供应商额度自动故障切换 feature spec 与审查归档（中英双语）：`sdd-docs/features/2026-07-12-provider-quota-failover/`
+
+### 注意
+- 自动故障切换默认关闭；开启后只影响全局默认 Provider，不影响会话内 `/model` 显式选择。
+- 如果所有候选 Provider 都不可用，客户端仍收到最终失败响应，并在事件页记录 `exhausted` 或 `retry_failed`。
+
 ## v0.15.3 (2026-07-11)
 
 ### Fixed
