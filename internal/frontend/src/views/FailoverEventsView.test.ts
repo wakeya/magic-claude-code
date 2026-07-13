@@ -14,12 +14,24 @@ test('FailoverEventsView states the global, JSONL-independent disclaimer', () =>
 
 test('FailoverEventsView renders source→target, model, signal, reason, outcome, disabled-until', () => {
   assert.match(viewSource, /routeLabel\(event\)/)
+  assert.match(viewSource, /providerIdLabel\(event\)/)
   assert.match(viewSource, /modelLabel\(event\)/)
   assert.match(viewSource, /signalLabel\(event\)/)
   assert.match(viewSource, /reasonLabel\(event\)/)
   assert.match(viewSource, /outcomeLabel\(event\.outcome\)/)
   assert.match(viewSource, /disabledUntilLabel\(event\)/)
   assert.match(viewSource, /formatTime\(event\.occurred_at\)/)
+  assert.match(viewSource, /t\('failover\.col_provider_id'\)/)
+})
+
+test('FailoverEventsView separates provider display names from provider IDs', () => {
+  assert.match(viewSource, /function routeLabel\(event: FailoverEvent\): string/)
+  assert.match(viewSource, /event\.from_provider_name/)
+  assert.match(viewSource, /event\.to_provider_name/)
+  assert.match(viewSource, /function providerIdLabel\(event: FailoverEvent\): string/)
+  assert.match(viewSource, /event\.from_provider_id/)
+  assert.match(viewSource, /event\.to_provider_id/)
+  assert.match(viewSource, /font-mono/)
 })
 
 test('FailoverEventsView fetches events on mount and on refresh', () => {

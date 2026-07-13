@@ -36,6 +36,7 @@
           <tr class="border-b text-left text-xs uppercase tracking-wide text-text-secondary">
             <th class="py-2 pr-4 font-semibold">{{ t('failover.col_time') }}</th>
             <th class="py-2 pr-4 font-semibold">{{ t('failover.col_route') }}</th>
+            <th class="py-2 pr-4 font-semibold">{{ t('failover.col_provider_id') }}</th>
             <th class="py-2 pr-4 font-semibold">{{ t('failover.col_model') }}</th>
             <th class="py-2 pr-4 font-semibold">{{ t('failover.col_signal') }}</th>
             <th class="py-2 pr-4 font-semibold">{{ t('failover.col_reason') }}</th>
@@ -49,6 +50,7 @@
             <td class="py-2 pr-4">
               <span class="font-medium">{{ routeLabel(event) }}</span>
             </td>
+            <td class="py-2 pr-4 font-mono text-xs text-text-secondary">{{ providerIdLabel(event) }}</td>
             <td class="py-2 pr-4 text-text-secondary">{{ modelLabel(event) }}</td>
             <td class="py-2 pr-4 text-text-secondary">{{ signalLabel(event) }}</td>
             <td class="py-2 pr-4 text-text-secondary">{{ reasonLabel(event) }}</td>
@@ -110,14 +112,22 @@ function formatTime(iso: string): string {
   })
 }
 
-// routeLabel：源 → 目标；恢复事件只显示源。名字缺失时回落到 ID（ID 也可能为空）。
+// routeLabel：供应商名称优先显示为源 → 目标；恢复事件只显示源。名字缺失时回落到 ID（ID 也可能为空）。
 function routeLabel(event: FailoverEvent): string {
   const from = event.from_provider_name || event.from_provider_id || '—'
-  if (event.outcome === 'recovered' || !event.to_provider_name && !event.to_provider_id) {
+  if (event.outcome === 'recovered' || (!event.to_provider_name && !event.to_provider_id)) {
     return from
   }
   const to = event.to_provider_name || event.to_provider_id || '—'
   return `${from} → ${to}`
+}
+
+function providerIdLabel(event: FailoverEvent): string {
+  const from = event.from_provider_id || '—'
+  if (event.outcome === 'recovered' || !event.to_provider_id) {
+    return from
+  }
+  return `${from} → ${event.to_provider_id}`
 }
 
 function modelLabel(event: FailoverEvent): string {

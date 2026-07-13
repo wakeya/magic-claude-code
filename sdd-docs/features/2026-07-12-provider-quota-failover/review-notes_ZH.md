@@ -62,3 +62,31 @@ Codex 审查发现的 3 个功能缺陷均已修复并通过 TDD 回归测试（
 其它结论：排序 API 认证、400/409 校验、脱敏返回、SQLite `sort_order` 持久化方向正确；failover 候选顺序测试覆盖同映射模型段与 fallback 段内部按 provider 顺序；tooltip、序号 badge、上移/下移可达性已实现；无 token 泄露或未认证写入。
 
 验证：`go test -race ./...` 1525 passed；`npm test` 193 passed；`npm run build` 通过；`git diff --check` clean。
+
+---
+
+## 供应商事件展示审查（Codex，2026-07-13）
+
+范围：提交 `8954320`（`fix(failover): show provider names and ids in events`），覆盖 `/api/failover/events` 的供应商名称回填，以及前端“切换事件”表格拆分为“供应商”和“供应商 ID”两列。
+
+主要发现与处置：
+
+1. 逻辑审查：当前供应商的展示行为正确。
+   - 证据：`handleFailoverEvents` 仍把当前已知 provider ID 集合传给 `failoverManager.Events`，因此已删除 provider 的 ID 仍会先由 store 抹空；新增的 `providerNames` 只在事件返回后仍带有当前已知 provider ID 时回填名称。
+   - 处置：无需改代码。该实现保留了既有的悬空 ID 保护，同时让 exhausted/recovered 等只存 ID 的事件可以展示供应商名称，而不是只显示 `provider-*` ID。
+
+2. 安全审查：没有引入 Token、请求体、query 或 raw HTML 暴露。
+   - 证据：API 响应仍只包含既有事件字段（供应商 ID/名称、模型、状态码/业务码、原因、结果、时间）；端点仍位于已认证的管理路由后面。前端 `FailoverEventsView` 使用 Vue 插值渲染供应商名称和 ID，没有使用 `v-html`，因此用户可控的供应商名称会被 HTML 转义。未修改 SessionBrowser、SessionDetail、导出或 JSONL 逻辑。
+   - 处置：未发现安全缺陷。
+
+3. 残余语义说明：未存历史供应商名称的事件，会按当前配置名称回填。
+   - 证据：名称回填发生在 API 读取阶段，来源是 `cfg.Providers`。如果旧事件没有存储名称，且之后 provider 被删除，则 ID 会按设计被抹空，缺失的名称也无法恢复。
+   - 处置：对本次修复可接受，因为它保留了删除 provider 后不暴露悬空 ID 的隐私保护，并解决了当前 provider 展示成 ID 的问题。如果未来要求“删除后仍展示历史名称”，应在所有事件写入路径中持久化 provider 名称。
+
+验证：
+
+- `go test ./internal/admin -run 'TestFailoverEvents|TestProviderDeleteLeavesNoDanglingFailoverEventIDs' -count=1` 通过。
+- `npm --prefix internal/frontend test -- src/views/FailoverEventsView.test.ts` 通过（195/195）。
+- `git diff --check` 通过。
+
+结论：提交 `8954320` 未发现遗留功能逻辑缺陷或安全缺陷。唯一残余说明是：旧事件如果没有存储供应商名称，且供应商后来被删除，则无法再恢复历史名称。
