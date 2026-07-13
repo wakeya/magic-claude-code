@@ -161,3 +161,65 @@ func TestProviderOrderDoesNotChangeActiveProvider(t *testing.T) {
 		t.Fatalf("ActiveProviderID changed %q -> %q (order must not change active)", before.ActiveProviderID, after.ActiveProviderID)
 	}
 }
+
+// TestProviderOrderPreservesEffectiveDefaultWhenActiveIDEmpty：
+// ActiveProviderID="" 时有效默认是首位 enabled（A）。拖拽成 [B,A,C] 后，
+// 必须把有效默认固化回 A，避免排序静默改变当前默认供应商。
+func TestProviderOrderPreservesEffectiveDefaultWhenActiveIDEmpty(t *testing.T) {
+	srv, store := orderTestHarness(t, "a", "b", "c")
+	before, _ := store.Load()
+	if before.ActiveProviderID != "" {
+		t.Fatalf("setup: expected empty ActiveProviderID, got %q", before.ActiveProviderID)
+	}
+	if eff := before.GetActiveProvider(); eff == nil || eff.ID != "a" {
+		t.Fatalf("setup: effective default should be a, got %+v", eff)
+	}
+
+	rec := httptest.NewRecorder()
+	srv.handleProviderOrder(rec, orderRequest(srv, `{"provider_ids":["b","a","c"]}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	after, _ := store.Load()
+	if eff := after.GetActiveProvider(); eff == nil || eff.ID != "a" {
+		t.Fatalf("effective default changed to %+v after reorder; must stay a", eff)
+	}
+	if after.ActiveProviderID != "a" {
+		t.Fatalf("ActiveProviderID = %q, want a (pinned to preserve effective default)", after.ActiveProviderID)
+	}
+}
+
+// TestProviderOrderPreservesEffectiveDefaultWhenActiveIDMissingOrDisabled：
+// ActiveProviderID 指向不存在/disabled 的 provider 时，有效默认回退到首位 enabled（B）。
+// 重排后必须把有效默认固化回 B。
+func TestProviderOrderPreservesEffectiveDefaultWhenActiveIDMissingOrDisabled(t *testing.T) {
+	srv, store := orderTestHarness(t)
+	// old 标记 disabled，b/c enabled；ActiveProviderID 指向 disabled 的 old。
+	_, _ = store.Update(func(cfg *config.Config) error {
+		cfg.Providers = []config.Provider{
+			{ID: "old", Name: "old", APIURL: "https://old", APIFormat: config.APIFormatAnthropic, Enabled: false},
+			{ID: "b", Name: "b", APIURL: "https://b", APIFormat: config.APIFormatAnthropic, Enabled: true},
+			{ID: "c", Name: "c", APIURL: "https://c", APIFormat: config.APIFormatAnthropic, Enabled: true},
+		}
+		cfg.ActiveProviderID = "old"
+		return nil
+	})
+	before, _ := store.Load()
+	if eff := before.GetActiveProvider(); eff == nil || eff.ID != "b" {
+		t.Fatalf("setup: effective default should be b, got %+v", eff)
+	}
+
+	rec := httptest.NewRecorder()
+	// 把 c 拖到最前：[c, old, b] —— old（disabled）仍在列表中占位。
+	srv.handleProviderOrder(rec, orderRequest(srv, `{"provider_ids":["c","old","b"]}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	after, _ := store.Load()
+	if eff := after.GetActiveProvider(); eff == nil || eff.ID != "b" {
+		t.Fatalf("effective default changed to %+v after reorder; must stay b", eff)
+	}
+	if after.ActiveProviderID != "b" {
+		t.Fatalf("ActiveProviderID = %q, want b (pinned to preserve effective default)", after.ActiveProviderID)
+	}
+}

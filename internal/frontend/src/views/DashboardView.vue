@@ -196,7 +196,7 @@
           :key="p.id"
           draggable="true"
           :class="['mb-3', providerDragIndex === index ? 'opacity-40' : '', providerDragOverIndex === index && providerDragIndex !== null && providerDragIndex !== index ? 'ring-2 ring-primary rounded-lg' : '']"
-          @dragstart="onProviderDragStart(index)"
+          @dragstart="onProviderDragStart($event, index)"
           @dragover.prevent="onProviderDragOver(index)"
           @drop.prevent="onProviderDrop(index)"
           @dragend="onProviderDragEnd"
@@ -1404,7 +1404,14 @@ const providerDragIndex = ref<number | null>(null)
 const providerDragOverIndex = ref<number | null>(null)
 const providerReorderError = ref('')
 
-function onProviderDragStart(index: number) {
+function onProviderDragStart(event: DragEvent, index: number) {
+  // 只允许从拖拽手柄（data-provider-drag-handle）发起拖拽，
+  // 避免误从按钮/文本/Token 区域拖动触发卡片拖拽。
+  const target = event.target as Element | null
+  if (!target || !target.closest('[data-provider-drag-handle]')) {
+    event.preventDefault()
+    return
+  }
   providerDragIndex.value = index
 }
 function onProviderDragOver(index: number) {

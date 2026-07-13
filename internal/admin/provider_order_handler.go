@@ -72,16 +72,26 @@ func (s *Server) handleProviderOrder(w http.ResponseWriter, r *http.Request) {
 				return errOrderConflict
 			}
 		}
-		// 按请求顺序重排。不改 provider 内容字段、不改 ActiveProviderID。
+		// 按请求顺序重排。不改 provider 内容字段。
 		byID := make(map[string]config.Provider, currentCount)
 		for i := range cfg.Providers {
 			byID[cfg.Providers[i].ID] = cfg.Providers[i]
 		}
+		// 排序前捕获「有效默认供应商」：当 ActiveProviderID 为空/缺失/disabled 时，
+		// GetActiveProvider 会回退到首位 enabled；若不固化，重排会静默改变有效默认供应商。
+		effectiveBefore := cfg.GetActiveProvider()
 		reordered := make([]config.Provider, 0, len(req.ProviderIDs))
 		for _, id := range req.ProviderIDs {
 			reordered = append(reordered, byID[id])
 		}
 		cfg.Providers = reordered
+		// 仅当存储的 ActiveProviderID 未明确指向 enabled provider 时，把旧有效默认固化进去；
+		// 已明确设置的 active provider 不受影响。
+		if active := cfg.GetProviderByID(cfg.ActiveProviderID); active == nil || !active.Enabled {
+			if effectiveBefore != nil {
+				cfg.ActiveProviderID = effectiveBefore.ID
+			}
+		}
 		return nil
 	})
 	if err != nil {

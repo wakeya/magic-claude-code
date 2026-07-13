@@ -15,6 +15,13 @@ test('DashboardView wraps provider cards in a draggable container', () => {
   assert.match(dashSource, /@drop\.prevent=/)
 })
 
+test('drag starts only from the drag handle, not from card content/buttons', () => {
+  // 手柄带 data-provider-drag-handle；dragstart 校验事件来源，非手柄发起则 preventDefault。
+  assert.match(dashSource, /data-provider-drag-handle/)
+  assert.match(dashSource, /closest\(['"]\[data-provider-drag-handle\]['"]\)/)
+  assert.match(dashSource, /preventDefault\(\)/)
+})
+
 test('DashboardView passes orderIndex (index) to ProviderCard', () => {
   assert.match(dashSource, /:order-index="index"|:order-index="idx"/)
 })

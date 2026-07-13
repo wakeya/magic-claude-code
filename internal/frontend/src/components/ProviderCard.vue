@@ -55,8 +55,8 @@
     </div>
 
     <div class="flex gap-2 flex-wrap">
-      <!-- 拖拽手柄：纯视觉 affordance（实际 draggable 由父级列表容器承担）。键盘/移动端用下方上移/下移按钮。 -->
-      <span class="inline-flex items-center px-1.5 text-text-secondary cursor-grab" :aria-label="t('providers.drag_handle')" :title="t('providers.drag_handle')">
+      <!-- 拖拽手柄：实际拖拽由此发起（父级列表容器校验 data-provider-drag-handle）。键盘/移动端用下方上移/下移按钮。 -->
+      <span data-provider-drag-handle class="inline-flex items-center px-1.5 text-text-secondary cursor-grab" :aria-label="t('providers.drag_handle')" :title="t('providers.drag_handle')">
         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5h.01M9 12h.01M9 19h.01M15 5h.01M15 12h.01M15 19h.01"/></svg>
       </span>
       <button class="flex items-center gap-1 px-3.5 py-1.5 border-none rounded-md text-xs font-semibold cursor-pointer transition-all duration-150 hover:scale-105 bg-transparent text-text-secondary hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100" :disabled="!canMoveUp" @click="$emit('move-up')" :aria-label="t('providers.move_up')" :title="t('providers.move_up')">
