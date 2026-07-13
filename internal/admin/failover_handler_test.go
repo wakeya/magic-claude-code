@@ -168,6 +168,33 @@ func TestFailoverEventsDoNotExposeSecrets(t *testing.T) {
 	}
 }
 
+func TestFailoverEventsBackfillProviderNamesFromCurrentConfig(t *testing.T) {
+	srv, _, mgr := failoverAdminHarness(t)
+	// RecordExhausted 只记录 provider ID；管理接口应从当前配置回填供应商名称，避免前端只看到 provider-xxx ID。
+	mgr.RecordExhausted("p1", "claude-opus-4-8", "glm-5.2", failover.Classification{Reason: "five_hour_quota_exhausted"}, nil)
+
+	rec := httptest.NewRecorder()
+	srv.handleFailoverEvents(rec, authedRequest(srv, "GET", "/api/failover/events", ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Events []failover.FailoverEvent `json:"events"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Events) != 1 {
+		t.Fatalf("events len = %d, want 1", len(resp.Events))
+	}
+	if resp.Events[0].FromProviderID != "p1" {
+		t.Fatalf("from_provider_id = %q, want p1", resp.Events[0].FromProviderID)
+	}
+	if resp.Events[0].FromProviderName != "Alpha" {
+		t.Fatalf("from_provider_name = %q, want Alpha", resp.Events[0].FromProviderName)
+	}
+}
+
 func TestProviderTokenChangeClearsCredentialFailure(t *testing.T) {
 	srv, _, mgr := failoverAdminHarness(t)
 	mgr.QuarantineFailed("p1", failover.Classification{Eligible: true, Kind: failover.StateKindCredential, Reason: "credential_invalid", UpstreamCode: 401})

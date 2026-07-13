@@ -81,10 +81,14 @@ func (s *Server) handleFailoverEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 已知供应商 ID 集合：用于抹空已删除供应商的 ID（保留名字）。
+	// providerNames 用于给早期/恢复/耗尽事件回填当前仍存在供应商的展示名称。
 	known := map[string]bool{}
+	providerNames := map[string]string{}
 	if cfg, err := s.configStore.Load(); err == nil {
 		for i := range cfg.Providers {
-			known[cfg.Providers[i].ID] = true
+			p := cfg.Providers[i]
+			known[p.ID] = true
+			providerNames[p.ID] = p.Name
 		}
 	}
 
@@ -92,6 +96,22 @@ func (s *Server) handleFailoverEvents(w http.ResponseWriter, r *http.Request) {
 	if events == nil {
 		events = []failover.FailoverEvent{}
 	}
+	backfillFailoverEventProviderNames(events, providerNames)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"events": events})
+}
+
+func backfillFailoverEventProviderNames(events []failover.FailoverEvent, providerNames map[string]string) {
+	for i := range events {
+		if events[i].FromProviderName == "" && events[i].FromProviderID != "" {
+			if name := providerNames[events[i].FromProviderID]; name != "" {
+				events[i].FromProviderName = name
+			}
+		}
+		if events[i].ToProviderName == "" && events[i].ToProviderID != "" {
+			if name := providerNames[events[i].ToProviderID]; name != "" {
+				events[i].ToProviderName = name
+			}
+		}
+	}
 }
