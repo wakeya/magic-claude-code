@@ -4,8 +4,8 @@
 代理入口：`internal/proxy/handler.go`（`POST /v1/messages`、`POST /anthropic/v1/messages`）<br>
 参考源站：`~/.claude/projects/`（84 个 JSONL、53 条 API 失败记录）、现有额度查询/重试代码<br>
 技术栈：Go 1.26、SQLite、Vue 3<br>
-最后更新：2026-07-12<br>
-进度：5 / 5 implemented（见文末「实现验证证据」）
+最后更新：2026-07-13<br>
+进度：5 / 6 implemented；任务 6 待实现（见文末「实现验证证据」）
 
 ## 整体分析（源站分析）
 
@@ -32,6 +32,7 @@
 | 3 | Done | 代理集成 | replay、最终响应、active update | `go test ./internal/proxy/...` |
 | 4 | Done | 额度/管理端接入 | reconciliation、Token recovery、API | `go test ./internal/admin/... ./internal/providerquota/...` |
 | 5 | Done | 前端 | switch、global event panel | 前端测试/build |
+| 6 | Pending | 供应商排序与优先级可视化 | drag reorder、order badge、tooltip、排序 API | Go/admin/frontend 测试/build |
 
 ## 需求
 
@@ -43,6 +44,7 @@
 6. 第一个 `<400` 重试原子更新 `ActiveProviderID`、写 `switched`，且是唯一客户端响应。现有同 provider 429 retry 先运行。ExposedModel、不安全 method、已开始响应均不回放。
 7. 新鲜 100% 额度快照可摘除，容量恢复可清额度 state；它 MUST NOT 清 401。只有已保存的非空 API Token 实际改变或 `POST /api/providers/{id}/test` 成功才清凭据 state；编辑名称/模型/URL 或测试失败均不清。
 8. 新增认证后的 `GET/PUT /api/providers/failover` 与 `GET /api/failover/events?limit=1..100`；前端增加可访问标题 switch；`DashboardView` 主导航在“会话记录”旁增加“切换事件”一级 tab，后者展示全局事件页面，不修改 `SessionBrowser`、`SessionDetail`、会话内容渲染或 export。
+9. 供应商管理页支持拖拽调整 provider 顺序。该顺序是自动切换候选的用户可控优先级：同映射模型候选分组内部、fallback 候选分组内部均按拖拽后的 provider 列表顺序。每张供应商卡片右上角额度显示块左侧展示蓝底白字圆形排序标号（`index + 1`）；拖拽后立即重新编号。自动切换开关旁有可访问问号 tooltip，说明可拖拽调整自动切换优先级。排序标号不是 provider 业务字段；排序来源为后端返回的 provider 列表顺序。
 
 ## 任务详情
 
@@ -276,9 +278,148 @@ npm --prefix internal/frontend run build
 
 预期：两条命令均返回 0；产物生成到 `internal/frontend/dist`，无 TypeScript/Vite 错误。
 
+### 任务 6：供应商排序、序号标识与自动切换优先级说明
+
+#### 需求
+
+**Objective（目标）** — 让用户能直接控制供应商自动切换优先级，并在供应商管理页清楚看到当前优先级顺序。
+
+**Outcomes（成果）** — 供应商卡片支持拖拽排序；排序持久化；failover 候选使用拖拽后的顺序；供应商卡片右上角展示圆形排序标号；自动切换开关旁展示可访问 tooltip，说明排序影响自动切换优先级。
+
+**Evidence（证据）** — 后端测试证明排序 API 认证、校验、持久化和 SQLite 重启后顺序稳定；failover 测试证明同模型分组与 fallback 分组内部使用新顺序；前端测试证明拖拽调用排序 API、失败回滚、序号随列表变化、tooltip 文案与可访问性。
+
+**Constraints（约束）** — 不新增 provider 的业务优先级字段给前端消费；前端序号始终由当前返回列表 `index + 1` 计算。`设为当前`、自动切换、启用/禁用、额度刷新、Token 编辑、模型映射编辑均不得改变排序。禁用 provider 仍显示在列表中并参与编号，但 failover 候选仍过滤 disabled provider。不得影响 `/model` 会话路由。
+
+**Edge Cases（边界）** — 排序请求缺 ID、重复 ID、未知 ID、漏掉已有 provider、空列表、并发 provider 删除/新增、API 失败、拖拽到原位置、禁用 provider 位于前面、当前供应商位于后面、移动端/键盘无法拖拽。
+
+**Verification（验证）** — `go test -v -race ./internal/config/... ./internal/admin/... ./internal/failover/... ./internal/proxy/...`、`npm --prefix internal/frontend test`、`npm --prefix internal/frontend run build` 全部通过。
+
+#### 设计
+
+排序语义：
+
+- Provider 列表顺序就是自动切换优先级顺序。
+- Failover 候选选择保持现有两段逻辑：先收集 `candidate.MapModel(originalModel) == failedMappedModel` 的同映射模型候选，再收集其它 fallback 候选；每一段内部都必须保持 provider 列表顺序。
+- 拖拽排序只改变列表顺序，不改变 `ActiveProviderID`。自动切换只改变 `ActiveProviderID`，不改变列表顺序。
+- `ExposedModel` / `/model` 固定路由不看此排序，不参与自动切换。
+
+后端持久化：
+
+- JSON store 直接使用 `Config.Providers` slice 顺序。
+- SQLite store MUST 增加 `providers.sort_order INTEGER NOT NULL DEFAULT 0`，否则当前 `ORDER BY created_at ASC, id ASC` 会在重启后覆盖拖拽顺序。
+- SQLite migration 在 `ensureProviderColumns` 中补 `sort_order`；保存 provider 时按当前 slice index 写入 `sort_order`；读取 provider 时使用 `ORDER BY sort_order ASC, created_at ASC, id ASC`，兼容旧数据。
+- 旧 DB 的所有 `sort_order=0` 时，初始顺序仍由 `created_at ASC, id ASC` 决定；第一次保存/排序后写入稳定 `sort_order`。
+
+后端 API：
+
+- 新增认证端点：`PUT /api/providers/order`。
+- 请求体：`{"provider_ids":["id-a","id-b","id-c"]}`。
+- 成功响应：`{"success":true,"providers":[...]}`，`providers` 使用现有 `providerResponseMap` 脱敏格式，并按新顺序返回。
+- 必须使用 `configStore.Update` 原子处理：在锁内加载最新 config、校验请求 ID 集合、重排 `cfg.Providers`、保存。
+- 校验规则：
+  - JSON 解析失败、`provider_ids` 缺失或不是数组：返回 400；
+  - `provider_ids` 为空但当前 provider 非空：返回 409；
+  - 重复 ID：返回 400；
+  - 未知 ID：返回 400；
+  - 漏掉任何现有 provider 或长度与当前 provider 数量不一致：返回 409；
+  - 当前 provider 为空且请求数组为空：返回 200，并返回空 `providers`；
+  - 并发删除/新增导致集合不匹配时返回 409 Conflict。
+- 该端点不得返回 API Token 原文；不得改变 `ActiveProviderID`；不得改变 provider 内容字段。
+
+前端交互：
+
+- 在 `DashboardView.vue` 的 provider 列表中实现拖拽排序。优先使用原生 HTML5 drag/drop 或轻量局部实现，不新增大型拖拽依赖，除非现有项目已使用对应依赖。
+- 拖拽开始时记录 dragged provider ID；拖过其它卡片时显示清晰的插入位置或卡片 hover 状态；drop 后立即乐观重排本地 `providers`。
+- 调用 `api.reorderProviders(providerIds)` 持久化。成功后用后端返回的 ordered providers 替换本地列表，并保持 `selectedProviderIds` 集合不丢失。失败时回滚到拖拽前顺序，并显示简短错误提示。
+- 拖拽到原位置不得调用 API。
+- 排序过程中不得触发 `activate`、`edit`、`delete`、`toggle`、`usage`、`refresh-quota` 等卡片按钮事件。
+- 供应商卡片需要明确的拖拽 affordance：可以让整张卡片可拖，也可以在卡片标题区增加拖拽手柄。若增加手柄，应使用已有图标体系（如 lucide `GripVertical`），并提供 `title` / `aria-label`。
+- 移动端或键盘用户至少要有无障碍替代：每张卡片提供“上移/下移”按钮或菜单项，调用同一排序函数；按钮在第一项/最后一项时 disabled。若本轮不实现替代操作，必须在 spec 实现备注中明确并作为阻塞，不得只做鼠标拖拽。
+
+排序标号：
+
+- 在 `ProviderCard` 右上角额度显示块的左侧显示圆形排序 badge。
+- badge 文案为当前列表顺序 `index + 1`，例如 `1`、`2`、`3`。
+- badge 使用蓝底白字圆形样式，视觉上类似小标题标识；建议 class 形态：`inline-flex h-6 w-6 items-center justify-center rounded-full bg-primary text-white text-xs font-bold`，具体需贴合现有主题 token。
+- badge 必须随本地列表顺序变化立即重算；不得保存为 provider 的独立字段；后端无需返回 `priority` 给前端。
+- badge 应有 `aria-label`，例如中文 `自动切换优先级第 1 位`，英文 `Failover priority 1`。
+- 禁用 provider 仍显示 badge 和编号；因为编号表示列表位置，不表示当前可用性。
+
+自动切换 tooltip：
+
+- 在“自动故障切换”开关文字右侧增加问号图标。
+- 图标 hover 和 keyboard focus 均显示 tooltip；不能只支持鼠标。
+- tooltip 中文文案：
+
+  `开启后，默认供应商遇到额度耗尽、凭据失效或供应商不可用时，会按供应商列表顺序自动切换。可拖拽供应商卡片调整自动切换优先级。不会影响会话内 /model 选择。`
+
+- tooltip 英文文案：
+
+  `When enabled, MCC automatically switches the global default provider by provider list order when quota, credential, or availability failures occur. Drag provider cards to adjust failover priority. This does not affect in-session /model choices.`
+
+- Tooltip 必须使用 i18n key；建议：
+  - `failover.switch_help`
+  - `providers.reorder_failed`
+  - `providers.drag_handle`
+  - `providers.move_up`
+  - `providers.move_down`
+  - `providers.priority_label`
+
+#### 计划
+
+文件：
+
+- 后端：`internal/config/sqlite_store.go`、`internal/admin/server.go`、`internal/admin/provider_handler.go` 或新增 `internal/admin/provider_order_handler.go`、相关 admin/config/proxy/failover 测试。
+- 前端：`internal/frontend/src/composables/useApi.ts`、`useI18n.ts`、`views/DashboardView.vue`、`components/ProviderCard.vue`、相关前端测试；构建后更新 `internal/frontend/dist`。
+
+步骤：
+
+- [ ] 写后端失败测试 `TestProviderOrderRequiresAuth`、`TestProviderOrderRejectsInvalidSets`、`TestProviderOrderPersistsInSQLiteOrder`、`TestProviderOrderDoesNotChangeActiveProvider`。
+- [ ] 执行 `go test ./internal/admin ./internal/config -run 'TestProviderOrder|TestSQLiteProviderOrder' -count=1`；预期：失败。
+- [ ] 给 SQLite providers 表增加 `sort_order` migration；保存时按 slice index 写入；读取时按 `sort_order, created_at, id` 排序；JSON store 无需额外字段。
+- [ ] 实现 `PUT /api/providers/order`，走 `authMiddlewareFunc` 和 `configStore.Update`；校验完整 ID 集合，返回脱敏 ordered providers。
+- [ ] 执行上述 Go 测试；预期：通过。
+- [ ] 写 failover 候选顺序测试：先保存/构造顺序 `[A, C, B, D]`，A 失败，B/C 为同 mapped model，D 为 fallback；断言候选顺序为 `[C, B, D]`；再拖拽为 `[A, B, C, D]`，断言为 `[B, C, D]`。
+- [ ] 执行 `go test ./internal/failover ./internal/proxy -run 'TestSelectCandidatesUsesProviderOrder|TestFailoverUsesReorderedProviderPriority' -count=1`；预期：先失败，完成后通过。
+- [ ] 前端增加 `reorderProviders(providerIds: string[])` API；写测试断言 PUT `/api/providers/order` JSON body、非 2xx 抛错。
+- [ ] 修改 `ProviderCard.vue` 接收 `orderIndex` 或 `priority` prop（仅展示用，值来自父组件 index + 1），在额度显示块左侧渲染 order badge；增加 badge aria-label。
+- [ ] 修改 `DashboardView.vue` provider 列表：实现 drag/drop 与上移/下移 fallback；drop 后乐观更新、成功替换、失败回滚；拖拽到原位置不发请求；保留 `selectedProviderIds`。
+- [ ] 在自动切换开关旁增加问号图标 tooltip，使用 i18n，支持 hover/focus。
+- [ ] 写前端测试：`DashboardProviderReorder.test.ts`、`ProviderCardPriorityBadge.test.ts`、`DashboardFailoverTooltip.test.ts`，覆盖拖拽/上移下移、失败回滚、badge 编号、tooltip 文案、i18n 中英文 key。
+- [ ] 执行 `npm --prefix internal/frontend test`；预期：通过。
+- [ ] 执行 `npm --prefix internal/frontend run build`；预期：通过并更新 dist。
+- [ ] 执行 `go test -v -race ./internal/config/... ./internal/admin/... ./internal/failover/... ./internal/proxy/...`；预期：通过。
+- [ ] 提交：`git add internal/config internal/admin internal/failover internal/proxy internal/frontend && git commit -m "feat(providers): reorder failover priority"`。
+
+#### 验证
+
+```bash
+go test -v -race ./internal/config/... ./internal/admin/... ./internal/failover/... ./internal/proxy/...
+npm --prefix internal/frontend test
+npm --prefix internal/frontend run build
+```
+
+逐项验收：
+
+- [ ] `TestProviderOrderRequiresAuth`：未认证请求返回 401；非 PUT 返回 405。
+- [ ] `TestProviderOrderRejectsInvalidSets`：非 JSON/非数组/重复 ID/未知 ID 返回 400；漏 ID、长度不匹配、并发集合变化返回 409；配置不变。
+- [ ] `TestProviderOrderPersistsInSQLiteOrder`：排序后重新 `Load()`、关闭并重开 SQLite store，provider 顺序仍为新顺序。
+- [ ] `TestProviderOrderDoesNotChangeActiveProvider`：排序前后 `ActiveProviderID` 完全一致。
+- [ ] `TestSelectCandidatesUsesProviderOrderWithinSameMappedModel`：同 mapped model 分组内部严格按拖拽后顺序。
+- [ ] `TestSelectCandidatesUsesProviderOrderWithinFallbackGroup`：fallback 分组内部严格按拖拽后顺序。
+- [ ] `TestFailoverUsesReorderedProviderPriority`：代理真实 failover 时访问第一个可用高优先级候选，active provider 更新为该候选。
+- [ ] `useApi.reorderProviders` 测试断言 PUT `/api/providers/order`、body 为完整 `provider_ids`，非 2xx 抛错。
+- [ ] `ProviderCardPriorityBadge` 测试断言 badge 出现在额度块左侧、显示 `1/2/3`、aria-label 使用 i18n，禁用 provider 仍显示编号。
+- [ ] `DashboardProviderReorder` 测试断言拖拽后本地编号立即变化、成功后采用服务端顺序、失败后回滚并显示 `providers.reorder_failed`。
+- [ ] `DashboardProviderKeyboardReorder` 测试断言上移/下移按钮可用，第一项上移 disabled，最后一项下移 disabled。
+- [ ] `DashboardFailoverTooltip` 测试断言问号图标紧邻自动切换开关，hover/focus 可显示包含“拖拽供应商卡片调整自动切换优先级”和“不影响 /model”的中英文文案。
+- [ ] 回归断言 `SessionBrowser.vue`、`SessionDetail.vue`、session export、JSONL 解析仍未因排序功能被修改。
+
+预期：所有命令返回 0；排序重启后稳定；拖拽和键盘排序都能改变 failover 优先级；自动切换开关 tooltip 能解释排序关系；无 token/body/query 泄露。
+
 ## 实现验证证据（2026-07-12）
 
-任务 1–5 全部实现并提交（分支 `provider-quota-failover`，本地 commit 未推送）。
+任务 1–5 全部实现并提交（分支 `provider-quota-failover`，本地 commit 未推送）。任务 6 于 2026-07-13 追加到本 spec，尚未实现。
 
 验证命令与结果：
 

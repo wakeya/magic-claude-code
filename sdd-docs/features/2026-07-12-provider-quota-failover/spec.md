@@ -4,8 +4,8 @@ Local page: Provider Management and Dashboard main navigation (`DashboardView.vu
 Proxy entry: `internal/proxy/handler.go` (`POST /v1/messages`, `POST /anthropic/v1/messages`)<br>
 Reference sources: `~/.claude/projects/` (84 JSONL files; 53 API failures), current quota/retry code<br>
 Stack: Go 1.26, SQLite, Vue 3<br>
-Last updated: 2026-07-12<br>
-Progress: 5 / 5 implemented (see "Implementation verification evidence" at end)
+Last updated: 2026-07-13<br>
+Progress: 5 / 6 implemented; Task 6 pending (see "Implementation verification evidence" at end)
 
 ## Overall Analysis (Source Analysis)
 
@@ -32,6 +32,7 @@ Events cannot be associated reliably with a Claude `sessionId`. They are a globa
 | 3 | Done | Proxy integration | replay, final response, active update | `go test ./internal/proxy/...` |
 | 4 | Done | Quota/admin integration | reconciliation, Token recovery, APIs | `go test ./internal/admin/... ./internal/providerquota/...` |
 | 5 | Done | Frontend | switch and global event panel | frontend tests/build |
+| 6 | Pending | Provider ordering and priority visibility | drag reorder, order badge, tooltip, ordering API | Go/admin/frontend tests/build |
 
 ## Requirements
 
@@ -43,6 +44,7 @@ Events cannot be associated reliably with a Claude `sessionId`. They are a globa
 6. The first `<400` retry atomically changes `ActiveProviderID`, emits `switched`, and is the sole client response. Existing same-provider 429 retry runs first. Never replay exposed-model requests, unsafe methods, or a response that has started.
 7. A fresh quota snapshot can quarantine at 100% and recover quota state when capacity returns. It MUST NOT recover a credential-invalid state. Credential state clears only after a stored non-empty API Token changes or `POST /api/providers/{id}/test` succeeds; editing name/models/URL or a failed test does not clear it.
 8. Add authenticated `GET/PUT /api/providers/failover` and `GET /api/failover/events?limit=1..100`; UI adds an accessible title switch and a DashboardView top-level Failover Events tab adjacent to Session Records without modifying `SessionBrowser`, `SessionDetail`, transcript rendering, or export.
+9. Provider Management supports dragging provider cards to reorder providers. That order is the user-controlled automatic failover priority: within the same-mapped-model candidate group and the fallback candidate group, candidates preserve the reordered provider list order. Each provider card shows a blue circular order badge (`index + 1`) at the top-right, immediately left of the quota display block; the badge renumbers immediately after reorder. The auto-failover switch includes an accessible question-mark tooltip explaining that provider cards can be dragged to adjust automatic failover priority. The badge is not a provider business field; order comes from the provider list returned by the backend.
 
 ## Task Details
 
@@ -276,9 +278,148 @@ Acceptance assertions:
 
 Expected: both commands exit 0 and generate `internal/frontend/dist` without TypeScript/Vite errors.
 
+### Task 6: Provider ordering, priority badge, and failover-priority help
+
+#### Requirements
+
+**Objective** - Let users directly control automatic failover priority and clearly see the current priority order on the Provider Management page.
+
+**Outcomes** - Provider cards support drag reorder; order persists; failover candidates use the reordered order; provider cards show a circular priority badge; the auto-failover switch has an accessible tooltip explaining reorder priority.
+
+**Evidence** - Backend tests prove ordering API auth, validation, persistence, and SQLite restart stability; failover tests prove same-model and fallback groups use the new order; frontend tests prove dragging calls the ordering API, failures roll back, badges renumber, and the tooltip is accessible/localized.
+
+**Constraints** - Do not add a provider business-priority field for frontend consumption; the displayed number is always `index + 1` from the current provider list. `Set current`, auto-failover, enable/disable, quota refresh, Token edits, and model-mapping edits must not change order. Disabled providers remain visible and numbered but are still filtered from failover candidates. Do not affect `/model` session routing.
+
+**Edge Cases** - Missing IDs, duplicate IDs, unknown IDs, omitted existing providers, empty list, concurrent provider deletion/creation, API failure, dropping at the same position, disabled provider first, current provider later in list, mobile/keyboard users who cannot drag.
+
+**Verification** - `go test -v -race ./internal/config/... ./internal/admin/... ./internal/failover/... ./internal/proxy/...`, `npm --prefix internal/frontend test`, and `npm --prefix internal/frontend run build` all pass.
+
+#### Design
+
+Ordering semantics:
+
+- Provider list order is the automatic failover priority order.
+- Failover candidate selection keeps the existing two-pass logic: first collect candidates where `candidate.MapModel(originalModel) == failedMappedModel`, then collect other fallback candidates. Each pass must preserve provider list order.
+- Drag reorder changes only list order, never `ActiveProviderID`. Auto-failover changes only `ActiveProviderID`, never list order.
+- `ExposedModel` / `/model` pinned routing does not use this order for automatic failover.
+
+Backend persistence:
+
+- JSON store uses the `Config.Providers` slice order directly.
+- SQLite store MUST add `providers.sort_order INTEGER NOT NULL DEFAULT 0`; otherwise the current `ORDER BY created_at ASC, id ASC` will overwrite drag order after restart.
+- SQLite migration adds `sort_order` in `ensureProviderColumns`; saving providers writes `sort_order=index`; loading providers orders by `sort_order ASC, created_at ASC, id ASC`.
+- Old databases where all rows have `sort_order=0` keep their initial `created_at ASC, id ASC` order until the first save/reorder writes stable sort values.
+
+Backend API:
+
+- Add authenticated endpoint: `PUT /api/providers/order`.
+- Request body: `{"provider_ids":["id-a","id-b","id-c"]}`.
+- Success response: `{"success":true,"providers":[...]}` where `providers` uses the existing redacted `providerResponseMap` format and the new order.
+- Use `configStore.Update` atomically: load latest config under lock, validate the ID set, reorder `cfg.Providers`, save.
+- Validation rules:
+  - invalid JSON, missing `provider_ids`, or non-array `provider_ids`: return 400;
+  - empty `provider_ids` while current providers are non-empty: return 409;
+  - duplicate IDs: return 400;
+  - unknown IDs: return 400;
+  - omitted existing providers or length mismatch with the current provider count: return 409;
+  - current providers empty and request array empty: return 200 with empty `providers`;
+  - concurrent create/delete causing a set mismatch returns 409 Conflict.
+- The endpoint must not return raw API Tokens, change `ActiveProviderID`, or mutate provider content fields.
+
+Frontend interaction:
+
+- Implement provider-list drag reorder in `DashboardView.vue`. Prefer native HTML5 drag/drop or a small local implementation; do not add a large drag dependency unless the project already uses it.
+- On drag start store the dragged provider ID; while dragging over cards, show a clear insertion or hover state; on drop, optimistically reorder local `providers`.
+- Call `api.reorderProviders(providerIds)` to persist. On success replace local providers with the returned ordered providers and preserve `selectedProviderIds`. On failure roll back to the previous order and show a short error.
+- Dropping at the same position must not call the API.
+- Reordering must not trigger `activate`, `edit`, `delete`, `toggle`, `usage`, or `refresh-quota` card actions.
+- Provider cards need an explicit drag affordance. Either make the whole card draggable or add a drag handle in the card header. If adding a handle, use the existing icon system such as lucide `GripVertical`, with `title` / `aria-label`.
+- Mobile and keyboard users need an accessible alternative: each card provides move-up/move-down buttons or menu items that call the same reorder function. Buttons are disabled for the first/last item. If this is not implemented, it is a blocker, not a nice-to-have.
+
+Priority badge:
+
+- `ProviderCard` renders a circular order badge at the top-right, immediately left of the quota display block.
+- Badge text is the current list position `index + 1`, for example `1`, `2`, `3`.
+- Badge uses a blue background and white text; suggested class shape: `inline-flex h-6 w-6 items-center justify-center rounded-full bg-primary text-white text-xs font-bold`, adjusted to existing theme tokens.
+- Badge renumbers immediately when local list order changes. It must not be saved as an independent provider field. The backend does not need to return `priority`.
+- Badge has an `aria-label`, for example `Failover priority 1`.
+- Disabled providers still show the badge and number because the number means list position, not current availability.
+
+Auto-failover tooltip:
+
+- Add a question-mark icon next to the "Auto failover" switch text.
+- Tooltip appears on hover and keyboard focus; mouse-only tooltip is not acceptable.
+- Chinese tooltip:
+
+  `开启后，默认供应商遇到额度耗尽、凭据失效或供应商不可用时，会按供应商列表顺序自动切换。可拖拽供应商卡片调整自动切换优先级。不会影响会话内 /model 选择。`
+
+- English tooltip:
+
+  `When enabled, MCC automatically switches the global default provider by provider list order when quota, credential, or availability failures occur. Drag provider cards to adjust failover priority. This does not affect in-session /model choices.`
+
+- Tooltip text must use i18n keys. Suggested keys:
+  - `failover.switch_help`
+  - `providers.reorder_failed`
+  - `providers.drag_handle`
+  - `providers.move_up`
+  - `providers.move_down`
+  - `providers.priority_label`
+
+#### Plan
+
+Files:
+
+- Backend: `internal/config/sqlite_store.go`, `internal/admin/server.go`, `internal/admin/provider_handler.go` or new `internal/admin/provider_order_handler.go`, plus related admin/config/proxy/failover tests.
+- Frontend: `internal/frontend/src/composables/useApi.ts`, `useI18n.ts`, `views/DashboardView.vue`, `components/ProviderCard.vue`, related frontend tests; rebuild `internal/frontend/dist`.
+
+Steps:
+
+- [ ] Write failing backend tests: `TestProviderOrderRequiresAuth`, `TestProviderOrderRejectsInvalidSets`, `TestProviderOrderPersistsInSQLiteOrder`, `TestProviderOrderDoesNotChangeActiveProvider`.
+- [ ] Run `go test ./internal/admin ./internal/config -run 'TestProviderOrder|TestSQLiteProviderOrder' -count=1`; expected: FAIL.
+- [ ] Add SQLite `providers.sort_order` migration; save provider slice index to `sort_order`; load by `sort_order, created_at, id`; JSON store needs no extra field.
+- [ ] Implement `PUT /api/providers/order` behind `authMiddlewareFunc` and `configStore.Update`; validate the complete ID set and return redacted ordered providers.
+- [ ] Run the backend tests above; expected: PASS.
+- [ ] Write failover-order tests: construct/order providers `[A, C, B, D]`, A fails, B/C same mapped model, D fallback; assert candidate order `[C, B, D]`; reorder to `[A, B, C, D]`, assert `[B, C, D]`.
+- [ ] Run `go test ./internal/failover ./internal/proxy -run 'TestSelectCandidatesUsesProviderOrder|TestFailoverUsesReorderedProviderPriority' -count=1`; expected: FAIL first, PASS after implementation.
+- [ ] Add frontend `reorderProviders(providerIds: string[])` API; test it sends PUT `/api/providers/order` with complete `provider_ids` and throws on non-2xx.
+- [ ] Modify `ProviderCard.vue` to accept an `orderIndex` or `priority` prop for display only, derived by the parent as `index + 1`; render the order badge left of quota display with an aria-label.
+- [ ] Modify `DashboardView.vue` provider list: implement drag/drop plus move-up/move-down fallback; optimistic reorder, success replacement, failure rollback; same-position drop does not request; preserve `selectedProviderIds`.
+- [ ] Add the question-mark tooltip beside the auto-failover switch, using i18n and supporting hover/focus.
+- [ ] Write frontend tests: `DashboardProviderReorder.test.ts`, `ProviderCardPriorityBadge.test.ts`, `DashboardFailoverTooltip.test.ts`, covering drag/move buttons, rollback, badge numbering, tooltip text, and zh/en i18n keys.
+- [ ] Run `npm --prefix internal/frontend test`; expected: PASS.
+- [ ] Run `npm --prefix internal/frontend run build`; expected: PASS and `dist` updated.
+- [ ] Run `go test -v -race ./internal/config/... ./internal/admin/... ./internal/failover/... ./internal/proxy/...`; expected: PASS.
+- [ ] Commit: `git add internal/config internal/admin internal/failover internal/proxy internal/frontend && git commit -m "feat(providers): reorder failover priority"`.
+
+#### Verification
+
+```bash
+go test -v -race ./internal/config/... ./internal/admin/... ./internal/failover/... ./internal/proxy/...
+npm --prefix internal/frontend test
+npm --prefix internal/frontend run build
+```
+
+Acceptance assertions:
+
+- [ ] `TestProviderOrderRequiresAuth`: unauthenticated returns 401; non-PUT returns 405.
+- [ ] `TestProviderOrderRejectsInvalidSets`: invalid JSON/non-array/duplicate ID/unknown ID return 400; missing ID, wrong length, and concurrent set mismatch return 409; config remains unchanged.
+- [ ] `TestProviderOrderPersistsInSQLiteOrder`: after reorder, `Load()` and a closed/reopened SQLite store retain the new order.
+- [ ] `TestProviderOrderDoesNotChangeActiveProvider`: `ActiveProviderID` is identical before and after reorder.
+- [ ] `TestSelectCandidatesUsesProviderOrderWithinSameMappedModel`: same-mapped-model group strictly follows reordered order.
+- [ ] `TestSelectCandidatesUsesProviderOrderWithinFallbackGroup`: fallback group strictly follows reordered order.
+- [ ] `TestFailoverUsesReorderedProviderPriority`: proxy failover contacts the first available high-priority candidate and updates active provider to it.
+- [ ] `useApi.reorderProviders` asserts PUT `/api/providers/order`, full `provider_ids` body, and non-2xx throw.
+- [ ] `ProviderCardPriorityBadge` asserts the badge is left of quota display, shows `1/2/3`, uses i18n aria-label, and appears on disabled providers.
+- [ ] `DashboardProviderReorder` asserts local numbers update immediately after drag, success adopts server order, failure rolls back and shows `providers.reorder_failed`.
+- [ ] `DashboardProviderKeyboardReorder` asserts move-up/move-down buttons work, first move-up is disabled, last move-down is disabled.
+- [ ] `DashboardFailoverTooltip` asserts the question icon is adjacent to the auto-failover switch, and hover/focus text includes "drag provider cards to adjust failover priority" plus "does not affect /model" in both locales.
+- [ ] Regression asserts `SessionBrowser.vue`, `SessionDetail.vue`, session export, and JSONL parsing remain untouched by ordering.
+
+Expected: all commands exit 0; order remains stable after restart; drag and keyboard reorder change failover priority; the auto-failover tooltip explains the ordering relationship; no token/body/query leakage.
+
 ## Implementation verification evidence (2026-07-12)
 
-All five tasks implemented and committed on branch `provider-quota-failover` (local commits, not pushed).
+Tasks 1-5 are implemented and committed on branch `provider-quota-failover` (local commits, not pushed). Task 6 was added to this spec on 2026-07-13 and is not implemented yet.
 
 Verification commands and results:
 
