@@ -169,6 +169,30 @@ func TestBare429DoesNotFailover(t *testing.T) {
 	}
 }
 
+func TestClassify1308WithStringCodeIsEquivalent(t *testing.T) {
+	// 部分供应商把业务码序列化为字符串（"1308"）；必须与数值 1308 等价处理。
+	c := classifyBody(t, 429, `{"error":{"code":"1308","message":"已达到 5 小时的使用上限"}}`)
+	if !c.Eligible || c.Kind != StateKindQuota {
+		t.Fatalf("string code \"1308\" must be eligible quota, got %+v", c)
+	}
+	if c.Reason != "five_hour_quota_exhausted" {
+		t.Fatalf("Reason = %q, want five_hour_quota_exhausted", c.Reason)
+	}
+	if c.BusinessCode != "1308" {
+		t.Fatalf("BusinessCode = %q, want 1308", c.BusinessCode)
+	}
+}
+
+func TestClassify1310WithStringCodeIsEquivalent(t *testing.T) {
+	c := classifyBody(t, 429, `{"error":{"code":"1310","message":"weekly limit"}}`)
+	if !c.Eligible || c.Kind != StateKindQuota || c.Reason != "weekly_quota_exhausted" {
+		t.Fatalf("string code \"1310\" must be eligible weekly quota, got %+v", c)
+	}
+	if c.BusinessCode != "1310" {
+		t.Fatalf("BusinessCode = %q, want 1310", c.BusinessCode)
+	}
+}
+
 func TestClassify1210DoesNotFailover(t *testing.T) {
 	c := classifyBody(t, 400, `{"error":{"code":1210,"message":"invalid request"}}`)
 	if c.Eligible {

@@ -465,3 +465,35 @@ func TestFailoverRebuildsOpenAIRequestFromCandidate(t *testing.T) {
 		t.Errorf("candidate model = %q, want B's mapped glm-5.2", gotModel)
 	}
 }
+
+func TestFailoverSwitchesOnTransportError(t *testing.T) {
+	// 上游连接被关闭 → client.Do 返回连接拒绝（无 HTTP 状态）。
+	// ClassifyError 应识别为可用性失败并切换到候选 B。
+	backendA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	backendA.Close() // 立即关闭，使后续连接被拒绝
+	backendB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		w.Write([]byte(`{"id":"m","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"glm-5.2","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer backendB.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.AutoFailoverEnabled = true
+	cfg.Providers = []config.Provider{
+		anthropicProvider("a", "A", backendA.URL, map[string]string{"claude-opus-4-8": "glm-5.2"}),
+		anthropicProvider("b", "B", backendB.URL, map[string]string{"claude-opus-4-8": "glm-5.2"}),
+	}
+	cfg.ActiveProviderID = "a"
+
+	h, _, cfgStore := newFailoverTestHandler(t, cfg, nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, newFailoverRequest())
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200 (failover from transport error to B)", rec.Code)
+	}
+	loaded, _ := cfgStore.Load()
+	if loaded.ActiveProviderID != "b" {
+		t.Fatalf("active = %s, want b (transport-error failover must persist)", loaded.ActiveProviderID)
+	}
+}

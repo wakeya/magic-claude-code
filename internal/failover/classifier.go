@@ -58,10 +58,10 @@ func ClassifyResponse(statusCode int, captured []byte, oversize bool) Classifica
 
 	switch statusCode {
 	case httpStatusTooManyRequests: // 429
-		if pe.code == 1308 {
+		if codeIs(pe, "1308") {
 			return eligible(StateKindQuota, "five_hour_quota_exhausted", statusCode, pe, resetTime(pe.message, now.Add(cooldownQuotaFallback)))
 		}
-		if pe.code == 1310 {
+		if codeIs(pe, "1310") {
 			return eligible(StateKindQuota, "weekly_quota_exhausted", statusCode, pe, resetTime(pe.message, now.Add(cooldownQuotaFallback)))
 		}
 		if containsQuotaExhausted(msg) {
@@ -182,6 +182,18 @@ func extractCode(v any) (int, string) {
 		return 0, c
 	}
 	return 0, ""
+}
+
+// codeIs 报告业务码是否匹配 want（同时接受数值与字符串形式，如 1308 与 "1308"）。
+// 不同供应商对 error.code 的序列化方式不一，必须等价处理。
+func codeIs(pe parsedError, want string) bool {
+	if pe.codeStr == want {
+		return true
+	}
+	if n, err := strconv.Atoi(want); err == nil && pe.code == n {
+		return true
+	}
+	return false
 }
 
 func containsQuotaExhausted(lowerMsg string) bool {

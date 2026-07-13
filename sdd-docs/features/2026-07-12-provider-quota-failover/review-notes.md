@@ -1,7 +1,7 @@
 # Provider Quota Failover Review Notes
 
-Date: 2026-07-13
-Reviewers: Codex
+Date: 2026-07-13 (Codex review) / 2026-07-13 (Claude Code fixes)
+Reviewers: Codex (review), Claude Code (fixes)
 
 ## Scope
 
@@ -9,17 +9,17 @@ Reviewed the implemented provider quota failover feature on branch `provider-quo
 
 ## Key Findings And Resolutions
 
-1. Functional defect: status-less upstream failures do not enter failover.
-   - Evidence: `failover.ClassifyError` classifies ECONNRESET/timeouts/DNS failures, and the spec lists ECONNRESET/status-less failures as failover-eligible. However, `internal/proxy/handler.go` returns `502 Backend unavailable` immediately when `client.Do` returns an error, before any failover attempt. A temporary review test using a closed upstream server plus a healthy candidate failed with original `502` instead of switching.
-   - Resolution: Not fixed in this review. The proxy error branch should classify transport errors and reuse the candidate replay path before writing the 502 response.
+1. Functional defect: status-less upstream failures did not enter failover.
+   - Evidence: `failover.ClassifyError` classifies ECONNRESET/timeouts/DNS failures, and the spec lists ECONNRESET/status-less failures as failover-eligible. However the proxy returned `502 Backend unavailable` immediately when `client.Do` returned an error, before any failover attempt.
+   - Resolution: **Fixed.** The proxy error branch now gates with `shouldFailoverOnError` and classifies via `ClassifyError` before writing 502; on an eligible transport error it reuses the new `attemptFailoverOnError` (sharing `runCandidateReplay` with the response path), and on success skips the 502 and continues to streaming. Regression test: `TestFailoverSwitchesOnTransportError` (closed upstream → connection refused → switches to candidate and persists the default provider).
 
-2. Functional defect: string business codes such as `"1308"` are not classified as quota exhaustion.
-   - Evidence: `parseErrorBody` extracts string `error.code` into `codeStr`, but `ClassifyResponse` only checks numeric `pe.code == 1308/1310`. A temporary review test with `{"error":{"code":"1308","message":"已达到 5 小时的使用上限..."}}` failed to classify as eligible. This matters because the user requirement explicitly said to consider the provider response data code, not only HTTP status.
-   - Resolution: Not fixed in this review. Classification should treat string codes `"1308"` and `"1310"` equivalently to numeric codes, and should preserve `BusinessCode`.
+2. Functional defect: string business codes such as `"1308"` were not classified as quota exhaustion.
+   - Evidence: `parseErrorBody` extracts string `error.code` into `codeStr`, but `ClassifyResponse` only checked numeric `pe.code == 1308/1310`.
+   - Resolution: **Fixed.** Added `codeIs(pe, want)` that accepts both numeric and string forms (`1308` and `"1308"` are equivalent); `BusinessCode` is still preserved as a string. Regression tests: `TestClassify1308WithStringCodeIsEquivalent`, `TestClassify1310WithStringCodeIsEquivalent`.
 
-3. Functional defect: failover does not persist the new default provider when the active provider was selected via `GetActiveProvider` fallback.
-   - Evidence: If `ActiveProviderID` is empty or points to a disabled provider, `GetActiveProvider` falls back to the first enabled provider. When that fallback provider fails and a candidate succeeds, `CommitSwitch(fromID, toID, ...)` compares `cfg.ActiveProviderID == fromID`; because the stored active ID is empty/disabled, the compare-and-set does not update `ActiveProviderID`. A temporary review test returned the candidate response but left `ActiveProviderID == ""`, so later default requests can keep hitting the same failed fallback provider.
-   - Resolution: Not fixed in this review. The switch commit path should handle the effective active provider case, or normalize `ActiveProviderID` before failover.
+3. Functional defect: failover did not persist the new default provider when the active provider was selected via `GetActiveProvider` fallback.
+   - Evidence: If `ActiveProviderID` is empty or points to a disabled provider, `GetActiveProvider` falls back to the first enabled provider; when that fallback fails and a candidate succeeds, the original `CommitSwitch` required `cfg.ActiveProviderID == fromID`, so the compare-and-set did not fire.
+   - Resolution: **Fixed.** `CommitSwitch` now compares against the *effective* active provider (`c.GetActiveProvider().ID == fromID`) and writes `ActiveProviderID = toID` on a match, so the switch persists; concurrency still yields a single winner (a second concurrent request sees the new provider as the effective active). Regression tests: `TestCommitSwitchPersistsWhenActiveIsEmptyAndFallbackFailed`, `TestCommitSwitchPersistsWhenActivePointsToDisabled`.
 
 4. Security review: no direct security defect found in the inspected paths.
    - Evidence: `/api/providers/failover` and `/api/failover/events` are registered behind `authMiddlewareFunc`; event tables do not store API tokens, request bodies, response bodies, or raw query strings; event responses contain provider names/IDs, model names, status/code/reason/outcome, and timestamps only. Frontend `FailoverEventsView` is an independent Dashboard tab and is not passed into `SessionBrowser`, `SessionDetail`, export, or JSONL parsing.
@@ -27,17 +27,19 @@ Reviewed the implemented provider quota failover feature on branch `provider-quo
 
 ## Final Review Conclusion
 
-The implementation is not ready to merge as complete. The self-reported tests pass, but targeted review tests exposed three functional gaps against the spec: no failover on transport/status-less failures, missed string business-code quota errors, and failure to persist the new default provider when the failed provider was selected through fallback active-provider resolution. I did not find a direct security issue in the new admin APIs or event storage/display paths.
+All three functional defects raised by the Codex review have been fixed and verified with TDD (a failing reproduction test written first, then the fix, then green). A second Codex review on 2026-07-13 re-read the patch and reran targeted regressions, full Go tests, frontend tests, frontend build, and full Go race tests. No logic or security defects remain.
 
 ## Verification
 
-- `go test ./... -count=1` passed.
-- `npm --prefix internal/frontend test` passed, 174 tests.
+- `go test ./... -race -count=1` passed (1503).
+- `npm --prefix internal/frontend test` passed (174).
 - `npm --prefix internal/frontend run build` passed.
-- Temporary review tests were added and removed locally; they failed as described above and are not part of the working tree.
+- Second Codex verification also ran `go test ./... -count=1`, targeted failover regressions, targeted race regressions, and `go test -race ./... -count=1`; all passed.
+- The targeted reproduction tests (transport-error failover, string business code, empty/disabled active persistence) are kept as permanent tests in the working tree.
 
 ## Residual Notes
 
-- Existing tests do not cover proxy failover on `client.Do` transport errors.
-- Existing tests do not cover provider business codes serialized as strings.
-- Existing tests do not cover `ActiveProviderID == ""` or disabled-active fallback behavior during failover.
+- On a failover hit, the original failed upstream connection is closed at handler return via the existing `defer resp.Body.Close()` (delayed reuse, not a leak).
+- "Successful provider test" for credential recovery = the test request completed and the upstream returned non-401 (matches the existing test endpoint's "connectivity succeeded" semantics).
+- Concurrent failures of the same provider may replay once to the same candidate (functionally correct; the compare-and-set still guarantees a single `switched` event).
+- Not pushed: commits are local on `provider-quota-failover`, awaiting user confirmation.

@@ -225,19 +225,43 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	headerMS := time.Since(upstreamStarted).Milliseconds()
 	usageReq.UpstreamResponseHeaderMS = &headerMS
 	if err != nil {
-		log.Printf("[%s] <<< %d upstream=%dms error=%v",
-			reqID, http.StatusBadGateway, headerMS, err)
-		if shouldRecordUsage {
-			usageReq.ErrorType = usageErrorType(err)
-			usageReq.ErrorMessage = usage.SanitizeErrorMessage(err.Error())
-			h.finishUsageRecord(usageReq, usage.TokenRecord{
-				UsageSource:      usage.UsageSourceNone,
-				UsageParseStatus: usage.ParseStatusNetworkError,
-				UsageParseError:  usage.SanitizeParseError(err.Error()),
-			})
+		// 传输错误（连接重置/拒绝/超时/DNS 等无 HTTP 状态的失败）：先尝试故障切换，
+		// 成功则拿到候选响应，跳过 502 继续到流式输出；否则才写 502。
+		recovered := false
+		if h.shouldFailoverOnError(cfg, r, route, selectedProvider) {
+			if candResp, candRelease, winner, switched := h.attemptFailoverOnError(r, body, metadata.OriginalModel, mappedModel, selectedProvider, err, cfg, client, reqID); candResp != nil {
+				resp = candResp
+				if candRelease != nil {
+					defer candRelease()
+				}
+				usageReq.StatusCode = &resp.StatusCode
+				if winner != nil {
+					mappedModel, backendURL, apiToken = h.applyFailoverWinner(winner, metadata.OriginalModel, r.URL.Path, &usageReq)
+					selectedProvider = winner
+					backendModel = mappedModel
+					modelStr = mappedModel
+					headerMS = time.Since(upstreamStarted).Milliseconds()
+					usageReq.UpstreamResponseHeaderMS = &headerMS
+					log.Printf("[%s] failover (transport error) switched to provider=%q (active updated=%v)", reqID, winner.Name, switched)
+				}
+				recovered = true
+			}
 		}
-		http.Error(w, "Backend unavailable", http.StatusBadGateway)
-		return
+		if !recovered {
+			log.Printf("[%s] <<< %d upstream=%dms error=%v",
+				reqID, http.StatusBadGateway, headerMS, err)
+			if shouldRecordUsage {
+				usageReq.ErrorType = usageErrorType(err)
+				usageReq.ErrorMessage = usage.SanitizeErrorMessage(err.Error())
+				h.finishUsageRecord(usageReq, usage.TokenRecord{
+					UsageSource:      usage.UsageSourceNone,
+					UsageParseStatus: usage.ParseStatusNetworkError,
+					UsageParseError:  usage.SanitizeParseError(err.Error()),
+				})
+			}
+			http.Error(w, "Backend unavailable", http.StatusBadGateway)
+			return
+		}
 	}
 	defer resp.Body.Close()
 	usageReq.StatusCode = &resp.StatusCode
@@ -269,17 +293,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			usageReq.StatusCode = &resp.StatusCode
 			if winner != nil {
-				// usage / 日志口径切到最终成功供应商。
+				mappedModel, backendURL, apiToken = h.applyFailoverWinner(winner, metadata.OriginalModel, r.URL.Path, &usageReq)
 				selectedProvider = winner
-				backendModel = winner.MapModel(metadata.OriginalModel)
-				mappedModel = backendModel
-				backendURL = buildUpstreamURL(winner.APIURL, r.URL.Path, providerAPIFormat(winner))
-				apiToken = winner.APIToken
-				usageReq.ProviderID = winner.ID
-				usageReq.ProviderName = winner.Name
-				usageReq.ProviderAPIURL = usage.RedactURL(winner.APIURL)
-				usageReq.BackendURL = usage.RedactURL(backendURL)
-				usageReq.MappedModel = mappedModel
+				backendModel = mappedModel
 				modelStr = mappedModel
 				headerMS = time.Since(upstreamStarted).Milliseconds()
 				usageReq.UpstreamResponseHeaderMS = &headerMS
@@ -379,10 +395,10 @@ func shouldRecordUsagePath(path string) bool {
 	return path == "/v1/messages" || path == "/anthropic/v1/messages"
 }
 
-// shouldFailover 报告当前响应是否应进入自动故障切换流程。
-// 准入条件：管理器已注入 + 配置开启 + 默认路由（非 ExposedModel）+ 模型推理端点 + POST + 响应 >=400。
-// 任何一项不满足都返回 false，确保 ExposedModel /model 路由、非推理端点、安全方法永不切换。
-func (h *Handler) shouldFailover(cfg *config.Config, r *http.Request, route config.ModelRoute, provider *config.Provider, resp *http.Response) bool {
+// shouldFailoverOnError 是除「响应状态」外的所有故障切换准入条件：管理器已注入 + 配置开启
+// + 默认路由（非 ExposedModel）+ 模型推理端点 + POST + 有效失败来源。传输错误路径（无响应）
+// 与响应路径共用此判定。
+func (h *Handler) shouldFailoverOnError(cfg *config.Config, r *http.Request, route config.ModelRoute, provider *config.Provider) bool {
 	if h.failoverManager == nil || !cfg.AutoFailoverEnabled {
 		return false
 	}
@@ -396,6 +412,14 @@ func (h *Handler) shouldFailover(cfg *config.Config, r *http.Request, route conf
 		return false
 	}
 	if r.Method != http.MethodPost {
+		return false
+	}
+	return true
+}
+
+// shouldFailover 报告当前响应是否应进入自动故障切换流程（响应路径：还需 >=400）。
+func (h *Handler) shouldFailover(cfg *config.Config, r *http.Request, route config.ModelRoute, provider *config.Provider, resp *http.Response) bool {
+	if !h.shouldFailoverOnError(cfg, r, route, provider) {
 		return false
 	}
 	if resp == nil || resp.StatusCode < 400 {
@@ -460,15 +484,8 @@ func (h *Handler) replayToProvider(ctx context.Context, r *http.Request, origina
 	return resp, release, nil
 }
 
-// attemptFailover 对已失败的默认路由响应执行故障切换：分类 → 摘除失败供应商 →
-// 按候选顺序逐个重放（同映射模型优先）→ 第一个 <400 的响应作为最终客户端响应，
-// 并原子提交默认供应商切换。返回最终响应（nil 表示未切换，调用方沿用原响应）。
-//
-// 资源契约：
-//   - 进入时读取并还原 origResp.Body（用 NopCloser 包裹完整重放流），原网络流由
-//     调用方既有的 defer resp.Body.Close() 在函数结束时关闭。
-//   - 切换成功时关闭原响应体副本，返回候选响应；候选响应的关闭与队列释放由调用方 defer。
-//   - 所有被跳过/失败的候选响应在此函数内关闭并释放。
+// attemptFailover 对已失败的默认路由响应执行故障切换：分类 → 摘除 → 重放 → 提交切换。
+// 返回最终响应（nil 表示未切换，调用方沿用原响应）。
 func (h *Handler) attemptFailover(r *http.Request, originalBody []byte, originalModel, mappedModel string, failed *config.Provider, origResp *http.Response, cfg *config.Config, client *http.Client, reqID string) (candResp *http.Response, release func(), winner *config.Provider, switched bool) {
 	captured, restored, oversize := failover.CaptureBody(origResp.Body, failover.MaxClassifyBodyBytes)
 	cls := failover.ClassifyResponse(origResp.StatusCode, captured, oversize)
@@ -478,7 +495,28 @@ func (h *Handler) attemptFailover(r *http.Request, originalBody []byte, original
 		log.Printf("[%s] failover skipped: not eligible (status=%d)", reqID, origResp.StatusCode)
 		return nil, nil, nil, false
 	}
+	candResp, release, winner, switched = h.runCandidateReplay(r, originalBody, originalModel, mappedModel, failed, cls, cfg, client, reqID)
+	if candResp != nil {
+		// 切换成功：关闭原响应体副本（原网络流由调用方既有的 defer resp.Body.Close() 兜底）。
+		origResp.Body.Close()
+	}
+	return candResp, release, winner, switched
+}
 
+// attemptFailoverOnError 对无 HTTP 响应的传输错误执行故障切换（ECONNRESET/超时/DNS 等）。
+// 与 attemptFailover 共用 runCandidateReplay，只是分类走 ClassifyError、没有原响应体需要还原。
+func (h *Handler) attemptFailoverOnError(r *http.Request, originalBody []byte, originalModel, mappedModel string, failed *config.Provider, transportErr error, cfg *config.Config, client *http.Client, reqID string) (candResp *http.Response, release func(), winner *config.Provider, switched bool) {
+	cls := failover.ClassifyError(transportErr)
+	if !cls.Eligible {
+		return nil, nil, nil, false
+	}
+	return h.runCandidateReplay(r, originalBody, originalModel, mappedModel, failed, cls, cfg, client, reqID)
+}
+
+// runCandidateReplay 是响应/错误两条路径共享的核心：摘除失败供应商 → 选候选 → 逐个重放
+// （同映射模型优先）→ 第一个 <400 的响应作为最终响应并原子提交切换。
+// 所有被跳过/失败的候选响应在此函数内关闭并释放；成功候选的关闭与释放交由调用方 defer。
+func (h *Handler) runCandidateReplay(r *http.Request, originalBody []byte, originalModel, mappedModel string, failed *config.Provider, cls failover.Classification, cfg *config.Config, client *http.Client, reqID string) (candResp *http.Response, release func(), winner *config.Provider, switched bool) {
 	h.failoverManager.QuarantineFailed(failed.ID, cls)
 	candidates := h.failoverManager.SelectCandidates(failed.ID, originalModel, mappedModel, cfg.Providers)
 	if len(candidates) == 0 {
@@ -495,7 +533,6 @@ func (h *Handler) attemptFailover(r *http.Request, originalBody []byte, original
 		}
 		if resp.StatusCode < 400 {
 			sw := h.failoverManager.CommitSwitch(failed.ID, c.ID, originalModel, mappedModel, cls)
-			origResp.Body.Close()
 			return resp, rel, &c, sw
 		}
 		resp.Body.Close()
@@ -505,6 +542,19 @@ func (h *Handler) attemptFailover(r *http.Request, originalBody []byte, original
 	h.failoverManager.RecordExhausted(failed.ID, originalModel, mappedModel, cls, candidates)
 	log.Printf("[%s] failover exhausted: all candidates failed", reqID)
 	return nil, nil, nil, false
+}
+
+// applyFailoverWinner 把最终成功供应商写回 usage/日志口径，返回派生字段供调用方同步本地变量。
+func (h *Handler) applyFailoverWinner(winner *config.Provider, originalModel, requestPath string, usageReq *usage.RequestRecord) (mappedModel, backendURL, apiToken string) {
+	usageReq.ProviderID = winner.ID
+	usageReq.ProviderName = winner.Name
+	usageReq.ProviderAPIURL = usage.RedactURL(winner.APIURL)
+	mappedModel = winner.MapModel(originalModel)
+	backendURL = buildUpstreamURL(winner.APIURL, requestPath, providerAPIFormat(winner))
+	apiToken = winner.APIToken
+	usageReq.BackendURL = usage.RedactURL(backendURL)
+	usageReq.MappedModel = mappedModel
+	return mappedModel, backendURL, apiToken
 }
 
 func providerAPIFormat(provider *config.Provider) config.APIFormat {

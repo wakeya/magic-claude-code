@@ -105,16 +105,18 @@ func (m *Manager) CommitSwitch(fromID, toID, originalModel, mappedModel string, 
 	var switched bool
 	var fromName, toName string
 	_, _ = m.configStore.Update(func(c *config.Config) error {
-		if c.ActiveProviderID != fromID {
-			return nil // 已被另一个并发请求切换 → 不是赢家
+		// 与「有效默认供应商」比较，而非存储的 ActiveProviderID 字符串：
+		// 当 ActiveProviderID 为空或指向 disabled provider 时，GetActiveProvider 会回退到
+		// 第一个 enabled provider；该回退来源失败也必须能把切换持久化（写入 ActiveProviderID）。
+		effective := c.GetActiveProvider()
+		if effective == nil || effective.ID != fromID {
+			return nil // 已被另一个并发请求切换，或失败来源已不是当前默认 → 不是赢家
 		}
 		to := c.GetProviderByID(toID)
 		if to == nil || !to.Enabled {
 			return nil
 		}
-		if from := c.GetProviderByID(fromID); from != nil {
-			fromName = from.Name
-		}
+		fromName = effective.Name
 		toName = to.Name
 		c.ActiveProviderID = toID
 		switched = true

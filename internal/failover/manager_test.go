@@ -221,6 +221,58 @@ func TestCommitSwitchRecordsBusinessCode(t *testing.T) {
 	}
 }
 
+func TestCommitSwitchPersistsWhenActiveIsEmptyAndFallbackFailed(t *testing.T) {
+	// ActiveProviderID 为空时 GetActiveProvider 回退到第一个 enabled provider（b）。
+	// b 失败、候选 c 成功后，CommitSwitch 必须把默认供应商持久化为 c，
+	// 否则后续默认请求会继续打到失败的 b。
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{
+		{ID: "b", Name: "Bravo", APIURL: "https://b", APIFormat: config.APIFormatAnthropic, Enabled: true},
+		{ID: "c", Name: "Charlie", APIURL: "https://c", APIFormat: config.APIFormatAnthropic, Enabled: true},
+	}
+	cfg.ActiveProviderID = "" // 空 → GetActiveProvider 回退到 b
+	store := newTestStore(t)
+	cfgStore := config.NewMockStore(cfg)
+	m := NewManager(store, cfgStore)
+
+	// 失败来源是 effective active = b。
+	if eff := cfg.GetActiveProvider(); eff == nil || eff.ID != "b" {
+		t.Fatalf("setup: effective active should be b, got %+v", eff)
+	}
+	cls := Classification{Eligible: true, Kind: StateKindQuota, Reason: "five_hour_quota_exhausted", UpstreamCode: 429}
+	if !m.CommitSwitch("b", "c", "claude-opus-4-8", "glm-5.2", cls) {
+		t.Fatal("CommitSwitch must switch when effective active equals fromID")
+	}
+	loaded, _ := cfgStore.Load()
+	if loaded.ActiveProviderID != "c" {
+		t.Fatalf("ActiveProviderID = %q, want c (must persist the switch)", loaded.ActiveProviderID)
+	}
+}
+
+func TestCommitSwitchPersistsWhenActivePointsToDisabled(t *testing.T) {
+	// ActiveProviderID 指向 disabled provider（a）时，effective active 回退到第一个 enabled（b）。
+	// b 失败后切到 c 必须持久化。
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{
+		{ID: "a", Name: "Alpha", APIURL: "https://a", APIFormat: config.APIFormatAnthropic, Enabled: false},
+		{ID: "b", Name: "Bravo", APIURL: "https://b", APIFormat: config.APIFormatAnthropic, Enabled: true},
+		{ID: "c", Name: "Charlie", APIURL: "https://c", APIFormat: config.APIFormatAnthropic, Enabled: true},
+	}
+	cfg.ActiveProviderID = "a" // disabled → effective active 回退到 b
+	store := newTestStore(t)
+	cfgStore := config.NewMockStore(cfg)
+	m := NewManager(store, cfgStore)
+
+	cls := Classification{Eligible: true, Kind: StateKindAvailability, Reason: "bad_gateway", UpstreamCode: 502}
+	if !m.CommitSwitch("b", "c", "claude-opus-4-8", "glm-5.2", cls) {
+		t.Fatal("CommitSwitch must switch when effective active equals fromID (disabled stored active)")
+	}
+	loaded, _ := cfgStore.Load()
+	if loaded.ActiveProviderID != "c" {
+		t.Fatalf("ActiveProviderID = %q, want c", loaded.ActiveProviderID)
+	}
+}
+
 func TestOnProviderDeletedClearsState(t *testing.T) {
 	m, _ := newTestManager(t, providersForTest(), "a")
 	m.QuarantineFailed("b", Classification{Eligible: true, Kind: StateKindAvailability, Reason: "bad_gateway", UpstreamCode: 502, DisabledUntil: time.Now().Add(time.Minute)})
