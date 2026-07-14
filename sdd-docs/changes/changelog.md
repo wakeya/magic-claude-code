@@ -7,6 +7,18 @@
 
 ---
 
+## v0.16.1 (2026-07-14)
+
+### Fixed
+- **Linux bootstrap 自动配置 SSL_CERT_FILE 与完整证书链**：修复透明模式下 Claude Code / Bun 的部分后台 TLS 请求不稳定读取 `NODE_EXTRA_CA_CERTS`，导致长对话后辅助请求对 mcc 证书链报 `unknown_ca` / `bad record MAC` 的问题。Linux 二进制启动时现在会确保当前 mcc CA 已安装并验证进完整系统 CA bundle，再持久化 `SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt`；`server.crt` 同时包含叶子证书和 CA 证书，避免只发送叶子证书造成链不完整。Docker 场景保持不写宿主 profile，并通过文档 / helper 明确宿主机配置边界。
+- **自动切换事件页正确显示供应商名称与 ID**：修复 `GET /api/failover/events` 返回的部分历史 / 恢复 / 耗尽事件缺少供应商展示名，导致管理面板“切换事件”页只能显示内部 ID 或空值的问题。接口现在会基于当前仍存在的 Provider 配置回填 `FromProviderName` / `ToProviderName`，前端事件表新增“供应商 ID”列，供应商列优先展示名称、ID 列独立展示源 / 目标 Provider ID，便于区分同名供应商并追踪自动切换路径。
+
+### Docs
+- Linux SSL_CERT_FILE 自动引导与证书链修复 feature spec / 审查归档（中英双语）：`sdd-docs/features/2026-07-13-linux-ssl-cert-file-bootstrap/`
+- 自动切换事件供应商显示修复审查归档（中英双语）：`sdd-docs/features/2026-07-13-failover-event-provider-display/`
+
+---
+
 ## v0.16.0 (2026-07-13)
 
 ### Added
