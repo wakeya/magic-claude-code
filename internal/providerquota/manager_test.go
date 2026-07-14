@@ -694,6 +694,11 @@ func TestSchedulerAppliesJitter(t *testing.T) {
 
 	db := setupTestDB(t)
 	store := NewSnapshotStore(db)
+	// Insert provider rows so snapshot SaveUpsert satisfies the provider FK
+	// (without these, a/b/c snapshots never persist — the test passed by luck).
+	insertTestProvider(t, db, "a")
+	insertTestProvider(t, db, "b")
+	insertTestProvider(t, db, "c")
 
 	script := `({
 		request: { url: "{{baseUrl}}/balance", method: "GET" },
@@ -717,6 +722,9 @@ func TestSchedulerAppliesJitter(t *testing.T) {
 	}
 
 	mgr := NewManager(store, configGet, 4)
+	// Ensure scanAndQuery's async goroutines finish before setupTestDB's
+	// cleanup closes the DB. t.Cleanup runs LIFO, so this runs before db.Close.
+	t.Cleanup(mgr.waitPendingScans)
 	// Override jitter: a=0, b=80ms, c=160ms — distinct, increasing.
 	mgr.jitterFn = func(id string) time.Duration {
 		switch id {
@@ -811,6 +819,9 @@ func TestSchedulerPeriodicScanNoJitter(t *testing.T) {
 	}
 
 	mgr := NewManager(store, configGet, 4)
+	// Ensure scanAndQuery's async goroutines finish before setupTestDB's
+	// cleanup closes the DB. t.Cleanup runs LIFO, so this runs before db.Close.
+	t.Cleanup(mgr.waitPendingScans)
 	// Large jitter that would clearly delay queries if applied.
 	mgr.jitterFn = func(id string) time.Duration { return 5 * time.Second }
 

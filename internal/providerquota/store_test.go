@@ -1,9 +1,14 @@
 package providerquota
 
 import (
+	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,11 +19,17 @@ func setupTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
-	dsn := "file:" + dbPath + "?_pragma=foreign_keys(1)"
+	// DSN mirrors production (internal/config/sqlite_store.go) so the test DB
+	// runs under WAL + busy_timeout. Without these, concurrent read/write
+	// (e.g. scanAndQuery's sequential Get vs. an async SaveUpsert) hits
+	// database-wide rollback-journal locks and returns SQLITE_BUSY immediately.
+	dsn := "file:" + dbPath + "?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
+	db.SetMaxOpenConns(8)
+	db.SetMaxIdleConns(8)
 	t.Cleanup(func() { db.Close() })
 
 	// Create required tables.
@@ -215,4 +226,85 @@ func TestSnapshotStoreGetNonExistent(t *testing.T) {
 func init() {
 	// Silence log output in tests.
 	_ = os.DevNull
+}
+
+// TestSnapshotStoreConcurrentReadWriteNoBusy verifies that the WAL + busy_timeout
+// pragma configuration (mirrored from production) prevents SQLITE_BUSY under
+// concurrent readers and writers. This is a regression guard for the scheduler
+// flaky where scanAndQuery's sequential Get raced an async SaveUpsert under the
+// default rollback-journal mode and returned "database is locked" immediately.
+//
+// If someone reverts setupTestDB's DSN to drop WAL/busy_timeout, this test
+// becomes flaky under rollback mode — which is the intended signal.
+func TestSnapshotStoreConcurrentReadWriteNoBusy(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewSnapshotStore(db)
+
+	// test-p is inserted by setupTestDB; add more provider rows so writers can
+	// target distinct IDs while satisfying the provider FK.
+	providerIDs := []string{"test-p"}
+	for i := 0; i < 4; i++ {
+		insertTestProvider(t, db, fmt.Sprintf("p%d", i))
+		providerIDs = append(providerIDs, fmt.Sprintf("p%d", i))
+	}
+
+	var wg sync.WaitGroup
+	var busy atomic.Int64
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	isBusy := func(err error) bool {
+		if err == nil {
+			return false
+		}
+		msg := err.Error()
+		return strings.Contains(msg, "locked") || strings.Contains(msg, "busy")
+	}
+
+	// Writers: SaveUpsert on each provider in a tight loop.
+	for i := range providerIDs {
+		id := providerIDs[i]
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				r := &ProviderQuotaResult{
+					ProviderID:   id,
+					Success:      true,
+					Balances:     []BalanceItem{{Remaining: floatPtr(float64(j)), Unit: "USD"}},
+					QueriedAt:    time.Now(),
+					DurationMS:   int64(j),
+				}
+				if isBusy(store.SaveUpsert(id, r)) {
+					busy.Add(1)
+				}
+				if ctx.Err() != nil {
+					return
+				}
+			}
+		}()
+	}
+
+	// Readers: GetAll in a tight loop, contending with writers for the DB.
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				if _, err := store.GetAll(); err != nil {
+					if isBusy(err) {
+						busy.Add(1)
+					}
+				}
+				if ctx.Err() != nil {
+					return
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+	if got := busy.Load(); got != 0 {
+		t.Fatalf("encountered %d SQLITE_BUSY errors under WAL+busy_timeout (expected 0)", got)
+	}
 }
