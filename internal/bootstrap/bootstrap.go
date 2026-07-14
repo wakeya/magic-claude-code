@@ -28,7 +28,9 @@ var (
 	ErrEnvironmentRefresh = errors.New("Windows environment refresh failed")
 	// ErrUserCustomValue indicates the user has a hand-written NODE_EXTRA_CA_CERTS
 	// entry outside mcc-managed blocks. mcc will not overwrite it.
-	ErrUserCustomValue = errors.New("user custom NODE_EXTRA_CA_CERTS already exists")
+	ErrUserCustomValue       = errors.New("user custom NODE_EXTRA_CA_CERTS already exists")
+	ErrUnsupportedPlatform   = errors.New("unsupported platform")
+	ErrInvalidCertificatePEM = errors.New("invalid certificate PEM")
 )
 
 // Mode represents a connection mode.
@@ -64,6 +66,7 @@ type Result struct {
 	TrustResult       StepResult
 	EnvResult         StepResult
 	NodeCAResult      StepResult // NODE_EXTRA_CA_CERTS 持久化结果
+	SSLCertFileResult StepResult // Linux SSL_CERT_FILE 持久化结果
 	PreferredMode     Mode
 	SelectedMode      Mode
 	Rationale         string
@@ -97,6 +100,8 @@ type EnvAdapter interface {
 	// PersistNodeCACert 把指向 mcc CA 文件的 NODE_EXTRA_CA_CERTS 持久化到
 	// 当前用户的 shell/桌面会话环境，使未来启动的 Node.js 客户端能信任 mcc。
 	PersistNodeCACert(caCertPath string) error
+	LookupSSLCertFile() (value string, exists bool, err error)
+	PersistSSLCertFile(bundlePath string) error
 }
 
 // Executor runs the bootstrap sequence.
@@ -213,6 +218,7 @@ func (e *Executor) Run() Result {
 			// Docker 内跳过：容器内 profile 改动对宿主无意义（spec 约束 10）
 			if result.TrustResult.Success && !caps.IsDocker {
 				result.NodeCAResult = e.tryPersistNodeCA()
+				result.SSLCertFileResult = e.tryPersistSSLCertFile()
 			}
 		}
 		result.SelectedMode, result.Rationale = resolveModeLocalized(result.PreferredMode, result.Caps, result.HostsResult, result.TrustResult, e.locale)
@@ -244,6 +250,22 @@ func (e *Executor) tryHosts() StepResult {
 }
 
 func (e *Executor) tryTrustCA() StepResult {
+	if isDockerEnvFn() {
+		err := e.trust.InstallCA(e.caCertPath)
+		if err == nil {
+			writeCATrustMarker(e.dataDir, e.caCertPath)
+		}
+		return StepResult{Attempted: true, Success: err == nil, Err: err}
+	}
+	if runtime.GOOS == "linux" {
+		if hasCATrustMarker(e.dataDir, e.caCertPath) {
+			if _, ok := linuxSSLCertFileContainingCA(e.caCertPath); ok {
+				return StepResult{Success: true}
+			}
+		}
+		_, result := e.ensureLinuxSystemTrustBundleContainsMCCCA("")
+		return result
+	}
 	// 先检测标记文件（只需读权限）：首次安装成功后写入的 .ca-trust-installed，
 	// 含 CA 证书 fingerprint。fingerprint 不匹配（证书被重新生成）则视为未安装。
 	// 后续非特权启动据此跳过安装，避免因无写权限而误判降级。
@@ -255,6 +277,42 @@ func (e *Executor) tryTrustCA() StepResult {
 		writeCATrustMarker(e.dataDir, e.caCertPath)
 	}
 	return StepResult{Attempted: true, Success: err == nil, Err: err}
+}
+
+func (e *Executor) ensureLinuxSystemTrustBundleContainsMCCCA(bundlePath string) (string, StepResult) {
+	if bundlePath != "" {
+		ok, err := linuxSystemBundleContainsCA(bundlePath, e.caCertPath)
+		if err == nil && ok {
+			writeCATrustMarker(e.dataDir, e.caCertPath)
+			return bundlePath, StepResult{Success: true}
+		}
+	}
+	if verified, ok := linuxSSLCertFileContainingCA(e.caCertPath); ok {
+		writeCATrustMarker(e.dataDir, e.caCertPath)
+		return verified, StepResult{Success: true}
+	}
+	installErr := e.trust.InstallCA(e.caCertPath)
+	if installErr != nil {
+		return "", StepResult{Attempted: true, Success: false, Err: installErr}
+	}
+	if verified, ok := linuxSSLCertFileContainingCA(e.caCertPath); ok {
+		writeCATrustMarker(e.dataDir, e.caCertPath)
+		return verified, StepResult{Attempted: true, Success: true}
+	}
+	fallback := bundlePath
+	if fallback == "" {
+		if p, ok := defaultLinuxSSLCertFile(); ok {
+			fallback = p
+		}
+	}
+	if fallback == "" {
+		return "", StepResult{Attempted: true, Success: false, Err: fmt.Errorf("no supported Linux CA bundle found")}
+	}
+	return "", StepResult{
+		Attempted: true,
+		Success:   false,
+		Err:       fmt.Errorf("bundle does not contain MCC CA fingerprint: bundle=%s ca=%s", fallback, e.caCertPath),
+	}
 }
 
 func (e *Executor) tryPersistEnv(rootDir string) StepResult {
@@ -317,7 +375,44 @@ func (e *Executor) tryPersistNodeCA() StepResult {
 	return StepResult{Attempted: true, Success: false, Err: err}
 }
 
+func (e *Executor) tryPersistSSLCertFile() StepResult {
+	if runtime.GOOS != "linux" || isDockerEnvFn() {
+		return StepResult{}
+	}
+	bundle, trustResult := e.ensureLinuxSystemTrustBundleContainsMCCCA("")
+	if !trustResult.Success {
+		return trustResult
+	}
+	markerMatches := hasSSLCertFileMarker(e.dataDir, bundle, e.caCertPath)
+	if isPrivilegedRun() {
+		if markerMatches {
+			return StepResult{Success: true}
+		}
+		return StepResult{Attempted: true, Success: false, Err: ErrPrivilegedRun}
+	}
+	existing, exists, err := e.env.LookupSSLCertFile()
+	if err != nil {
+		return StepResult{Attempted: true, Success: false, Err: fmt.Errorf("lookup persisted SSL_CERT_FILE: %w", err)}
+	}
+	if exists && existing != "" && !sslCertFilePathsEqual(existing, bundle) {
+		previous, managed := previousManagedSSLCertFilePath(e.dataDir)
+		if !managed || !sslCertFilePathsEqual(existing, previous) {
+			return StepResult{Attempted: true, Success: false, Err: ErrUserCustomValue}
+		}
+	}
+	err = e.env.PersistSSLCertFile(bundle)
+	if err == nil {
+		writeSSLCertFileMarker(e.dataDir, bundle, e.caCertPath)
+		return StepResult{Attempted: true, Success: true}
+	}
+	if errors.Is(err, ErrPartialSuccess) {
+		return StepResult{Attempted: true, Success: false, Partial: true, Err: err}
+	}
+	return StepResult{Attempted: true, Success: false, Err: err}
+}
+
 const nodeCAMarkerName = ".node-ca-persisted"
+const sslCertFileMarkerName = ".ssl-cert-file-persisted"
 
 // nodeCAMarker 是 .node-ca-persisted 的 JSON 格式。除指纹外还记录证书路径和用户标识
 // (HOME/UID)，避免"证书内容没变但路径/用户变了"时错误跳过重新持久化（F-3/F-4）。
@@ -326,6 +421,13 @@ type nodeCAMarker struct {
 	CertPath    string `json:"cert_path"`
 	Home        string `json:"home"`
 	UID         int    `json:"uid,omitempty"` // unix 普通用户；root/windows 不写
+}
+
+type sslCertFileMarker struct {
+	Fingerprint string `json:"fp"`
+	BundlePath  string `json:"bundle_path"`
+	Home        string `json:"home"`
+	UID         int    `json:"uid,omitempty"`
 }
 
 // hasNodeCAMarker reports whether the NodeCA marker matches the current cert AND
@@ -462,6 +564,93 @@ func writeNodeCAMarker(dataDir, caCertPath string) {
 	_ = os.WriteFile(markerPath, data, 0644)
 }
 
+func hasSSLCertFileMarker(dataDir, bundlePath, caCertPath string) bool {
+	if dataDir == "" {
+		return false
+	}
+	markerPath := filepath.Join(dataDir, sslCertFileMarkerName)
+	if err := isSafeForWrite(markerPath); err != nil {
+		return false
+	}
+	raw, err := os.ReadFile(markerPath)
+	if err != nil {
+		return false
+	}
+	var m sslCertFileMarker
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return false
+	}
+	if m.Fingerprint == "" || m.BundlePath == "" || !sslCertFileMarkerUserMatches(m) {
+		return false
+	}
+	current, err := caFingerprint(caCertPath)
+	if err != nil || m.Fingerprint != current {
+		return false
+	}
+	return sslCertFilePathsEqual(m.BundlePath, bundlePath)
+}
+
+func previousManagedSSLCertFilePath(dataDir string) (string, bool) {
+	if dataDir == "" {
+		return "", false
+	}
+	markerPath := filepath.Join(dataDir, sslCertFileMarkerName)
+	if err := isSafeForWrite(markerPath); err != nil {
+		return "", false
+	}
+	raw, err := os.ReadFile(markerPath)
+	if err != nil {
+		return "", false
+	}
+	var m sslCertFileMarker
+	if json.Unmarshal(raw, &m) != nil || m.BundlePath == "" || !sslCertFileMarkerUserMatches(m) {
+		return "", false
+	}
+	return m.BundlePath, true
+}
+
+func writeSSLCertFileMarker(dataDir, bundlePath, caCertPath string) {
+	if dataDir == "" {
+		return
+	}
+	fp, err := caFingerprint(caCertPath)
+	if err != nil {
+		return
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return
+	}
+	m := sslCertFileMarker{
+		Fingerprint: fp,
+		BundlePath:  bundlePath,
+		Home:        home,
+	}
+	if uid := os.Getuid(); uid > 0 {
+		m.UID = uid
+	}
+	data, err := json.Marshal(m)
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		return
+	}
+	markerPath := filepath.Join(dataDir, sslCertFileMarkerName)
+	if err := isSafeForWrite(markerPath); err != nil {
+		return
+	}
+	_ = os.WriteFile(markerPath, data, 0644)
+}
+
+func sslCertFileMarkerUserMatches(m sslCertFileMarker) bool {
+	return nodeCAMarkerUserMatches(nodeCAMarker{Home: m.Home, UID: m.UID, Fingerprint: m.Fingerprint, CertPath: m.BundlePath})
+}
+
+func sslCertFilePathsEqual(left, right string) bool {
+	return nodeCAPathsEqual(left, right)
+}
+
 func (e *Executor) logDockerBoundary(result *Result) {
 	if e.locale == "zh" {
 		log.Println("[Bootstrap] 运行在 Docker 容器中，无法修改宿主机 hosts 或 CA 信任库。")
@@ -483,7 +672,11 @@ func (e *Executor) LogResult(r Result) {
 	}
 	saveState(statePath, r)
 
-	if IsTransparentReady(r) && !(r.NodeCAResult.Attempted && (!r.NodeCAResult.Success || r.NodeCAResult.Partial)) {
+	if IsTransparentReady(r) &&
+		!(r.NodeCAResult.Attempted && (!r.NodeCAResult.Success || r.NodeCAResult.Partial)) &&
+		!(r.SSLCertFileResult.Attempted && (!r.SSLCertFileResult.Success || r.SSLCertFileResult.Partial)) &&
+		!r.NodeCAResult.Attempted &&
+		!r.SSLCertFileResult.Attempted {
 		if e.locale == "zh" {
 			log.Println("[Bootstrap] 透明模式配置完成：hosts 已更新，CA 已安装。")
 		} else {
@@ -503,6 +696,7 @@ func (e *Executor) LogResult(r Result) {
 	printStep(e.locale, "CA", r.TrustResult)
 	printStep(e.locale, "ENV", r.EnvResult)
 	printStep(e.locale, "NODE_CA", r.NodeCAResult)
+	printStep(e.locale, "SSL_CERT_FILE", r.SSLCertFileResult)
 
 	fmt.Println()
 	instr := generateInstructions(r, e.locale)
@@ -527,6 +721,13 @@ func printModeSummary(r Result, locale string) {
 				log.Printf("[Bootstrap] ⚠ NODE_EXTRA_CA_CERTS 未完全就绪，详见上次启动输出（删除 .bootstrap-state 可重新查看）")
 			} else {
 				log.Printf("[Bootstrap] ⚠ NODE_EXTRA_CA_CERTS not fully ready; see previous launch output (delete .bootstrap-state to show again)")
+			}
+		}
+		if r.SSLCertFileResult.Attempted && (!r.SSLCertFileResult.Success || r.SSLCertFileResult.Partial) {
+			if locale == "zh" {
+				log.Printf("[Bootstrap] ⚠ SSL_CERT_FILE 未完全就绪，详见上次启动输出（删除 .bootstrap-state 可重新查看）")
+			} else {
+				log.Printf("[Bootstrap] ⚠ SSL_CERT_FILE not fully ready; see previous launch output (delete .bootstrap-state to show again)")
 			}
 		}
 		return

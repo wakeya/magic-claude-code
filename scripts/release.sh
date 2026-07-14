@@ -108,11 +108,21 @@ build_target() {
     -o "${pkg_dir}/${BINARY_NAME}${exe_suffix}" ./cmd/server
 
   cp README.md "$pkg_dir/README.md"
-  # 附带宿主机配置脚本：bootstrap 自动配置失败时（如系统缺 ca-certificates），
+  cp README.en.md "$pkg_dir/README.en.md"
+  cp scripts/SCRIPTS.md "$pkg_dir/SCRIPTS.md"
+  cp scripts/SCRIPTS.en.md "$pkg_dir/SCRIPTS.en.md"
+  # 附带对应平台的宿主机配置脚本：bootstrap 自动配置失败时，
   # 用户可手动运行脚本完成 hosts + CA 配置。脚本含国内镜像 fallback。
-  cp scripts/setup-host.sh "$pkg_dir/setup-host.sh"
-  cp scripts/setup-host.ps1 "$pkg_dir/setup-host.ps1"
-  chmod +x "$pkg_dir/setup-host.sh"
+  if [ "$goos" = "windows" ]; then
+    cp scripts/setup-host.ps1 "$pkg_dir/setup-host.ps1"
+    cp scripts/start-mcc.ps1 "$pkg_dir/start-mcc.ps1"
+    cp scripts/stop-mcc.ps1 "$pkg_dir/stop-mcc.ps1"
+    cp scripts/register-mcc-task.ps1 "$pkg_dir/register-mcc-task.ps1"
+  else
+    cp scripts/setup-host.sh "$pkg_dir/setup-host.sh"
+    cp scripts/docker-host-helper.sh "$pkg_dir/docker-host-helper.sh"
+    chmod +x "$pkg_dir/setup-host.sh" "$pkg_dir/docker-host-helper.sh"
+  fi
 
   if [ "$format" = "zip" ]; then
     (cd "$BUILD_DIR" && zip -qr "${pkg}.zip" "$pkg")

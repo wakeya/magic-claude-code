@@ -150,6 +150,7 @@ Local page / proxy entry / reference sources / stack / last updated / progress
 | NPM Audit Fix | `2026-07-10-npm-audit-fix/spec.md` | `2026-07-10-npm-audit-fix/spec_ZH.md` |
 | Updater Download URL Redaction | `2026-07-10-updater-url-redaction/spec.md` | `2026-07-10-updater-url-redaction/spec_ZH.md` |
 | TLS Plaintext Alert Diagnostics | `2026-07-11-tls-plaintext-alert-diagnostics/spec.md` | `2026-07-11-tls-plaintext-alert-diagnostics/spec_ZH.md` |
+| Linux SSL_CERT_FILE Bootstrap | `2026-07-13-linux-ssl-cert-file-bootstrap/spec.md` | `2026-07-13-linux-ssl-cert-file-bootstrap/spec_ZH.md` |
 
 ## 状态生命周期
 

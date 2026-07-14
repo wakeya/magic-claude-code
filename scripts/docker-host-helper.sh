@@ -19,6 +19,22 @@
 
 DATA_DIR="${MCC_DATA_DIR:-/app/data}"
 
+sha256_file() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print tolower($1)}'
+        return
+    fi
+    if command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{print tolower($1)}'
+        return
+    fi
+    return 1
+}
+
+marker_fingerprint() {
+    sed -n 's/.*"fingerprint"[[:space:]]*:[[:space:]]*"\([A-Fa-f0-9]*\)".*/\1/p' "$1" | head -1 | tr 'A-F' 'a-f'
+}
+
 case "$1" in
     hosts)
         if [ -f "$DATA_DIR/.hosts-configured" ]; then
@@ -28,8 +44,24 @@ case "$1" in
         exit 1
         ;;
     trust)
-        if [ -f "$DATA_DIR/.ca-trust-installed" ]; then
-            exit 0
+        marker="$DATA_DIR/.ca-trust-installed"
+        cert="$3"
+        if [ -f "$marker" ]; then
+            want="$(marker_fingerprint "$marker")"
+            if [ -z "$want" ]; then
+                echo "[helper] CA trust marker is legacy/stale; run: sudo ./scripts/setup-host.sh trust" >&2
+                exit 1
+            fi
+            if [ ! -f "$cert" ]; then
+                echo "[helper] CA cert not found in container: $cert" >&2
+                exit 1
+            fi
+            got="$(sha256_file "$cert" || true)"
+            if [ -n "$got" ] && [ "$want" = "$got" ]; then
+                exit 0
+            fi
+            echo "[helper] CA trust marker fingerprint mismatch/stale; run: sudo ./scripts/setup-host.sh trust" >&2
+            exit 1
         fi
         echo "[helper] CA not installed on host; run: sudo ./scripts/setup-host.sh trust" >&2
         exit 1
