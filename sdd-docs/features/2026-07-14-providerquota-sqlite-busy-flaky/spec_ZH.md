@@ -198,6 +198,7 @@ flaky 依赖 goroutine 调度时序，本地难以稳定复现：`go test -race 
 - [x] `grep -n "_pragma" internal/providerquota/store_test.go internal/config/sqlite_store.go` 两处 DSN 完全一致（`diff` 校验通过）。
 - [x] `go test -race ./internal/providerquota -run TestSnapshotStoreConcurrentReadWriteNoBusy -v` 通过（`-count=5` 全 PASS）。
 - [x] `go test -race ./internal/providerquota/... -count=20` 通过且无 `database is locked`（38.062s，locked 0，DATA RACE 0）。
+- [x] 回归测试同时捕获首个非 BUSY store 错误（mutex 保护的 `firstErr`）并在 `wg.Wait()` 后失败 —— 依审核 follow-up；已重新验证 `-race -count=5` 通过（正常路径 firstErr 为 nil）。
 
 **实际验证证据（2026-07-14）：**
 - 对照实验（临时探针，用旧 DSN 仅 `foreign_keys(1)`）：5 个 goroutine 各写 100 次共 500 次，触发 **388–410 次 `SQLITE_BUSY`**（~80% 撞锁率），运行 3 次均稳定复现；探针文件验证后已删除。

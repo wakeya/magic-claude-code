@@ -194,6 +194,7 @@ Therefore this spec does **not** rely on "reproducing the flaky locally" as vali
 - [x] `grep -n "_pragma" internal/providerquota/store_test.go internal/config/sqlite_store.go` shows identical DSNs (verified via `diff`).
 - [x] `go test -race ./internal/providerquota -run TestSnapshotStoreConcurrentReadWriteNoBusy -v` passes (`-count=5` all PASS).
 - [x] `go test -race ./internal/providerquota/... -count=20` passes with no `database is locked` (38.062s, locked 0, DATA RACE 0).
+- [x] The regression test also captures the first non-BUSY store error (mutex-guarded `firstErr`) and fails after `wg.Wait()` — per review follow-up; re-verified `-race -count=5` green (firstErr nil on the normal path).
 
 **Actual verification evidence (2026-07-14):**
 - Control experiment (temporary probe using the OLD DSN with only `foreign_keys(1)`): 5 goroutines × 100 writes = 500 total, surfaced **388–410 `SQLITE_BUSY`** errors (~80% lock-hit rate), reproduced stably across 3 runs; probe file deleted after verification.

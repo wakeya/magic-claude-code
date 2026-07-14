@@ -250,6 +250,8 @@ func TestSnapshotStoreConcurrentReadWriteNoBusy(t *testing.T) {
 
 	var wg sync.WaitGroup
 	var busy atomic.Int64
+	var firstMu sync.Mutex
+	var firstErr error // first non-BUSY store error; surfaced after wg.Wait()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -259,6 +261,16 @@ func TestSnapshotStoreConcurrentReadWriteNoBusy(t *testing.T) {
 		}
 		msg := err.Error()
 		return strings.Contains(msg, "locked") || strings.Contains(msg, "busy")
+	}
+
+	// recordNonBusy keeps the first non-BUSY store error so unrelated storage
+	// regressions cannot pass silently under this test's BUSY-only lens.
+	recordNonBusy := func(err error) {
+		firstMu.Lock()
+		if firstErr == nil {
+			firstErr = err
+		}
+		firstMu.Unlock()
 	}
 
 	// Writers: SaveUpsert on each provider in a tight loop.
@@ -275,8 +287,12 @@ func TestSnapshotStoreConcurrentReadWriteNoBusy(t *testing.T) {
 					QueriedAt:    time.Now(),
 					DurationMS:   int64(j),
 				}
-				if isBusy(store.SaveUpsert(id, r)) {
-					busy.Add(1)
+				if err := store.SaveUpsert(id, r); err != nil {
+					if isBusy(err) {
+						busy.Add(1)
+					} else {
+						recordNonBusy(err)
+					}
 				}
 				if ctx.Err() != nil {
 					return
@@ -294,6 +310,8 @@ func TestSnapshotStoreConcurrentReadWriteNoBusy(t *testing.T) {
 				if _, err := store.GetAll(); err != nil {
 					if isBusy(err) {
 						busy.Add(1)
+					} else {
+						recordNonBusy(err)
 					}
 				}
 				if ctx.Err() != nil {
@@ -306,5 +324,8 @@ func TestSnapshotStoreConcurrentReadWriteNoBusy(t *testing.T) {
 	wg.Wait()
 	if got := busy.Load(); got != 0 {
 		t.Fatalf("encountered %d SQLITE_BUSY errors under WAL+busy_timeout (expected 0)", got)
+	}
+	if firstErr != nil {
+		t.Fatalf("non-BUSY store error surfaced (would have been silently ignored before): %v", firstErr)
 	}
 }
