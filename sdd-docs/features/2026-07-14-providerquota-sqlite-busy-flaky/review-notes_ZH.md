@@ -5,7 +5,7 @@
 
 ## 范围
 
-审查提交 `d54dd74` 中 providerquota SQLite BUSY flaky 的修复：测试 SQLite DSN/连接池与生产对齐、scheduler goroutine 追踪、FK 测试数据修复，以及新增的并发读写回归测试。
+审查提交 `d54dd74` 中 providerquota SQLite BUSY flaky 的修复：测试 SQLite DSN/连接池与生产对齐、scheduler goroutine 追踪、FK 测试数据修复，以及新增的并发读写回归测试。本次 follow-up 复审覆盖提交 `0f7595e`，该提交实现了非 BUSY 错误捕获维护项。
 
 ## 关键发现与处理
 
@@ -26,3 +26,4 @@ GLM-5.2 的修复可以接受。根因修复与生产 SQLite 行为一致，sche
 - 已验证 `go vet ./...`。
 - 已验证 `go test ./...`。
 - 后续（2026-07-14）：为 `TestSnapshotStoreConcurrentReadWriteNoBusy` 增加非 BUSY 错误捕获；已重新验证 `go test -race ./internal/providerquota -run TestSnapshotStoreConcurrentReadWriteNoBusy -count=5 -v`。
+- 后续复审（2026-07-14）：已审查提交 `0f7595e`；未发现新的阻塞问题。

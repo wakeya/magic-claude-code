@@ -5,7 +5,7 @@ Reviewers: Codex and Claude Code
 
 ## Scope
 
-Reviewed commit `d54dd74` for the providerquota SQLite BUSY flaky fix: test SQLite DSN/pool parity with production, scheduler goroutine tracking, FK fixture repair, and the new concurrent read/write regression test.
+Reviewed commit `d54dd74` for the providerquota SQLite BUSY flaky fix: test SQLite DSN/pool parity with production, scheduler goroutine tracking, FK fixture repair, and the new concurrent read/write regression test. Follow-up review covered commit `0f7595e`, which implements the non-BUSY error capture maintenance item.
 
 ## Key Findings And Resolutions
 
@@ -26,3 +26,4 @@ The GLM-5.2 fix is acceptable as submitted. The root-cause fix matches productio
 - Verified with `go vet ./...`.
 - Verified with `go test ./...`.
 - Follow-up (2026-07-14): added non-BUSY error capture to `TestSnapshotStoreConcurrentReadWriteNoBusy`; re-verified with `go test -race ./internal/providerquota -run TestSnapshotStoreConcurrentReadWriteNoBusy -count=5 -v`.
+- Follow-up review (2026-07-14): reviewed commit `0f7595e`; no new blocking findings.
