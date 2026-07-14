@@ -161,6 +161,28 @@ func TestReleasePackageUsesPlatformSpecificScripts(t *testing.T) {
 	}
 }
 
+func TestGitHubReleaseWorkflowPackagesSameSupportFiles(t *testing.T) {
+	content, err := os.ReadFile("../.github/workflows/release.yml")
+	if err != nil {
+		t.Fatalf("read GitHub release workflow: %v", err)
+	}
+	text := string(content)
+
+	for _, want := range []string{
+		"README.en.md",
+		"scripts/SCRIPTS.md",
+		"scripts/SCRIPTS.en.md",
+		"scripts/start-mcc.ps1",
+		"scripts/stop-mcc.ps1",
+		"scripts/register-mcc-task.ps1",
+		"scripts/docker-host-helper.sh",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("GitHub release workflow should package %s", want)
+		}
+	}
+}
+
 func TestSetupHostSHPrintsLinuxSSLCertFileGuidance(t *testing.T) {
 	content, err := os.ReadFile("setup-host.sh")
 	if err != nil {
