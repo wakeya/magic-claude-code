@@ -1,14 +1,22 @@
 package bootstrap
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // --- Mock adapters ---
@@ -22,19 +30,33 @@ func (m *mockHosts) EnsureHostMapping(domain, ip string) error { return m.err }
 func (m *mockHosts) HasMapping(domain, ip string) bool         { return m.hasMapping }
 
 type mockTrust struct {
-	err error
+	err       error
+	calls     int
+	installFn func(string) error
 }
 
-func (m *mockTrust) InstallCA(certPath string) error { return m.err }
+func (m *mockTrust) InstallCA(certPath string) error {
+	m.calls++
+	if m.installFn != nil {
+		return m.installFn(certPath)
+	}
+	return m.err
+}
 
 type mockEnv struct {
-	err               error
-	nodeCAErr         error  // PersistNodeCACert 错误，nil 时 fallback 到 err
-	caCertArg         string // 记录 PersistNodeCACert 收到的参数
-	nodeCAValue       string
-	nodeCAValueSet    bool
-	nodeCALookupErr   error
-	nodeCALookupCalls int
+	err                    error
+	nodeCAErr              error  // PersistNodeCACert 错误，nil 时 fallback 到 err
+	caCertArg              string // 记录 PersistNodeCACert 收到的参数
+	nodeCAValue            string
+	nodeCAValueSet         bool
+	nodeCALookupErr        error
+	nodeCALookupCalls      int
+	sslCertFileErr         error
+	sslCertFileArg         string
+	sslCertFileValue       string
+	sslCertFileValueSet    bool
+	sslCertFileLookupErr   error
+	sslCertFileLookupCalls int
 }
 
 func (m *mockEnv) PersistRoot(rootDir string) error { return m.err }
@@ -48,6 +70,53 @@ func (m *mockEnv) PersistNodeCACert(caCertPath string) error {
 		return m.nodeCAErr
 	}
 	return m.err
+}
+func (m *mockEnv) LookupSSLCertFile() (string, bool, error) {
+	m.sslCertFileLookupCalls++
+	return m.sslCertFileValue, m.sslCertFileValueSet, m.sslCertFileLookupErr
+}
+func (m *mockEnv) PersistSSLCertFile(bundlePath string) error {
+	m.sslCertFileArg = bundlePath
+	if m.sslCertFileErr != nil {
+		return m.sslCertFileErr
+	}
+	return m.err
+}
+
+func generateTestCACertPEM(t *testing.T, cn string) []byte {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		t.Fatalf("rand.Int() error = %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject: pkix.Name{
+			Organization: []string{"MCC Proxy Local CA"},
+			CommonName:   cn,
+		},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("CreateCertificate() error = %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+func withLinuxSSLCertFileCandidates(t *testing.T, candidates []string) {
+	t.Helper()
+	prev := linuxSSLCertFileCandidates
+	linuxSSLCertFileCandidates = candidates
+	t.Cleanup(func() { linuxSSLCertFileCandidates = prev })
 }
 
 // --- Resolver tests ---
@@ -238,10 +307,15 @@ func TestExecutor_TryTrustCA_MarkerMatchesFingerprint_SkipsInstall(t *testing.T)
 	dir := t.TempDir()
 	// 写一份 CA 证书，并写入匹配其 fingerprint 的标记
 	caPath := filepath.Join(dir, "ca.crt")
-	caContent := []byte("-----BEGIN CERTIFICATE-----\nfake-cert-body\n-----END CERTIFICATE-----\n")
+	caContent := generateTestCACertPEM(t, "current mcc ca")
 	if err := os.WriteFile(caPath, caContent, 0644); err != nil {
 		t.Fatal(err)
 	}
+	bundlePath := filepath.Join(dir, "ca-certificates.crt")
+	if err := os.WriteFile(bundlePath, caContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+	withLinuxSSLCertFileCandidates(t, []string{bundlePath})
 	fp, err := caFingerprint(caPath)
 	if err != nil {
 		t.Fatalf("caFingerprint() error = %v", err)
@@ -262,20 +336,28 @@ func TestExecutor_TryTrustCA_MarkerMatchesFingerprint_SkipsInstall(t *testing.T)
 func TestExecutor_TryTrustCA_MarkerStaleFingerprint_Reinstalls(t *testing.T) {
 	dir := t.TempDir()
 	caPath := filepath.Join(dir, "ca.crt")
-	if err := os.WriteFile(caPath, []byte("current-cert"), 0644); err != nil {
+	caContent := generateTestCACertPEM(t, "current mcc ca")
+	if err := os.WriteFile(caPath, caContent, 0644); err != nil {
 		t.Fatal(err)
 	}
+	bundlePath := filepath.Join(dir, "ca-certificates.crt")
+	if err := os.WriteFile(bundlePath, caContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+	withLinuxSSLCertFileCandidates(t, []string{bundlePath})
 	// 写一个 fingerprint 不匹配的标记（模拟证书重新生成后标记过期）
 	stale, _ := json.Marshal(caTrustMarker{Action: "ca-trust-installed", Fingerprint: "stale-fingerprint"})
 	if err := os.WriteFile(filepath.Join(dir, caTrustMarkerName), stale, 0644); err != nil {
 		t.Fatal(err)
 	}
 	e := New(dir, caPath, "en",
-		WithTrustAdapter(&mockTrust{}),
+		WithTrustAdapter(&mockTrust{installFn: func(string) error {
+			return os.WriteFile(bundlePath, caContent, 0644)
+		}}),
 	)
 	r := e.tryTrustCA()
-	if !r.Success || !r.Attempted {
-		t.Errorf("expected reinstall (Success=true Attempted=true) on stale marker, got %+v", r)
+	if !r.Success || r.Attempted {
+		t.Errorf("expected verified bundle to refresh stale marker without reinstall, got %+v", r)
 	}
 	// 标记应被刷新为当前 fingerprint
 	if !hasCATrustMarker(dir, caPath) {
@@ -286,11 +368,19 @@ func TestExecutor_TryTrustCA_MarkerStaleFingerprint_Reinstalls(t *testing.T) {
 func TestExecutor_TryTrustCA_NoMarker_InstallsAndWritesMarker(t *testing.T) {
 	dir := t.TempDir()
 	caPath := filepath.Join(dir, "ca.crt")
-	if err := os.WriteFile(caPath, []byte("cert-content"), 0644); err != nil {
+	caContent := generateTestCACertPEM(t, "current mcc ca")
+	if err := os.WriteFile(caPath, caContent, 0644); err != nil {
 		t.Fatal(err)
 	}
+	bundlePath := filepath.Join(dir, "ca-certificates.crt")
+	if err := os.WriteFile(bundlePath, generateTestCACertPEM(t, "other ca"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	withLinuxSSLCertFileCandidates(t, []string{bundlePath})
 	e := New(dir, caPath, "en",
-		WithTrustAdapter(&mockTrust{}),
+		WithTrustAdapter(&mockTrust{installFn: func(string) error {
+			return os.WriteFile(bundlePath, caContent, 0644)
+		}}),
 	)
 	r := e.tryTrustCA()
 	if !r.Success || !r.Attempted {
@@ -298,6 +388,916 @@ func TestExecutor_TryTrustCA_NoMarker_InstallsAndWritesMarker(t *testing.T) {
 	}
 	if !hasCATrustMarker(dir, caPath) {
 		t.Errorf("expected marker %q to be written after successful install", caTrustMarkerName)
+	}
+}
+
+func TestLinuxSystemBundleContainsCA_MatchingFingerprint(t *testing.T) {
+	dir := t.TempDir()
+	caPEM := generateTestCACertPEM(t, "current mcc ca")
+	caPath := filepath.Join(dir, "ca.crt")
+	bundlePath := filepath.Join(dir, "ca-certificates.crt")
+	if err := os.WriteFile(caPath, caPEM, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bundlePath, append([]byte("# bundle\n"), caPEM...), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ok, err := linuxSystemBundleContainsCA(bundlePath, caPath)
+	if err != nil {
+		t.Fatalf("linuxSystemBundleContainsCA() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("expected bundle to contain matching CA fingerprint")
+	}
+}
+
+func TestLinuxSystemBundleContainsCA_MissingFingerprint(t *testing.T) {
+	dir := t.TempDir()
+	caPEM := generateTestCACertPEM(t, "current mcc ca")
+	otherPEM := generateTestCACertPEM(t, "other ca")
+	caPath := filepath.Join(dir, "ca.crt")
+	bundlePath := filepath.Join(dir, "ca-certificates.crt")
+	if err := os.WriteFile(caPath, caPEM, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bundlePath, otherPEM, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ok, err := linuxSystemBundleContainsCA(bundlePath, caPath)
+	if err != nil {
+		t.Fatalf("linuxSystemBundleContainsCA() error = %v", err)
+	}
+	if ok {
+		t.Fatal("expected bundle without matching fingerprint to return false")
+	}
+}
+
+func TestTryTrustCA_MarkerExistsButBundleMissingCA_Reinstalls(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux bundle verification is Linux-only")
+	}
+	dir := t.TempDir()
+	caPEM := generateTestCACertPEM(t, "current mcc ca")
+	otherPEM := generateTestCACertPEM(t, "other ca")
+	caPath := filepath.Join(dir, "ca.crt")
+	bundlePath := filepath.Join(dir, "ca-certificates.crt")
+	if err := os.WriteFile(caPath, caPEM, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bundlePath, otherPEM, 0644); err != nil {
+		t.Fatal(err)
+	}
+	writeCATrustMarker(dir, caPath)
+	withLinuxSSLCertFileCandidates(t, []string{bundlePath})
+	trust := &mockTrust{}
+	e := New(dir, caPath, "en", WithTrustAdapter(trust))
+
+	r := e.tryTrustCA()
+	if r.Success {
+		t.Fatalf("expected trust verification to fail because install mock did not rebuild bundle, got %+v", r)
+	}
+	if trust.calls != 1 {
+		t.Fatalf("expected stale marker to trigger reinstall, got %d calls", trust.calls)
+	}
+	if r.Err == nil || !strings.Contains(r.Err.Error(), "bundle does not contain MCC CA fingerprint") {
+		t.Fatalf("expected missing fingerprint error, got %v", r.Err)
+	}
+}
+
+func TestTryPersistSSLCertFile_BundleMissingCADoesNotPersist(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux SSL_CERT_FILE persistence is Linux-only")
+	}
+	dir := t.TempDir()
+	caPEM := generateTestCACertPEM(t, "current mcc ca")
+	otherPEM := generateTestCACertPEM(t, "other ca")
+	caPath := filepath.Join(dir, "ca.crt")
+	bundlePath := filepath.Join(dir, "ca-certificates.crt")
+	if err := os.WriteFile(caPath, caPEM, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bundlePath, otherPEM, 0644); err != nil {
+		t.Fatal(err)
+	}
+	withLinuxSSLCertFileCandidates(t, []string{bundlePath})
+	setPrivileged(t, false)
+	env := &mockEnv{}
+	e := New(dir, caPath, "en", WithEnvAdapter(env), WithTrustAdapter(&mockTrust{}))
+
+	r := e.tryPersistSSLCertFile()
+	if r.Success {
+		t.Fatalf("expected failure when bundle lacks current CA, got %+v", r)
+	}
+	if env.sslCertFileArg != "" {
+		t.Fatalf("PersistSSLCertFile must not be called when bundle lacks CA, got %q", env.sslCertFileArg)
+	}
+}
+
+func TestTryTrustCA_DockerHelperSkipsContainerBundleVerification(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux Docker helper path is Linux-only")
+	}
+	dir := t.TempDir()
+	caPEM := generateTestCACertPEM(t, "current mcc ca")
+	otherPEM := generateTestCACertPEM(t, "other ca")
+	caPath := filepath.Join(dir, "ca.crt")
+	bundlePath := filepath.Join(dir, "container-ca-certificates.crt")
+	if err := os.WriteFile(caPath, caPEM, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bundlePath, otherPEM, 0644); err != nil {
+		t.Fatal(err)
+	}
+	withLinuxSSLCertFileCandidates(t, []string{bundlePath})
+	oldDocker := isDockerEnvFn
+	isDockerEnvFn = func() bool { return true }
+	t.Cleanup(func() { isDockerEnvFn = oldDocker })
+	trust := &mockTrust{}
+	e := New(dir, caPath, "en", WithTrustAdapter(trust))
+
+	r := e.tryTrustCA()
+	if !r.Success || !r.Attempted {
+		t.Fatalf("expected Docker helper trust install success without local bundle verification, got %+v", r)
+	}
+	if trust.calls != 1 {
+		t.Fatalf("expected one helper trust install call, got %d", trust.calls)
+	}
+}
+
+func TestTryPersistSSLCertFile_ExistingCorrectEnvStillPersistsProfile(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux SSL_CERT_FILE persistence is Linux-only")
+	}
+	dir := t.TempDir()
+	caPEM := generateTestCACertPEM(t, "current mcc ca")
+	caPath := filepath.Join(dir, "ca.crt")
+	bundlePath := filepath.Join(dir, "ca-certificates.crt")
+	if err := os.WriteFile(caPath, caPEM, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bundlePath, caPEM, 0644); err != nil {
+		t.Fatal(err)
+	}
+	withLinuxSSLCertFileCandidates(t, []string{bundlePath})
+	setPrivileged(t, false)
+	env := &mockEnv{
+		sslCertFileValue:    bundlePath,
+		sslCertFileValueSet: true,
+	}
+	e := New(dir, caPath, "en", WithEnvAdapter(env), WithTrustAdapter(&mockTrust{}))
+
+	r := e.tryPersistSSLCertFile()
+	if !r.Success {
+		t.Fatalf("expected existing correct SSL_CERT_FILE to be accepted, got %+v", r)
+	}
+	if env.sslCertFileArg != bundlePath {
+		t.Fatalf("expected PersistSSLCertFile to persist profile for future shells, got %q", env.sslCertFileArg)
+	}
+	if !hasSSLCertFileMarker(dir, bundlePath, caPath) {
+		t.Fatal("expected SSL_CERT_FILE marker to be written")
+	}
+}
+
+func TestTryPersistSSLCertFile_MarkerMatchStillDetectsProfileCustomValue(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux SSL_CERT_FILE persistence is Linux-only")
+	}
+	dir := t.TempDir()
+	home := t.TempDir()
+	caPEM := generateTestCACertPEM(t, "current mcc ca")
+	caPath := filepath.Join(dir, "ca.crt")
+	bundlePath := filepath.Join(dir, "ca-certificates.crt")
+	if err := os.WriteFile(caPath, caPEM, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bundlePath, caPEM, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".bashrc"), []byte("export SSL_CERT_FILE=/custom/company-bundle.pem\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SHELL", "/bin/bash")
+	t.Setenv("SSL_CERT_FILE", "")
+	setPrivileged(t, false)
+	withLinuxSSLCertFileCandidates(t, []string{bundlePath})
+	oldDocker := isDockerEnvFn
+	isDockerEnvFn = func() bool { return false }
+	t.Cleanup(func() { isDockerEnvFn = oldDocker })
+	writeSSLCertFileMarker(dir, bundlePath, caPath)
+	e := New(dir, caPath, "en", WithEnvAdapter(&osEnvAdapter{}), WithTrustAdapter(&mockTrust{}))
+
+	r := e.tryPersistSSLCertFile()
+	if !r.Attempted || r.Success || !errors.Is(r.Err, ErrUserCustomValue) {
+		t.Fatalf("expected profile custom value to override matching marker, got %+v", r)
+	}
+}
+
+func TestWritePOSIXProfileSSLCertFile_ExistingSameValueIsAccepted(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SHELL", "/bin/bash")
+	setPrivileged(t, false)
+	bundlePath := "/etc/ssl/certs/ca-certificates.crt"
+	bashrc := filepath.Join(home, ".bashrc")
+	if err := os.WriteFile(bashrc, []byte("export SSL_CERT_FILE="+bundlePath+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := (&osEnvAdapter{}).writePOSIXProfileSSLCertFile(bundlePath); err != nil {
+		t.Fatalf("writePOSIXProfileSSLCertFile() should accept same-value user entry: %v", err)
+	}
+	content, err := os.ReadFile(bashrc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(content), posixSSLBlockBegin) {
+		t.Fatalf("same-value user entry should be accepted without adding duplicate mcc block, got: %s", content)
+	}
+}
+
+func TestWritePOSIXProfileSSLCertFile_ExistingSameValueUpdatesStaleManagedBlock(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SHELL", "/bin/bash")
+	setPrivileged(t, false)
+	bundlePath := "/etc/ssl/certs/ca-certificates.crt"
+	oldBundlePath := "/etc/ssl/certs/old-ca-certificates.crt"
+	bashrc := filepath.Join(home, ".bashrc")
+	content := "export SSL_CERT_FILE=" + bundlePath + "\n" +
+		posixSSLBlockBegin + "\n" +
+		"export SSL_CERT_FILE=" + oldBundlePath + "\n" +
+		posixSSLBlockEnd + "\n"
+	if err := os.WriteFile(bashrc, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := (&osEnvAdapter{}).writePOSIXProfileSSLCertFile(bundlePath); err != nil {
+		t.Fatalf("writePOSIXProfileSSLCertFile() should repair its stale managed block: %v", err)
+	}
+	written, err := os.ReadFile(bashrc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(written), oldBundlePath) {
+		t.Fatalf("stale managed value can override the matching user value: %s", written)
+	}
+	if strings.Count(string(written), bundlePath) != 2 {
+		t.Fatalf("expected matching user value plus repaired managed value, got: %s", written)
+	}
+}
+
+func TestWritePOSIXProfileSSLCertFile_NodeCABlockBeforeStaleSSLBlock(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SHELL", "/bin/bash")
+	setPrivileged(t, false)
+	bundlePath := "/etc/ssl/certs/ca-certificates.crt"
+	oldBundlePath := "/etc/ssl/certs/old-ca-certificates.crt"
+	bashrc := filepath.Join(home, ".bashrc")
+	content := posixCABlockBegin + "\n" +
+		"export NODE_EXTRA_CA_CERTS=/srv/mcc/data/ca.crt\n" +
+		posixCABlockEnd + "\n" +
+		posixSSLBlockBegin + "\n" +
+		"export SSL_CERT_FILE=" + oldBundlePath + "\n" +
+		posixSSLBlockEnd + "\n"
+	writeFile(t, bashrc, content)
+
+	if err := (&osEnvAdapter{}).writePOSIXProfileSSLCertFile(bundlePath); err != nil {
+		t.Fatalf("writePOSIXProfileSSLCertFile() failed: %v", err)
+	}
+	written, err := os.ReadFile(bashrc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(written), oldBundlePath) {
+		t.Fatalf("stale SSL block was not replaced: %s", written)
+	}
+	if got := strings.Count(string(written), posixSSLBlockBegin); got != 1 {
+		t.Fatalf("expected exactly one SSL block, got %d: %s", got, written)
+	}
+}
+
+func TestWritePOSIXProfileSSLCertFile_NodeCABlockBeforeSSLBlockIsIdempotent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SHELL", "/bin/bash")
+	setPrivileged(t, false)
+	bundlePath := "/etc/ssl/certs/ca-certificates.crt"
+	oldBundlePath := "/etc/ssl/certs/old-ca-certificates.crt"
+	bashrc := filepath.Join(home, ".bashrc")
+	content := posixCABlockBegin + "\n" +
+		"export NODE_EXTRA_CA_CERTS=/srv/mcc/data/ca.crt\n" +
+		posixCABlockEnd + "\n" +
+		posixSSLBlockBegin + "\n" +
+		"export SSL_CERT_FILE=" + oldBundlePath + "\n" +
+		posixSSLBlockEnd + "\n"
+	writeFile(t, bashrc, content)
+	a := &osEnvAdapter{}
+
+	if err := a.writePOSIXProfileSSLCertFile(bundlePath); err != nil {
+		t.Fatalf("first call failed: %v", err)
+	}
+	afterFirst, err := os.ReadFile(bashrc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.writePOSIXProfileSSLCertFile(bundlePath); err != nil {
+		t.Fatalf("second call failed: %v", err)
+	}
+	afterSecond, err := os.ReadFile(bashrc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterSecond) != string(afterFirst) {
+		t.Fatalf("second call modified profile:\nfirst: %q\nsecond: %q", afterFirst, afterSecond)
+	}
+	if got := strings.Count(string(afterSecond), posixSSLBlockBegin); got != 1 {
+		t.Fatalf("expected exactly one SSL block, got %d: %s", got, afterSecond)
+	}
+}
+
+func TestWritePOSIXProfileSSLCertFile_MatchingUserValueBeforeNodeCAAndStaleSSLBlock(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SHELL", "/bin/bash")
+	setPrivileged(t, false)
+	bundlePath := "/etc/ssl/certs/ca-certificates.crt"
+	oldBundlePath := "/etc/ssl/certs/old-ca-certificates.crt"
+	bashrc := filepath.Join(home, ".bashrc")
+	content := "export SSL_CERT_FILE=" + bundlePath + "\n" +
+		posixCABlockBegin + "\n" +
+		"export NODE_EXTRA_CA_CERTS=/srv/mcc/data/ca.crt\n" +
+		posixCABlockEnd + "\n" +
+		posixSSLBlockBegin + "\n" +
+		"export SSL_CERT_FILE=" + oldBundlePath + "\n" +
+		posixSSLBlockEnd + "\n"
+	writeFile(t, bashrc, content)
+
+	if err := (&osEnvAdapter{}).writePOSIXProfileSSLCertFile(bundlePath); err != nil {
+		t.Fatalf("writePOSIXProfileSSLCertFile() failed: %v", err)
+	}
+	written, err := os.ReadFile(bashrc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(written), oldBundlePath) {
+		t.Fatalf("matching user value allowed stale SSL block to survive: %s", written)
+	}
+	if got := strings.Count(string(written), posixSSLBlockBegin); got != 1 {
+		t.Fatalf("expected exactly one SSL block, got %d: %s", got, written)
+	}
+}
+
+func TestWritePOSIXProfileSSLCertFile_MalformedManagedBlockFailsClosed(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{
+			name: "unmatched begin hides custom assignment",
+			content: posixSSLBlockBegin + "\n" +
+				"export SSL_CERT_FILE=/custom/company-bundle.pem\n",
+		},
+		{
+			name:    "unmatched end",
+			content: posixSSLBlockEnd + "\n",
+		},
+		{
+			name: "nested begin",
+			content: posixSSLBlockBegin + "\n" +
+				posixSSLBlockBegin + "\n" +
+				posixSSLBlockEnd + "\n",
+		},
+		{
+			name: "marker embedded in active command",
+			content: "echo '" + posixSSLBlockBegin + "'\n" +
+				"echo '" + posixSSLBlockEnd + "'\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Setenv("SHELL", "/bin/bash")
+			setPrivileged(t, false)
+			bashrc := filepath.Join(home, ".bashrc")
+			if err := os.WriteFile(bashrc, []byte(tt.content), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			err := (&osEnvAdapter{}).writePOSIXProfileSSLCertFile("/etc/ssl/certs/ca-certificates.crt")
+			if !errors.Is(err, ErrUserCustomValue) {
+				t.Fatalf("expected malformed block to return ErrUserCustomValue, got %v", err)
+			}
+			written, readErr := os.ReadFile(bashrc)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if string(written) != tt.content {
+				t.Fatalf("malformed profile must remain unchanged; got %q, want %q", written, tt.content)
+			}
+		})
+	}
+}
+
+func TestWritePOSIXProfileSSLCertFile_ExistingNodeCAManagedBlockIsCompatible(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SHELL", "/bin/bash")
+	setPrivileged(t, false)
+	bundlePath := "/etc/ssl/certs/ca-certificates.crt"
+	bashrc := filepath.Join(home, ".bashrc")
+	content := posixCABlockBegin + "\n" +
+		"export NODE_EXTRA_CA_CERTS=/srv/mcc/data/ca.crt\n" +
+		posixCABlockEnd + "\n"
+	if err := os.WriteFile(bashrc, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := (&osEnvAdapter{}).writePOSIXProfileSSLCertFile(bundlePath); err != nil {
+		t.Fatalf("existing Node CA managed block must remain compatible: %v", err)
+	}
+	written, err := os.ReadFile(bashrc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(written), content) {
+		t.Fatalf("existing Node CA block was modified: %q", written)
+	}
+	if !strings.Contains(string(written), posixSSLBlockBegin) || !strings.Contains(string(written), bundlePath) {
+		t.Fatalf("expected SSL_CERT_FILE managed block after Node CA block, got: %s", written)
+	}
+}
+
+func TestWritePOSIXProfileSSLCertFile_NodeCAManagedBlockDoesNotHideSSLChanges(t *testing.T) {
+	tests := []string{
+		"export SSL_CERT_FILE=/custom/company-bundle.pem",
+		"unset SSL_CERT_FILE",
+	}
+	for _, change := range tests {
+		t.Run(change, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Setenv("SHELL", "/bin/bash")
+			setPrivileged(t, false)
+			bashrc := filepath.Join(home, ".bashrc")
+			content := posixCABlockBegin + "\n" + change + "\n" + posixCABlockEnd + "\n"
+			if err := os.WriteFile(bashrc, []byte(content), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			err := (&osEnvAdapter{}).writePOSIXProfileSSLCertFile("/etc/ssl/certs/ca-certificates.crt")
+			if !errors.Is(err, ErrUserCustomValue) {
+				t.Fatalf("Node CA block must not hide %q, got %v", change, err)
+			}
+			written, readErr := os.ReadFile(bashrc)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if string(written) != content {
+				t.Fatalf("conflicting profile must remain unchanged; got %q, want %q", written, content)
+			}
+		})
+	}
+}
+
+func TestWritePOSIXProfileSSLCertFile_MatchingSecondaryProfileStillWritesPreferredProfile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SHELL", "/bin/bash")
+	setPrivileged(t, false)
+	bundlePath := "/etc/ssl/certs/ca-certificates.crt"
+	profile := filepath.Join(home, ".profile")
+	if err := os.WriteFile(profile, []byte("export SSL_CERT_FILE="+bundlePath+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := (&osEnvAdapter{}).writePOSIXProfileSSLCertFile(bundlePath); err != nil {
+		t.Fatalf("writePOSIXProfileSSLCertFile() failed: %v", err)
+	}
+	bashrc := filepath.Join(home, ".bashrc")
+	written, err := os.ReadFile(bashrc)
+	if err != nil {
+		t.Fatalf("matching value in .profile must not suppress preferred .bashrc persistence: %v", err)
+	}
+	if !strings.Contains(string(written), posixSSLBlockBegin) || !strings.Contains(string(written), bundlePath) {
+		t.Fatalf("expected managed SSL_CERT_FILE block in .bashrc, got: %s", written)
+	}
+}
+
+func TestWritePOSIXProfileSSLCertFile_UnknownShellScansAllProfilesBeforeAcceptingSameValue(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SHELL", "/usr/bin/nushell")
+	setPrivileged(t, false)
+	bundlePath := "/etc/ssl/certs/ca-certificates.crt"
+	profile := filepath.Join(home, ".profile")
+	bashrc := filepath.Join(home, ".bashrc")
+	if err := os.WriteFile(profile, []byte("export SSL_CERT_FILE="+bundlePath+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bashrc, []byte("export SSL_CERT_FILE=/custom/company-bundle.pem\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := (&osEnvAdapter{}).writePOSIXProfileSSLCertFile(bundlePath)
+	if !errors.Is(err, ErrUserCustomValue) {
+		t.Fatalf("expected ErrUserCustomValue from second profile custom value, got %v", err)
+	}
+	content, err := os.ReadFile(bashrc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), "/custom/company-bundle.pem") {
+		t.Fatalf("custom .bashrc value should be preserved, got: %s", content)
+	}
+}
+
+func TestWritePOSIXProfileSSLCertFile_KnownShellScansAllEffectiveProfiles(t *testing.T) {
+	tests := []struct {
+		name            string
+		shell           string
+		conflictProfile string
+		writeProfile    string
+	}{
+		{name: "bash profile", shell: "/bin/bash", conflictProfile: ".profile", writeProfile: ".bashrc"},
+		{name: "bash profile login", shell: "/bin/bash", conflictProfile: ".bash_profile", writeProfile: ".bashrc"},
+		{name: "bash login", shell: "/bin/bash", conflictProfile: ".bash_login", writeProfile: ".bashrc"},
+		{name: "zsh profile", shell: "/bin/zsh", conflictProfile: ".zprofile", writeProfile: ".zshrc"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Setenv("SHELL", tt.shell)
+			setPrivileged(t, false)
+			bundlePath := "/etc/ssl/certs/ca-certificates.crt"
+			conflictPath := filepath.Join(home, tt.conflictProfile)
+			if err := os.WriteFile(conflictPath, []byte("export SSL_CERT_FILE=/custom/company-bundle.pem\n"), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			err := (&osEnvAdapter{}).writePOSIXProfileSSLCertFile(bundlePath)
+			if !errors.Is(err, ErrUserCustomValue) {
+				t.Fatalf("expected ErrUserCustomValue from %s, got %v", conflictPath, err)
+			}
+			content, err := os.ReadFile(filepath.Join(home, tt.writeProfile))
+			if err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(content), posixSSLBlockBegin) {
+				t.Fatalf("preferred write profile must not be modified after conflict in %s: %s", conflictPath, content)
+			}
+		})
+	}
+}
+
+func TestWritePOSIXProfileSSLCertFile_ZshScansEveryStartupProfile(t *testing.T) {
+	for _, profileName := range []string{".zshenv", ".zlogin"} {
+		t.Run(profileName, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Setenv("SHELL", "/bin/zsh")
+			setPrivileged(t, false)
+			bundlePath := "/etc/ssl/certs/ca-certificates.crt"
+			conflictPath := filepath.Join(home, profileName)
+			if err := os.WriteFile(conflictPath, []byte("export SSL_CERT_FILE=/custom/company-bundle.pem\n"), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			err := (&osEnvAdapter{}).writePOSIXProfileSSLCertFile(bundlePath)
+			if !errors.Is(err, ErrUserCustomValue) {
+				t.Fatalf("expected ErrUserCustomValue from %s, got %v", conflictPath, err)
+			}
+			zshrc, readErr := os.ReadFile(filepath.Join(home, ".zshrc"))
+			if readErr != nil && !os.IsNotExist(readErr) {
+				t.Fatal(readErr)
+			}
+			if strings.Contains(string(zshrc), posixSSLBlockBegin) {
+				t.Fatalf(".zshrc must not be modified after conflict in %s: %s", conflictPath, zshrc)
+			}
+		})
+	}
+}
+
+func TestWritePOSIXProfileSSLCertFile_RejectsLaterConflictingAssignment(t *testing.T) {
+	tests := []struct {
+		name    string
+		shell   string
+		profile string
+		content func(string) string
+	}{
+		{
+			name:    "bash",
+			shell:   "/bin/bash",
+			profile: ".bashrc",
+			content: func(bundlePath string) string {
+				return "export SSL_CERT_FILE=" + bundlePath + "\n" +
+					"export SSL_CERT_FILE=/custom/company-bundle.pem\n"
+			},
+		},
+		{
+			name:    "fish",
+			shell:   "/usr/bin/fish",
+			profile: ".config/fish/config.fish",
+			content: func(bundlePath string) string {
+				return "set -gx SSL_CERT_FILE " + bundlePath + "\n" +
+					"set -gx SSL_CERT_FILE /custom/company-bundle.pem\n"
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Setenv("SHELL", tt.shell)
+			setPrivileged(t, false)
+			bundlePath := "/etc/ssl/certs/ca-certificates.crt"
+			profile := filepath.Join(home, tt.profile)
+			if err := os.MkdirAll(filepath.Dir(profile), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(profile, []byte(tt.content(bundlePath)), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			err := (&osEnvAdapter{}).writePOSIXProfileSSLCertFile(bundlePath)
+			if !errors.Is(err, ErrUserCustomValue) {
+				t.Fatalf("expected later conflicting assignment to return ErrUserCustomValue, got %v", err)
+			}
+		})
+	}
+}
+
+func TestWritePOSIXProfileSSLCertFile_AcceptsMultipleMatchingAssignments(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SHELL", "/bin/bash")
+	setPrivileged(t, false)
+	bundlePath := "/etc/ssl/certs/ca-certificates.crt"
+	bashrc := filepath.Join(home, ".bashrc")
+	content := "export SSL_CERT_FILE=" + bundlePath + "\n" +
+		"export SSL_CERT_FILE='" + bundlePath + "'\n"
+	if err := os.WriteFile(bashrc, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := (&osEnvAdapter{}).writePOSIXProfileSSLCertFile(bundlePath); err != nil {
+		t.Fatalf("all matching assignments should be accepted: %v", err)
+	}
+	written, err := os.ReadFile(bashrc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(written), posixSSLBlockBegin) {
+		t.Fatalf("matching user assignments should not add an mcc block: %s", written)
+	}
+}
+
+func TestWritePOSIXProfileSSLCertFile_RecognizesCommonCustomAssignmentForms(t *testing.T) {
+	tests := []struct {
+		name    string
+		shell   string
+		profile string
+		line    string
+	}{
+		{name: "zsh typeset export", shell: "/bin/zsh", profile: ".zshrc", line: "typeset -x SSL_CERT_FILE=/custom/company-bundle.pem\n"},
+		{name: "zsh typeset global export", shell: "/bin/zsh", profile: ".zshrc", line: "typeset -gx SSL_CERT_FILE=/custom/company-bundle.pem\n"},
+		{name: "bash declare export", shell: "/bin/bash", profile: ".bashrc", line: "declare -x SSL_CERT_FILE=/custom/company-bundle.pem\n"},
+		{name: "bash declare readonly export", shell: "/bin/bash", profile: ".bashrc", line: "declare -rx SSL_CERT_FILE=/custom/company-bundle.pem\n"},
+		{name: "fish combined universal export", shell: "/usr/bin/fish", profile: ".config/fish/config.fish", line: "set -Ux SSL_CERT_FILE /custom/company-bundle.pem\n"},
+		{name: "fish separate universal export", shell: "/usr/bin/fish", profile: ".config/fish/config.fish", line: "set -U -x SSL_CERT_FILE /custom/company-bundle.pem\n"},
+		{name: "fish long universal export", shell: "/usr/bin/fish", profile: ".config/fish/config.fish", line: "set --universal --export SSL_CERT_FILE /custom/company-bundle.pem\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Setenv("SHELL", tt.shell)
+			setPrivileged(t, false)
+			profile := filepath.Join(home, tt.profile)
+			if err := os.MkdirAll(filepath.Dir(profile), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(profile, []byte(tt.line), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			err := (&osEnvAdapter{}).writePOSIXProfileSSLCertFile("/etc/ssl/certs/ca-certificates.crt")
+			if !errors.Is(err, ErrUserCustomValue) {
+				t.Fatalf("expected %q to return ErrUserCustomValue, got %v", strings.TrimSpace(tt.line), err)
+			}
+		})
+	}
+}
+
+func TestWritePOSIXProfileSSLCertFile_RecognizesCommonMatchingAssignmentForms(t *testing.T) {
+	tests := []struct {
+		name    string
+		shell   string
+		profile string
+		line    func(string) string
+	}{
+		{name: "zsh typeset export", shell: "/bin/zsh", profile: ".zshrc", line: func(path string) string { return "typeset -x SSL_CERT_FILE=" + path + "\n" }},
+		{name: "bash declare export", shell: "/bin/bash", profile: ".bashrc", line: func(path string) string { return "declare -x SSL_CERT_FILE=" + path + "\n" }},
+		{name: "fish universal export", shell: "/usr/bin/fish", profile: ".config/fish/config.fish", line: func(path string) string { return "set -Ux SSL_CERT_FILE " + path + "\n" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Setenv("SHELL", tt.shell)
+			setPrivileged(t, false)
+			bundlePath := "/etc/ssl/certs/ca-certificates.crt"
+			profile := filepath.Join(home, tt.profile)
+			if err := os.MkdirAll(filepath.Dir(profile), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(profile, []byte(tt.line(bundlePath)), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := (&osEnvAdapter{}).writePOSIXProfileSSLCertFile(bundlePath); err != nil {
+				t.Fatalf("matching assignment should be accepted: %v", err)
+			}
+			written, err := os.ReadFile(profile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(written), posixSSLBlockBegin) {
+				t.Fatalf("matching assignment should not add a managed block: %s", written)
+			}
+		})
+	}
+}
+
+func TestWritePOSIXProfileSSLCertFile_ReadOnlyReferenceDoesNotBlockPersistence(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SHELL", "/bin/bash")
+	setPrivileged(t, false)
+	bashrc := filepath.Join(home, ".bashrc")
+	if err := os.WriteFile(bashrc, []byte("echo \"$SSL_CERT_FILE\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := (&osEnvAdapter{}).writePOSIXProfileSSLCertFile("/etc/ssl/certs/ca-certificates.crt"); err != nil {
+		t.Fatalf("read-only reference should not block persistence: %v", err)
+	}
+	written, err := os.ReadFile(bashrc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(written), posixSSLBlockBegin) {
+		t.Fatalf("expected managed block after read-only reference, got: %s", written)
+	}
+}
+
+func TestWritePOSIXProfileSSLCertFile_EnvironmentMutationFailsClosed(t *testing.T) {
+	tests := []struct {
+		name     string
+		shell    string
+		profile  string
+		mutation string
+	}{
+		{name: "unset", shell: "/bin/bash", profile: ".bashrc", mutation: "unset SSL_CERT_FILE"},
+		{name: "unset variable option", shell: "/bin/bash", profile: ".bashrc", mutation: "unset -v SSL_CERT_FILE"},
+		{name: "unset quoted key", shell: "/bin/bash", profile: ".bashrc", mutation: "unset 'SSL_CERT_FILE'"},
+		{name: "export unexport", shell: "/bin/bash", profile: ".bashrc", mutation: "export -n SSL_CERT_FILE"},
+		{name: "zsh typeset removes export", shell: "/bin/zsh", profile: ".zshrc", mutation: "typeset +x SSL_CERT_FILE"},
+		{name: "bash declare removes export", shell: "/bin/bash", profile: ".bashrc", mutation: "declare +x SSL_CERT_FILE"},
+		{name: "fish erase", shell: "/usr/bin/fish", profile: ".config/fish/config.fish", mutation: "set -e SSL_CERT_FILE"},
+		{name: "fish long erase with scope", shell: "/usr/bin/fish", profile: ".config/fish/config.fish", mutation: "set --erase --universal SSL_CERT_FILE"},
+		{name: "fish unexport", shell: "/usr/bin/fish", profile: ".config/fish/config.fish", mutation: "set -u SSL_CERT_FILE"},
+		{name: "fish combined export unexport", shell: "/usr/bin/fish", profile: ".config/fish/config.fish", mutation: "set -xu SSL_CERT_FILE"},
+		{name: "fish long unexport", shell: "/usr/bin/fish", profile: ".config/fish/config.fish", mutation: "set --unexport SSL_CERT_FILE"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Setenv("SHELL", tt.shell)
+			setPrivileged(t, false)
+			bundlePath := "/etc/ssl/certs/ca-certificates.crt"
+			profile := filepath.Join(home, tt.profile)
+			if err := os.MkdirAll(filepath.Dir(profile), 0755); err != nil {
+				t.Fatal(err)
+			}
+			content := posixSSLBlockBegin + "\n" + sslCertFileExportLine(tt.shell, bundlePath) + "\n" + posixSSLBlockEnd + "\n" + tt.mutation + "\n"
+			if err := os.WriteFile(profile, []byte(content), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			err := (&osEnvAdapter{}).writePOSIXProfileSSLCertFile(bundlePath)
+			if !errors.Is(err, ErrUserCustomValue) {
+				t.Fatalf("expected %q to return ErrUserCustomValue, got %v", tt.mutation, err)
+			}
+			written, readErr := os.ReadFile(profile)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if string(written) != content {
+				t.Fatalf("conflicting profile must remain unchanged; got %q, want %q", written, content)
+			}
+		})
+	}
+}
+
+func TestWritePOSIXProfileSSLCertFile_OtherVariableMutationAndReadOnlyReferenceAllowed(t *testing.T) {
+	tests := []struct {
+		name     string
+		shell    string
+		profile  string
+		mutation string
+	}{
+		{name: "bash other variable", shell: "/bin/bash", profile: ".bashrc", mutation: "unset OTHER_VAR\nexport -n OTHER_VAR\ntypeset +x OTHER_VAR\ndeclare +x OTHER_VAR"},
+		{name: "bash read only reference", shell: "/bin/bash", profile: ".bashrc", mutation: "echo \"$SSL_CERT_FILE\""},
+		{name: "fish other variable", shell: "/usr/bin/fish", profile: ".config/fish/config.fish", mutation: "set -e OTHER_VAR\nset --unexport OTHER_VAR"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Setenv("SHELL", tt.shell)
+			setPrivileged(t, false)
+			bundlePath := "/etc/ssl/certs/ca-certificates.crt"
+			profile := filepath.Join(home, tt.profile)
+			if err := os.MkdirAll(filepath.Dir(profile), 0755); err != nil {
+				t.Fatal(err)
+			}
+			content := posixSSLBlockBegin + "\n" + sslCertFileExportLine(tt.shell, bundlePath) + "\n" + posixSSLBlockEnd + "\n" + tt.mutation + "\n"
+			if err := os.WriteFile(profile, []byte(content), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := (&osEnvAdapter{}).writePOSIXProfileSSLCertFile(bundlePath); err != nil {
+				t.Fatalf("non-target mutation/reference should be allowed: %v", err)
+			}
+			written, readErr := os.ReadFile(profile)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if string(written) != content {
+				t.Fatalf("already-correct profile should remain unchanged; got %q, want %q", written, content)
+			}
+		})
+	}
+}
+
+func TestEnsureLinuxSystemTrustBundleContainsMCCCA_SelectsBundleUpdatedByInstall(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux bundle verification is Linux-only")
+	}
+	dir := t.TempDir()
+	caPEM := generateTestCACertPEM(t, "current mcc ca")
+	otherPEM := generateTestCACertPEM(t, "other ca")
+	caPath := filepath.Join(dir, "ca.crt")
+	staleBundle := filepath.Join(dir, "stale-bundle.crt")
+	updatedBundle := filepath.Join(dir, "updated-bundle.crt")
+	if err := os.WriteFile(caPath, caPEM, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staleBundle, otherPEM, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(updatedBundle, otherPEM, 0644); err != nil {
+		t.Fatal(err)
+	}
+	withLinuxSSLCertFileCandidates(t, []string{staleBundle, updatedBundle})
+	trust := &mockTrust{installFn: func(string) error {
+		return os.WriteFile(updatedBundle, caPEM, 0644)
+	}}
+	e := New(dir, caPath, "en", WithTrustAdapter(trust))
+
+	bundle, r := e.ensureLinuxSystemTrustBundleContainsMCCCA("")
+	if !r.Success {
+		t.Fatalf("expected success after install updated second bundle, got bundle=%q result=%+v", bundle, r)
+	}
+	if bundle != updatedBundle {
+		t.Fatalf("expected updated bundle %q, got %q", updatedBundle, bundle)
 	}
 }
 
@@ -901,6 +1901,48 @@ func TestResolveShellProfiles(t *testing.T) {
 				if got[i] != want {
 					t.Errorf("resolveShellProfiles[%d] = %q, want %q", i, got[i], want)
 				}
+			}
+		})
+	}
+}
+
+func TestResolveSSLCertFileScanProfiles(t *testing.T) {
+	tests := []struct {
+		name     string
+		shell    string
+		home     string
+		expected []string
+	}{
+		{
+			name:     "bash scans interactive and login profiles",
+			shell:    "/bin/bash",
+			home:     "/home/u",
+			expected: []string{"/home/u/.bashrc", "/home/u/.profile", "/home/u/.bash_profile", "/home/u/.bash_login"},
+		},
+		{
+			name:     "zsh scans interactive and login profiles",
+			shell:    "/bin/zsh",
+			home:     "/home/u",
+			expected: []string{"/home/u/.zshenv", "/home/u/.zprofile", "/home/u/.zshrc", "/home/u/.zlogin"},
+		},
+		{
+			name:     "fish scans its config",
+			shell:    "/usr/bin/fish",
+			home:     "/home/u",
+			expected: []string{"/home/u/.config/fish/config.fish"},
+		},
+		{
+			name:     "unknown shell keeps generic fallbacks",
+			shell:    "/usr/bin/nushell",
+			home:     "/home/u",
+			expected: []string{"/home/u/.profile", "/home/u/.bashrc"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveSSLCertFileScanProfiles(tt.shell, tt.home)
+			if !reflect.DeepEqual(got, tt.expected) {
+				t.Fatalf("resolveSSLCertFileScanProfiles(%q, %q) = %v, want %v", tt.shell, tt.home, got, tt.expected)
 			}
 		})
 	}
@@ -1862,6 +2904,26 @@ func TestNodeCAMarker_Symlink_NotFollowed(t *testing.T) {
 	}
 }
 
+func TestCATrustMarker_Symlink_NotFollowed(t *testing.T) {
+	dir := t.TempDir()
+	caPath := writeFile(t, filepath.Join(dir, "ca.crt"), "cert-content")
+	target := filepath.Join(dir, "ca-marker.real")
+	writeFile(t, target, "original-target")
+	markerPath := filepath.Join(dir, caTrustMarkerName)
+	if err := os.Symlink(target, markerPath); err != nil {
+		t.Fatal(err)
+	}
+
+	if hasCATrustMarker(dir, caPath) {
+		t.Error("expected hasCATrustMarker=false for symlink marker, got true")
+	}
+	writeCATrustMarker(dir, caPath)
+	got, _ := os.ReadFile(target)
+	if string(got) != "original-target" {
+		t.Errorf("symlink marker target modified: got %q, want %q", got, "original-target")
+	}
+}
+
 // setPrivileged 注入 isPrivilegedRun 的 mock 值，测试结束自动还原。
 // 测试默认串行（无 t.Parallel），包级 var 覆盖安全。
 func setPrivileged(t *testing.T, priv bool) {
@@ -2522,6 +3584,156 @@ func TestWritePOSIXProfileNodeCA_CAPathChanged_UpdatesProfile(t *testing.T) {
 	}
 }
 
+func TestWritePOSIXProfileNodeCA_SSLBlockBeforeStaleNodeCABlock(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SHELL", "/bin/bash")
+	setPrivileged(t, false)
+	oldCAPath := "/srv/mcc/data/old-ca.crt"
+	newCAPath := "/srv/mcc/data/ca.crt"
+	bashrc := filepath.Join(home, ".bashrc")
+	content := posixSSLBlockBegin + "\n" +
+		"export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt\n" +
+		posixSSLBlockEnd + "\n" +
+		posixCABlockBegin + "\n" +
+		"export NODE_EXTRA_CA_CERTS=" + oldCAPath + "\n" +
+		posixCABlockEnd + "\n"
+	writeFile(t, bashrc, content)
+
+	if err := (&osEnvAdapter{}).writePOSIXProfileNodeCA(newCAPath); err != nil {
+		t.Fatalf("writePOSIXProfileNodeCA() failed: %v", err)
+	}
+	written, err := os.ReadFile(bashrc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(written), oldCAPath) {
+		t.Fatalf("stale Node CA block was not replaced: %s", written)
+	}
+	if got := strings.Count(string(written), posixCABlockBegin); got != 1 {
+		t.Fatalf("expected exactly one Node CA block, got %d: %s", got, written)
+	}
+}
+
+func TestWritePOSIXProfileNodeCA_SSLBlockBeforeNodeCABlockIsIdempotent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SHELL", "/bin/bash")
+	setPrivileged(t, false)
+	oldCAPath := "/srv/mcc/data/old-ca.crt"
+	newCAPath := "/srv/mcc/data/ca.crt"
+	bashrc := filepath.Join(home, ".bashrc")
+	content := posixSSLBlockBegin + "\n" +
+		"export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt\n" +
+		posixSSLBlockEnd + "\n" +
+		posixCABlockBegin + "\n" +
+		"export NODE_EXTRA_CA_CERTS=" + oldCAPath + "\n" +
+		posixCABlockEnd + "\n"
+	writeFile(t, bashrc, content)
+	a := &osEnvAdapter{}
+
+	if err := a.writePOSIXProfileNodeCA(newCAPath); err != nil {
+		t.Fatalf("first call failed: %v", err)
+	}
+	afterFirst, err := os.ReadFile(bashrc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.writePOSIXProfileNodeCA(newCAPath); err != nil {
+		t.Fatalf("second call failed: %v", err)
+	}
+	afterSecond, err := os.ReadFile(bashrc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterSecond) != string(afterFirst) {
+		t.Fatalf("second call modified profile:\nfirst: %q\nsecond: %q", afterFirst, afterSecond)
+	}
+	if got := strings.Count(string(afterSecond), posixCABlockBegin); got != 1 {
+		t.Fatalf("expected exactly one Node CA block, got %d: %s", got, afterSecond)
+	}
+}
+
+func TestWritePOSIXProfileNodeCA_MalformedManagedBlockFailsClosed(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SHELL", "/bin/bash")
+	setPrivileged(t, false)
+	bashrc := filepath.Join(home, ".bashrc")
+	content := posixCABlockBegin + "\n" +
+		"export NODE_EXTRA_CA_CERTS=/custom/company-ca.crt\n"
+	writeFile(t, bashrc, content)
+
+	err := (&osEnvAdapter{}).writePOSIXProfileNodeCA("/srv/mcc/data/ca.crt")
+	if !errors.Is(err, ErrUserCustomValue) {
+		t.Fatalf("expected malformed Node CA block to return ErrUserCustomValue, got %v", err)
+	}
+	written, readErr := os.ReadFile(bashrc)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(written) != content {
+		t.Fatalf("malformed profile must remain unchanged; got %q, want %q", written, content)
+	}
+}
+
+func TestWritePOSIXProfileNodeCA_EnvironmentMutationAfterManagedBlockFailsClosed(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SHELL", "/bin/bash")
+	setPrivileged(t, false)
+	caPath := "/srv/mcc/data/ca.crt"
+	bashrc := filepath.Join(home, ".bashrc")
+	content := posixCABlockBegin + "\n" +
+		"export NODE_EXTRA_CA_CERTS=" + caPath + "\n" +
+		posixCABlockEnd + "\n" +
+		"unset NODE_EXTRA_CA_CERTS\n"
+	writeFile(t, bashrc, content)
+
+	err := (&osEnvAdapter{}).writePOSIXProfileNodeCA(caPath)
+	if !errors.Is(err, ErrUserCustomValue) {
+		t.Fatalf("expected later NODE_EXTRA_CA_CERTS mutation to return ErrUserCustomValue, got %v", err)
+	}
+	written, readErr := os.ReadFile(bashrc)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(written) != content {
+		t.Fatalf("conflicting profile must remain unchanged; got %q, want %q", written, content)
+	}
+}
+
+func TestWritePOSIXProfileNodeCA_FishMutationAfterManagedBlockFailsClosed(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SHELL", "/usr/bin/fish")
+	setPrivileged(t, false)
+	caPath := "/srv/mcc/data/ca.crt"
+	profile := filepath.Join(home, ".config", "fish", "config.fish")
+	content := posixCABlockBegin + "\n" +
+		"set -gx NODE_EXTRA_CA_CERTS " + caPath + "\n" +
+		posixCABlockEnd + "\n" +
+		"set -e NODE_EXTRA_CA_CERTS\n"
+	writeFile(t, profile, content)
+
+	err := (&osEnvAdapter{}).writePOSIXProfileNodeCA(caPath)
+	if !errors.Is(err, ErrUserCustomValue) {
+		t.Fatalf("expected later fish NODE_EXTRA_CA_CERTS mutation to return ErrUserCustomValue, got %v", err)
+	}
+	written, readErr := os.ReadFile(profile)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(written) != content {
+		t.Fatalf("conflicting fish profile must remain unchanged; got %q, want %q", written, content)
+	}
+}
+
 func TestWritePOSIXProfileNodeCA_Fish_UsesSetGx(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -2593,6 +3805,64 @@ func TestGenerateInstructions_TransparentSuccess_NodeCASuccess_NoWarning(t *test
 			t.Errorf("should NOT have NodeCA failure warning when success, got: %v", lines)
 			break
 		}
+	}
+}
+
+func TestGenerateInstructions_TransparentSuccess_SSLCertFileSuccess_PrintsRestartHint(t *testing.T) {
+	r := Result{
+		SelectedMode:      ModeTransparent,
+		HostsResult:       StepResult{Success: true},
+		TrustResult:       StepResult{Success: true},
+		EnvResult:         StepResult{Success: true},
+		SSLCertFileResult: StepResult{Attempted: true, Success: true},
+	}
+	lines := generateInstructions(r, "zh")
+	found := false
+	for _, l := range lines {
+		if strings.Contains(l, "SSL_CERT_FILE") && strings.Contains(l, "系统 CA bundle") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected SSL_CERT_FILE success hint, got %v", lines)
+	}
+}
+
+func TestGenerateInstructions_TransparentSuccess_SSLCertFileUserCustom_PrintsBundleWarning(t *testing.T) {
+	r := Result{
+		SelectedMode:      ModeTransparent,
+		HostsResult:       StepResult{Success: true},
+		TrustResult:       StepResult{Success: true},
+		EnvResult:         StepResult{Success: true},
+		SSLCertFileResult: StepResult{Attempted: true, Success: false, Err: ErrUserCustomValue},
+	}
+	lines := generateInstructions(r, "en")
+	found := false
+	for _, l := range lines {
+		if strings.Contains(l, "SSL_CERT_FILE") && strings.Contains(l, "full system CA bundle") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected SSL_CERT_FILE custom value warning, got %v", lines)
+	}
+}
+
+func TestStateHash_SSLCertFileFailureDiffersFromSuccess(t *testing.T) {
+	base := Result{
+		SelectedMode: ModeTransparent,
+		HostsResult:  StepResult{Success: true},
+		TrustResult:  StepResult{Success: true},
+		EnvResult:    StepResult{Success: true},
+	}
+	success := base
+	success.SSLCertFileResult = StepResult{Attempted: true, Success: true}
+	fail := base
+	fail.SSLCertFileResult = StepResult{Attempted: true, Success: false, Err: &testError{"missing bundle fingerprint"}}
+	if stateHash(success) == stateHash(fail) {
+		t.Fatal("stateHash should differ between SSL_CERT_FILE success and failure")
 	}
 }
 
@@ -3014,6 +4284,7 @@ func TestProfileHasNodeCAKeyOutsideMCCBlock(t *testing.T) {
 		shell   string
 		content string
 		want    bool
+		wantErr bool
 	}{
 		{
 			name:    "user hand-written export detected",
@@ -3034,6 +4305,30 @@ func TestProfileHasNodeCAKeyOutsideMCCBlock(t *testing.T) {
 			want:    true,
 		},
 		{
+			name:    "declare export detected",
+			shell:   "/bin/bash",
+			content: "declare -x NODE_EXTRA_CA_CERTS=/custom/company-ca.crt\n",
+			want:    true,
+		},
+		{
+			name:    "typeset export detected",
+			shell:   "/bin/zsh",
+			content: "typeset -x NODE_EXTRA_CA_CERTS=/custom/company-ca.crt\n",
+			want:    true,
+		},
+		{
+			name:    "unset fails closed",
+			shell:   "/bin/bash",
+			content: "unset NODE_EXTRA_CA_CERTS\n",
+			wantErr: true,
+		},
+		{
+			name:    "export unexport fails closed",
+			shell:   "/bin/bash",
+			content: "export -n NODE_EXTRA_CA_CERTS\n",
+			wantErr: true,
+		},
+		{
 			name:    "no NODE_EXTRA_CA_CERTS at all",
 			shell:   "/bin/bash",
 			content: "export MCC_ROOT=/opt/mcc\n",
@@ -3052,15 +4347,66 @@ func TestProfileHasNodeCAKeyOutsideMCCBlock(t *testing.T) {
 			want:    true,
 		},
 		{
+			name:    "fish erase fails closed",
+			shell:   "/usr/bin/fish",
+			content: "set -e NODE_EXTRA_CA_CERTS\n",
+			wantErr: true,
+		},
+		{
+			name:    "fish long erase fails closed",
+			shell:   "/usr/bin/fish",
+			content: "set --erase NODE_EXTRA_CA_CERTS\n",
+			wantErr: true,
+		},
+		{
+			name:    "fish unexport fails closed",
+			shell:   "/usr/bin/fish",
+			content: "set --unexport NODE_EXTRA_CA_CERTS\n",
+			wantErr: true,
+		},
+		{
 			name:    "fish inside mcc block not detected",
 			shell:   "/usr/bin/fish",
 			content: "# >>> mcc: Node.js CA trust >>>\nset -gx NODE_EXTRA_CA_CERTS /path\n# <<< mcc <<<\n",
 			want:    false,
 		},
+		{
+			name:    "unmatched begin fails closed",
+			shell:   "/bin/bash",
+			content: posixCABlockBegin + "\nexport NODE_EXTRA_CA_CERTS=/custom/company-ca.crt\n",
+			wantErr: true,
+		},
+		{
+			name:    "unmatched end fails closed",
+			shell:   "/bin/bash",
+			content: posixCABlockEnd + "\n",
+			wantErr: true,
+		},
+		{
+			name:    "nested begin fails closed",
+			shell:   "/bin/bash",
+			content: posixCABlockBegin + "\n" + posixCABlockBegin + "\n" + posixCABlockEnd + "\n",
+			wantErr: true,
+		},
+		{
+			name:    "marker embedded in active command fails closed",
+			shell:   "/bin/bash",
+			content: "echo '" + posixCABlockBegin + "'\n",
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := profileHasNodeCAKeyOutsideMCCBlock(tt.shell, tt.content)
+			got, err := profileHasNodeCAKeyOutsideMCCBlock(tt.shell, tt.content)
+			if tt.wantErr {
+				if !errors.Is(err, ErrUserCustomValue) {
+					t.Fatalf("expected ErrUserCustomValue, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("profileHasNodeCAKeyOutsideMCCBlock returned unexpected error: %v", err)
+			}
 			if got != tt.want {
 				t.Errorf("profileHasNodeCAKeyOutsideMCCBlock(%q, %q) = %v, want %v",
 					tt.shell, tt.content, got, tt.want)
@@ -3520,6 +4866,48 @@ func TestPersistNodeCACert_Darwin_ProfileUserCustom_SkipsLaunchctl(t *testing.T)
 	}
 	if launchctlCalled {
 		t.Error("launchctl must NOT be called when POSIX profile has user custom value")
+	}
+}
+
+func TestPersistNodeCACert_Darwin_MalformedNodeCAMarker_SkipsLaunchctl(t *testing.T) {
+	home := t.TempDir()
+	caPath := writeFile(t, filepath.Join(home, "ca.crt"), "cert")
+
+	bashrc := filepath.Join(home, ".bashrc")
+	content := posixCABlockBegin + "\n" +
+		"export NODE_EXTRA_CA_CERTS=/custom/company-ca.crt\n"
+	writeFile(t, bashrc, content)
+
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SHELL", "/bin/bash")
+
+	launchctlCalled := false
+	origLaunchctl := launchctlSetenv
+	origHas := hasLaunchctl
+	launchctlSetenv = func(key, value string) error {
+		launchctlCalled = true
+		return nil
+	}
+	hasLaunchctl = func() bool { return true }
+	t.Cleanup(func() {
+		launchctlSetenv = origLaunchctl
+		hasLaunchctl = origHas
+	})
+
+	err := (&osEnvAdapter{}).persistNodeCACertDarwin(caPath)
+	if !errors.Is(err, ErrUserCustomValue) {
+		t.Fatalf("expected ErrUserCustomValue, got: %v", err)
+	}
+	if launchctlCalled {
+		t.Error("launchctl must NOT be called when POSIX profile has malformed Node CA marker")
+	}
+	written, readErr := os.ReadFile(bashrc)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(written) != content {
+		t.Fatalf("malformed profile must remain unchanged; got %q, want %q", written, content)
 	}
 }
 

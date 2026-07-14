@@ -88,6 +88,34 @@ func transparentSuccessInstructions(r Result, locale string) []string {
 			}
 		}
 	}
+	if r.SSLCertFileResult.Attempted && r.SSLCertFileResult.Success {
+		lines = append(lines, "")
+		if locale == "zh" {
+			lines = append(lines, "ℹ SSL_CERT_FILE 已持久化为系统 CA bundle；如果 Claude Code/Orca 已在运行，请完全退出并重新启动。")
+		} else {
+			lines = append(lines, "ℹ SSL_CERT_FILE persisted to the full system CA bundle; fully restart Claude Code/Orca if it is already running.")
+		}
+	}
+	if r.SSLCertFileResult.Attempted && (!r.SSLCertFileResult.Success || r.SSLCertFileResult.Partial) {
+		lines = append(lines, "")
+		if locale == "zh" {
+			if errors.Is(r.SSLCertFileResult.Err, ErrPrivilegedRun) {
+				lines = append(lines, "⚠ 检测到以高权限运行，已跳过 SSL_CERT_FILE 持久化。请以非特权身份重启 mcc。")
+			} else if errors.Is(r.SSLCertFileResult.Err, ErrUserCustomValue) {
+				lines = append(lines, "⚠ 检测到用户自定义 SSL_CERT_FILE，mcc 不覆盖；请确认其指向包含 mcc CA 的完整系统 CA bundle，不要指向 data/ca.crt。")
+			} else {
+				lines = append(lines, fmt.Sprintf("⚠ SSL_CERT_FILE 持久化失败，Linux Claude Code 后台 TLS 路径可能仍不信任 mcc CA：%v", r.SSLCertFileResult.Err))
+			}
+		} else {
+			if errors.Is(r.SSLCertFileResult.Err, ErrPrivilegedRun) {
+				lines = append(lines, "⚠ Running with elevated privileges; skipped SSL_CERT_FILE persistence. Restart mcc as a non-privileged user.")
+			} else if errors.Is(r.SSLCertFileResult.Err, ErrUserCustomValue) {
+				lines = append(lines, "⚠ User custom SSL_CERT_FILE detected; mcc will not overwrite it. Verify it points to a full system CA bundle containing the mcc CA, not data/ca.crt.")
+			} else {
+				lines = append(lines, fmt.Sprintf("⚠ SSL_CERT_FILE persistence failed; Linux Claude Code background TLS paths may still not trust the mcc CA: %v", r.SSLCertFileResult.Err))
+			}
+		}
+	}
 	return lines
 }
 
@@ -292,6 +320,13 @@ func stepFailuresZh(r Result) []string {
 			lines = append(lines, fmt.Sprintf("  失败: NODE_EXTRA_CA_CERTS 持久化 (%v)", r.NodeCAResult.Err))
 		}
 	}
+	if r.SSLCertFileResult.Attempted && (!r.SSLCertFileResult.Success || r.SSLCertFileResult.Partial) {
+		if errors.Is(r.SSLCertFileResult.Err, ErrUserCustomValue) {
+			lines = append(lines, "  警告: 检测到用户自定义 SSL_CERT_FILE，mcc 不覆盖")
+		} else {
+			lines = append(lines, fmt.Sprintf("  失败: SSL_CERT_FILE 持久化 (%v)", r.SSLCertFileResult.Err))
+		}
+	}
 	if r.Caps.IsDocker && !r.Caps.HasHostHelper {
 		lines = append(lines, "  限制: Docker 容器无法修改宿主机（未检测到 helper）")
 	}
@@ -317,6 +352,13 @@ func stepFailuresEn(r Result) []string {
 			lines = append(lines, "  Warning: user custom NODE_EXTRA_CA_CERTS detected, mcc will not overwrite")
 		} else {
 			lines = append(lines, fmt.Sprintf("  Failed: NODE_EXTRA_CA_CERTS persistence (%v)", r.NodeCAResult.Err))
+		}
+	}
+	if r.SSLCertFileResult.Attempted && (!r.SSLCertFileResult.Success || r.SSLCertFileResult.Partial) {
+		if errors.Is(r.SSLCertFileResult.Err, ErrUserCustomValue) {
+			lines = append(lines, "  Warning: user custom SSL_CERT_FILE detected, mcc will not overwrite")
+		} else {
+			lines = append(lines, fmt.Sprintf("  Failed: SSL_CERT_FILE persistence (%v)", r.SSLCertFileResult.Err))
 		}
 	}
 	if r.Caps.IsDocker && !r.Caps.HasHostHelper {

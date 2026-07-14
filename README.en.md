@@ -36,7 +36,8 @@ Switching is transparent to Claude Code via automatic model mapping. Hardcoded r
 - Auto-generated CA certificate (10-year validity)
 - Frontend configuration page for providers and model mappings
 - Password-protected configuration page
-- Single-container Docker deployment
+- **Binary-first deployment**: first launch can guide hosts, CA trust, and client environment variable setup automatically
+- Single-container Docker deployment for server or containerized operations
 - Hot-reload configuration without restart
 - **Auto bootstrap**: automatically attempts hosts modification, CA trust installation, and environment persistence on startup
 
@@ -59,9 +60,10 @@ On startup, the proxy automatically attempts the following in priority order:
 1. Ensure the CA certificate exists
 2. Attempt to modify hosts (`127.0.0.1 api.anthropic.com`)
 3. Attempt to install/trust the CA into the system certificate store
-4. Attempt to persist the executable directory as the MCC root
+4. Attempt to persist client environment variables such as `NODE_EXTRA_CA_CERTS` and Linux `SSL_CERT_FILE`
+5. Attempt to persist the executable directory as the MCC root
 
-**Use administrator privileges on first run** to maximize the chance of automatic bootstrap success. If privileges are insufficient, the system will:
+**Prefer the binary on first run**. Administrator privileges let MCC configure hosts, system CA trust, and port 443 related settings; `NODE_EXTRA_CA_CERTS` and Linux `SSL_CERT_FILE` are persisted for the current runtime user when possible. If privileges are insufficient, the system will:
 
 - Log the exact failure reason
 - Print a description of the missing capability
@@ -109,9 +111,75 @@ Releases are built automatically by CI triggered by `v*` tags. GitHub/GitLab gen
 
 ## 🚀 Quick Start
 
-### 1. Deploy with Docker
+### 1. Run as a Binary (recommended)
 
-#### Option A: Using docker build (recommended)
+Binary mode is the recommended path. On first launch, MCC attempts to configure everything needed for Transparent Mode:
+
+- Add hosts mapping: `127.0.0.1 api.anthropic.com`
+- Install/trust the local CA certificate
+- Persist `NODE_EXTRA_CA_CERTS`
+- On Linux, verify the system CA bundle and persist `SSL_CERT_FILE`
+- Persist `MCC_ROOT`, so later launches can resolve certificates from any working directory
+
+> Docker containers cannot directly modify the host hosts file, host CA trust store, or host shell profiles. If your goal is the least manual setup for local Claude Code/Orca, use the binary first.
+>
+> On Linux, `sudo ./mcc` handles system-level setup, but it does not edit an ordinary user's shell profile. If startup logs say user environment variables were not persisted, follow the printed instructions as the ordinary user, or rerun the binary as the ordinary user after system trust is configured.
+
+#### Linux / macOS
+
+Download the matching Release archive, extract it, and start from that directory:
+
+```bash
+# First run may use sudo so bootstrap can configure hosts, CA trust, and port 443 related settings
+sudo ./mcc -data ./data -password "your-admin-password"
+```
+
+If building from source:
+
+```bash
+git clone <repo-url>
+cd magic-claude-code
+
+npm --prefix internal/frontend ci
+npm --prefix internal/frontend run build
+make build
+
+sudo ./bin/mcc -data ./data -password "your-admin-password"
+```
+
+After startup succeeds, fully quit and reopen the terminal or app that starts Claude Code/Orca so the new process inherits the persisted environment. On Linux, check:
+
+```bash
+echo "$NODE_EXTRA_CA_CERTS"
+echo "$SSL_CERT_FILE"
+```
+
+`NODE_EXTRA_CA_CERTS` should point to MCC's `data/ca.crt`, and `SSL_CERT_FILE` should point to the full system CA bundle, for example `/etc/ssl/certs/ca-certificates.crt`. If either value is empty, follow the startup log instructions in the ordinary user's shell, or rerun the binary as the ordinary user after system setup is complete.
+
+#### Windows
+
+Download the Windows Release archive and place it in a stable directory:
+
+```text
+C:\mcc\
+  mcc.exe
+  data\
+```
+
+Start with an admin PowerShell:
+
+```powershell
+cd C:\mcc
+.\mcc.exe -data .\data -password "your-admin-password"
+```
+
+After startup succeeds, close and reopen the terminal, then start Claude Code.
+
+### 2. Deploy with Docker (alternative)
+
+Docker is useful for server deployments or existing container workflows. Note that in-container bootstrap cannot directly modify the host hosts file, host CA trust store, or host shell profiles; apply those host-side settings manually from the logs or use the host helper described later.
+
+#### Option A: Using docker build
 
 ```bash
 # Clone the project
@@ -155,7 +223,7 @@ docker compose up -d
 docker logs mcc
 ```
 
-### 2. Build Test and Verify
+### 3. Docker Build Test and Verify
 
 ```bash
 # 1. Test building the image
@@ -177,7 +245,7 @@ curl -k https://localhost:8442
 docker compose ps
 ```
 
-### 3. Rebuild and Redeploy
+### 4. Docker Rebuild and Redeploy
 
 After code updates, rebuild the image and restart the container:
 
@@ -189,9 +257,24 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-### 4. Run as a Binary (non-Docker)
+### 5. Helper Scripts
 
-Binary mode suits environments where Docker is not desired. The service listens on fixed ports:
+The repository's `scripts/` directory contains host setup and release helpers:
+
+| Script | Purpose | Typical usage |
+| --- | --- | --- |
+| `scripts/setup-host.sh` | Linux/macOS host setup script for hosts mapping and CA trust installation | `sudo ./scripts/setup-host.sh`, `sudo ./scripts/setup-host.sh hosts`, `sudo ./scripts/setup-host.sh trust` |
+| `scripts/setup-host.ps1` | Windows host setup script for hosts mapping and CA trust installation | Admin PowerShell: `.\scripts\setup-host.ps1`, `.\scripts\setup-host.ps1 -Action hosts`, `.\scripts\setup-host.ps1 -Action trust` |
+| `scripts/docker-host-helper.sh` | Host-state helper for Docker scenarios. The container calls it through `MCC_HOST_HELPER` to check whether host hosts/CA setup is done | Run `setup-host.sh` on the host first, then mount the helper into the container and set `MCC_HOST_HELPER` |
+| `scripts/start-mcc.ps1` / `scripts/stop-mcc.ps1` | Windows binary background start/stop scripts; write logs under `logs/` and a `mcc.pid` file | Run `.\start-mcc.ps1` and `.\stop-mcc.ps1` next to `mcc.exe` |
+| `scripts/register-mcc-task.ps1` | Windows scheduled-task registration for starting mcc when the current user logs in | Admin PowerShell: `.\register-mcc-task.ps1 -Force` |
+| `scripts/release.sh` | Maintainer release script for cross-platform builds and Gitee/GitCode/GitLab Release uploads | Used for publishing releases, not required for normal startup |
+
+Release archive roots include `README.md`, `README.en.md`, `SCRIPTS.md`, and `SCRIPTS.en.md`. Linux/macOS archives include `setup-host.sh` and `docker-host-helper.sh`; Windows archives include `setup-host.ps1`, `start-mcc.ps1`, `stop-mcc.ps1`, and `register-mcc-task.ps1`. In normal use, start with the binary and let bootstrap handle setup automatically; these scripts are mainly for bootstrap failure recovery, Docker host pre-configuration, Windows background/autostart operation, or standalone hosts/CA setup.
+
+### 6. Binary Mode Details
+
+The service listens on fixed ports:
 
 - `443`: proxy entry, receives `https://api.anthropic.com` requests
 - `8442`: configuration page
@@ -208,7 +291,7 @@ Binary mode suits environments where Docker is not desired. The service listens 
 >
 > Selective configuration is supported: `setup-host.sh hosts` (hosts only), `setup-host.sh trust` (CA only).
 >
-> Normally `sudo ./mcc` performs the same configuration automatically on startup; the scripts are only needed when auto-configuration fails or for standalone operations.
+> Normally an admin launch of `./mcc` performs system-level setup such as hosts and CA trust automatically; the scripts are only needed when auto-configuration fails or for standalone operations. On Linux, ordinary-user shell environment variables still follow the startup log guidance.
 
 #### macOS / Linux
 
@@ -255,6 +338,14 @@ Configure Node.js to use the proxy CA:
 echo 'export NODE_EXTRA_CA_CERTS=/absolute/path/to/magic-claude-code/data/ca.crt' >> ~/.bashrc
 source ~/.bashrc
 ```
+
+On Linux, binary bootstrap also attempts to install and verify the MCC CA in the full system CA bundle and persist `SSL_CERT_FILE` for subsequently started clients. If automatic setup fails, set it manually after confirming the system bundle contains the MCC CA:
+
+```bash
+export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+```
+
+Fully quit and restart Claude Code/Orca so the new process inherits the variable. `SSL_CERT_FILE` must point to the full system bundle; **do not** point it at the single `data/ca.crt`, because some TLS implementations would then lose trust in normal public certificates. When the binary is started with `sudo`, bootstrap does not edit an ordinary user's shell profile; persist the variable as that user or add it to the appropriate profile as instructed at startup.
 
 #### Windows
 
@@ -330,14 +421,14 @@ ipconfig /flushdns
 
 #### Binary Mode Notes
 
-- **Use administrator privileges on first run** to allow auto bootstrap (hosts modification, CA installation, environment persistence).
+- **Prefer the binary on first run**; system-level setup requires administrator privileges, while ordinary-user shell environment variables are persisted for the current runtime user.
 - Bootstrap failure does not block startup; the system falls back to Tunnel Mode or Gateway Mode (see "Connection Modes").
 - The first launch generates `ca.crt`, `ca.key`, `server.crt`, `server.key`, and `proxy.db` in the `data` directory.
 - The first successful run persists the executable directory as `MCC_ROOT`; subsequent launches from any working directory resolve the certificate automatically.
 - Always set the admin password via `-password` or `ADMIN_PASSWORD`; if unset, a random password is generated and printed once to startup output.
 - Usage statistics default to reading the current user's Claude Code session directory: `~/.claude/projects`. Override with `CLAUDE_PROJECTS_DIR` if needed.
 
-### 5. Install the CA Certificate
+### 7. Install the CA Certificate
 
 The proxy uses a self-signed CA certificate that must be trusted on the client machine. There are three options:
 
@@ -457,7 +548,7 @@ sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keyc
 - ⚠️ Node.js does not read the system certificate store by default
 - Must be combined with `NODE_OPTIONS` from Option 1 or Option 2
 
-### 6. Browser Certificate Import
+### 8. Browser Certificate Import
 
 The CA certificate installed in the system certificate store only affects command-line tools (curl, wget). Chrome and Firefox use a separate NSS certificate database and do not read the system CA — they need a separate import.
 
@@ -547,14 +638,14 @@ Then follow the **apt Firefox** steps above to import the certificate.
 
 snap Firefox may not be readable by the Firefox process even if certutil writes successfully, due to sandbox restrictions. Therefore, for snap Firefox, **import via the Firefox UI** or **switch to apt** is recommended.
 
-### 7. Configure the System
+### 9. Configure the System
 
 ```bash
 # Add the hosts mapping (point api.anthropic.com at the proxy)
 echo "127.0.0.1 api.anthropic.com" | sudo tee -a /etc/hosts
 ```
 
-### 8. Open the Configuration Page
+### 10. Open the Configuration Page
 
 Open a browser and visit: `https://localhost:8442`
 
@@ -771,6 +862,7 @@ The proxy automatically maps `claude-sonnet-4` to the provider-configured model 
 | Modify hosts            | Attempted | Requires admin privileges; falls back on failure        |
 | Install CA trust        | Attempted | Requires admin privileges; falls back on failure        |
 | Persist MCC root        | Attempted | Writes to shell profile or Windows environment variable |
+| Persist client CA env   | Attempted | Linux writes `NODE_EXTRA_CA_CERTS` and system-bundle `SSL_CERT_FILE` |
 | Start proxy             | ✅         | Starts even if bootstrap fails                          |
 
 
@@ -801,7 +893,11 @@ A Docker container **cannot** directly modify the host machine's hosts file or C
 For Docker scenarios, it is recommended to:
 
 - Configure hosts and CA trust manually on the host
+- On a Linux host, run `sudo ./setup-host.sh trust`, then set `export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt` in the host shell that starts Claude Code/Orca
+- Fully quit and restart Claude Code/Orca; the container cannot write or refresh the host's `SSL_CERT_FILE`
 - Or use Tunnel Mode (set `HTTPS_PROXY`)
+
+`SSL_CERT_FILE` must point to the full system bundle containing the MCC CA, never to the single `data/ca.crt`.
 
 ### Docker Host Helper Usage
 

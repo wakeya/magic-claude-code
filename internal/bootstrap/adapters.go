@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"log"
@@ -30,6 +31,13 @@ var isDockerEnvFn = isDockerEnv
 // lookupPersistedNodeCACert reads the effective user/session value without
 // mutating it. Platform implementations live in node_ca_lookup_*.go.
 var lookupPersistedNodeCACert = lookupPersistedNodeCACertOS
+
+var linuxSSLCertFileCandidates = []string{
+	"/etc/ssl/certs/ca-certificates.crt",
+	"/etc/pki/tls/certs/ca-bundle.crt",
+	"/etc/ssl/ca-bundle.pem",
+	"/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+}
 
 // --- Testable hooks for Windows pwsh/setx (not part of EnvAdapter interface) ---
 
@@ -238,6 +246,83 @@ func caFingerprint(certPath string) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
+func caFingerprintSHA256(certPath string) (string, error) {
+	data, err := os.ReadFile(certPath)
+	if err != nil {
+		return "", err
+	}
+	block, _ := pem.Decode(data)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return "", ErrInvalidCertificatePEM
+	}
+	sum := sha256.Sum256(block.Bytes)
+	return strings.ToUpper(hex.EncodeToString(sum[:])), nil
+}
+
+func pemBundleContainsFingerprint(bundlePEM []byte, fingerprint string) (bool, error) {
+	want := strings.ToUpper(strings.ReplaceAll(fingerprint, ":", ""))
+	foundCert := false
+	rest := bundlePEM
+	for {
+		block, remaining := pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		rest = remaining
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		foundCert = true
+		sum := sha256.Sum256(block.Bytes)
+		if strings.ToUpper(hex.EncodeToString(sum[:])) == want {
+			return true, nil
+		}
+	}
+	if !foundCert {
+		return false, ErrInvalidCertificatePEM
+	}
+	return false, nil
+}
+
+func linuxSystemBundleContainsCA(bundlePath, caCertPath string) (bool, error) {
+	fp, err := caFingerprintSHA256(caCertPath)
+	if err != nil {
+		return false, fmt.Errorf("fingerprint CA cert %s: %w", caCertPath, err)
+	}
+	bundlePEM, err := os.ReadFile(bundlePath)
+	if err != nil {
+		return false, fmt.Errorf("read system CA bundle %s: %w", bundlePath, err)
+	}
+	return pemBundleContainsFingerprint(bundlePEM, fp)
+}
+
+func defaultLinuxSSLCertFile() (string, bool) {
+	return defaultLinuxSSLCertFileWithStat(os.Stat)
+}
+
+func defaultLinuxSSLCertFileWithStat(stat func(string) (os.FileInfo, error)) (string, bool) {
+	for _, p := range linuxSSLCertFileCandidates {
+		if st, err := stat(p); err == nil && !st.IsDir() {
+			return p, true
+		}
+	}
+	return "", false
+}
+
+func linuxSSLCertFileContainingCA(caCertPath string) (string, bool) {
+	for _, p := range linuxSSLCertFileCandidates {
+		st, err := os.Stat(p)
+		if err != nil || st.IsDir() {
+			continue
+		}
+		ok, err := linuxSystemBundleContainsCA(p, caCertPath)
+		if err == nil && ok {
+			return p, true
+		}
+	}
+	return "", false
+}
+
 // hasCATrustMarker reports whether the CA-installation marker exists in dataDir
 // AND its recorded fingerprint matches the current CA cert. Fingerprint mismatch
 // (e.g. after cert regeneration) yields false so the caller reinstalls.
@@ -247,7 +332,11 @@ func hasCATrustMarker(dataDir, caCertPath string) bool {
 	if dataDir == "" {
 		return false
 	}
-	raw, err := os.ReadFile(filepath.Join(dataDir, caTrustMarkerName))
+	markerPath := filepath.Join(dataDir, caTrustMarkerName)
+	if err := isSafeForWrite(markerPath); err != nil {
+		return false
+	}
+	raw, err := os.ReadFile(markerPath)
 	if err != nil {
 		return false
 	}
@@ -279,6 +368,10 @@ func writeCATrustMarker(dataDir, caCertPath string) {
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		return
 	}
+	markerPath := filepath.Join(dataDir, caTrustMarkerName)
+	if err := isSafeForWrite(markerPath); err != nil {
+		return
+	}
 	m := caTrustMarker{
 		Action:      "ca-trust-installed",
 		Fingerprint: fp,
@@ -288,7 +381,7 @@ func writeCATrustMarker(dataDir, caCertPath string) {
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(filepath.Join(dataDir, caTrustMarkerName), data, 0644)
+	_ = os.WriteFile(markerPath, data, 0644)
 }
 
 func (a *osTrustAdapter) InstallCA(certPath string) error {
@@ -421,6 +514,11 @@ func (a *osEnvAdapter) LookupNodeCACert() (string, bool, error) {
 	return lookupPersistedNodeCACert()
 }
 
+func (a *osEnvAdapter) LookupSSLCertFile() (string, bool, error) {
+	v, ok := os.LookupEnv("SSL_CERT_FILE")
+	return v, ok && v != "", nil
+}
+
 // PersistNodeCACert 把 NODE_EXTRA_CA_CERTS 持久化到当前用户的 shell/桌面会话环境。
 // 平台实现由 persistNodeCACertWindows / persistNodeCACertDarwin / persistNodeCACertPOSIX 提供。
 func (a *osEnvAdapter) PersistNodeCACert(caCertPath string) error {
@@ -432,6 +530,13 @@ func (a *osEnvAdapter) PersistNodeCACert(caCertPath string) error {
 	default:
 		return a.persistNodeCACertPOSIX(caCertPath)
 	}
+}
+
+func (a *osEnvAdapter) PersistSSLCertFile(bundlePath string) error {
+	if runtime.GOOS != "linux" {
+		return ErrUnsupportedPlatform
+	}
+	return a.persistSSLCertFilePOSIX(bundlePath)
 }
 
 // --- Windows implementation ---
@@ -547,7 +652,11 @@ func scanPOSIXProfilesForCustomValue(shell, home string, privileged bool) (custo
 		if err != nil {
 			return false, err
 		}
-		if profileHasNodeCAKeyOutsideMCCBlock(shell, string(existing)) {
+		custom, scanErr := profileHasNodeCAKeyOutsideMCCBlock(shell, string(existing))
+		if scanErr != nil {
+			return false, scanErr
+		}
+		if custom {
 			return true, nil
 		}
 	}
@@ -793,12 +902,26 @@ func stripLegacyMCCNodeCALines(content string) (string, bool) {
 	return strings.Join(kept, "\n"), true
 }
 
+// findMarkedBlock locates the requested block's end relative to its begin, so
+// another MCC block that shares the same end marker cannot supply the range.
+func findMarkedBlock(content, begin, end string) (beginIndex, endIndex int, found bool) {
+	beginIndex = strings.Index(content, begin)
+	if beginIndex < 0 {
+		return -1, -1, false
+	}
+	endSearchStart := beginIndex + len(begin)
+	relativeEnd := strings.Index(content[endSearchStart:], end)
+	if relativeEnd < 0 {
+		return beginIndex, -1, false
+	}
+	return beginIndex, endSearchStart + relativeEnd, true
+}
+
 // replaceMarkedBlock 在 content 里替换 begin..end 标记之间的内容为 newBlock。
 // 若标记不存在则追加。changed 表示是否实际改动。
 func replaceMarkedBlock(content, begin, end, newBlock string) (string, bool) {
-	bi := strings.Index(content, begin)
-	ei := strings.Index(content, end)
-	if bi >= 0 && ei > bi {
+	bi, ei, found := findMarkedBlock(content, begin, end)
+	if found {
 		// 已有标记块：比较内容，相同则不改
 		existing := content[bi : ei+len(end)]
 		if existing == strings.TrimRight(newBlock, "\n") {
@@ -864,12 +987,18 @@ func (a *osEnvAdapter) persistNodeCACertDarwin(caCertPath string) error {
 // --- POSIX (macOS/Linux) shared implementation ---
 
 const (
-	posixCABlockBegin = "# >>> mcc: Node.js CA trust >>>"
-	posixCABlockEnd   = "# <<< mcc <<<"
+	posixCABlockBegin  = "# >>> mcc: Node.js CA trust >>>"
+	posixCABlockEnd    = "# <<< mcc <<<"
+	posixSSLBlockBegin = "# >>> mcc: SSL_CERT_FILE trust bundle (auto-managed, do not edit) >>>"
+	posixSSLBlockEnd   = "# <<< mcc <<<"
 )
 
 func (a *osEnvAdapter) persistNodeCACertPOSIX(caCertPath string) error {
 	return a.writePOSIXProfileNodeCA(caCertPath)
+}
+
+func (a *osEnvAdapter) persistSSLCertFilePOSIX(bundlePath string) error {
+	return a.writePOSIXProfileSSLCertFile(bundlePath)
 }
 
 func (a *osEnvAdapter) writePOSIXProfileNodeCA(caCertPath string) error {
@@ -897,7 +1026,11 @@ func (a *osEnvAdapter) writePOSIXProfileNodeCA(caCertPath string) error {
 		if err != nil {
 			return err
 		}
-		if profileHasNodeCAKeyOutsideMCCBlock(shell, string(existing)) {
+		custom, scanErr := profileHasNodeCAKeyOutsideMCCBlock(shell, string(existing))
+		if scanErr != nil {
+			return scanErr
+		}
+		if custom {
 			return ErrUserCustomValue
 		}
 	}
@@ -936,38 +1069,62 @@ func (a *osEnvAdapter) writePOSIXProfileNodeCA(caCertPath string) error {
 	return fmt.Errorf("no profile file writable (tried %v)", profiles)
 }
 
-// profileHasNodeCAKeyOutsideMCCBlock 检测 profile 中是否存在非 mcc 管理的
-// NODE_EXTRA_CA_CERTS 赋值（用户手写的 export/set 行，不在 mcc 标记块内）。
-func profileHasNodeCAKeyOutsideMCCBlock(shell, content string) bool {
-	inBlock := false
+// profileHasNodeCAKeyOutsideMCCBlock detects non-mcc NODE_EXTRA_CA_CERTS
+// assignments and fails closed when MCC markers are malformed.
+func profileHasNodeCAKeyOutsideMCCBlock(shell, content string) (bool, error) {
+	managedBlock := ""
 	isFish := strings.Contains(shell, "fish")
 	for _, line := range strings.Split(content, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.Contains(trimmed, posixCABlockBegin) {
-			inBlock = true
+		switch trimmed {
+		case posixCABlockBegin:
+			if managedBlock != "" {
+				return false, ErrUserCustomValue
+			}
+			managedBlock = "node-ca"
+			continue
+		case posixSSLBlockBegin:
+			if managedBlock != "" {
+				return false, ErrUserCustomValue
+			}
+			managedBlock = "ssl"
+			continue
+		case posixCABlockEnd:
+			if managedBlock == "" {
+				return false, ErrUserCustomValue
+			}
+			managedBlock = ""
 			continue
 		}
-		if strings.Contains(trimmed, posixCABlockEnd) {
-			inBlock = false
-			continue
+		if strings.Contains(trimmed, posixCABlockBegin) ||
+			strings.Contains(trimmed, posixSSLBlockBegin) ||
+			strings.Contains(trimmed, posixCABlockEnd) {
+			return false, ErrUserCustomValue
 		}
-		if inBlock || trimmed == "" || strings.HasPrefix(trimmed, "#") {
+		if managedBlock == "node-ca" || trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
 		if isFish {
+			if fishMutatesEnvKey(trimmed, "NODE_EXTRA_CA_CERTS") {
+				return false, ErrUserCustomValue
+			}
 			parsed, ok := parseFishExportLine(trimmed)
 			if ok && parsed.hasExport && parsed.key == "NODE_EXTRA_CA_CERTS" {
-				return true
+				return true, nil
 			}
 		} else {
-			rest := strings.TrimPrefix(trimmed, "export ")
-			rest = strings.TrimSpace(rest)
-			if strings.HasPrefix(rest, "NODE_EXTRA_CA_CERTS=") {
-				return true
+			if posixMutatesEnvKey(trimmed, "NODE_EXTRA_CA_CERTS") {
+				return false, ErrUserCustomValue
+			}
+			if _, found := parsePOSIXExportedAssignment(trimmed, "NODE_EXTRA_CA_CERTS"); found {
+				return true, nil
 			}
 		}
 	}
-	return false
+	if managedBlock != "" {
+		return false, ErrUserCustomValue
+	}
+	return false, nil
 }
 
 func nodeCAExportLine(shell, caCertPath string) string {
@@ -975,6 +1132,283 @@ func nodeCAExportLine(shell, caCertPath string) string {
 		return fmt.Sprintf("set -gx NODE_EXTRA_CA_CERTS %s", shellQuote(caCertPath))
 	}
 	return fmt.Sprintf("export NODE_EXTRA_CA_CERTS=%s", shellQuote(caCertPath))
+}
+
+func (a *osEnvAdapter) writePOSIXProfileSSLCertFile(bundlePath string) error {
+	shell := os.Getenv("SHELL")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("user home dir: %w", err)
+	}
+
+	exportLine := sslCertFileExportLine(shell, bundlePath)
+	block := fmt.Sprintf("%s\n%s\n%s\n", posixSSLBlockBegin, exportLine, posixSSLBlockEnd)
+	scanProfiles := resolveSSLCertFileScanProfiles(shell, home)
+	writeProfiles := resolveShellProfiles(shell, home)
+	privileged := isPrivilegedRun()
+	sameValueProfiles := make(map[string]bool)
+	for _, profile := range scanProfiles {
+		if privileged {
+			if e := isSafeForWrite(profile); e != nil {
+				return fmt.Errorf("%w: %s", ErrUnsafeProfile, profile)
+			}
+		}
+		existing, err := readProfile(profile)
+		if err != nil {
+			return err
+		}
+		values, scanErr := profileSSLCertFileOutsideMCCBlockValues(shell, string(existing))
+		if scanErr != nil {
+			return fmt.Errorf("scan SSL_CERT_FILE in %s: %w", profile, scanErr)
+		}
+		for _, value := range values {
+			if sslCertFilePathsEqual(value, bundlePath) {
+				continue
+			}
+			return ErrUserCustomValue
+		}
+		if len(values) > 0 {
+			sameValueProfiles[profile] = true
+		}
+	}
+	var lastErr error
+	for _, profile := range writeProfiles {
+		if privileged {
+			if e := isSafeForWrite(profile); e != nil {
+				lastErr = fmt.Errorf("%w: %s", ErrUnsafeProfile, profile)
+				continue
+			}
+		}
+		existing, err := readProfile(profile)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if sameValueProfiles[profile] {
+			_, _, found := findMarkedBlock(string(existing), posixSSLBlockBegin, posixSSLBlockEnd)
+			if !found {
+				return nil
+			}
+		}
+		updated, changed := replaceMarkedBlock(string(existing), posixSSLBlockBegin, posixSSLBlockEnd, block)
+		if !changed {
+			return nil
+		}
+		if err := os.MkdirAll(filepath.Dir(profile), 0755); err != nil {
+			lastErr = err
+			continue
+		}
+		if err := writeFileSync(profile, []byte(updated), 0644); err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return fmt.Errorf("no profile file writable (tried %v)", writeProfiles)
+}
+
+func profileSSLCertFileOutsideMCCBlockValues(shell, content string) ([]string, error) {
+	managedBlock := ""
+	isFish := strings.Contains(shell, "fish")
+	var values []string
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch trimmed {
+		case posixSSLBlockBegin:
+			if managedBlock != "" {
+				return nil, ErrUserCustomValue
+			}
+			managedBlock = "ssl"
+			continue
+		case posixCABlockBegin:
+			if managedBlock != "" {
+				return nil, ErrUserCustomValue
+			}
+			managedBlock = "node-ca"
+			continue
+		case posixSSLBlockEnd:
+			if managedBlock == "" {
+				return nil, ErrUserCustomValue
+			}
+			managedBlock = ""
+			continue
+		}
+		if strings.Contains(trimmed, posixSSLBlockBegin) ||
+			strings.Contains(trimmed, posixCABlockBegin) ||
+			strings.Contains(trimmed, posixSSLBlockEnd) {
+			return nil, ErrUserCustomValue
+		}
+		if managedBlock == "ssl" || trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if isFish {
+			if fishMutatesEnvKey(trimmed, "SSL_CERT_FILE") {
+				return nil, ErrUserCustomValue
+			}
+			parsed, ok := parseFishExportLine(trimmed)
+			if ok && parsed.hasExport && parsed.key == "SSL_CERT_FILE" {
+				values = append(values, parsed.value)
+			}
+		} else {
+			if posixMutatesEnvKey(trimmed, "SSL_CERT_FILE") {
+				return nil, ErrUserCustomValue
+			}
+			if value, found := parsePOSIXExportedAssignment(trimmed, "SSL_CERT_FILE"); found {
+				values = append(values, value)
+			}
+		}
+	}
+	if managedBlock != "" {
+		return nil, ErrUserCustomValue
+	}
+	return values, nil
+}
+
+func tokenTargetsEnvKey(token, key string) bool {
+	token = unquoteValue(token)
+	return token == key || strings.HasPrefix(token, key+"=")
+}
+
+func posixMutatesEnvKey(line, key string) bool {
+	fields := strings.Fields(line)
+	if len(fields) < 2 {
+		return false
+	}
+
+	mutates := false
+	switch fields[0] {
+	case "unset":
+		mutates = true
+	case "export":
+		for _, field := range fields[1:] {
+			if field == "--" || (!strings.HasPrefix(field, "-") && !strings.HasPrefix(field, "+")) {
+				break
+			}
+			if strings.HasPrefix(field, "-") && !strings.HasPrefix(field, "--") && strings.Contains(field[1:], "n") {
+				mutates = true
+				break
+			}
+		}
+	case "typeset", "declare":
+		for _, field := range fields[1:] {
+			if field == "--" || (!strings.HasPrefix(field, "-") && !strings.HasPrefix(field, "+")) {
+				break
+			}
+			if strings.HasPrefix(field, "+") && !strings.HasPrefix(field, "++") && strings.Contains(field[1:], "x") {
+				mutates = true
+				break
+			}
+		}
+	default:
+		return false
+	}
+	if !mutates {
+		return false
+	}
+	for _, field := range fields[1:] {
+		if strings.HasPrefix(field, "-") || strings.HasPrefix(field, "+") {
+			continue
+		}
+		if tokenTargetsEnvKey(field, key) {
+			return true
+		}
+	}
+	return false
+}
+
+func fishMutatesEnvKey(line, key string) bool {
+	tokens := scanFishTokens(stripFishComment(line))
+	if len(tokens) < 3 || tokens[0].text != "set" {
+		return false
+	}
+
+	mutates := false
+	idx := 1
+	for idx < len(tokens) {
+		option := tokens[idx].text
+		if !strings.HasPrefix(option, "-") {
+			break
+		}
+		switch option {
+		case "--erase", "--unexport":
+			mutates = true
+		case "--global", "--universal", "--function", "--local":
+			// Scope-only long options do not change mutation semantics.
+		default:
+			if strings.HasPrefix(option, "--") || len(option) == 1 {
+				return false
+			}
+			for _, flag := range option[1:] {
+				switch flag {
+				case 'e', 'u':
+					mutates = true
+				case 'g', 'U', 'f', 'l', 'x':
+					// Scope/export short options do not cancel a mutation.
+				default:
+					return false
+				}
+			}
+		}
+		idx++
+	}
+	return mutates && idx < len(tokens) && tokens[idx].text == key
+}
+
+func parsePOSIXExportedAssignment(line, key string) (string, bool) {
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return "", false
+	}
+
+	assignmentStart := 0
+	switch fields[0] {
+	case "export":
+		assignmentStart = 1
+	case "typeset", "declare":
+		if !posixDeclarationHasExportOption(fields[1:]) {
+			return "", false
+		}
+		assignmentStart = 1
+	default:
+		prefix := key + "="
+		if strings.HasPrefix(fields[0], prefix) {
+			return unquoteValue(strings.TrimPrefix(fields[0], prefix)), true
+		}
+		return "", false
+	}
+
+	prefix := key + "="
+	for _, field := range fields[assignmentStart:] {
+		if strings.HasPrefix(field, prefix) {
+			return unquoteValue(strings.TrimPrefix(field, prefix)), true
+		}
+	}
+	return "", false
+}
+
+func posixDeclarationHasExportOption(fields []string) bool {
+	for _, field := range fields {
+		if field == "--" || (!strings.HasPrefix(field, "-") && !strings.HasPrefix(field, "+")) {
+			break
+		}
+		if field == "--export" {
+			return true
+		}
+		if strings.HasPrefix(field, "-") && !strings.HasPrefix(field, "--") && strings.Contains(field[1:], "x") {
+			return true
+		}
+	}
+	return false
+}
+
+func sslCertFileExportLine(shell, bundlePath string) string {
+	if strings.Contains(shell, "fish") {
+		return fmt.Sprintf("set -gx SSL_CERT_FILE %s", shellQuote(bundlePath))
+	}
+	return fmt.Sprintf("export SSL_CERT_FILE=%s", shellQuote(bundlePath))
 }
 
 // writeCloser is the minimal interface writeProfileEntry needs from a profile
@@ -1105,25 +1539,11 @@ func parseFishExportLine(line string) (fishExportLine, bool) {
 		return fishExportLine{}, false
 	}
 
-	out := fishExportLine{}
-	idx := 1
-	for idx < len(tokens) {
-		switch tokens[idx].text {
-		case "-x", "-gx", "--export":
-			out.hasExport = true
-			idx++
-		default:
-			if strings.HasPrefix(tokens[idx].text, "-") {
-				return fishExportLine{}, false
-			}
-			goto key
-		}
-	}
-
-key:
-	if !out.hasExport || idx >= len(tokens) {
+	idx, hasExport, ok := parseFishSetOptions(tokens)
+	if !ok || !hasExport || idx >= len(tokens) {
 		return fishExportLine{}, false
 	}
+	out := fishExportLine{hasExport: true}
 	out.key = tokens[idx].text
 	idx++
 	if idx >= len(tokens) {
@@ -1144,6 +1564,38 @@ key:
 	}
 	out.value = b.String()
 	return out, true
+}
+
+func parseFishSetOptions(tokens []fishToken) (idx int, hasExport bool, ok bool) {
+	idx = 1
+	for idx < len(tokens) {
+		option := tokens[idx].text
+		if !strings.HasPrefix(option, "-") {
+			return idx, hasExport, true
+		}
+		switch option {
+		case "--export":
+			hasExport = true
+		case "--global", "--universal", "--function", "--local":
+			// Scope-only long options do not change assignment semantics.
+		default:
+			if strings.HasPrefix(option, "--") || len(option) == 1 {
+				return 0, false, false
+			}
+			for _, flag := range option[1:] {
+				switch flag {
+				case 'x':
+					hasExport = true
+				case 'g', 'U', 'f', 'l':
+					// Scope-only short options are safe in any combination.
+				default:
+					return 0, false, false
+				}
+			}
+		}
+		idx++
+	}
+	return idx, hasExport, true
 }
 
 // scanFishTokens tokenizes a fish line while preserving quoted spans and
@@ -1340,6 +1792,23 @@ func resolveShellProfiles(shell, home string) []string {
 		return []string{home + "/.bashrc"}
 	default:
 		return []string{home + "/.profile", home + "/.bashrc"}
+	}
+}
+
+// resolveSSLCertFileScanProfiles returns every startup profile that can set
+// SSL_CERT_FILE for the selected shell. This is intentionally separate from
+// resolveShellProfiles: scanning must cover interactive and login startup
+// files, while persistence keeps its existing single preferred write target.
+func resolveSSLCertFileScanProfiles(shell, home string) []string {
+	switch {
+	case strings.Contains(shell, "zsh"):
+		return []string{home + "/.zshenv", home + "/.zprofile", home + "/.zshrc", home + "/.zlogin"}
+	case strings.Contains(shell, "fish"):
+		return []string{home + "/.config/fish/config.fish"}
+	case strings.Contains(shell, "bash"):
+		return []string{home + "/.bashrc", home + "/.profile", home + "/.bash_profile", home + "/.bash_login"}
+	default:
+		return resolveShellProfiles(shell, home)
 	}
 }
 

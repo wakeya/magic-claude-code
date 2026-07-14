@@ -53,6 +53,8 @@ write_marker() {
     local cert="${2:-}"
     local data_dir="$PROJECT_DIR/data"
     mkdir -p "$data_dir" 2>/dev/null || return 0
+    local marker="$data_dir/.$name"
+    safe_marker_path "$marker" || return 0
     local fp_field=""
     if [[ "$name" == "ca-trust-installed" && -n "$cert" && -f "$cert" ]]; then
         local fp
@@ -63,9 +65,22 @@ write_marker() {
         fi
         [[ -n "$fp" ]] && fp_field="\"fingerprint\":\"$fp\","
     fi
+    local tmp
+    tmp=$(mktemp "$data_dir/.$name.tmp.XXXXXX" 2>/dev/null) || return 0
     printf '{"action":"%s",%s"os":"%s","timestamp":"%s"}\n' \
         "$name" "$fp_field" "$OS_TYPE" "$(date -Iseconds 2>/dev/null || date)" \
-        > "$data_dir/.$name" 2>/dev/null || true
+        > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    chmod 0644 "$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$marker" 2>/dev/null || rm -f "$tmp"
+}
+
+safe_marker_path() {
+    local path="$1"
+    if [[ -e "$path" || -L "$path" ]]; then
+        [[ -L "$path" ]] && return 1
+        [[ -f "$path" ]] || return 1
+    fi
+    return 0
 }
 
 # ─── 参数解析 ───
@@ -152,6 +167,22 @@ find_cert() {
         "./data/ca.crt"
         "./ca.crt"
     )
+    for c in "${candidates[@]}"; do
+        if [[ -f "$c" ]]; then
+            echo "$c"; return 0
+        fi
+    done
+    return 1
+}
+
+find_system_ca_bundle() {
+    local candidates=(
+        "/etc/ssl/certs/ca-certificates.crt"
+        "/etc/pki/tls/certs/ca-bundle.crt"
+        "/etc/ssl/ca-bundle.pem"
+        "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
+    )
+    local c
     for c in "${candidates[@]}"; do
         if [[ -f "$c" ]]; then
             echo "$c"; return 0
@@ -389,6 +420,15 @@ setup_trust() {
     write_marker "ca-trust-installed" "$cert"
     info "提示: 如果使用 Node.js (Claude Code)，还需设置环境变量:"
     echo "  export NODE_EXTRA_CA_CERTS=$(cd "$(dirname "$cert")" && pwd)/$(basename "$cert")"
+    if [[ "$OS_TYPE" != "macos" && "$OS_TYPE" != "windows" ]]; then
+        local bundle
+        if bundle=$(find_system_ca_bundle); then
+            echo "  export SSL_CERT_FILE=$bundle"
+            echo "  # SSL_CERT_FILE 必须指向完整系统 CA bundle，不能指向单个 data/ca.crt"
+        else
+            warn "未找到常见完整系统 CA bundle；请按 README 手动设置 SSL_CERT_FILE。"
+        fi
+    fi
 }
 
 # ─── 主逻辑 ───

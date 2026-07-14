@@ -155,15 +155,237 @@ func TestSaveServerCertWritesChain(t *testing.T) {
 		t.Errorf("expected both blocks to be CERTIFICATE type, got %s and %s", blocks[0].Type, blocks[1].Type)
 	}
 
-	if !equalBytes(blocks[0].Bytes, serverCert) {
+	if !equalBytesForTest(blocks[0].Bytes, serverCert) {
 		t.Error("first PEM block should be server certificate")
 	}
-	if !equalBytes(blocks[1].Bytes, caCert) {
+	if !equalBytesForTest(blocks[1].Bytes, caCert) {
 		t.Error("second PEM block should be CA certificate")
 	}
 }
 
-func equalBytes(a, b []byte) bool {
+func TestEnsureServerCertDoesNotDuplicateExistingChain(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "cert-chain-idempotent-test")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	manager := NewManager(tmpDir)
+	caCert, caKey, err := manager.GenerateCA()
+	if err != nil {
+		t.Fatalf("failed to generate CA: %v", err)
+	}
+	if err := manager.SaveCA(caCert, caKey); err != nil {
+		t.Fatalf("failed to save CA: %v", err)
+	}
+	serverCert, serverKey, err := manager.GenerateServerCert(caCert, caKey)
+	if err != nil {
+		t.Fatalf("failed to generate server cert: %v", err)
+	}
+	if err := manager.SaveServerCert(serverCert, caCert, serverKey); err != nil {
+		t.Fatalf("failed to save server cert: %v", err)
+	}
+
+	if _, _, err := manager.EnsureServerCert(caCert, caKey); err != nil {
+		t.Fatalf("EnsureServerCert() error = %v", err)
+	}
+	if _, _, err := manager.EnsureServerCert(caCert, caKey); err != nil {
+		t.Fatalf("EnsureServerCert() second call error = %v", err)
+	}
+
+	certPEM, err := os.ReadFile(filepath.Join(tmpDir, "server.crt"))
+	if err != nil {
+		t.Fatalf("failed to read server.crt: %v", err)
+	}
+	if got := countCertificatePEMBlocksForTest(certPEM); got != 2 {
+		t.Fatalf("expected existing full chain to remain 2 cert PEM blocks, got %d", got)
+	}
+}
+
+func TestEnsureServerCertRepairsLeafOnlyServerCert(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "cert-chain-repair-test")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	manager := NewManager(tmpDir)
+	caCert, caKey, err := manager.GenerateCA()
+	if err != nil {
+		t.Fatalf("failed to generate CA: %v", err)
+	}
+	if err := manager.SaveCA(caCert, caKey); err != nil {
+		t.Fatalf("failed to save CA: %v", err)
+	}
+	serverCert, serverKey, err := manager.GenerateServerCert(caCert, caKey)
+	if err != nil {
+		t.Fatalf("failed to generate server cert: %v", err)
+	}
+	if err := manager.SaveServerCert(serverCert, caCert, serverKey); err != nil {
+		t.Fatalf("failed to save server cert: %v", err)
+	}
+
+	leafOnly := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: serverCert})
+	if err := os.WriteFile(filepath.Join(tmpDir, "server.crt"), leafOnly, 0644); err != nil {
+		t.Fatalf("failed to rewrite leaf-only server.crt: %v", err)
+	}
+
+	if _, _, err := manager.EnsureServerCert(caCert, caKey); err != nil {
+		t.Fatalf("EnsureServerCert() error = %v", err)
+	}
+	certPEM, err := os.ReadFile(filepath.Join(tmpDir, "server.crt"))
+	if err != nil {
+		t.Fatalf("failed to read server.crt: %v", err)
+	}
+	if got := countCertificatePEMBlocksForTest(certPEM); got != 2 {
+		t.Fatalf("expected repaired chain to contain 2 cert PEM blocks, got %d", got)
+	}
+}
+
+func TestEnsureServerCertRegeneratesWhenExistingChainUsesOldCA(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "cert-chain-rotated-ca-test")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	manager := NewManager(tmpDir)
+	oldCA, oldKey, err := manager.GenerateCA()
+	if err != nil {
+		t.Fatalf("failed to generate old CA: %v", err)
+	}
+	oldServerCert, oldServerKey, err := manager.GenerateServerCert(oldCA, oldKey)
+	if err != nil {
+		t.Fatalf("failed to generate old server cert: %v", err)
+	}
+	if err := manager.SaveServerCert(oldServerCert, oldCA, oldServerKey); err != nil {
+		t.Fatalf("failed to save old server cert: %v", err)
+	}
+
+	newCA, newKey, err := manager.GenerateCA()
+	if err != nil {
+		t.Fatalf("failed to generate new CA: %v", err)
+	}
+	if err := manager.SaveCA(newCA, newKey); err != nil {
+		t.Fatalf("failed to save new CA: %v", err)
+	}
+
+	ensuredCert, _, err := manager.EnsureServerCert(newCA, newKey)
+	if err != nil {
+		t.Fatalf("EnsureServerCert() error = %v", err)
+	}
+	if equalBytesForTest(ensuredCert, oldServerCert) {
+		t.Fatal("expected server certificate to be regenerated for new CA")
+	}
+
+	certPEM, err := os.ReadFile(filepath.Join(tmpDir, "server.crt"))
+	if err != nil {
+		t.Fatalf("failed to read server.crt: %v", err)
+	}
+	blocks := certificatePEMBlocksForTest(certPEM)
+	if len(blocks) != 2 {
+		t.Fatalf("expected regenerated chain to contain 2 cert PEM blocks, got %d", len(blocks))
+	}
+	if !equalBytesForTest(blocks[1].Bytes, newCA) {
+		t.Fatal("expected second PEM block to be current CA")
+	}
+	leaf, err := x509.ParseCertificate(blocks[0].Bytes)
+	if err != nil {
+		t.Fatalf("failed to parse regenerated leaf: %v", err)
+	}
+	currentCA, err := x509.ParseCertificate(newCA)
+	if err != nil {
+		t.Fatalf("failed to parse new CA: %v", err)
+	}
+	if err := leaf.CheckSignatureFrom(currentCA); err != nil {
+		t.Fatalf("regenerated leaf should verify against current CA: %v", err)
+	}
+}
+
+func TestEnsureServerCertRegeneratesWhenLeafOnlyUsesOldCA(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "cert-chain-leaf-only-rotated-ca-test")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	manager := NewManager(tmpDir)
+	oldCA, oldKey, err := manager.GenerateCA()
+	if err != nil {
+		t.Fatalf("failed to generate old CA: %v", err)
+	}
+	oldServerCert, oldServerKey, err := manager.GenerateServerCert(oldCA, oldKey)
+	if err != nil {
+		t.Fatalf("failed to generate old server cert: %v", err)
+	}
+	if err := manager.SaveServerCert(oldServerCert, oldCA, oldServerKey); err != nil {
+		t.Fatalf("failed to save old server cert: %v", err)
+	}
+	leafOnly := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: oldServerCert})
+	if err := os.WriteFile(filepath.Join(tmpDir, "server.crt"), leafOnly, 0644); err != nil {
+		t.Fatalf("failed to rewrite leaf-only old server.crt: %v", err)
+	}
+
+	newCA, newKey, err := manager.GenerateCA()
+	if err != nil {
+		t.Fatalf("failed to generate new CA: %v", err)
+	}
+	if err := manager.SaveCA(newCA, newKey); err != nil {
+		t.Fatalf("failed to save new CA: %v", err)
+	}
+
+	ensuredCert, _, err := manager.EnsureServerCert(newCA, newKey)
+	if err != nil {
+		t.Fatalf("EnsureServerCert() error = %v", err)
+	}
+	if equalBytesForTest(ensuredCert, oldServerCert) {
+		t.Fatal("expected leaf-only server certificate to be regenerated for new CA")
+	}
+
+	certPEM, err := os.ReadFile(filepath.Join(tmpDir, "server.crt"))
+	if err != nil {
+		t.Fatalf("failed to read server.crt: %v", err)
+	}
+	blocks := certificatePEMBlocksForTest(certPEM)
+	if len(blocks) != 2 {
+		t.Fatalf("expected regenerated chain to contain 2 cert PEM blocks, got %d", len(blocks))
+	}
+	if !equalBytesForTest(blocks[1].Bytes, newCA) {
+		t.Fatal("expected second PEM block to be current CA")
+	}
+	leaf, err := x509.ParseCertificate(blocks[0].Bytes)
+	if err != nil {
+		t.Fatalf("failed to parse regenerated leaf: %v", err)
+	}
+	currentCA, err := x509.ParseCertificate(newCA)
+	if err != nil {
+		t.Fatalf("failed to parse new CA: %v", err)
+	}
+	if err := leaf.CheckSignatureFrom(currentCA); err != nil {
+		t.Fatalf("regenerated leaf should verify against current CA: %v", err)
+	}
+}
+
+func countCertificatePEMBlocksForTest(data []byte) int {
+	return len(certificatePEMBlocksForTest(data))
+}
+
+func certificatePEMBlocksForTest(data []byte) []*pem.Block {
+	var blocks []*pem.Block
+	rest := data
+	for {
+		block, remaining := pem.Decode(rest)
+		if block == nil {
+			return blocks
+		}
+		if block.Type == "CERTIFICATE" {
+			blocks = append(blocks, block)
+		}
+		rest = remaining
+	}
+}
+
+func equalBytesForTest(a, b []byte) bool {
 	if len(a) != len(b) {
 		return false
 	}

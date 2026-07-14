@@ -17,33 +17,39 @@ type persistedState struct {
 func stateHash(r Result) string {
 	h := sha256.New()
 	data := struct {
-		HostsOK       bool   `json:"h"`
-		TrustOK       bool   `json:"t"`
-		EnvOK         bool   `json:"e"`
-		NodeCAOK      bool   `json:"nc"`
-		NodeCAPartial bool   `json:"np"`
-		Mode          Mode   `json:"m"`
-		PrefMode      Mode   `json:"pm"`
-		Docker        bool   `json:"d"`
-		Helper        bool   `json:"helper"`
-		HostsErr      string `json:"he"`
-		TrustErr      string `json:"te"`
-		EnvErr        string `json:"ee"`
-		NodeCAErr     string `json:"nce"`
+		HostsOK            bool   `json:"h"`
+		TrustOK            bool   `json:"t"`
+		EnvOK              bool   `json:"e"`
+		NodeCAOK           bool   `json:"nc"`
+		NodeCAPartial      bool   `json:"np"`
+		SSLCertFileOK      bool   `json:"ssl"`
+		SSLCertFilePartial bool   `json:"sslp"`
+		Mode               Mode   `json:"m"`
+		PrefMode           Mode   `json:"pm"`
+		Docker             bool   `json:"d"`
+		Helper             bool   `json:"helper"`
+		HostsErr           string `json:"he"`
+		TrustErr           string `json:"te"`
+		EnvErr             string `json:"ee"`
+		NodeCAErr          string `json:"nce"`
+		SSLCertFileErr     string `json:"ssle"`
 	}{
-		HostsOK:       r.HostsResult.Success,
-		TrustOK:       r.TrustResult.Success,
-		EnvOK:         r.EnvResult.Success,
-		NodeCAOK:      r.NodeCAResult.Success,
-		NodeCAPartial: r.NodeCAResult.Partial,
-		Mode:          r.SelectedMode,
-		PrefMode:      r.PreferredMode,
-		Docker:        r.Caps.IsDocker,
-		Helper:        r.Caps.HasHostHelper,
-		HostsErr:      errString(r.HostsResult.Err),
-		TrustErr:      errString(r.TrustResult.Err),
-		EnvErr:        errString(r.EnvResult.Err),
-		NodeCAErr:     errString(r.NodeCAResult.Err),
+		HostsOK:            r.HostsResult.Success,
+		TrustOK:            r.TrustResult.Success,
+		EnvOK:              r.EnvResult.Success,
+		NodeCAOK:           r.NodeCAResult.Success,
+		NodeCAPartial:      r.NodeCAResult.Partial,
+		SSLCertFileOK:      r.SSLCertFileResult.Success,
+		SSLCertFilePartial: r.SSLCertFileResult.Partial,
+		Mode:               r.SelectedMode,
+		PrefMode:           r.PreferredMode,
+		Docker:             r.Caps.IsDocker,
+		Helper:             r.Caps.HasHostHelper,
+		HostsErr:           errString(r.HostsResult.Err),
+		TrustErr:           errString(r.TrustResult.Err),
+		EnvErr:             errString(r.EnvResult.Err),
+		NodeCAErr:          errString(r.NodeCAResult.Err),
+		SSLCertFileErr:     errString(r.SSLCertFileResult.Err),
 	}
 	jsonData, _ := json.Marshal(data)
 	h.Write(jsonData)

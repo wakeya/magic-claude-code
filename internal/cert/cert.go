@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"net"
 	"os"
@@ -165,10 +166,88 @@ func (m *Manager) EnsureCA() ([]byte, *rsa.PrivateKey, error) {
 	return caCert, caKey, nil
 }
 
+// ensureServerCertChain 确保 server.crt 包含完整证书链（叶子 + 当前 CA）。
+// f168de9 之前生成的存量 server.crt 只含叶子证书，TLS 握手时不发 CA，
+// 导致 Bun 后台辅助请求（不读本地 CA 库）验证失败发 unknown_ca。
+// 检测到链不完整且 leaf 由当前 CA 签发时，追加当前 CA；检测到链属于旧 CA 时，要求调用方重签。
+func (m *Manager) ensureServerCertChain(caCertDER []byte) (bool, error) {
+	certPath := m.GetServerCertPath()
+	certPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		return false, err
+	}
+
+	blocks := certificatePEMBlocks(certPEM)
+	if len(blocks) == 0 {
+		return true, nil
+	}
+	leaf, err := x509.ParseCertificate(blocks[0].Bytes)
+	if err != nil {
+		return true, nil
+	}
+	ca, err := x509.ParseCertificate(caCertDER)
+	if err != nil {
+		return false, err
+	}
+	if len(blocks) >= 2 {
+		if !equalBytes(blocks[1].Bytes, caCertDER) {
+			return true, nil
+		}
+		if err := leaf.CheckSignatureFrom(ca); err != nil {
+			return true, nil
+		}
+		return false, nil
+	}
+	if err := leaf.CheckSignatureFrom(ca); err != nil {
+		return true, nil
+	}
+
+	// 修复：追加调用方传入的当前 CA DER，避免磁盘 ca.crt 与入参不一致。
+	f, err := os.OpenFile(certPath, os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	if len(certPEM) > 0 && certPEM[len(certPEM)-1] != '\n' {
+		if _, err := f.Write([]byte("\n")); err != nil {
+			return false, err
+		}
+	}
+	if err := pem.Encode(f, &pem.Block{Type: "CERTIFICATE", Bytes: caCertDER}); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+func countCertificatePEMBlocks(data []byte) int {
+	return len(certificatePEMBlocks(data))
+}
+
+func certificatePEMBlocks(data []byte) []*pem.Block {
+	var blocks []*pem.Block
+	rest := data
+	for {
+		block, remaining := pem.Decode(rest)
+		if block == nil {
+			return blocks
+		}
+		if block.Type == "CERTIFICATE" {
+			blocks = append(blocks, block)
+		}
+		rest = remaining
+	}
+}
+
 // EnsureServerCert 确保服务器证书存在，不存在则生成
 func (m *Manager) EnsureServerCert(caCertDER []byte, caKey *rsa.PrivateKey) ([]byte, *rsa.PrivateKey, error) {
 	if m.ServerCertExists() {
-		return m.LoadServerCert()
+		regenerate, err := m.ensureServerCertChain(caCertDER)
+		if err != nil {
+			return nil, nil, fmt.Errorf("ensure server cert chain: %w", err)
+		}
+		if !regenerate {
+			return m.LoadServerCert()
+		}
 	}
 
 	serverCert, serverKey, err := m.GenerateServerCert(caCertDER, caKey)
@@ -181,6 +260,18 @@ func (m *Manager) EnsureServerCert(caCertDER []byte, caKey *rsa.PrivateKey) ([]b
 	}
 
 	return serverCert, serverKey, nil
+}
+
+func equalBytes(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // GetCACertPath 返回 CA 证书路径

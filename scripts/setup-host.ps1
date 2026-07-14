@@ -41,6 +41,8 @@ function Write-Marker {
     $dataDir = Join-Path $PSScriptRoot "..\data"
     if (-not (Test-Path $dataDir)) { return }
     try {
+        $markerPath = Join-Path $dataDir ".$Name"
+        if (-not (Test-SafeMarkerPath $markerPath)) { return }
         $obj = [ordered]@{ action = $Name }
         if ($Name -eq 'ca-trust-installed' -and $CertPath -and (Test-Path $CertPath)) {
             $hash = (Get-FileHash $CertPath -Algorithm SHA256).Hash.ToLower()
@@ -48,9 +50,24 @@ function Write-Marker {
         }
         $obj['os'] = 'windows'
         $obj['timestamp'] = (Get-Date -Format 'o')
+        $tmp = Join-Path $dataDir ".$Name.tmp.$([Guid]::NewGuid().ToString('N'))"
         $obj | ConvertTo-Json -Compress |
-            Set-Content -Path (Join-Path $dataDir ".$Name") -Encoding UTF8 -ErrorAction SilentlyContinue
+            Set-Content -Path $tmp -Encoding UTF8 -ErrorAction Stop
+        Move-Item -Path $tmp -Destination $markerPath -Force -ErrorAction SilentlyContinue
     } catch { }
+}
+
+function Test-SafeMarkerPath {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -Force)) { return $true }
+    try {
+        $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { return $false }
+        if ($item.PSIsContainer) { return $false }
+        return $true
+    } catch {
+        return $false
+    }
 }
 
 # ─── 管理员权限检查 ───
