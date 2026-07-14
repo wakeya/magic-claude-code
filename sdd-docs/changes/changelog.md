@@ -7,6 +7,17 @@
 
 ---
 
+## v0.16.2 (2026-07-14)
+
+### Fixed
+- **各平台 Release 下载包附带完整的宿主机配置脚本与文档**：修复此前打包步骤不分平台只附带 `setup-host.sh` / `setup-host.ps1`，导致 Windows 包缺少 `start-mcc.ps1`、`stop-mcc.ps1`、`register-mcc-task.ps1`，非 Windows 包缺少 `docker-host-helper.sh`，且所有平台都缺少 `README.en.md`、`SCRIPTS.md`、`SCRIPTS.en.md` 的问题（#12）。现在按平台附带对应脚本与双语文档，便于在 bootstrap 自动配置失败时手动完成 hosts + CA 配置与容器宿主维护。
+- **消除 providerquota 调度器测试在 `-race` 下偶发的 `SQLITE_BUSY` flaky**：测试 DB 此前以 rollback-journal 模式运行且未设置 `busy_timeout`，`scanAndQuery` 的同步 `store.Get` 与异步 `SaveUpsert` 在写锁上冲突并立即返回 `SQLITE_BUSY`，导致 `TestSchedulerPeriodicScanNoJitter` 在 CI 偶发失败（run 29314320010）。现已将测试 DSN 对齐生产配置（WAL + `synchronous(NORMAL)` + `busy_timeout(5000)`）并补充并发回归测试。本项为测试 / CI 质量修复，不影响运行时行为。
+
+### Docs
+- providerquota SQLite BUSY flaky 修复的 feature spec / 审查归档（中英双语）：`sdd-docs/features/2026-07-14-providerquota-sqlite-busy-flaky/`
+
+---
+
 ## v0.16.1 (2026-07-14)
 
 ### Fixed
