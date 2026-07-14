@@ -50,6 +50,11 @@ type Manager struct {
 	stopCh     chan struct{}
 	done       chan struct{}
 
+	// scanWG tracks goroutines fired by scanAndQuery so tests can wait for
+	// them to finish before closing the DB. Stop() does not wait on it yet;
+	// in-flight queries are bounded by the ctx passed into Start/scanAndQuery.
+	scanWG sync.WaitGroup
+
 	// jitterFn returns the per-provider startup jitter applied before a
 	// scheduled query fires. Defaults to jitterForProvider (deterministic
 	// 0–30s hash); overridable for tests.
@@ -368,7 +373,9 @@ func (m *Manager) scanAndQuery(ctx context.Context, applyJitter bool) {
 		// only applied on the first scan; periodic scans fire immediately.
 		providerID := p.ID
 		interval := time.Duration(p.QuotaQuery.AutoQueryIntervalMinutes) * time.Minute
+		m.scanWG.Add(1)
 		go func() {
+			defer m.scanWG.Done()
 			if applyJitter && m.jitterFn != nil {
 				jitter := m.jitterFn(providerID)
 				if jitter > 0 {
@@ -400,6 +407,11 @@ func (m *Manager) Stop() {
 	close(m.stopCh)
 	<-m.done
 }
+
+// waitPendingScans blocks until all scheduler-fired query goroutines from
+// scanAndQuery have returned. Test-only seam so a test can guarantee the async
+// writers finish before t.Cleanup closes the DB; production callers use Stop().
+func (m *Manager) waitPendingScans() { m.scanWG.Wait() }
 
 // GetSnapshot returns the cached snapshot for a provider.
 func (m *Manager) GetSnapshot(providerID string) (*QuotaSnapshot, error) {
