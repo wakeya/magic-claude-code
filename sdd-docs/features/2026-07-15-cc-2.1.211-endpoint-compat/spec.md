@@ -61,10 +61,10 @@ None of the 8 endpoints below hit the forward allowlist; they currently all flow
 
 | # | Status | Task | Output | Verification |
 |---|--------|------|--------|--------------|
-| 1 | planned | design grants GET/POST split | `hardcoded.go` + `hardcoded_test.go` | unit: GET `{grants:[]}`, POST 403, PUT 405 |
-| 2 | planned | ultrareview preflight joins quota group | `hardcoded.go` + `hardcoded_test.go` | unit: GET `200 {}` |
-| 3 | planned | triggers prefix + dedicated handler | `hardcoded.go` + `triggers.go` + `triggers_test.go` | unit: GET `{data:[]}`, POST 403, sub-path covered |
-| 4 | planned | baseline doc update 52→55 | `2026-07-15-intercepted-endpoints.md` | count-check script outputs 55 |
+| 1 | done | design grants GET/POST split | `hardcoded.go` + `hardcoded_test.go` | unit: GET `{grants:[]}`, POST 403, PUT 405 |
+| 2 | done | ultrareview preflight joins quota group | `hardcoded.go` + `hardcoded_test.go` | unit: GET `200 {}` |
+| 3 | done | triggers prefix + dedicated handler | `hardcoded.go` + `triggers.go` + `triggers_test.go` | unit: GET `{data:[]}`, POST 403, sub-path covered |
+| 4 | done | baseline doc update 52→55 | `2026-07-15-intercepted-endpoints.md` | count-check script outputs 55 |
 
 ## Requirements
 
@@ -552,6 +552,6 @@ All 4 tasks done; `go test ./...` passes across 17 packages.
 
 Key findings verified against source (`claude_code_src_2.1.211.js`) during self-review:
 
-- POST `/v1/design/grants` returning 403 makes client `W8u` throw (`validateStatus: n<300||n===404`), but the throw message contains "blocked by policy gate" — an **expected failure signal** in the Design grant flow, caught by the caller by error type, no crash; returning 200 would falsely signal grant success (wrong). 403 is the only correct choice.
+- POST `/v1/design/grants` uses 403 `write_gate_disabled` (functionally equivalent to 404; 403 chosen for consistency). Source verification: client `W8u` throws `sn` (grant-failed error, extends Error) for both 403 (`if(!r.ok) throw sn`, catch re-throws) and 404 (`if(t===404) throw sn`); the caller's `if(!(m instanceof yco)) throw m` only admits `yco` (consent-required error — `sn` and `yco` are both Error subclasses with no inheritance), so `sn` is re-thrown and propagates to the tool framework top level, failing Design authorization. 403 is kept for consistency with `frame.go`'s write-gate and "write disabled" semantics; returning 200 would falsely signal grant success (wrong).
 - `/v1/ultrareview/quota` appears 0 times in 2.1.211, superseded by `preflight`; local interception of quota kept to stay compatible with ≤2.1.206 clients (older versions may still request it).
 - triggers is a CCR feature (`auth:"teleport-org"`, `anthropic-beta: ccr-triggers-2026-01-30`), rarely triggered in third-party provider scenarios; GET list returns `{data:[]}` to prevent client `Was` from throwing "triggers unavailable" and interrupting the load flow.
