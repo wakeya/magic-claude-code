@@ -5,7 +5,7 @@ Proxy entry: `internal/proxy/handler.go` → `handleHardcodedEndpoint` (`interna
 Reference source: `claude_code_src_2.1.211.js` (vs `2.1.206`, under `073_claude_spy/`)
 Stack: Go 1.26 standard library (`net/http`)
 Last updated: 2026-07-15
-Progress: 0 / 4
+Progress: 4 / 4
 Tracking issue: [#17](https://github.com/wakeya/magic-claude-code/issues/17)
 
 ## Overall Analysis (Source Analysis)
@@ -246,9 +246,9 @@ func TestHardcodedDesignGrants(t *testing.T) {
 
 #### Verification
 
-- [ ] `GET /v1/design/grants` returns `200 {"grants":[]}`.
-- [ ] `POST /v1/design/grants` returns `403`, body contains `"reason":"write_gate_disabled"`.
-- [ ] `PUT /v1/design/grants` returns `405` + `Allow: GET, POST`.
+- [x] `GET /v1/design/grants` returns `200 {"grants":[]}`.
+- [x] `POST /v1/design/grants` returns `403`, body contains `"reason":"write_gate_disabled"`.
+- [x] `PUT /v1/design/grants` returns `405` + `Allow: GET, POST`.
 
 ### Task 2: ultrareview preflight joins the quota group
 
@@ -304,8 +304,8 @@ func TestHardcodedDesignGrants(t *testing.T) {
 
 #### Verification
 
-- [ ] `GET /v1/ultrareview/preflight` returns `200 {}`.
-- [ ] `GET /v1/ultrareview/quota` behavior unchanged (regression).
+- [x] `GET /v1/ultrareview/preflight` returns `200 {}`.
+- [x] `GET /v1/ultrareview/quota` behavior unchanged (regression).
 
 ### Task 3: triggers prefix + dedicated handler
 
@@ -461,10 +461,10 @@ func TestHardcodedTriggers(t *testing.T) {
 
 #### Verification
 
-- [ ] `GET /v1/code/triggers` returns `200 {"data":[]}`.
-- [ ] `GET /v1/code/triggers/t1` (sub-path) returns `200 {"data":[]}`.
-- [ ] `POST /v1/code/triggers` returns `403`, `reason=="write_gate_disabled"`.
-- [ ] `DELETE /v1/code/triggers/t1` returns `405` + `Allow: GET, POST`.
+- [x] `GET /v1/code/triggers` returns `200 {"data":[]}`.
+- [x] `GET /v1/code/triggers/t1` (sub-path) returns `200 {"data":[]}`.
+- [x] `POST /v1/code/triggers` returns `403`, `reason=="write_gate_disabled"`.
+- [x] `DELETE /v1/code/triggers/t1` returns `405` + `Allow: GET, POST`.
 
 ### Task 4: baseline doc line-by-line update 52→55
 
@@ -531,12 +531,27 @@ Doc path `sdd-docs/research/2026-07-15-intercepted-endpoints.md`. Line numbers r
 
 #### Verification
 
-- [ ] Appendix script actually outputs exact 39, prefix 12 (verify with `awk ... | grep -cE`).
-- [ ] Count summary table "Total top-level endpoints" = 55.
-- [ ] Prefix list contains `/v1/code/triggers*`; exact lists contain grants and preflight.
+- [x] Appendix script actually outputs exact 39, prefix 12 (verify with `awk ... | grep -cE`).
+- [x] Count summary table "Total top-level endpoints" = 55.
+- [x] Prefix list contains `/v1/code/triggers*`; exact lists contain grants and preflight.
 
 ---
 
 ## Post-Implementation Writeback
 
 After implementation, write back the header "Progress: 0 / 4 → 4 / 4", set each task's "Status: planned → done", tick the `#### Verification` checkboxes of tasks 1-3, and paste the actual script output into task 4.
+
+---
+
+## Implementation Record (2026-07-15)
+
+All 4 tasks done; `go test ./...` passes across 17 packages.
+
+- Tasks 1-3 unit tests green: `TestHardcodedDesignGrants`, `TestHardcodedLowRiskClaudeCodeEndpoints` (preflight subtest), `TestHardcodedTriggers`.
+- Task 4 appendix script actual output: exact `39`, prefix `12`, model forward `2`, pattern `2` → total `55`.
+
+Key findings verified against source (`claude_code_src_2.1.211.js`) during self-review:
+
+- POST `/v1/design/grants` returning 403 makes client `W8u` throw (`validateStatus: n<300||n===404`), but the throw message contains "blocked by policy gate" — an **expected failure signal** in the Design grant flow, caught by the caller by error type, no crash; returning 200 would falsely signal grant success (wrong). 403 is the only correct choice.
+- `/v1/ultrareview/quota` appears 0 times in 2.1.211, superseded by `preflight`; local interception of quota kept as harmless legacy.
+- triggers is a CCR feature (`auth:"teleport-org"`, `anthropic-beta: ccr-triggers-2026-01-30`), rarely triggered in third-party provider scenarios; GET list returns `{data:[]}` to prevent client `Was` from throwing "triggers unavailable" and interrupting the load flow.

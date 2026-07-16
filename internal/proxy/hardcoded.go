@@ -39,6 +39,8 @@ func isHardcodedEndpoint(path string) bool {
 		"/api/claude_code_grove",
 		"/api/organization/claude_code_first_token_date",
 		"/v1/ultrareview/quota",
+		// CC 2.1.211：preflight 取代 quota，同走 handleEmptyResponse
+		"/v1/ultrareview/preflight",
 		"/api/claude_code/team_memory",
 		"/api/auth/trusted_devices",
 		"/api/oauth/file_upload",
@@ -61,6 +63,8 @@ func isHardcodedEndpoint(path string) bool {
 		// Claude Design consent / MCP bridge
 		"/v1/design/consent",
 		"/v1/design/mcp",
+		// CC 2.1.211：Design grants，GET 空授权 / POST 写入门关闭
+		"/v1/design/grants",
 	}
 
 	for _, match := range exactMatches {
@@ -80,6 +84,7 @@ func isHardcodedEndpoint(path string) bool {
 		"/v1/session_ingress/session/",
 		"/api/oauth/organizations/",
 		"/v1/code/sessions/",
+		"/v1/code/triggers",
 		"/api/frame/",
 		"/api/ws/",
 	}
@@ -293,6 +298,11 @@ func (h *Handler) handleHardcodedEndpoint(w http.ResponseWriter, r *http.Request
 		h.handleFrameEndpoint(w, r)
 		return true
 
+	// CCR 触发器 - 前缀覆盖 list/子路径，本地空响应（CC 2.1.211）
+	case strings.HasPrefix(path, "/v1/code/triggers"):
+		h.handleTriggersEndpoint(w, r)
+		return true
+
 	// Claude Design consent - GET/POST/DELETE 本地状态
 	case path == "/v1/design/consent":
 		h.handleDesignConsent(w, r)
@@ -301,6 +311,21 @@ func (h *Handler) handleHardcodedEndpoint(w http.ResponseWriter, r *http.Request
 	// Claude Design MCP bridge - POST 返回受控 unsupported
 	case path == "/v1/design/mcp":
 		h.handleDesignMCP(w, r)
+		return true
+
+	// Claude Design grants - GET 空授权禁用 Design 授权；POST 写入门关闭（CC 2.1.211）
+	case path == "/v1/design/grants":
+		switch r.Method {
+		case http.MethodGet:
+			writeJSONResponse(w, http.StatusOK, map[string]any{"grants": []any{}})
+		case http.MethodPost:
+			writeJSONResponse(w, http.StatusForbidden, map[string]any{
+				"error":  "Design grants write is unavailable in MCC local mode",
+				"reason": "write_gate_disabled",
+			})
+		default:
+			methodAllowed(w, r, http.MethodGet, http.MethodPost)
+		}
 		return true
 
 	// WebSocket / 语音流端点 - 任意方法本地 501，不 hijack
@@ -317,6 +342,7 @@ func (h *Handler) handleHardcodedEndpoint(w http.ResponseWriter, r *http.Request
 		path == "/api/claude_code_grove",
 		path == "/api/organization/claude_code_first_token_date",
 		path == "/v1/ultrareview/quota",
+		path == "/v1/ultrareview/preflight",
 		strings.HasPrefix(path, "/v1/session_ingress/session/"),
 		path == "/api/claude_code/team_memory",
 		path == "/api/auth/trusted_devices",

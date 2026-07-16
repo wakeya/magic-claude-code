@@ -6,14 +6,14 @@
 
 | 类别 | 处置方式 | 数量 |
 |------|----------|-----:|
-| **本地硬编码拦截** | 本地伪造响应，不转发上游 | **50** |
-| ↳ 精确匹配端点 | 路径完全相等 | 37 |
-| ↳ 前缀匹配端点 | `strings.HasPrefix` | 11 |
+| **本地硬编码拦截** | 本地伪造响应，不转发上游 | **53** |
+| ↳ 精确匹配端点 | 路径完全相等 | 39 |
+| ↳ 前缀匹配端点 | `strings.HasPrefix` | 12 |
 | ↳ 模式匹配端点 | 前缀 + 后缀组合 | 2 |
 | **模型推理转发** | 转发到配置的 provider | **2** |
-| **合计顶层端点** | | **52** |
+| **合计顶层端点** | | **55** |
 
-> 另有兜底规则：未命中以上 52 个端点的任意请求 → 本地 `404 mcc_blocked_unknown_endpoint`（模型端点路径的非 POST 方法 → `405`）。
+> 另有兜底规则：未命中以上 55 个端点的任意请求 → 本地 `404 mcc_blocked_unknown_endpoint`（模型端点路径的非 POST 方法 → `405`）。
 
 ---
 
@@ -23,7 +23,7 @@
 
 ```
 请求 → ① 根路径 "/"? ──────────────────────→ 200 "OK"
-     → ② 命中硬编码端点表（50 条）? ────────→ 本地伪造响应
+     → ② 命中硬编码端点表（53 条）? ────────→ 本地伪造响应
      → ③ 模型推理端点（2 条）? ─────────────→ 转发上游 provider
      → ④ 其余一切 ─────────────────────────→ 404 / 405 兜底拦截
 ```
@@ -48,9 +48,9 @@
 
 ---
 
-## 二、本地硬编码拦截端点（50 个）
+## 二、本地硬编码拦截端点（53 个）
 
-### A. 精确匹配端点（37 个，编号 1–37 连续无重复）
+### A. 精确匹配端点（39 个，编号 1–37 + 20b/33b 后缀为 CC 2.1.211 新增）
 
 #### A1. 模型发现与启动引导（4）
 
@@ -80,12 +80,13 @@
 | 17 | `GET` | `/api/claude_code/team_memory` | 团队记忆 |
 | 18 | `GET` | `/api/claude_code_grove` | grove |
 
-#### A3. 策略 / 限制 / 合规（2）
+#### A3. 策略 / 限制 / 合规（3）
 
 | # | 方法 | 路径 | 作用 |
 |---|------|------|------|
 | 19 | `GET` | `/api/claude_code/policy_limits` | 策略限制（restrictions 空对象） |
-| 20 | `GET` | `/v1/ultrareview/quota` | ultrareview 配额 |
+| 20 | `GET` | `/v1/ultrareview/quota` | ultrareview 配额（2.1.211 已被 preflight 取代，本地拦截保留） |
+| 20b | `GET` | `/v1/ultrareview/preflight` | ultrareview 预检（CC 2.1.211，与 quota 同走 `200 {}`） |
 
 #### A4. 遥测 / 事件 / 反馈（7）
 
@@ -108,12 +109,13 @@
 | 30 | `GET` | `/api/claude_code/discovery/team_usage` | 团队用量 |
 | 31 | `GET` | `/api/claude_code/notification/preferences` | 通知偏好 |
 
-#### A6. Claude Design（2）
+#### A6. Claude Design（3）
 
 | # | 方法 | 路径 | 作用 |
 |---|------|------|------|
 | 32 | `*` | `/v1/design/consent` | consent 本地状态 |
 | 33 | `POST` | `/v1/design/mcp` | MCP bridge → unsupported |
+| 33b | `GET`/`POST` | `/v1/design/grants` | GET 空授权禁用 Design；POST `403 write_gate_disabled`（CC 2.1.211） |
 
 #### A7. 浏览器 / 静态探测（4）
 
@@ -124,11 +126,11 @@
 | 36 | `GET` | `/apple-touch-icon.png` | 404 空 body |
 | 37 | `GET` | `/apple-touch-icon-precomposed.png` | 404 空 body |
 
-> 子节小计：4 + 14 + 2 + 7 + 4 + 2 + 4 = **37** ✓
+> 子节小计：4 + 14 + 3 + 7 + 4 + 3 + 4 = **39** ✓
 
 ---
 
-### B. 前缀匹配端点（11 个）
+### B. 前缀匹配端点（12 个）
 
 | # | 方法 | 路径前缀 | 作用 |
 |---|------|----------|------|
@@ -141,6 +143,7 @@
 | 7 | `*` | `/api/oauth/organizations/*` | 组织（宽泛 fallback，空响应；其下搜索子路径见 D） |
 | 8 | `*` | `/v1/session_ingress/session/*` | session ingress |
 | 9 | `*` | `/v1/code/sessions/*` | code sessions |
+| 9b | `GET`/`POST` | `/v1/code/triggers*` | CCR 触发器（CC 2.1.211）：GET `{data:[]}`、POST `403 write_gate_disabled` |
 | 10 | `*` | `/api/frame/*` | Frame artifact（子路径展开见 C） |
 | 11 | `*` | `/api/ws/*` | WebSocket / 语音流 → 501 |
 
@@ -190,7 +193,7 @@
 
 | 场景 | 响应 | reason |
 |------|------|--------|
-| 未命中 52 个端点的任意非模型请求 | `404` | `mcc_blocked_unknown_endpoint` |
+| 未命中 55 个端点的任意非模型请求 | `404` | `mcc_blocked_unknown_endpoint` |
 | 模型端点路径但方法非 POST | `405` + `Allow: POST` | `method_not_allowed` |
 
 **日志安全红线**（`blocked.go:57-68`）：只记录 `method/host/path/query 是否存在/截断 UA/status/reason`，**绝不记录请求体、Authorization、Cookie、X-Api-Key、原始 query**；所有字段经控制字符 sanitize（防日志注入 CWE-117）。
@@ -201,7 +204,7 @@
 
 | 版本 | 含义 | 涉及端点 |
 |------|------|----------|
-| **v1** | Anthropic 主 API 版本 | `/v1/messages`、`/anthropic/v1/messages`、`/v1/models`、`/v1/me`、`/v1/mcp_servers`、`/v1/messages/count_tokens`、`/v1/metrics`、`/v1/logs`、`/v1/traces`、`/v1/ultrareview/quota`、`/v1/design/consent`、`/v1/design/mcp`、`/v1/session_ingress/session/*`、`/v1/code/sessions/*` |
+| **v1** | Anthropic 主 API 版本 | `/v1/messages`、`/anthropic/v1/messages`、`/v1/models`、`/v1/me`、`/v1/mcp_servers`、`/v1/messages/count_tokens`、`/v1/metrics`、`/v1/logs`、`/v1/traces`、`/v1/ultrareview/quota`、`/v1/ultrareview/preflight`、`/v1/design/consent`、`/v1/design/mcp`、`/v1/design/grants`、`/v1/session_ingress/session/*`、`/v1/code/sessions/*`、`/v1/code/triggers*` |
 | **v2** | 事件上报新版本 | `/api/event_logging/v2/batch`（同时保留无版本号的 v1 路径 `/api/event_logging/batch`） |
 | **`/anthropic/v1/`** | OAuth base_url 前缀变体 | `/anthropic/v1/messages`（与 `/v1/messages` 等价对待） |
 | **Desktop `1.13576.0`** | Claude Desktop 版本号 | `desktopCurrentRelease` 常量（`hardcoded.go:689`），伪造为最新以阻断自动更新 |
@@ -213,11 +216,11 @@
 ```bash
 # 精确匹配端点数（exactMatches 切片内的字面量路径）
 awk '/exactMatches := \[\]string{/,/^	\}/' internal/proxy/hardcoded.go | grep -cE '^\s*"/'
-# → 37
+# → 39
 
 # 前缀匹配端点数（prefixMatches 切片内的字面量路径）
 awk '/prefixMatches := \[\]string{/,/^	\}/' internal/proxy/hardcoded.go | grep -cE '^\s*"/'
-# → 11
+# → 12
 
 # 模型转发端点数（modelForwardPaths map）
 grep -cE '^\s*"/' internal/proxy/endpoint_policy.go
@@ -227,5 +230,5 @@ grep -cE '^\s*"/' internal/proxy/endpoint_policy.go
 #   /api/desktop/**/update
 #   /api/organizations/{org}/claude_code/onboarding
 
-# 合计：37 + 11 + 2（本地拦截）+ 2（模型转发）= 52
+# 合计：39 + 12 + 2（本地拦截）+ 2（模型转发）= 55
 ```

@@ -5,7 +5,7 @@
 参考源站：`claude_code_src_2.1.211.js`（对照 `2.1.206`，位于 `073_claude_spy/`）
 技术栈：Go 1.26 标准库（`net/http`）
 最后更新：2026-07-15
-进度：0 / 4
+进度：4 / 4
 关联 issue：[#17](https://github.com/wakeya/magic-claude-code/issues/17)
 
 ## 整体分析（源站分析）
@@ -61,10 +61,10 @@ var modelForwardPaths = map[string]struct{}{
 
 | 序号 | 状态 | 任务 | 产出 | 验证 |
 |------|------|------|------|------|
-| 1 | 已规划 | design grants GET/POST 分流 | `hardcoded.go` + `hardcoded_test.go` | 单测：GET `{grants:[]}`、POST 403、PUT 405 |
-| 2 | 已规划 | ultrareview preflight 并入 quota 组 | `hardcoded.go` + `hardcoded_test.go` | 单测：GET `200 {}` |
-| 3 | 已规划 | triggers 前缀 + 单独 handler | `hardcoded.go` + `triggers.go` + `triggers_test.go` | 单测：GET `{data:[]}`、POST 403、子路径覆盖 |
-| 4 | 已规划 | 基线文档更新 52→55 | `2026-07-15-intercepted-endpoints.md` | 数量校验脚本输出 55 |
+| 1 | 已完成 | design grants GET/POST 分流 | `hardcoded.go` + `hardcoded_test.go` | 单测：GET `{grants:[]}`、POST 403、PUT 405 |
+| 2 | 已完成 | ultrareview preflight 并入 quota 组 | `hardcoded.go` + `hardcoded_test.go` | 单测：GET `200 {}` |
+| 3 | 已完成 | triggers 前缀 + 单独 handler | `hardcoded.go` + `triggers.go` + `triggers_test.go` | 单测：GET `{data:[]}`、POST 403、子路径覆盖 |
+| 4 | 已完成 | 基线文档更新 52→55 | `2026-07-15-intercepted-endpoints.md` | 数量校验脚本输出 55 |
 
 ## 需求
 
@@ -246,9 +246,9 @@ func TestHardcodedDesignGrants(t *testing.T) {
 
 #### 验证
 
-- [ ] `GET /v1/design/grants` 返回 `200 {"grants":[]}`。
-- [ ] `POST /v1/design/grants` 返回 `403`，body 含 `"reason":"write_gate_disabled"`。
-- [ ] `PUT /v1/design/grants` 返回 `405` + `Allow: GET, POST`。
+- [x] `GET /v1/design/grants` 返回 `200 {"grants":[]}`。
+- [x] `POST /v1/design/grants` 返回 `403`，body 含 `"reason":"write_gate_disabled"`。
+- [x] `PUT /v1/design/grants` 返回 `405` + `Allow: GET, POST`。
 
 ### 任务 2：ultrareview preflight 并入 quota 组
 
@@ -304,8 +304,8 @@ func TestHardcodedDesignGrants(t *testing.T) {
 
 #### 验证
 
-- [ ] `GET /v1/ultrareview/preflight` 返回 `200 {}`。
-- [ ] `GET /v1/ultrareview/quota` 行为不变（回归）。
+- [x] `GET /v1/ultrareview/preflight` 返回 `200 {}`。
+- [x] `GET /v1/ultrareview/quota` 行为不变（回归）。
 
 ### 任务 3：triggers 前缀 + 单独 handler
 
@@ -460,10 +460,10 @@ func TestHardcodedTriggers(t *testing.T) {
 
 #### 验证
 
-- [ ] `GET /v1/code/triggers` 返回 `200 {"data":[]}`。
-- [ ] `GET /v1/code/triggers/t1`（子路径）返回 `200 {"data":[]}`。
-- [ ] `POST /v1/code/triggers` 返回 `403`，`reason=="write_gate_disabled"`。
-- [ ] `DELETE /v1/code/triggers/t1` 返回 `405` + `Allow: GET, POST`。
+- [x] `GET /v1/code/triggers` 返回 `200 {"data":[]}`。
+- [x] `GET /v1/code/triggers/t1`（子路径）返回 `200 {"data":[]}`。
+- [x] `POST /v1/code/triggers` 返回 `403`，`reason=="write_gate_disabled"`。
+- [x] `DELETE /v1/code/triggers/t1` 返回 `405` + `Allow: GET, POST`。
 
 ### 任务 4：基线文档逐条更新 52→55
 
@@ -530,12 +530,27 @@ func TestHardcodedTriggers(t *testing.T) {
 
 #### 验证
 
-- [ ] 附录脚本实际输出精确 39、前缀 12（`awk ... | grep -cE` 验证）。
-- [ ] 数量总览表"合计顶层端点"= 55。
-- [ ] B 前缀清单含 `/v1/code/triggers*`，精确清单含 grants 与 preflight。
+- [x] 附录脚本实际输出精确 39、前缀 12（`awk ... | grep -cE` 验证）。
+- [x] 数量总览表"合计顶层端点"= 55。
+- [x] B 前缀清单含 `/v1/code/triggers*`，精确清单含 grants 与 preflight。
 
 ---
 
 ## 实现后回写
 
 实现完成后，回写本规格头部"进度：0 / 4 → 4 / 4"，各任务"状态：已规划 → 已完成"，并在任务 1-3 的 `#### 验证` 复选框打勾，任务 4 贴入实际脚本输出。
+
+---
+
+## 实现记录（2026-07-15）
+
+4 个任务全部完成，`go test ./...` 全包通过（17 包）。
+
+- 任务 1-3 单测全绿：`TestHardcodedDesignGrants`、`TestHardcodedLowRiskClaudeCodeEndpoints`（preflight 子测试）、`TestHardcodedTriggers`。
+- 任务 4 附录脚本实测：精确匹配 `39`、前缀匹配 `12`、模型转发 `2`、模式匹配 `2` → 合计 `55`。
+
+实现期自审查证源码（`claude_code_src_2.1.211.js`）确认的关键点：
+
+- POST `/v1/design/grants` 返回 403 会使客户端 `W8u` throw（`validateStatus: n<300||n===404`），但 throw message 含 "blocked by policy gate"，是 Design 授权流程的**预期失败信号**，被调用者按错误类型 catch，不崩溃；返回 200 会伪造授权成功（错）。403 为唯一正确选择。
+- `/v1/ultrareview/quota` 在 2.1.211 出现 0 次，已被 `preflight` 取代；本地拦截 quota 保留为无害历史遗留。
+- triggers 属 CCR 功能（`auth:"teleport-org"`，`anthropic-beta: ccr-triggers-2026-01-30`），第三方 provider 场景基本不触发；GET list 返回 `{data:[]}` 避免客户端 `Was` throw "triggers unavailable" 中断加载流程。
