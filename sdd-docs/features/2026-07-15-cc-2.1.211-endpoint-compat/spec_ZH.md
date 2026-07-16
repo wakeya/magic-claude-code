@@ -552,5 +552,5 @@ func TestHardcodedTriggers(t *testing.T) {
 实现期自审查证源码（`claude_code_src_2.1.211.js`）确认的关键点：
 
 - POST `/v1/design/grants` 返回 403 会使客户端 `W8u` throw（`validateStatus: n<300||n===404`），但 throw message 含 "blocked by policy gate"，是 Design 授权流程的**预期失败信号**，被调用者按错误类型 catch，不崩溃；返回 200 会伪造授权成功（错）。403 为唯一正确选择。
-- `/v1/ultrareview/quota` 在 2.1.211 出现 0 次，已被 `preflight` 取代；本地拦截 quota 保留为无害历史遗留。
+- `/v1/ultrareview/quota` 在 2.1.211 出现 0 次，已被 `preflight` 取代；本地拦截 quota 保留以兼容 ≤2.1.206 旧版本客户端（旧版本仍可能请求）。
 - triggers 属 CCR 功能（`auth:"teleport-org"`，`anthropic-beta: ccr-triggers-2026-01-30`），第三方 provider 场景基本不触发；GET list 返回 `{data:[]}` 避免客户端 `Was` throw "triggers unavailable" 中断加载流程。

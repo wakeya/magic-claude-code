@@ -553,5 +553,5 @@ All 4 tasks done; `go test ./...` passes across 17 packages.
 Key findings verified against source (`claude_code_src_2.1.211.js`) during self-review:
 
 - POST `/v1/design/grants` returning 403 makes client `W8u` throw (`validateStatus: n<300||n===404`), but the throw message contains "blocked by policy gate" — an **expected failure signal** in the Design grant flow, caught by the caller by error type, no crash; returning 200 would falsely signal grant success (wrong). 403 is the only correct choice.
-- `/v1/ultrareview/quota` appears 0 times in 2.1.211, superseded by `preflight`; local interception of quota kept as harmless legacy.
+- `/v1/ultrareview/quota` appears 0 times in 2.1.211, superseded by `preflight`; local interception of quota kept to stay compatible with ≤2.1.206 clients (older versions may still request it).
 - triggers is a CCR feature (`auth:"teleport-org"`, `anthropic-beta: ccr-triggers-2026-01-30`), rarely triggered in third-party provider scenarios; GET list returns `{data:[]}` to prevent client `Was` from throwing "triggers unavailable" and interrupting the load flow.

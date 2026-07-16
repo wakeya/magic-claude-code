@@ -85,7 +85,7 @@
 | # | 方法 | 路径 | 作用 |
 |---|------|------|------|
 | 19 | `GET` | `/api/claude_code/policy_limits` | 策略限制（restrictions 空对象） |
-| 20 | `GET` | `/v1/ultrareview/quota` | ultrareview 配额（2.1.211 已被 preflight 取代，本地拦截保留） |
+| 20 | `GET` | `/v1/ultrareview/quota` | ultrareview 配额（≤2.1.206 客户端使用，保留以兼容旧版本；2.1.211 起 preflight 取代） |
 | 20b | `GET` | `/v1/ultrareview/preflight` | ultrareview 预检（CC 2.1.211，与 quota 同走 `200 {}`） |
 
 #### A4. 遥测 / 事件 / 反馈（7）
