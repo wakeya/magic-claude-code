@@ -51,6 +51,13 @@ func TestIsHardcodedEndpoint(t *testing.T) {
 		{"/api/claude_code_grove", true},
 		{"/api/organization/claude_code_first_token_date", true},
 		{"/v1/ultrareview/quota", true},
+		// CC 2.1.211 新增
+		{"/v1/design/grants", true},
+		{"/v1/ultrareview/preflight", true},
+		// CC 2.1.211 新增前缀匹配
+		{"/v1/code/triggers", true},
+		{"/v1/code/triggers/t1", true},
+		{"/v1/code/triggers/t1/run", true},
 		// v1.1 新增前缀匹配
 		{"/v1/session_ingress/session/abc-123", true},
 		{"/v1/session_ingress/session/x-y-z", true},
@@ -509,6 +516,9 @@ func TestHandleHardcodedEndpoint(t *testing.T) {
 		{"/api/claude_code_grove"},
 		{"/api/organization/claude_code_first_token_date"},
 		{"/v1/ultrareview/quota"},
+		{"/v1/ultrareview/preflight"},
+		{"/v1/design/grants"},
+		{"/v1/code/triggers"},
 		{"/v1/session_ingress/session/test-id"},
 		{"/api/claude_code/team_memory"},
 		{"/api/oauth/organizations/org-123/referral/eligibility"},
@@ -1010,6 +1020,20 @@ func TestHardcodedLowRiskClaudeCodeEndpoints(t *testing.T) {
 		}
 	})
 
+	t.Run("ultrareview preflight returns empty object", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/ultrareview/preflight", nil)
+		rec := httptest.NewRecorder()
+		if !handler.handleHardcodedEndpoint(rec, req) {
+			t.Fatal("should handle ultrareview preflight")
+		}
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		if strings.TrimSpace(rec.Body.String()) != "{}" {
+			t.Errorf("body = %q, want {}", rec.Body.String())
+		}
+	})
+
 	t.Run("count_tokens still local after fail-closed guard", func(t *testing.T) {
 		body := `{"model":"claude-opus-4-6","messages":[{"role":"user","content":"hello"}]}`
 		req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", strings.NewReader(body))
@@ -1040,4 +1064,60 @@ func TestHardcodedLowRiskClaudeCodeEndpoints(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestHardcodedDesignGrants 验证 CC 2.1.211 的 /v1/design/grants 端点：
+// GET 返回空授权禁用 Design 授权；POST 写入门关闭；其它方法 405。
+func TestHardcodedDesignGrants(t *testing.T) {
+	handler := NewHandler(config.NewMockStore(nil), nil)
+
+	t.Run("GET returns empty grants", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/design/grants", nil)
+		rec := httptest.NewRecorder()
+		if !handler.handleHardcodedEndpoint(rec, req) {
+			t.Fatal("should handle design grants")
+		}
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		var resp struct {
+			Grants []any `json:"grants"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(resp.Grants) != 0 {
+			t.Errorf("grants = %v, want empty", resp.Grants)
+		}
+	})
+
+	t.Run("POST returns 403 write_gate_disabled", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/design/grants", strings.NewReader(`{"project_id":"p1"}`))
+		rec := httptest.NewRecorder()
+		handler.handleHardcodedEndpoint(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403", rec.Code)
+		}
+		var resp struct {
+			Reason string `json:"reason"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.Reason != "write_gate_disabled" {
+			t.Errorf("reason = %q, want write_gate_disabled", resp.Reason)
+		}
+	})
+
+	t.Run("PUT returns 405 with Allow GET, POST", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPut, "/v1/design/grants", nil)
+		rec := httptest.NewRecorder()
+		handler.handleHardcodedEndpoint(rec, req)
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("status = %d, want 405", rec.Code)
+		}
+		if got := rec.Header().Get("Allow"); got != "GET, POST" {
+			t.Errorf("Allow = %q, want GET, POST", got)
+		}
+	})
 }
