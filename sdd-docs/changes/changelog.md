@@ -7,6 +7,21 @@
 
 ---
 
+## v0.16.3 (2026-07-17)
+
+### Fixed
+- **兼容 Claude Code 2.1.211 新增端点，消除客户端抛异常与遥测噪音**（#17）：CC 2.1.211 引入 `/v1/design/grants`、`/v1/ultrareview/preflight`、`/v1/code/triggers` 等新端点，此前全部命中 fail-closed 拦截返回本地 404——`GET /v1/code/triggers` 失败会让客户端 throw "triggers unavailable" 中断加载流程，`GET /v1/design/grants` 404 会触发 `probe_404_old_server` 遥测噪音。现按端点语义补本地兼容响应：
+  - `GET /v1/design/grants` → `200 {"grants":[]}`（空授权列表即禁用 Design 授权）；`POST /v1/design/grants` → `403 write_gate_disabled`（写入门关闭，与 frame deploy 语义一致）
+  - `GET /v1/ultrareview/preflight` → `200 {}`（2.1.211 以 preflight 取代 quota，并入同族 `handleEmptyResponse`；`/v1/ultrareview/quota` 保留以兼容旧版本客户端）
+  - `GET /v1/code/triggers`（前缀覆盖 `{id}` 子路径）→ `200 {"data":[]}`（空列表避免客户端 throw）；`POST` → `403 write_gate_disabled`；其它方法 405
+- 以上端点均不命中模型转发白名单，继续本地处理、不转发上游，无数据泄露面。memory 链路（`/v1/code/local/memory/mounts` 等 5 个端点）经客户端源码验证 404 即其定义的"memory 未启用"正常分支，保持拦截不动，避免过度激活 memory 读写链路。
+
+### Docs
+- CC 2.1.211 端点兼容 feature spec / 审查归档（中英双语）：`sdd-docs/features/2026-07-15-cc-2.1.211-endpoint-compat/`
+- 拦截端点基线文档更新（52 → 55）：`sdd-docs/research/2026-07-15-intercepted-endpoints.md`
+
+---
+
 ## v0.16.2 (2026-07-14)
 
 ### Fixed
