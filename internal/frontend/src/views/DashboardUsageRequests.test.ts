@@ -203,7 +203,7 @@ test('usage page exposes clear data action with session sync reset option', () =
   assert.match(dashboardSource, /await loadUsageData\(\)/)
 })
 
-test('usage date range presets default to the last 7 complete days excluding today', () => {
+test('usage date range presets default to the last 7 days including today', () => {
   assert.match(dashboardSource, /const defaultUsageDateRange = usageDateRangeForPreset\('last_7_days'\)/)
   assert.match(dashboardSource, /from: defaultUsageDateRange\.from/)
   assert.match(dashboardSource, /to: defaultUsageDateRange\.to/)
@@ -214,9 +214,9 @@ test('usage date range presets default to the last 7 complete days excluding tod
   assert.match(dashboardSource, /new Date\(date\.getFullYear\(\), date\.getMonth\(\), date\.getDate\(\), 0, 0, 0, 0\)/)
   assert.match(dashboardSource, /new Date\(date\.getFullYear\(\), date\.getMonth\(\), date\.getDate\(\), 23, 59, 59, 0\)/)
   assert.match(dashboardSource, /case 'last_7_days':/)
-  assert.match(dashboardSource, /return inclusiveDateTimeRange\(7, 1\)/)
+  assert.match(dashboardSource, /return inclusiveDateTimeRange\(6, 0\)/)
   assert.match(dashboardSource, /case 'last_30_days':/)
-  assert.match(dashboardSource, /return inclusiveDateTimeRange\(30, 1\)/)
+  assert.match(dashboardSource, /return inclusiveDateTimeRange\(29, 0\)/)
   assert.match(dashboardSource, /case 'today':/)
   assert.match(dashboardSource, /return inclusiveDateTimeRange\(0, 0\)/)
   assert.match(dashboardSource, /const activeUsageDateRangePreset = computed/)

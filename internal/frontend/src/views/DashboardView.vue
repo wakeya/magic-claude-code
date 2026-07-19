@@ -1903,13 +1903,15 @@ function inclusiveDateTimeRange(startDaysAgo: number, endDaysAgo: number): { fro
 }
 
 function usageDateRangeForPreset(preset: UsageDateRangePreset): { from: string; to: string } {
+  // Ranges include today: "近 N 天" = today plus the previous N-1 days, so a
+  // provider whose traffic is all from today is not filtered out by default.
   switch (preset) {
     case 'today':
       return inclusiveDateTimeRange(0, 0)
     case 'last_7_days':
-      return inclusiveDateTimeRange(7, 1)
+      return inclusiveDateTimeRange(6, 0)
     case 'last_30_days':
-      return inclusiveDateTimeRange(30, 1)
+      return inclusiveDateTimeRange(29, 0)
   }
 }
 
