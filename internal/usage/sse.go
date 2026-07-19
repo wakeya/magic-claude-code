@@ -160,10 +160,10 @@ func (o *SSEObserver) observeBlock(block string) {
 	}
 
 	var payload struct {
-		Type    string    `json:"type"`
-		Usage   usageJSON `json:"usage"`
+		Type    string          `json:"type"`
+		Usage   json.RawMessage `json:"usage"`
 		Message struct {
-			Usage usageJSON `json:"usage"`
+			Usage json.RawMessage `json:"usage"`
 		} `json:"message"`
 		ContentBlock struct {
 			Type string `json:"type"`
@@ -208,21 +208,22 @@ func (o *SSEObserver) observeBlock(block string) {
 	}
 }
 
-func (o *SSEObserver) merge(values usageJSON) {
-	if values.InputTokens != nil {
-		o.usage.InputTokens = *values.InputTokens
-		o.usage.HasAny = true
-	}
-	if values.OutputTokens != nil {
-		o.usage.OutputTokens = *values.OutputTokens
-		o.usage.HasAny = true
-	}
-	if values.CacheCreationInputTokens != nil {
-		o.usage.CacheCreationInputTokens = *values.CacheCreationInputTokens
-		o.usage.HasAny = true
-	}
-	if values.CacheReadInputTokens != nil {
-		o.usage.CacheReadInputTokens = *values.CacheReadInputTokens
+// merge 把一个事件的 usage 合并进累计值：只覆盖"存在且为可用数字"的字段，
+// 保持 message_start 提供 input、message_delta 提供 output 的跨事件拼接语义。
+// 解析复用与非流式路径相同的宽松提取器，容忍数字/浮点/数字字符串，
+// 忽略非数字字段（server_tool_use、service_tier 等）。
+func (o *SSEObserver) merge(raw json.RawMessage) {
+	for key, v := range parseUsageFields(raw) {
+		switch key {
+		case "input_tokens":
+			o.usage.InputTokens = v
+		case "output_tokens":
+			o.usage.OutputTokens = v
+		case "cache_creation_input_tokens":
+			o.usage.CacheCreationInputTokens = v
+		case "cache_read_input_tokens":
+			o.usage.CacheReadInputTokens = v
+		}
 		o.usage.HasAny = true
 	}
 }
@@ -368,11 +369,4 @@ func copyIntMap(m map[string]int) map[string]int {
 		out[k] = v
 	}
 	return out
-}
-
-type usageJSON struct {
-	InputTokens              *int64 `json:"input_tokens"`
-	OutputTokens             *int64 `json:"output_tokens"`
-	CacheCreationInputTokens *int64 `json:"cache_creation_input_tokens"`
-	CacheReadInputTokens     *int64 `json:"cache_read_input_tokens"`
 }
