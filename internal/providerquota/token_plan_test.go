@@ -101,26 +101,28 @@ func TestDetectTokenPlanProvider(t *testing.T) {
 }
 
 func TestParseKimiResponse(t *testing.T) {
-	// Reference: usage is an OBJECT, not array.
-	resetTime := time.Now().Add(2 * time.Hour).Unix()
+	// Live API shape: numeric fields are numeric strings, resetTime is an
+	// RFC3339 string, limits[] carries window instead of name.
+	// usage is an OBJECT, not an array.
+	reset5h := time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339Nano)
+	reset7d := time.Now().Add(5 * 24 * time.Hour).UTC().Format(time.RFC3339Nano)
 	body := []byte(fmt.Sprintf(`{
-		"limits": [{"name": "coding", "detail": {"limit": 1000, "remaining": 800, "resetTime": %d}}],
-		"usage": {"limit": 5000, "remaining": 4500, "resetTime": %d}
-	}`, resetTime, resetTime+86400*5))
+		"limits": [{"window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"}, "detail": {"limit": "1000", "used": "200", "remaining": "800", "resetTime": %q}}],
+		"usage": {"limit": "5000", "used": "500", "remaining": "4500", "resetTime": %q}
+	}`, reset5h, reset7d))
 
 	var resp struct {
 		Limits []struct {
 			Name   string `json:"name"`
-			Detail struct {
-				Limit     json.Number `json:"limit"`
-				Remaining json.Number `json:"remaining"`
-				ResetTime json.Number `json:"resetTime"`
-			} `json:"detail"`
+			Title  string `json:"title"`
+			Scope  string `json:"scope"`
+			Window struct {
+				Duration json.Number `json:"duration"`
+				TimeUnit string      `json:"timeUnit"`
+			} `json:"window"`
+			Detail kimiUsageDetail `json:"detail"`
 		} `json:"limits"`
-		Usage struct {
-			Limit     json.Number `json:"limit"`
-			Remaining json.Number `json:"remaining"`
-		} `json:"usage"`
+		Usage kimiUsageDetail `json:"usage"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -134,10 +136,129 @@ func TestParseKimiResponse(t *testing.T) {
 	if len(resp.Limits) != 1 {
 		t.Fatalf("limits count = %d", len(resp.Limits))
 	}
+	// Verify window-derived label.
+	if got := kimiWindowLabel(resp.Limits[0].Window.Duration, resp.Limits[0].Window.TimeUnit); got != "5h limit" {
+		t.Errorf("window label = %q, want %q", got, "5h limit")
+	}
+	// Verify RFC3339 resetTime parses.
+	if got := parseKimiResetTime(resp.Limits[0].Detail.ResetTime); got.IsZero() {
+		t.Error("resetTime did not parse")
+	}
+}
+
+func TestParseKimiResetTime(t *testing.T) {
+	iso := time.Date(2026, 7, 24, 1, 20, 25, 0, time.UTC)
+	cases := []struct {
+		name string
+		raw  string
+		want time.Time
+	}{
+		{"rfc3339 string", `"2026-07-24T01:20:25Z"`, iso},
+		{"rfc3339nano string", `"2026-07-24T01:20:25.362103Z"`, time.Date(2026, 7, 24, 1, 20, 25, 362103000, time.UTC)},
+		{"unix seconds number", `1753228825`, time.Unix(1753228825, 0).UTC()},
+		{"unix seconds string", `"1753228825"`, time.Unix(1753228825, 0).UTC()},
+		{"unix millis number", `1753228825000`, time.UnixMilli(1753228825000).UTC()},
+		{"null", `null`, time.Time{}},
+		{"missing", ``, time.Time{}},
+		{"garbage", `"not-a-time"`, time.Time{}},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseKimiResetTime(json.RawMessage(tt.raw)); !got.Equal(tt.want) {
+				t.Errorf("parseKimiResetTime(%s) = %v, want %v", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestKimiUsedOrDerived(t *testing.T) {
+	// Explicit used wins.
+	d := kimiUsageDetail{Used: "22", Remaining: "78"}
+	if got := d.usedOrDerived(100, 78); got != 22 {
+		t.Errorf("explicit used = %f, want 22", got)
+	}
+	// Missing used falls back to limit - remaining.
+	d = kimiUsageDetail{Remaining: "78"}
+	if got := d.usedOrDerived(100, 78); got != 22 {
+		t.Errorf("derived used = %f, want 22", got)
+	}
+	// Negative derived value clamps to zero.
+	d = kimiUsageDetail{Remaining: "120"}
+	if got := d.usedOrDerived(100, 120); got != 0 {
+		t.Errorf("clamped used = %f, want 0", got)
+	}
+}
+
+func TestKimiWindowLabel(t *testing.T) {
+	cases := []struct {
+		duration string
+		unit     string
+		want     string
+	}{
+		{"300", "TIME_UNIT_MINUTE", "5h limit"},
+		{"90", "TIME_UNIT_MINUTE", "90m limit"},
+		{"24", "TIME_UNIT_HOUR", "24h limit"},
+		{"30", "SECOND", "30s limit"},
+		{"", "TIME_UNIT_MINUTE", ""},
+		{"300", "", ""},
+	}
+	for _, tt := range cases {
+		if got := kimiWindowLabel(json.Number(tt.duration), tt.unit); got != tt.want {
+			t.Errorf("kimiWindowLabel(%q, %q) = %q, want %q", tt.duration, tt.unit, got, tt.want)
+		}
+	}
+}
+
+func TestKimiUtilization(t *testing.T) {
+	cases := []struct {
+		used, limit, want float64
+	}{
+		{20, 100, 20},
+		{100, 100, 100},
+		{120, 100, 100}, // over-quota window clamps to 100 instead of failing NormalizeTier
+		{-5, 100, 0},    // defensive: negative used clamps to 0
+	}
+	for _, tt := range cases {
+		if got := kimiUtilization(tt.used, tt.limit); got != tt.want {
+			t.Errorf("kimiUtilization(%v, %v) = %v, want %v", tt.used, tt.limit, got, tt.want)
+		}
+	}
+}
+
+func TestKimiIntegrationOverQuota(t *testing.T) {
+	// used 超过 limit（限流窗口内超出的请求被 429 但计数照涨）时查询仍须成功，
+	// utilization 钳到 100，Used 展示值保留 API 原样。
+	reset := time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(fmt.Sprintf(`{
+			"limits": [{"window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"}, "detail": {"limit": "100", "used": "120", "remaining": "0", "resetTime": %q}}],
+			"usage": {"limit": "100", "used": "36", "remaining": "64", "resetTime": %q}
+		}`, reset, reset)))
+	}))
+	defer srv.Close()
+
+	transport := &urlRewriteTransport{original: "https://api.kimi.com", replaced: srv.URL, inner: http.DefaultTransport}
+	adapter := &TokenPlanAdapter{HTTPClient: &http.Client{Transport: transport, Timeout: 5 * time.Second}}
+
+	result := adapter.Query(context.Background(), "kimi", nil, "https://api.kimi.com", "kimi-token")
+	if !result.Success {
+		t.Fatalf("over-quota query failed: %s - %s", result.ErrorCode, result.ErrorMessage)
+	}
+	if len(result.Tiers) < 2 {
+		t.Fatalf("expected at least 2 tiers, got %d", len(result.Tiers))
+	}
+	if result.Tiers[0].Utilization != 100 {
+		t.Errorf("5h utilization = %f, want clamped 100", result.Tiers[0].Utilization)
+	}
+	if result.Tiers[0].Used == nil || *result.Tiers[0].Used != 120 {
+		t.Errorf("5h used = %v, want reported 120", result.Tiers[0].Used)
+	}
 }
 
 func TestKimiIntegration(t *testing.T) {
-	resetTime := time.Now().Add(2 * time.Hour).Unix()
+	reset5h := time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339Nano)
+	reset7d := time.Now().Add(5 * 24 * time.Hour).UTC().Format(time.RFC3339Nano)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer kimi-token" {
 			w.WriteHeader(401)
@@ -145,9 +266,9 @@ func TestKimiIntegration(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(fmt.Sprintf(`{
-			"limits": [{"name": "coding", "detail": {"limit": 1000, "remaining": 800, "resetTime": %d}}],
-			"usage": {"limit": 5000, "remaining": 4500, "resetTime": %d}
-		}`, resetTime, resetTime+86400*5)))
+			"limits": [{"window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"}, "detail": {"limit": "1000", "used": "200", "remaining": "800", "resetTime": %q}}],
+			"usage": {"limit": "5000", "used": "500", "remaining": "4500", "resetTime": %q}
+		}`, reset5h, reset7d)))
 	}))
 	defer srv.Close()
 
@@ -167,9 +288,82 @@ func TestKimiIntegration(t *testing.T) {
 	if result.Tiers[1].Name != WindowSevenDay {
 		t.Errorf("tier[1] name = %q, want %q", result.Tiers[1].Name, WindowSevenDay)
 	}
-	// Verify utilization: (1000-800)/1000*100 = 20%
+	// Verify utilization: used=200, limit=1000 -> 20%
 	if result.Tiers[0].Utilization != 20 {
 		t.Errorf("5h utilization = %f, want 20", result.Tiers[0].Utilization)
+	}
+	// Window-derived label.
+	if result.Tiers[0].Label != "5h limit" {
+		t.Errorf("5h label = %q, want %q", result.Tiers[0].Label, "5h limit")
+	}
+	// Weekly tier carries remaining.
+	if result.Tiers[1].Remaining == nil || *result.Tiers[1].Remaining != 4500 {
+		t.Errorf("7d remaining = %v, want 4500", result.Tiers[1].Remaining)
+	}
+	// Reset times parsed from RFC3339 strings.
+	if result.Tiers[0].ResetsAt == nil {
+		t.Error("5h resets_at missing")
+	}
+}
+
+func TestKimiIntegrationLegacyShape(t *testing.T) {
+	// Backward tolerance: numeric fields as JSON numbers, resetTime as unix
+	// seconds, limits[] with name instead of window.
+	resetTime := time.Now().Add(2 * time.Hour).Unix()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(fmt.Sprintf(`{
+			"limits": [{"name": "coding", "detail": {"limit": 1000, "remaining": 800, "resetTime": %d}}],
+			"usage": {"limit": 5000, "remaining": 4500, "resetTime": %d}
+		}`, resetTime, resetTime+86400*5)))
+	}))
+	defer srv.Close()
+
+	transport := &urlRewriteTransport{original: "https://api.kimi.com", replaced: srv.URL, inner: http.DefaultTransport}
+	adapter := &TokenPlanAdapter{HTTPClient: &http.Client{Transport: transport, Timeout: 5 * time.Second}}
+
+	result := adapter.Query(context.Background(), "kimi", nil, "https://api.kimi.com", "kimi-token")
+	if !result.Success {
+		t.Fatalf("query failed: %s - %s", result.ErrorCode, result.ErrorMessage)
+	}
+	if len(result.Tiers) < 2 {
+		t.Fatalf("expected at least 2 tiers, got %d", len(result.Tiers))
+	}
+	if result.Tiers[0].Label != "coding" {
+		t.Errorf("5h label = %q, want %q", result.Tiers[0].Label, "coding")
+	}
+	// used derived: (1000-800)/1000*100 = 20%
+	if result.Tiers[0].Utilization != 20 {
+		t.Errorf("5h utilization = %f, want 20", result.Tiers[0].Utilization)
+	}
+	if result.Tiers[0].ResetsAt == nil {
+		t.Error("5h resets_at missing for unix resetTime")
+	}
+}
+
+func TestQueryKimiInvalidJSONDoesNotLeakBody(t *testing.T) {
+	// 上游响应让 json.Unmarshal 失败，且 Go 的错误消息会回显触发字段的原始值。
+	// harden 后 ErrorMessage 必须是固定文案，不得包含响应体片段（防 admin 侧 / 快照泄露）。
+	const secret = "LEAK_CANARY_0xDEADBEEF"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// limit 是 json.Number，给非数字字符串触发 "trying to unmarshal \"...\" into Number"。
+		fmt.Fprintf(w, `{"usage": {"limit": "%s"}}`, secret)
+	}))
+	defer srv.Close()
+
+	transport := &urlRewriteTransport{original: "https://api.kimi.com", replaced: srv.URL, inner: http.DefaultTransport}
+	adapter := &TokenPlanAdapter{HTTPClient: &http.Client{Transport: transport, Timeout: 5 * time.Second}}
+
+	result := adapter.Query(context.Background(), "kimi", nil, "https://api.kimi.com", "kimi-token")
+	if result.Success {
+		t.Fatalf("expected invalid_json failure, got success")
+	}
+	if result.ErrorCode != "invalid_json" {
+		t.Fatalf("ErrorCode = %q, want invalid_json", result.ErrorCode)
+	}
+	if strings.Contains(result.ErrorMessage, secret) {
+		t.Fatalf("ErrorMessage leaks upstream response body fragment: %q", result.ErrorMessage)
 	}
 }
 

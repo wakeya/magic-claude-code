@@ -340,6 +340,15 @@ func errorResult(code, msg string, start time.Time) *ProviderQuotaResult {
 	}
 }
 
+// invalidJSONResult returns a fixed-message invalid_json error. The raw
+// json.Unmarshal error is deliberately dropped: it echoes the offending
+// field's original value from the upstream response body (e.g. "trying to
+// unmarshal \"<value>\" into Number"), which has no place in a message that is
+// persisted into provider_quota_snapshots and surfaced to admins.
+func invalidJSONResult(start time.Time) *ProviderQuotaResult {
+	return errorResult("invalid_json", "failed to parse upstream quota response", start)
+}
+
 // SanitizedSnapshot is the DTO returned by the admin API.
 // It strips sensitive fields and provides convenience booleans.
 type SanitizedSnapshot struct {

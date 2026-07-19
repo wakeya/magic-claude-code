@@ -55,6 +55,40 @@ func TestSSEObserverExtractsUsageWithCRLFDelimiters(t *testing.T) {
 	}
 }
 
+func TestSSEObserverToleratesNonNumericUsageFields(t *testing.T) {
+	// usage 中混入对象/字符串字段时不再把整个事件判为 parse_error。
+	observer := NewSSEObserver(time.Now())
+	observer.Observe([]byte("event: message_start\ndata: {\"message\":{\"usage\":{\"input_tokens\":10,\"server_tool_use\":{\"web_search_requests\":0},\"service_tier\":\"standard\"}}}\n\n"))
+	observer.Observe([]byte("event: message_delta\ndata: {\"usage\":{\"output_tokens\":7,\"service_tier\":\"standard\"}}\n\n"))
+
+	values, source, status, _ := observer.Result()
+
+	if source != UsageSourceProvider || status != ParseStatusOK {
+		t.Fatalf("source/status = %q/%q", source, status)
+	}
+	if values.InputTokens != 10 || values.OutputTokens != 7 {
+		t.Fatalf("values = %#v", values)
+	}
+	if diag := observer.Diagnostics(); diag.ParseErrors != 0 {
+		t.Fatalf("parse errors = %d, want 0", diag.ParseErrors)
+	}
+}
+
+func TestSSEObserverToleratesNumericStringsAndFloats(t *testing.T) {
+	observer := NewSSEObserver(time.Now())
+	observer.Observe([]byte("event: message_start\ndata: {\"message\":{\"usage\":{\"input_tokens\":\"11\",\"cache_read_input_tokens\":5.0}}}\n\n"))
+	observer.Observe([]byte("event: message_delta\ndata: {\"usage\":{\"output_tokens\":\"8\"}}\n\n"))
+
+	values, source, status, _ := observer.Result()
+
+	if source != UsageSourceProvider || status != ParseStatusOK {
+		t.Fatalf("source/status = %q/%q", source, status)
+	}
+	if values.InputTokens != 11 || values.OutputTokens != 8 || values.CacheReadInputTokens != 5 {
+		t.Fatalf("values = %#v", values)
+	}
+}
+
 func TestSSEObserverIgnoresPingEvents(t *testing.T) {
 	observer := NewSSEObserver(time.Now())
 	observer.Observe([]byte("event: ping\ndata: {\"type\":\"ping\"}\n\n"))
