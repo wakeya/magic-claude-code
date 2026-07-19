@@ -7,6 +7,18 @@
 
 ---
 
+## v0.16.4 (2026-07-19)
+
+### Fixed
+- **容错解析 Kimi 额度响应并加固 invalid_json 错误**：providerquota 此前对 Kimi 额度响应的字段类型与结构假设过强，遇到非预期格式即落入 invalid_json 分支。现改为容错解析：计数统一走 `json.Number`（接受 JSON 数字或数字字符串），`resetTime` 接受 RFC3339 或 unix 时间戳，tier 标签由 `window` 字段推导，`used` 优先于 `limit-remaining`。同时把全部 7 个 provider 路径的 invalid_json 处理统一收敛到新的 `invalidJSONResult` helper（固定错误消息），避免 `json.Unmarshal` 错误（会回显出错字段的原始值）被持久化进额度快照或暴露给管理员。
+- **usage 统计容错解析 provider 用量字段并防护 int64 边界**：用量统计里非流式的 `map[string]int64` 解析与 SSE 流式的 typed `usageJSON` 解析各自为政、且对字段类型敏感，遇到 Kimi 等供应商返回的浮点、数字字符串或非数值字段（`server_tool_use`、`service_tier`）即报 `parse_error`。现统一为一个容错提取器：接受 JSON 数字、浮点、数字字符串，忽略非数值字段。同时修复 `usageFieldInt64` 的 int64 溢出：整数走 `json.Number.Int64()`（精确，可接受 `MaxInt64`），仅浮点编码值回退 `Float64()` 并拒绝越界值，避免 `2^63` 这类超界值回绕为负数计数。
+- **用量统计默认日期范围包含今天**：前端 `last_7_days` / `last_30_days` 预设现映射为 `(6,0)` / `(29,0)`，使“最近 N 天”包含今天；此前默认区间排除今天，导致流量全部产生于今天的供应商（如新建的 `kimi-k3`）在默认视图被隐藏。重建前端 `dist`。
+
+### Docs
+- Kimi 额度 / 用量解析修复 feature spec / 审查归档（中英双语）：`sdd-docs/features/2026-07-17-kimi-quota-usage-parsing-fixes/`
+
+---
+
 ## v0.16.3 (2026-07-17)
 
 ### Fixed
