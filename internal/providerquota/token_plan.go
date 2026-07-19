@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -120,8 +121,33 @@ func (a *TokenPlanAdapter) Query(ctx context.Context, provider string, cfg *Prov
 }
 
 // --- Kimi ---
-// Response: { "limits": [{ "detail": { "limit", "remaining", "resetTime" } }], "usage": { "limit", "remaining", "resetTime" } }
+// Response: { "limits": [{ "window": { "duration", "timeUnit" }, "detail": { "limit", "used", "remaining", "resetTime" } }], "usage": { "limit", "used", "remaining", "resetTime" } }
 // NOTE: usage is an OBJECT, not an array.
+// Field spelling drifts between API versions, so parsing is deliberately
+// tolerant (mirroring kimi-code's managed-usage.ts): numeric fields accept
+// both numbers and numeric strings (json.Number handles both), resetTime
+// accepts both RFC3339 strings and unix timestamps, and the limits[] label
+// falls back to the window duration when no name/title/scope is present.
+
+// kimiUsageDetail is the shared shape of limits[].detail and the usage object.
+type kimiUsageDetail struct {
+	Limit     json.Number     `json:"limit"`
+	Used      json.Number     `json:"used"`
+	Remaining json.Number     `json:"remaining"`
+	ResetTime json.RawMessage `json:"resetTime"`
+}
+
+// usedOrDerived prefers the explicit used field, else limit - remaining.
+func (d kimiUsageDetail) usedOrDerived(limit, remaining float64) float64 {
+	if u, err := d.Used.Float64(); err == nil && d.Used.String() != "" {
+		return u
+	}
+	used := limit - remaining
+	if used < 0 {
+		used = 0
+	}
+	return used
+}
 
 func (a *TokenPlanAdapter) queryKimi(ctx context.Context, apiToken string, start time.Time) *ProviderQuotaResult {
 	req, _ := http.NewRequestWithContext(ctx, "GET", "https://api.kimi.com/coding/v1/usages", nil)
@@ -142,20 +168,18 @@ func (a *TokenPlanAdapter) queryKimi(ctx context.Context, apiToken string, start
 	var resp struct {
 		Limits []struct {
 			Name   string `json:"name"`
-			Detail struct {
-				Limit     json.Number `json:"limit"`
-				Remaining json.Number `json:"remaining"`
-				ResetTime json.Number `json:"resetTime"`
-			} `json:"detail"`
+			Title  string `json:"title"`
+			Scope  string `json:"scope"`
+			Window struct {
+				Duration json.Number `json:"duration"`
+				TimeUnit string      `json:"timeUnit"`
+			} `json:"window"`
+			Detail kimiUsageDetail `json:"detail"`
 		} `json:"limits"`
-		Usage struct {
-			Limit     json.Number `json:"limit"`
-			Remaining json.Number `json:"remaining"`
-			ResetTime json.Number `json:"resetTime"`
-		} `json:"usage"`
+		Usage kimiUsageDetail `json:"usage"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return errorResult("invalid_json", sanitizeError(err.Error(), nil), start)
+		return invalidJSONResult(start)
 	}
 
 	result := &ProviderQuotaResult{
@@ -171,18 +195,25 @@ func (a *TokenPlanAdapter) queryKimi(ctx context.Context, apiToken string, start
 		if limit <= 0 {
 			continue
 		}
-		used := (limit - remaining)
-		if used < 0 {
-			used = 0
-		}
-		utilization := used / limit * 100
+		used := lim.Detail.usedOrDerived(limit, remaining)
+		utilization := kimiUtilization(used, limit)
 		totalF := limit
 		usedF := used
 		remainingF := remaining
 		resetAt := parseKimiResetTime(lim.Detail.ResetTime)
+		label := lim.Name
+		if label == "" {
+			label = lim.Title
+		}
+		if label == "" {
+			label = lim.Scope
+		}
+		if label == "" {
+			label = kimiWindowLabel(lim.Window.Duration, lim.Window.TimeUnit)
+		}
 		tier := QuotaTier{
 			Name:        WindowFiveHour,
-			Label:       lim.Name,
+			Label:       label,
 			Utilization: utilization,
 			Used:        &usedF,
 			Total:       &totalF,
@@ -199,13 +230,11 @@ func (a *TokenPlanAdapter) queryKimi(ctx context.Context, apiToken string, start
 	usageLimit, _ := resp.Usage.Limit.Float64()
 	usageRemaining, _ := resp.Usage.Remaining.Float64()
 	if usageLimit > 0 {
-		usageUsed := usageLimit - usageRemaining
-		if usageUsed < 0 {
-			usageUsed = 0
-		}
-		utilization := usageUsed / usageLimit * 100
+		usageUsed := resp.Usage.usedOrDerived(usageLimit, usageRemaining)
+		utilization := kimiUtilization(usageUsed, usageLimit)
 		totalF := usageLimit
 		usedF := usageUsed
+		remainingF := usageRemaining
 		resetAt := parseKimiResetTime(resp.Usage.ResetTime)
 		tier := QuotaTier{
 			Name:        WindowSevenDay,
@@ -213,6 +242,7 @@ func (a *TokenPlanAdapter) queryKimi(ctx context.Context, apiToken string, start
 			Utilization: utilization,
 			Used:        &usedF,
 			Total:       &totalF,
+			Remaining:   &remainingF,
 			Unit:        "tokens",
 		}
 		if !resetAt.IsZero() {
@@ -227,21 +257,65 @@ func (a *TokenPlanAdapter) queryKimi(ctx context.Context, apiToken string, start
 	return result
 }
 
-func parseKimiResetTime(v json.Number) time.Time {
-	s := v.String()
+// kimiUtilization computes used/limit as a percentage clamped to [0, 100].
+// Over-quota windows are real (requests past the limit get rejected but the
+// used counter keeps rising), and NormalizeTier rejects utilization outside
+// [0,100] — without the clamp a single over-limit tier would fail the whole
+// query as invalid_response. Used/Remaining display values stay as reported.
+func kimiUtilization(used, limit float64) float64 {
+	u := used / limit * 100
+	if u > 100 {
+		u = 100
+	}
+	if u < 0 {
+		u = 0
+	}
+	return u
+}
+
+// kimiWindowLabel derives a human label from a rate-limit window, e.g.
+// (300, "TIME_UNIT_MINUTE") -> "5h limit". Returns "" when it cannot.
+func kimiWindowLabel(duration json.Number, timeUnit string) string {
+	d, err := duration.Float64()
+	if err != nil || d <= 0 {
+		return ""
+	}
+	unit := strings.ToUpper(timeUnit)
+	switch {
+	case strings.Contains(unit, "MINUTE"):
+		if m := int64(d); m%60 == 0 {
+			return fmt.Sprintf("%dh limit", m/60)
+		}
+		return fmt.Sprintf("%dm limit", int64(d))
+	case strings.Contains(unit, "HOUR"):
+		return fmt.Sprintf("%dh limit", int64(d))
+	case strings.Contains(unit, "SECOND"):
+		return fmt.Sprintf("%ds limit", int64(d))
+	default:
+		return ""
+	}
+}
+
+// parseKimiResetTime accepts a raw resetTime value that may be an RFC3339
+// string ("2026-07-24T01:20:25.362103Z") or a unix timestamp in seconds or
+// milliseconds, encoded either as a JSON number or a numeric string.
+func parseKimiResetTime(raw json.RawMessage) time.Time {
+	s := strings.TrimSpace(string(raw))
 	if s == "" || s == "null" {
 		return time.Time{}
 	}
-	// Try as number (unix timestamp).
-	if f, err := v.Float64(); err == nil {
+	// Quoted value: strip quotes, then try ISO time and numeric epoch.
+	if unq, err := strconv.Unquote(s); err == nil {
+		if t, err := time.Parse(time.RFC3339Nano, unq); err == nil {
+			return t.UTC()
+		}
+		s = unq
+	}
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
 		if f > 1e12 {
 			return time.UnixMilli(int64(f)).UTC()
 		}
 		return time.Unix(int64(f), 0).UTC()
-	}
-	// Try as ISO string.
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return t.UTC()
 	}
 	return time.Time{}
 }
@@ -283,7 +357,7 @@ func (a *TokenPlanAdapter) queryZhipu(ctx context.Context, baseHost string, apiT
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return errorResult("invalid_json", sanitizeError(err.Error(), nil), start)
+		return invalidJSONResult(start)
 	}
 
 	if !resp.Success {
@@ -403,7 +477,7 @@ func (a *TokenPlanAdapter) queryMiniMax(ctx context.Context, baseHost string, ap
 		} `json:"model_remains"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return errorResult("invalid_json", sanitizeError(err.Error(), nil), start)
+		return invalidJSONResult(start)
 	}
 
 	if resp.BaseResp.StatusCode != 0 {
@@ -515,7 +589,7 @@ func (a *TokenPlanAdapter) queryZenMux(ctx context.Context, quotaURL, apiToken s
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return errorResult("invalid_json", sanitizeError(err.Error(), nil), start)
+		return invalidJSONResult(start)
 	}
 
 	if !resp.Success {
@@ -637,7 +711,7 @@ func (a *TokenPlanAdapter) queryVolcengineAPI(ctx context.Context, action string
 		Result json.RawMessage `json:"Result"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return errorResult("invalid_json", sanitizeError(err.Error(), nil), start)
+		return invalidJSONResult(start)
 	}
 
 	errCode := resp.ResponseMetadata.Error.Code
@@ -679,7 +753,7 @@ func parseVolcengineAFP(result json.RawMessage, start time.Time) *ProviderQuotaR
 		PlanType string `json:"PlanType"`
 	}
 	if err := json.Unmarshal(result, &r); err != nil {
-		return errorResult("invalid_json", sanitizeError(err.Error(), nil), start)
+		return invalidJSONResult(start)
 	}
 
 	res := &ProviderQuotaResult{
@@ -723,7 +797,7 @@ func parseVolcengineCodingPlan(result json.RawMessage, start time.Time) *Provide
 		Details    []map[string]any `json:"Details"`
 	}
 	if err := json.Unmarshal(result, &r); err != nil {
-		return errorResult("invalid_json", sanitizeError(err.Error(), nil), start)
+		return invalidJSONResult(start)
 	}
 
 	items := r.QuotaUsage
