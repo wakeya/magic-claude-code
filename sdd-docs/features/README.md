@@ -85,6 +85,47 @@ Local page / proxy entry / reference sources / stack / last updated / progress
 #### Verification
 ```
 
+Simple examples for each task are provided below; in practice, a more granular approach can be used to ensure the tasks can be implemented straightforwardly without requiring complex decision-making during execution.
+
+```markdown
+### Task 1: Kimi quota response tolerant parsing
+
+#### Requirements
+
+**Objective** — Make `queryKimi` parse the real `GET https://api.kimi.com/coding/v1/usages` response (RFC3339 `resetTime`, numeric-string counters, `window`-described limits, no `name`), eliminating the permanent `invalid_json` failure, with tolerance aligned to kimi-code's `managed-usage.ts`.
+
+**Outcomes** — `token_plan.go` gains `kimiUsageDetail` (line 133), `usedOrDerived` (141), `kimiWindowLabel` (262), and a `json.RawMessage`-based `parseKimiResetTime` (286); `queryKimi` (152) returns correct five-hour and weekly tiers from the live payload; tests use live-shaped fixtures plus a legacy-shape backward-tolerance case.
+
+**Evidence** — `go test ./internal/providerquota/` passes; an end-to-end run of `TokenPlanAdapter.Query("kimi", ..., "https://api.kimi.com/coding/", <real token>)` succeeds and reports tiers `five_hour` (utilization 39, resets 2026-07-17T16:20:25Z, label "5h limit") and `seven_day` (utilization 36, resets 2026-07-24T01:20:25Z, remaining 64).
+
+**Constraints** — Endpoint/headers/interface unchanged; unknown response fields ignored; label fallback order fixed as `name → title → scope → window`; `strconv` added to imports.
+
+**Edge Cases** — `resetTime` variants (RFC3339Nano, unix seconds, unix millis, numeric string, null, garbage); `used` explicit-zero vs derived; `remaining > limit` clamp; `TIME_UNIT_*` enum units; missing `detail` fields skipped when `limit <= 0`.
+
+**Verification** — Package tests green; live query succeeds; legacy-shape fixture still parses (backward tolerance).
+
+#### Plan
+
+1. In `internal/providerquota/token_plan.go`, replace the anonymous response struct and helpers (old lines 131–233) with:
+   - `kimiUsageDetail{ Limit, Used, Remaining json.Number; ResetTime json.RawMessage }` shared by `limits[].detail` and `usage`.
+   - `usedOrDerived(limit, remaining float64) float64` — explicit `used` wins when present (including a real `0`), else `max(limit-remaining, 0)`.
+   - `limits[]` item gains `Title`, `Scope`, and `Window{ Duration json.Number; TimeUnit string }`; label = first non-empty of `Name/Title/Scope/kimiWindowLabel(Window)`.
+   - `kimiWindowLabel(duration, timeUnit)` — minute multiples of 60 → `"<h>h limit"`, other minutes → `"<m>m limit"`, hours → `"<h>h limit"`, seconds → `"<s>s limit"`, else `""`; unit matched case-insensitively by substring (`MINUTE`/`HOUR`/`SECOND`) to accept `TIME_UNIT_MINUTE`.
+   - `parseKimiResetTime(raw json.RawMessage) time.Time` — trim; `null`/empty → zero; `strconv.Unquote` quoted values then try `time.Parse(time.RFC3339Nano, …)`; finally `strconv.ParseFloat` → unix seconds, or `time.UnixMilli` when > 1e12.
+   - `kimiUtilization(used, limit)` — percentage clamped to [0, 100] so over-quota tiers pass `NormalizeTier`; `Used`/`Remaining` display values stay as reported.
+   - Weekly tier sets `Remaining` (previously only `Used`/`Total`).
+2. Rewrite `TestParseKimiResponse` and `TestKimiIntegration` fixtures to the live shape (string counters, RFC3339Nano `resetTime`, `window` without `name`); add `TestParseKimiResetTime` (8 cases), `TestKimiUsedOrDerived` (3 cases), `TestKimiWindowLabel` (6 cases), `TestKimiUtilization` (4 cases incl. over-quota clamp), `TestKimiIntegrationOverQuota` (used=120/limit=100 → success, utilization 100, used reported as 120), and `TestKimiIntegrationLegacyShape` (numeric fields, unix `resetTime`, `name` label).
+3. Run `go test ./internal/providerquota/` and `go test ./...`.
+4. End-to-end probe (temporary `main.go` under `.tmp-kimi-check/`, deleted afterwards): `providerquota.NewTokenPlanAdapter(10s).Query(ctx, "kimi", nil, "https://api.kimi.com/coding/", token)` with the real kimi-k3 token; confirm `success:true` and both tiers.
+
+#### Verification
+
+- [x] `go test ./internal/providerquota/` — ok (2.749s); `go test ./...` — all 15 packages ok, `go vet` clean.
+- [x] Live end-to-end probe (2026-07-17): `success:true`, tier `five_hour` label "5h limit", used 39 / total 100 / remaining 61, resets 2026-07-17T16:20:25Z; tier `seven_day` used 36 / total 100 / remaining 64, resets 2026-07-24T01:20:25Z.
+- [x] `TestKimiIntegrationLegacyShape` proves the pre-change fixture shape (JSON numbers, unix `resetTime`, `name`) still parses — no regression for older API versions.
+```
+
+
 中文任务详情使用同等结构：
 
 ```markdown
@@ -103,6 +144,47 @@ Local page / proxy entry / reference sources / stack / last updated / progress
 
 #### 验证
 ```
+
+任务详情下每个任务的简单举例如下，实际可使用更细致颗粒度的方式保证实现时可无脑直接实现：
+
+```markdown
+### 任务 1：Kimi 配额响应宽松解析
+
+#### 需求
+
+**Objective（目标）** — 让 `queryKimi` 能解析真实的 `GET https://api.kimi.com/coding/v1/usages` 响应（RFC3339 `resetTime`、数字字符串计数器、`window` 描述的 limits、无 `name`），消除永久性的 `invalid_json` 失败，容忍度对齐 kimi-code 的 `managed-usage.ts`。
+
+**Outcomes（成果）** — `token_plan.go` 新增 `kimiUsageDetail`（第 133 行）、`usedOrDerived`（141）、`kimiWindowLabel`（262）和基于 `json.RawMessage` 的 `parseKimiResetTime`（286）；`queryKimi`（152）能从线上 payload 产出正确的 5 小时与周限额 tier；测试改用线上形态假数据，并保留旧形态的向后兼容用例。
+
+**Evidence（证据）** — `go test ./internal/providerquota/` 通过；端到端运行 `TokenPlanAdapter.Query("kimi", ..., "https://api.kimi.com/coding/", <真实 token>)` 成功，返回 tier `five_hour`（利用率 39，重置 2026-07-17T16:20:25Z，标签 "5h limit"）与 `seven_day`（利用率 36，重置 2026-07-24T01:20:25Z，剩余 64）。
+
+**Constraints（约束）** — 端点/请求头/接口不变；忽略未知响应字段；标签回退顺序固定为 `name → title → scope → window`；新增 `strconv` 导入。
+
+**Edge Cases（边界）** — `resetTime` 各变体（RFC3339Nano、unix 秒、unix 毫秒、数字字符串、null、乱码）；`used` 显式零与推导；`remaining > limit` 钳位；`TIME_UNIT_*` 枚举单位；`detail` 字段缺失且 `limit <= 0` 时跳过。
+
+**Verification（验证）** — 包测试全绿；真实查询成功；旧形态假数据仍可解析（向后兼容）。
+
+#### 计划
+
+1. 在 `internal/providerquota/token_plan.go` 中替换原匿名响应结构体与辅助函数（旧 131–233 行）：
+   - `kimiUsageDetail{ Limit, Used, Remaining json.Number; ResetTime json.RawMessage }`，由 `limits[].detail` 与 `usage` 共用。
+   - `usedOrDerived(limit, remaining float64) float64`——显式 `used`（含真实的 `0`）优先，否则 `max(limit-remaining, 0)`。
+   - `limits[]` 项新增 `Title`、`Scope` 与 `Window{ Duration json.Number; TimeUnit string }`；标签取 `Name/Title/Scope/kimiWindowLabel(Window)` 中第一个非空值。
+   - `kimiWindowLabel(duration, timeUnit)`——分钟数能被 60 整除 → `"<h>h limit"`，其余分钟 → `"<m>m limit"`，小时 → `"<h>h limit"`，秒 → `"<s>s limit"`，否则 `""`；单位按大小写不敏感子串（`MINUTE`/`HOUR`/`SECOND`）匹配，兼容 `TIME_UNIT_MINUTE`。
+   - `parseKimiResetTime(raw json.RawMessage) time.Time`——trim；`null`/空 → 零值；带引号值先 `strconv.Unquote` 再试 `time.Parse(time.RFC3339Nano, …)`；最后 `strconv.ParseFloat` → unix 秒，> 1e12 时 `time.UnixMilli`。
+   - `kimiUtilization(used, limit)`——百分比钳到 [0, 100]，使超限 tier 通过 `NormalizeTier` 校验；`Used`/`Remaining` 展示值保留 API 原样。
+   - 周限额 tier 设置 `Remaining`（此前只有 `Used`/`Total`）。
+2. 重写 `TestParseKimiResponse` 与 `TestKimiIntegration` 的假数据为线上形态（字符串计数器、RFC3339Nano `resetTime`、无 `name` 的 `window`）；新增 `TestParseKimiResetTime`（8 例）、`TestKimiUsedOrDerived`（3 例）、`TestKimiWindowLabel`（6 例）、`TestKimiUtilization`（4 例，含超限钳位）、`TestKimiIntegrationOverQuota`（used=120/limit=100 → 查询成功、utilization 100、used 展示 120）与 `TestKimiIntegrationLegacyShape`（数字字段、unix `resetTime`、`name` 标签）。
+3. 运行 `go test ./internal/providerquota/` 与 `go test ./...`。
+4. 端到端探针（临时 `main.go` 置于 `.tmp-kimi-check/`，用后删除）：用真实 kimi-k3 token 执行 `providerquota.NewTokenPlanAdapter(10s).Query(ctx, "kimi", nil, "https://api.kimi.com/coding/", token)`，确认 `success:true` 且两个 tier 正确。
+
+#### 验证
+
+- [x] `go test ./internal/providerquota/` — ok（2.749s）；`go test ./...` — 15 个包全部 ok，`go vet` 干净。
+- [x] 端到端真实探针（2026-07-17）：`success:true`，tier `five_hour` 标签 "5h limit"，used 39 / total 100 / remaining 61，重置 2026-07-17T16:20:25Z；tier `seven_day` used 36 / total 100 / remaining 64，重置 2026-07-24T01:20:25Z。
+- [x] `TestKimiIntegrationLegacyShape` 证明旧假数据形态（JSON 数字、unix `resetTime`、`name`）仍可解析——对旧版 API 无回归。
+```
+
 
 ### 单文件计划规则
 
