@@ -141,10 +141,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// 请求入口日志的静态部分（upstream_url 等最终 URL 确定后再打印，见下方）
 	msgs, tools, isStream := requestBodySummary(body)
-	modelStr := metadata.OriginalModel
-	if mappedModel != metadata.OriginalModel {
-		modelStr = fmt.Sprintf("%s -> %s", metadata.OriginalModel, mappedModel)
-	}
+	modelStr := formatModelLog(metadata.OriginalModel, mappedModel, route.ExposedLabel)
 
 	// 创建后端请求
 	backendURL = buildUpstreamURL(backendURL, r.URL.Path, providerAPIFormat(selectedProvider))

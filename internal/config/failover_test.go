@@ -29,6 +29,9 @@ func TestResolveRouteExposedModelIsNotDefaultRouted(t *testing.T) {
 	if r.DefaultRouted {
 		t.Fatalf("exposed-model route must NOT be default-routed (failover must skip it)")
 	}
+	if r.ExposedLabel != "GLM-4.6" {
+		t.Fatalf("expected exposed label GLM-4.6, got %q", r.ExposedLabel)
+	}
 }
 
 // TestResolveRouteActiveFallbackIsDefaultRouted verifies that the
@@ -55,6 +58,9 @@ func TestResolveRouteActiveFallbackIsDefaultRouted(t *testing.T) {
 	if !r.DefaultRouted {
 		t.Fatalf("active fallback MUST be default-routed (failover-eligible)")
 	}
+	if r.ExposedLabel != "" {
+		t.Fatalf("active fallback must have empty ExposedLabel, got %q", r.ExposedLabel)
+	}
 }
 
 // TestResolveRouteSkipsDisabledExposedModel preserves the existing fallback
@@ -76,6 +82,9 @@ func TestResolveRouteSkipsDisabledExposedModel(t *testing.T) {
 	if !r.DefaultRouted {
 		t.Fatalf("fallback to active must be default-routed")
 	}
+	if r.ExposedLabel != "" {
+		t.Fatalf("disabled-exposed fallback must have empty ExposedLabel, got %q", r.ExposedLabel)
+	}
 }
 
 // TestResolveRouteWithoutActiveProvider preserves the nil-provider fallback:
@@ -94,6 +103,9 @@ func TestResolveRouteWithoutActiveProvider(t *testing.T) {
 	}
 	if r.DefaultRouted {
 		t.Fatalf("nil-provider route must not be default-routed")
+	}
+	if r.ExposedLabel != "" {
+		t.Fatalf("no-active route must have empty ExposedLabel, got %q", r.ExposedLabel)
 	}
 }
 

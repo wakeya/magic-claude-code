@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"slices"
@@ -38,4 +39,19 @@ func methodAllowed(w http.ResponseWriter, r *http.Request, allowed ...string) bo
 		},
 	})
 	return false
+}
+
+// formatModelLog 构造请求/响应日志里的 model 字段。
+// 命中 ExposedModel 时优先用人类可读的 Label 替代原始 em-<hex> ID（仅影响日志展示，
+// 不改路由/请求体）；mappedModel 与展示模型相同时折叠为单 token，
+// 与未做模型映射时的行为一致。
+func formatModelLog(originalModel, mappedModel, exposedLabel string) string {
+	display := originalModel
+	if exposedLabel != "" {
+		display = exposedLabel
+	}
+	if mappedModel == display {
+		return display
+	}
+	return fmt.Sprintf("%s -> %s", display, mappedModel)
 }
