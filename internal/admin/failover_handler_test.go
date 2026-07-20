@@ -232,9 +232,11 @@ func TestSuccessfulProviderTestClearsCredentialFailure(t *testing.T) {
 	dir := t.TempDir()
 	cfgStore, _ := config.NewSQLiteStore(filepath.Join(dir, "proxy.db"), "")
 	t.Cleanup(func() { cfgStore.Close() })
-	// 用公网域名作为 APIURL 以通过 SSRF 检查；真实请求由注入的 stub transport 接管。
+	// 用 RFC 5737 TEST-NET-3 文档保留 IP 作为 APIURL 以稳定通过 SSRF 检查
+	// （公网域名在某些环境 DNS 解析到私有/ULA 地址会被 isInternalIP 误拦）；
+	// 真实请求由注入的 stub transport 接管。
 	_, _ = cfgStore.Update(func(cfg *config.Config) error {
-		cfg.Providers = []config.Provider{{ID: "p1", Name: "P1", APIURL: "https://example.com/v1", APIFormat: config.APIFormatAnthropic, Enabled: true}}
+		cfg.Providers = []config.Provider{{ID: "p1", Name: "P1", APIURL: "https://203.0.113.1/v1", APIFormat: config.APIFormatAnthropic, Enabled: true}}
 		return nil
 	})
 	fstore := failover.NewStore(cfgStore.DB())
