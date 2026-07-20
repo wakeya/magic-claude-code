@@ -272,6 +272,9 @@ type ModelRoute struct {
 	Provider      *Provider
 	BackendModel  string
 	DefaultRouted bool
+	// ExposedLabel 在命中 ExposedModel 时为 em.Label，其余为空；
+	// 仅供日志展示层使用，不参与路由。
+	ExposedLabel string
 }
 
 // ResolveRoute 根据请求的 model 字段解析出完整路由决策。
@@ -294,7 +297,7 @@ func (c *Config) ResolveRoute(model string) ModelRoute {
 		}
 		for _, em := range p.ExposedModels {
 			if em.ID == pureModel {
-				return ModelRoute{Provider: p, BackendModel: em.BackendModel, DefaultRouted: false}
+				return ModelRoute{Provider: p, BackendModel: em.BackendModel, DefaultRouted: false, ExposedLabel: em.Label}
 			}
 		}
 	}
