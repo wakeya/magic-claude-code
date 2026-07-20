@@ -214,5 +214,5 @@ type ModelRoute struct {
 #### 验证
 
 - [x] `go test ./internal/proxy/ -run TestFormatModelLog` — 5/5 子测试通过。
-- [x] `go test ./...` — 1683 项通过，1 项既有失败（`TestSuccessfulProviderTestClearsCredentialFailure`，在 `main` 0711f61 上同样失败，与本次改动无关）；`go vet ./...` 干净。
-- [ ] 人工验证（待用户环境）：配置一个暴露模型的 provider，发送 `model` 为 `em-` ID 的请求，确认 `>>> ... model=<Label> -> <BackendModel>` 与对应 `<<<` 行；默认路由请求（`claude-opus-4-8`）保持不变。
+- [x] `go test ./...` — 1684 项通过（0 失败）；`go vet ./...` 干净。
+- [x] 人工验证（2026-07-19）：ExposedModel Label=`kimi-k3`、BackendModel=`k3`，入口 `>>>` 与出口 `<<<` 日志均显示 `model=kimi-k3 -> k3`（em- ID 已被 Label 替换）。

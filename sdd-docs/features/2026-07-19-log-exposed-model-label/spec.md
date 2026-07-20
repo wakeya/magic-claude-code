@@ -214,5 +214,5 @@ type ModelRoute struct {
 #### Verification
 
 - [x] `go test ./internal/proxy/ -run TestFormatModelLog` — 5/5 sub-tests pass.
-- [x] `go test ./...` — 1683 passed, 1 pre-existing failure (`TestSuccessfulProviderTestClearsCredentialFailure`, fails identically on `main` 0711f61, unrelated to this change); `go vet ./...` clean.
-- [ ] Manual (pending user environment): with a provider exposing a model, a request whose `model` is the `em-` ID should produce `>>> ... model=<Label> -> <BackendModel>` and a matching `<<<` line; a default-route request (`claude-opus-4-8`) unchanged.
+- [x] `go test ./...` — 1684 passed (0 failed); `go vet ./...` clean.
+- [x] Manual (2026-07-19): ExposedModel Label=`kimi-k3`, BackendModel=`k3`; both `>>>` entry and `<<<` exit logs show `model=kimi-k3 -> k3` (em- ID replaced by Label).
