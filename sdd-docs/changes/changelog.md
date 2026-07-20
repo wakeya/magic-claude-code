@@ -7,6 +7,19 @@
 
 ---
 
+## v0.17.0 (2026-07-20)
+
+### Added
+- **代理日志显示暴露模型 Label 替代内部 em- ID**：通过 `/model` 切换到暴露模型后，请求/响应日志的 `model=` 字段此前记录的是 `ExposedModel.ID`（随机 `em-<hex>`，设计上无语义），现改为显示用户配置的 `ExposedModel.Label`，保留 `-> BackendModel` 映射结构。`config.ModelRoute` 新增 `ExposedLabel` 字段，`ResolveRoute` 命中暴露模型时填充；代理日志层提取纯函数 `formatModelLog` 做展示替换，仅影响日志可读性，不改变路由、请求体、failover 或 usage 记录。Label 与 BackendModel 同名时折叠为单 token。
+
+### Fixed
+- **修复 admin provider 测试在沙箱环境的环境敏感失败**：`TestSuccessfulProviderTestClearsCredentialFailure` 此前用 `example.com` 作为测试 APIURL，在沙箱 DNS 把 `example.com` 解析到 ULA 私有 IPv6（`fd00::/8`）时，`isInternalIP` 的 SSRF 检查误拦，导致 `handleTestProviderByID` 提前返回、到不了凭据恢复钩子。改用 RFC 5737 TEST-NET-3 文档保留 IP（`203.0.113.1`）作为测试 APIURL，`isReservedIP` 永不误判且无需 DNS 解析。
+
+### Docs
+- 日志显示暴露模型 Label feature spec / 审查归档（中英双语）：`sdd-docs/features/2026-07-19-log-exposed-model-label/`
+
+---
+
 ## v0.16.4 (2026-07-19)
 
 ### Fixed
