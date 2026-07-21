@@ -501,3 +501,78 @@ func TestMatchErrorPattern_Zhipu1210(t *testing.T) {
 		})
 	}
 }
+
+// blockTypes 提取 content 数组中各 block 的 type 集合，供清洗测试断言使用。
+func blockTypes(content []any) map[string]bool {
+	types := make(map[string]bool)
+	for _, b := range content {
+		if m, ok := b.(map[string]any); ok {
+			if t, _ := m["type"].(string); t != "" {
+				types[t] = true
+			}
+		}
+	}
+	return types
+}
+
+// TestProactiveClean_PreservesToolReference 验证主动清洗保留 tool_reference
+// （Claude Code deferred tool 的加载标记），同时仍剥离其他真正的非标准类型。
+// 对应 2026-07-21-preserve-tool-reference spec 需求 1 与需求 4。
+func TestProactiveClean_PreservesToolReference(t *testing.T) {
+	req := map[string]any{
+		"messages": []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type":        "tool_result",
+						"tool_use_id": "toolu_t1",
+						"content": []any{
+							map[string]any{"type": "tool_reference", "tool_name": "WebSearch"},
+							map[string]any{"type": "server_tool_use", "name": "future"},
+							map[string]any{"type": "text", "text": "ok"},
+						},
+					},
+				},
+			},
+		},
+	}
+	changed := proactiveCleanUnknownContentTypes(req)
+	if !changed {
+		t.Fatal("expected proactive cleanup to strip server_tool_use (changed=true)")
+	}
+	content := req["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)["content"].([]any)
+	types := blockTypes(content)
+	if _, ok := types["tool_reference"]; !ok {
+		t.Errorf("proactive cleanup must preserve tool_reference; remaining blocks: %v", types)
+	}
+	if _, ok := types["server_tool_use"]; ok {
+		t.Errorf("proactive cleanup must strip other non-standard types (server_tool_use); remaining: %v", types)
+	}
+	if _, ok := types["text"]; !ok {
+		t.Errorf("proactive cleanup must keep standard text blocks; remaining: %v", types)
+	}
+}
+
+// TestReactiveClean_StripsToolReference 验证反应式清洗在 400 后仍清除 tool_reference，
+// 以便 tool_reference 指向未定义工具的异常 400 能通过重试恢复。
+// 对应 2026-07-21-preserve-tool-reference spec 需求 2。
+func TestReactiveClean_StripsToolReference(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_t1","content":[{"type":"tool_reference","tool_name":"ToolSearch"},{"type":"text","text":"ok"}]}]}]}`)
+	out, changed := cleanUnknownContentTypes(body)
+	if !changed {
+		t.Fatal("expected reactive cleanup to strip tool_reference (changed=true)")
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(out, &resp); err != nil {
+		t.Fatalf("cleaned body is not valid JSON: %v", err)
+	}
+	content := resp["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)["content"].([]any)
+	types := blockTypes(content)
+	if _, ok := types["tool_reference"]; ok {
+		t.Errorf("reactive cleanup must strip tool_reference; remaining: %v", types)
+	}
+	if _, ok := types["text"]; !ok {
+		t.Errorf("reactive cleanup must keep text blocks; remaining: %v", types)
+	}
+}

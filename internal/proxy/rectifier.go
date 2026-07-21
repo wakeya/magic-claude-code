@@ -423,7 +423,7 @@ func cleanUnknownContentTypes(body []byte) ([]byte, bool) {
 		if !ok {
 			continue
 		}
-		if filterContentBlocks(msg) {
+		if filterContentBlocks(msg, false) {
 			changed = true
 		}
 	}
@@ -439,8 +439,11 @@ func cleanUnknownContentTypes(body []byte) ([]byte, bool) {
 	return out, true
 }
 
-// filterContentBlocks cleans a message's content array and recurses into tool_result.content
-func filterContentBlocks(msg map[string]any) bool {
+// filterContentBlocks cleans a message's content array and recurses into tool_result.content.
+// preserveToolReference=true 时保留 tool_reference 块（Claude Code deferred tool 加载标记；
+// 现行 kimi/glm 等 Anthropic 兼容端点已接受该类型，主动清洗保留它以免破坏模型上下文）；
+// false 时按非标准类型剥离（反应式 400 兜底，用于 tool_reference 指向未定义工具等异常恢复）。
+func filterContentBlocks(msg map[string]any, preserveToolReference bool) bool {
 	content, ok := msg["content"]
 	if !ok {
 		return false
@@ -460,13 +463,17 @@ func filterContentBlocks(msg map[string]any) bool {
 			continue
 		}
 		btype, _ := b["type"].(string)
+		if preserveToolReference && btype == "tool_reference" {
+			filtered = append(filtered, block)
+			continue
+		}
 		if !knownContentTypes[btype] && btype != "" {
 			changed = true
 			continue
 		}
 		// recurse into tool_result.content
 		if btype == "tool_result" {
-			if filterContentBlocks(b) {
+			if filterContentBlocks(b, preserveToolReference) {
 				changed = true
 			}
 		}
