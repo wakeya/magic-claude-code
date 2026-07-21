@@ -157,3 +157,9 @@ rectifier 必须识别上游 400 错误消息中的 `"unsupported content type"`
 **Evidence（证据）** — `go test -cover ./internal/proxy/...` 显示覆盖率无回归。
 
 **Verification（验证）** — `go test ./internal/proxy/... -v`
+
+## 2026-07-21 勘误
+
+本规格所依据的 kimi 上游行为已变化。2026-07-21 的受控实测（`sdd-docs/features/2026-07-21-preserve-tool-reference/`）表明：kimi 三个 Anthropic 兼容端点（moonshot k2.6、coding k2.7、coding k3）在 tool_reference 引用 tools 中已存在工具时**接受**该类型；最初的 `"unsupported content type"` 400 已不复现。当前残留的 400 源于 tool_reference 指向未定义的工具，而非类型本身。
+
+据此，主动剥离 tool_reference 现为纯副作用——它移除了 Claude Code deferred 工具加载标记。`filterContentBlocks` 已参数化（`preserveToolReference`）：主动清洗保留 tool_reference；反应式清洗（`tryRectify`）仍清除它，以兜底引用未定义工具的 400。反应式错误模式匹配顺带扩展，使当前 kimi 400 串（`"Invalid request Error"`、`"Tool reference ... not found"`）仍能触发清洗。`StripUnknownContentBlocks` flag 实际已无作用，后续特性将弃用。完整分析与实测矩阵见 `2026-07-21-preserve-tool-reference/`。

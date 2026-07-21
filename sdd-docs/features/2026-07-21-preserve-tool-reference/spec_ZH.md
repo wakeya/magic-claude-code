@@ -5,7 +5,7 @@
 参考源站：`~/workspace/open-software/cc-switch/src-tauri/src/proxy/body_filter.rs`、`sdd-docs/research/2026-05-15-rectifier-pattern3-generic-bad-request.md`、`sdd-docs/features/2026-06-15-proactive-content-block-cleanup/spec.md`、2026-07-21 对 `api.moonshot.cn/anthropic` 与 `api.kimi.com/coding` 的真实 curl 探针
 技术栈：Go 1.26 标准库
 最后更新：2026-07-21
-进度：0 / 3 计划任务
+进度：3 / 3 计划任务（任务 1–3 已完成）
 
 ## 整体分析（源站分析）
 
@@ -65,11 +65,11 @@ Claude Code 2.1.x 会把 `tool_reference` 块放进 `tool_result.content` 数组
 
 ## 开发检查清单
 
-- [ ] 参数化 `filterContentBlocks(msg, preserveToolReference)`；主动传 `true`，反应式传 `false`。
-- [ ] 验证 `matchErrorPattern` 识别当前 kimi 400 串（`"Invalid request Error"`、`"Tool reference '<name>' not found in available tools"`）；必要时扩展短语表。
-- [ ] 单元测试：主动保留 `tool_reference`；反应式清除 `tool_reference`；新增的错误模式用例使用真实错误串。
-- [ ] 运行 `go test ./internal/proxy/...` 与 `go test ./...`。
-- [ ] 追加 review notes（`review-notes.md` / `review-notes_ZH.md`），并在 2026-06-15 规格与 2026-05-15 研究中追加带日期的勘误说明。
+- [x] 参数化 `filterContentBlocks(msg, preserveToolReference)`；主动传 `true`，反应式传 `false`。
+- [x] 验证 `matchErrorPattern` 识别当前 kimi 400 串（`"Invalid request Error"`、`"Tool reference '<name>' not found in available tools"`）；必要时扩展短语表。
+- [x] 单元测试：主动保留 `tool_reference`；反应式清除 `tool_reference`；新增的错误模式用例使用真实错误串。
+- [x] 运行 `go test ./internal/proxy/...` 与 `go test ./...`。
+- [x] 追加 review notes（`review-notes.md` / `review-notes_ZH.md`），并在 2026-06-15 规格与 2026-05-15 研究中追加带日期的勘误说明。
 
 ## 需求
 
@@ -194,6 +194,6 @@ Claude Code 2.1.x 会把 `tool_reference` 块放进 `tool_result.content` 数组
 
 #### 验证
 
-- [ ] `go test ./...` 通过。
-- [ ] review notes 齐备（EN + ZH）。
-- [ ] 2026-06-15 规格与 2026-05-15 研究带有回链此处的日期勘误。
+- [x] `go test ./...` 通过 —— 17 个包 1689 passed。
+- [x] review notes 齐备：`review-notes.md` + `review-notes_ZH.md`。
+- [x] 2026-06-15 规格（EN+ZH）与 2026-05-15 研究附有"2026-07-21 勘误"段并回链此处。

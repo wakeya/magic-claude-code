@@ -5,7 +5,7 @@ Proxy entry: `internal/proxy/handler.go` ServeHTTP / tryRectify
 Reference sources: `~/workspace/open-software/cc-switch/src-tauri/src/proxy/body_filter.rs`, `sdd-docs/research/2026-05-15-rectifier-pattern3-generic-bad-request.md`, `sdd-docs/features/2026-06-15-proactive-content-block-cleanup/spec.md`, live curl probe against `api.moonshot.cn/anthropic` and `api.kimi.com/coding` (2026-07-21)
 Stack: Go 1.26 standard library
 Last updated: 2026-07-21
-Progress: 0 / 3 planned
+Progress: 3 / 3 planned (Tasks 1–3 shipped)
 
 ## Overall Analysis (Source Analysis)
 
@@ -65,11 +65,11 @@ A follow-up, separate feature will deprecate the `strip_unknown_content_blocks` 
 
 ## Development Checklist
 
-- [ ] Parameterize `filterContentBlocks(msg, preserveToolReference)`; proactive passes `true`, reactive passes `false`.
-- [ ] Verify `matchErrorPattern` recognizes current kimi 400 strings (`"Invalid request Error"`, `"Tool reference '<name>' not found in available tools"`); extend phrase list if needed.
-- [ ] Unit tests: proactive preserves `tool_reference`; reactive strips `tool_reference`; new error-pattern cases use the live error strings.
-- [ ] Run `go test ./internal/proxy/...` and `go test ./...`.
-- [ ] Add review notes (`review-notes.md` / `review-notes_ZH.md`) and a dated correction note in the 2026-06-15 spec and 2026-05-15 research.
+- [x] Parameterize `filterContentBlocks(msg, preserveToolReference)`; proactive passes `true`, reactive passes `false`.
+- [x] Verify `matchErrorPattern` recognizes current kimi 400 strings (`"Invalid request Error"`, `"Tool reference '<name>' not found in available tools"`); extend phrase list if needed.
+- [x] Unit tests: proactive preserves `tool_reference`; reactive strips `tool_reference`; new error-pattern cases use the live error strings.
+- [x] Run `go test ./internal/proxy/...` and `go test ./...`.
+- [x] Add review notes (`review-notes.md` / `review-notes_ZH.md`) and a dated correction note in the 2026-06-15 spec and 2026-05-15 research.
 
 ## Requirements
 
@@ -194,6 +194,6 @@ Providers with `StripUnknownContentBlocks == false` (default) are not modified a
 
 #### Verification
 
-- [ ] `go test ./...` green.
-- [ ] Review notes present (EN + ZH).
-- [ ] 2026-06-15 spec + 2026-05-15 research carry dated correction notes linking here.
+- [x] `go test ./...` — 1689 passed across 17 packages.
+- [x] Review notes present: `review-notes.md` + `review-notes_ZH.md`.
+- [x] 2026-06-15 spec (EN+ZH) + 2026-05-15 research carry "2026-07-21 Correction" notes linking here.

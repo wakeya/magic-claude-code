@@ -157,3 +157,9 @@ Run unit tests; confirm strip=false preserves all content blocks (passthrough); 
 **Evidence** — `go test -cover ./internal/proxy/...` shows no regression in coverage.
 
 **Verification** — `go test ./internal/proxy/... -v`
+
+## 2026-07-21 Correction
+
+The kimi upstream behavior this spec relied on has changed. A controlled live probe on 2026-07-21 (`sdd-docs/features/2026-07-21-preserve-tool-reference/`) shows all three kimi Anthropic-compatible endpoints (moonshot k2.6, coding k2.7, coding k3) now **accept** `tool_reference` as a content type when it references a tool present in the request's `tools` array; the `"unsupported content type"` 400 no longer reproduces. The 400s still observed come from `tool_reference` pointing at an undefined tool, not from the type itself.
+
+Consequence: proactive stripping of `tool_reference` is now pure side-effect — it removes the Claude Code deferred-tool load marker the model relies on. `filterContentBlocks` was parameterized (`preserveToolReference`): proactive cleanup keeps `tool_reference`; reactive cleanup (`tryRectify`) still strips it to recover the undefined-tool-reference 400. Reactive error matching was extended so current kimi 400 strings (`"Invalid request Error"`, `"Tool reference ... not found"`) still trigger cleanup. The `StripUnknownContentBlocks` flag is now a no-op in practice and will be deprecated in a follow-up. See `2026-07-21-preserve-tool-reference/` for the full analysis and the live-probe matrix.
