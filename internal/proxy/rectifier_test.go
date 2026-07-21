@@ -576,3 +576,29 @@ func TestReactiveClean_StripsToolReference(t *testing.T) {
 		t.Errorf("reactive cleanup must keep text blocks; remaining: %v", types)
 	}
 }
+
+// TestMatchErrorPattern_KimiCurrentErrors 验证 matchErrorPattern 识别现行 kimi 端点的 400 错误，
+// 使反应式 tryRectify 能在 tool_reference 引发 400 时触发 cleanUnknownContentTypes。
+// 对应 2026-07-21-preserve-tool-reference spec 任务 2。
+func TestMatchErrorPattern_KimiCurrentErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "coding_invalid_request_error",
+			body: `{"error":{"type":"invalid_request_error","message":"Invalid request Error"}}`,
+		},
+		{
+			name: "moonshot_tool_reference_not_found",
+			body: `{"error":{"type":"invalid_request_error","message":"messages.2.content.0.tool_result.content: Tool reference 'ToolSearch' not found in available tools"}}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := matchErrorPattern([]byte(tt.body)); got != PatternGenericBadRequest {
+				t.Fatalf("matchErrorPattern() = %v, want PatternGenericBadRequest", got)
+			}
+		})
+	}
+}

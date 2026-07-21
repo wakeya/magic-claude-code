@@ -221,11 +221,16 @@ func hasToolErrorContext(lower string) bool {
 	return false
 }
 
-// isUnsupportedContentTypePhrase 检测 unsupported/unknown content type 短语。
-// 这类错误优先级高于 1210 兜底，仍归 PatternGenericBadRequest（由 cleanUnknownContentTypes 处理）。
+// isUnsupportedContentTypePhrase 检测会触发 cleanUnknownContentTypes 的 content-block 相关 400 短语。
+// 这类错误优先级高于 1210 兜底，仍归 PatternGenericBadRequest（由 cleanUnknownContentTypes 处理）：
+//   - "unsupported/unknown content type"：旧版 kimi 等拒绝 tool_reference 类型本身；
+//   - "tool reference ... not found"：现行 kimi 端点已接受 tool_reference 类型，但当其指向 tools
+//     中未定义的工具时报错（2026-07-21 实测 moonshot/anthropic 端点）。清洗 tool_reference 后重试
+//     即可恢复，与 unsupported content type 同类处理。
 func isUnsupportedContentTypePhrase(lower string) bool {
 	return strings.Contains(lower, "unsupported content type") ||
-		strings.Contains(lower, "unknown content type")
+		strings.Contains(lower, "unknown content type") ||
+		strings.Contains(lower, "tool reference")
 }
 
 // isOpaqueToolCompatibilityError 识别智谱等供应商不透明的参数错误：结构化 error.code == "1210"，

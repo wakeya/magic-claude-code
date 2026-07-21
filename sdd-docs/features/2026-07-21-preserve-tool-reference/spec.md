@@ -164,8 +164,10 @@ Providers with `StripUnknownContentBlocks == false` (default) are not modified a
 
 #### Verification
 
-- [ ] Both live error JSONs classify as `PatternGenericBadRequest`.
-- [ ] Old `"unsupported content type"` cases still classify (backward compat).
+- [x] coding `"Invalid request Error"` already matched by `hasGenericInvalidRequestPhrase` (phrase `"invalid request"`); test documents this, no code change needed.
+- [x] moonshot `"Tool reference '<name>' not found in available tools"` newly matched via `isUnsupportedContentTypePhrase` extension (added `"tool reference"` phrase).
+- [x] Old `"unsupported content type"` cases still classify (backward compat); full `TestMatchErrorPattern` suite 34 passed.
+- [x] `go test ./...` — 1689 passed across 17 packages.
 
 ### Task 3: Tests, Review Notes, and Spec Correction
 

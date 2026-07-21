@@ -164,8 +164,10 @@ Claude Code 2.1.x 会把 `tool_reference` 块放进 `tool_result.content` 数组
 
 #### 验证
 
-- [ ] 两条真实错误 JSON 均归类为 `PatternGenericBadRequest`。
-- [ ] 旧 `"unsupported content type"` 用例仍归类（向后兼容）。
+- [x] coding `"Invalid request Error"` 已被 `hasGenericInvalidRequestPhrase` 覆盖（短语 `"invalid request"`）；测试记录，无需改码。
+- [x] moonshot `"Tool reference '<name>' not found in available tools"` 经 `isUnsupportedContentTypePhrase` 扩展（新增 `"tool reference"` 短语）后命中。
+- [x] 旧 `"unsupported content type"` 用例仍归类（向后兼容）；`TestMatchErrorPattern` 全套 34 passed。
+- [x] `go test ./...` — 17 个包 1689 passed。
 
 ### 任务 3：测试、review notes 与规格勘误
 
