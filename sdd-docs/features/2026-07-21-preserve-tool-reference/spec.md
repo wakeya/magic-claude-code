@@ -165,7 +165,7 @@ Providers with `StripUnknownContentBlocks == false` (default) are not modified a
 #### Verification
 
 - [x] coding `"Invalid request Error"` already matched by `hasGenericInvalidRequestPhrase` (phrase `"invalid request"`); test documents this, no code change needed.
-- [x] moonshot `"Tool reference '<name>' not found in available tools"` newly matched via `isUnsupportedContentTypePhrase` extension (added `"tool reference"` phrase).
+- [x] moonshot `"Tool reference '<name>' not found in available tools"` newly matched via `isUnsupportedContentTypePhrase` extension (narrowed to `"tool reference"` + `"not found"`; `TestMatchErrorPattern_ToolReferenceRequiresNotFound` proves non-not-found variants do not match — avoids masking other tool_reference errors).
 - [x] Old `"unsupported content type"` cases still classify (backward compat); full `TestMatchErrorPattern` suite 34 passed.
 - [x] `go test ./...` — 1689 passed across 17 packages.
 

@@ -38,7 +38,7 @@ Minimal Anthropic `/v1/messages`, non-stream, one `tool_use`→`tool_result` rou
 1. `internal/proxy/rectifier.go`
    - `filterContentBlocks(msg, preserveToolReference bool)`: when `preserveToolReference && btype == "tool_reference"`, the block is kept; all other logic byte-for-byte unchanged. Recursive call forwards the flag.
    - `cleanUnknownContentTypes` calls `filterContentBlocks(msg, false)` (reactive — behavior unchanged).
-   - `isUnsupportedContentTypePhrase` extended with `"tool reference"` to match the current moonshot 400 string.
+   - `isUnsupportedContentTypePhrase` extended with `"tool reference"` + `"not found"` to match the current moonshot 400 string; narrowed (not just `"tool reference"`, per review feedback) so other tool_reference errors (format/permission/policy) don't get masked by a reactive cleanup. `TestMatchErrorPattern_ToolReferenceRequiresNotFound` locks the negative cases.
 2. `internal/proxy/handler.go`
    - `proactiveCleanUnknownContentTypes` calls `filterContentBlocks(msg, true)` (proactive — now preserves `tool_reference`).
 3. Tests (`internal/proxy/rectifier_test.go`, `server_test.go`):

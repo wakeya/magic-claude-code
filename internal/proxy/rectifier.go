@@ -230,7 +230,7 @@ func hasToolErrorContext(lower string) bool {
 func isUnsupportedContentTypePhrase(lower string) bool {
 	return strings.Contains(lower, "unsupported content type") ||
 		strings.Contains(lower, "unknown content type") ||
-		strings.Contains(lower, "tool reference")
+		(strings.Contains(lower, "tool reference") && strings.Contains(lower, "not found"))
 }
 
 // isOpaqueToolCompatibilityError 识别智谱等供应商不透明的参数错误：结构化 error.code == "1210"，

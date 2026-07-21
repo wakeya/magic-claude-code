@@ -602,3 +602,29 @@ func TestMatchErrorPattern_KimiCurrentErrors(t *testing.T) {
 		})
 	}
 }
+
+// TestMatchErrorPattern_ToolReferenceRequiresNotFound 验证 "tool reference" 短语收窄为
+// 必须同时含 "not found"，避免误匹配其他语义的 tool reference 错误（格式/权限/策略等），
+// 防止反应式清洗 tool_reference 后重试掩盖真实错误。对应 spec 任务 2 Constraints。
+func TestMatchErrorPattern_ToolReferenceRequiresNotFound(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "tool_reference_format_invalid",
+			body: `{"error":{"type":"invalid_request_error","message":"tool reference format invalid"}}`,
+		},
+		{
+			name: "tool_reference_not_authorized",
+			body: `{"error":{"type":"invalid_request_error","message":"tool reference not authorized"}}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := matchErrorPattern([]byte(tt.body)); got == PatternGenericBadRequest {
+				t.Fatalf("matchErrorPattern() = PatternGenericBadRequest; 'tool reference' without 'not found' must not trigger reactive cleanup (would mask real errors)")
+			}
+		})
+	}
+}

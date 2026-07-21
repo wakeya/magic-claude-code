@@ -38,7 +38,7 @@
 1. `internal/proxy/rectifier.go`
    - `filterContentBlocks(msg, preserveToolReference bool)`：`preserveToolReference && btype == "tool_reference"` 时保留该块；其他逻辑逐字节不变。递归调用透传该标志。
    - `cleanUnknownContentTypes` 以 `filterContentBlocks(msg, false)` 调用（反应式 —— 行为不变）。
-   - `isUnsupportedContentTypePhrase` 新增 `"tool reference"`，匹配现行 moonshot 400 串。
+   - `isUnsupportedContentTypePhrase` 新增 `"tool reference"` + `"not found"`（收窄，非仅 `"tool reference"`，依 review 反馈），匹配现行 moonshot 400 串；避免其他 tool_reference 错误（格式/权限/策略）被反应式清洗掩盖。`TestMatchErrorPattern_ToolReferenceRequiresNotFound` 锁定负向用例。
 2. `internal/proxy/handler.go`
    - `proactiveCleanUnknownContentTypes` 以 `filterContentBlocks(msg, true)` 调用（主动 —— 现保留 tool_reference）。
 3. 测试（`internal/proxy/rectifier_test.go`、`server_test.go`）：
