@@ -1072,7 +1072,7 @@ func proactiveCleanUnknownContentTypes(req map[string]any) bool {
 		if !ok {
 			continue
 		}
-		if filterContentBlocks(msg) {
+		if filterContentBlocks(msg, true) {
 			changed = true
 		}
 	}

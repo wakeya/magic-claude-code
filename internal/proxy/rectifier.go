@@ -221,11 +221,16 @@ func hasToolErrorContext(lower string) bool {
 	return false
 }
 
-// isUnsupportedContentTypePhrase 检测 unsupported/unknown content type 短语。
-// 这类错误优先级高于 1210 兜底，仍归 PatternGenericBadRequest（由 cleanUnknownContentTypes 处理）。
+// isUnsupportedContentTypePhrase 检测会触发 cleanUnknownContentTypes 的 content-block 相关 400 短语。
+// 这类错误优先级高于 1210 兜底，仍归 PatternGenericBadRequest（由 cleanUnknownContentTypes 处理）：
+//   - "unsupported/unknown content type"：旧版 kimi 等拒绝 tool_reference 类型本身；
+//   - "tool reference ... not found"：现行 kimi 端点已接受 tool_reference 类型，但当其指向 tools
+//     中未定义的工具时报错（2026-07-21 实测 moonshot/anthropic 端点）。清洗 tool_reference 后重试
+//     即可恢复，与 unsupported content type 同类处理。
 func isUnsupportedContentTypePhrase(lower string) bool {
 	return strings.Contains(lower, "unsupported content type") ||
-		strings.Contains(lower, "unknown content type")
+		strings.Contains(lower, "unknown content type") ||
+		(strings.Contains(lower, "tool reference") && strings.Contains(lower, "not found"))
 }
 
 // isOpaqueToolCompatibilityError 识别智谱等供应商不透明的参数错误：结构化 error.code == "1210"，
@@ -423,7 +428,7 @@ func cleanUnknownContentTypes(body []byte) ([]byte, bool) {
 		if !ok {
 			continue
 		}
-		if filterContentBlocks(msg) {
+		if filterContentBlocks(msg, false) {
 			changed = true
 		}
 	}
@@ -439,8 +444,11 @@ func cleanUnknownContentTypes(body []byte) ([]byte, bool) {
 	return out, true
 }
 
-// filterContentBlocks cleans a message's content array and recurses into tool_result.content
-func filterContentBlocks(msg map[string]any) bool {
+// filterContentBlocks cleans a message's content array and recurses into tool_result.content.
+// preserveToolReference=true 时保留 tool_reference 块（Claude Code deferred tool 加载标记；
+// 现行 kimi/glm 等 Anthropic 兼容端点已接受该类型，主动清洗保留它以免破坏模型上下文）；
+// false 时按非标准类型剥离（反应式 400 兜底，用于 tool_reference 指向未定义工具等异常恢复）。
+func filterContentBlocks(msg map[string]any, preserveToolReference bool) bool {
 	content, ok := msg["content"]
 	if !ok {
 		return false
@@ -460,13 +468,17 @@ func filterContentBlocks(msg map[string]any) bool {
 			continue
 		}
 		btype, _ := b["type"].(string)
+		if preserveToolReference && btype == "tool_reference" {
+			filtered = append(filtered, block)
+			continue
+		}
 		if !knownContentTypes[btype] && btype != "" {
 			changed = true
 			continue
 		}
 		// recurse into tool_result.content
 		if btype == "tool_result" {
-			if filterContentBlocks(b) {
+			if filterContentBlocks(b, preserveToolReference) {
 				changed = true
 			}
 		}

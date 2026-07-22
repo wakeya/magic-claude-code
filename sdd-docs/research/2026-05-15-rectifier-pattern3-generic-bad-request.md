@@ -108,3 +108,11 @@ var knownContentTypes = map[string]bool{
 - **主动式清洗**：在 `transformRequest` 阶段就剥离非标准 content block，避免第一次 400 的往返延迟
 - **扩展清理范围**：考虑清理 `system[].cache_control` 等字段，进一步减少第三方 API 的拒绝率
 - **供应商能力声明**：为 Provider 增加更多能力开关（如 `SupportsCacheControl`），实现细粒度的主动式清理
+
+---
+
+## 2026-07-21 勘误
+
+本研究的核心结论"kimi-k2.6 收到 tool_reference 返回 400"基于 2026-05 的上游行为。2026-07-21 受控实测（`sdd-docs/features/2026-07-21-preserve-tool-reference/`）表明：kimi 三个 Anthropic 兼容端点（moonshot k2.6、coding k2.7、coding k3）现已接受 tool_reference 类型（引用已定义工具时 200）；原始的 "unsupported content type" 400 已不复现。当前残留的 400 源于 tool_reference 指向 tools 中未定义的工具，与类型本身无关。
+
+据此，当初把 400 归因于 tool_reference 类型本身属于混淆变量（真正变量是"引用的工具是否定义"）。修复在 `2026-07-21-preserve-tool-reference` 中以参数化 `filterContentBlocks` 的方式纠正：主动清洗保留 tool_reference，反应式仅在 400 后清除。详见该特性规格与 review notes。

@@ -64,9 +64,10 @@ type Provider struct {
 	// MultimodalModel 多模态请求使用的模型 ID
 	MultimodalModel string `json:"multimodal_model"`
 
-	// StripUnknownContentBlocks controls whether non-standard content blocks
-	// (e.g. tool_reference) are proactively stripped before forwarding.
-	// Enable for providers with strict content-type validation (e.g. Kimi).
+	// StripUnknownContentBlocks controls whether non-standard content blocks are
+	// proactively stripped before forwarding. tool_reference is always preserved
+	// (Claude Code deferred-tool load marker; current kimi/glm endpoints accept it).
+	// Enable only if the upstream 400s on other unknown content block types.
 	StripUnknownContentBlocks bool `json:"strip_unknown_content_blocks"`
 
 	// RateLimitQueueEnabled enables local concurrency queue for this provider.

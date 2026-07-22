@@ -1360,8 +1360,10 @@ func TestProactiveClean_AnthropicDefault_PreservesToolReference(t *testing.T) {
 	}
 }
 
-// 场景 2：anthropic + strip=true → tool_reference 被主动清洗
-func TestProactiveClean_AnthropicStripEnabled_RemovesToolReference(t *testing.T) {
+// 场景 2：anthropic + strip=true → tool_reference 仍保留（2026-07-21 起 kimi 等 Anthropic 兼容端点
+// 已接受 tool_reference 类型，主动清洗不再剥离它，避免破坏 Claude Code deferred tool 上下文；
+// 其他真正非标准类型仍被清洗，见 rectifier_test.go 的 TestProactiveClean_PreservesToolReference）
+func TestProactiveClean_AnthropicStripEnabled_PreservesToolReference(t *testing.T) {
 	provider := config.NewProvider("kimi", "https://api.moonshot.cn/anthropic", "token")
 	provider.APIFormat = config.APIFormatAnthropic
 	provider.StripUnknownContentBlocks = true
@@ -1377,8 +1379,8 @@ func TestProactiveClean_AnthropicStripEnabled_RemovesToolReference(t *testing.T)
 	messages := req["messages"].([]any)
 	msg := messages[0].(map[string]any)
 	content := msg["content"].([]any)
-	if findToolReference(content) {
-		t.Fatalf("tool_reference should have been stripped when strip_unknown_content_blocks=true")
+	if !findToolReference(content) {
+		t.Fatalf("tool_reference should be preserved even when strip_unknown_content_blocks=true (current kimi endpoints accept this type)")
 	}
 }
 
