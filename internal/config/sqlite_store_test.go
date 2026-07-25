@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -959,7 +958,7 @@ func TestSQLiteStoreRoundTripsNilExposedModels(t *testing.T) {	path := filepath.
 func TestSQLiteStoreMigratesLegacyExposedModelIDs(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "proxy.db")
-	// 第一次：存入旧格式（非 em- 前缀）ID
+	// 第一次：存入旧格式（随机 em- 前缀）ID
 	store, err := NewSQLiteStore(dbPath, "")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore: %v", err)
@@ -967,8 +966,9 @@ func TestSQLiteStoreMigratesLegacyExposedModelIDs(t *testing.T) {
 	cfg := DefaultConfig()
 	provider := NewProvider("A", "https://a.example/anthropic", "token")
 	provider.ExposedModels = []ExposedModel{
-		{ID: "glm-5.2-ky", Label: "GLM-5.2", BackendModel: "glm-5.2", Context1M: true},
-		{ID: "em-abcd1234", Label: "Already New", BackendModel: "x"}, // 已是 em- 前缀，不应变
+		{ID: "em-abcd1234", Label: "GLM-5.2", BackendModel: "glm-5.2", Context1M: true},
+		{ID: "em-ffff0000", Label: "Kimi", BackendModel: "y"},
+		{ID: "em-empty00", Label: "", BackendModel: "z"}, // Label 空：迁移不置空
 	}
 	cfg.Providers = []Provider{*provider}
 	cfg.ActiveProviderID = provider.ID
@@ -979,30 +979,47 @@ func TestSQLiteStoreMigratesLegacyExposedModelIDs(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	// 第二次：重新打开，触发 migrateExposedModelIDs
+	// 第二次：重新打开，触发 migrateExposedModelIDs（反向：em- ID -> Label）
 	store2, err := NewSQLiteStore(dbPath, "")
 	if err != nil {
 		t.Fatalf("reopen NewSQLiteStore: %v", err)
 	}
-	defer store2.Close()
 	loaded, err := store2.Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	got := loaded.GetProviderByID(provider.ID).ExposedModels
-	if !strings.HasPrefix(got[0].ID, "em-") {
-		t.Fatalf("legacy ID not migrated: %q", got[0].ID)
+	if got[0].ID != "GLM-5.2" {
+		t.Fatalf("ID not migrated to Label: %q, want GLM-5.2", got[0].ID)
 	}
-	if got[0].ID == "glm-5.2-ky" {
-		t.Fatal("legacy ID should have changed")
+	if got[1].ID != "Kimi" {
+		t.Fatalf("ID not migrated to Label: %q, want Kimi", got[1].ID)
 	}
 	// 保留其他字段
 	if got[0].Label != "GLM-5.2" || got[0].BackendModel != "glm-5.2" || !got[0].Context1M {
 		t.Fatalf("migration lost fields: %#v", got[0])
 	}
-	// 已是 em- 的不变
-	if got[1].ID != "em-abcd1234" {
-		t.Fatalf("em- ID should be unchanged: %q", got[1].ID)
+	// 空 Label 不置空
+	if got[2].ID != "em-empty00" {
+		t.Fatalf("empty-label ID should be untouched: %q", got[2].ID)
+	}
+	if err := store2.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// 第三次：再次打开，幂等（ID==Label，不再触发）
+	store3, err := NewSQLiteStore(dbPath, "")
+	if err != nil {
+		t.Fatalf("third open NewSQLiteStore: %v", err)
+	}
+	defer store3.Close()
+	loaded3, err := store3.Load()
+	if err != nil {
+		t.Fatalf("Load3: %v", err)
+	}
+	got3 := loaded3.GetProviderByID(provider.ID).ExposedModels
+	if got3[0].ID != "GLM-5.2" || got3[1].ID != "Kimi" {
+		t.Fatalf("migration not idempotent: %q / %q", got3[0].ID, got3[1].ID)
 	}
 }
 

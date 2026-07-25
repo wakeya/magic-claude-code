@@ -34,6 +34,38 @@ func TestResolveRouteExposedModelIsNotDefaultRouted(t *testing.T) {
 	}
 }
 
+// TestResolveRouteByDisplayNameAfterValidate 证明「所见即所得」端到端链路：
+// Provider.Validate 把 ID 归一为 Label 后，model 字段为显示名的请求
+// （即用户 `claude --model <显示名>` 发出的值）能命中所属 provider 及其 BackendModel。
+// 用中文显示名同时验证 Unicode 路由键可用。
+func TestResolveRouteByDisplayNameAfterValidate(t *testing.T) {
+	p := Provider{Name: "智谱", APIURL: "https://a.example.com/v1", Enabled: true,
+		ExposedModels: []ExposedModel{
+			{Label: "智谱GLM", BackendModel: "glm-4.6"}, // 用户只填显示名，ID 由 Validate 归一
+		}}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if p.ExposedModels[0].ID != "智谱GLM" {
+		t.Fatalf("Validate should normalize ID to Label, got ID %q", p.ExposedModels[0].ID)
+	}
+	cfg := &Config{Providers: []Provider{p}}
+
+	r := cfg.ResolveRoute("智谱GLM")
+	if r.Provider == nil || r.Provider.Name != "智谱" {
+		t.Fatalf("expected 智谱 provider, got %+v", r.Provider)
+	}
+	if r.BackendModel != "glm-4.6" {
+		t.Fatalf("expected backend glm-4.6, got %q", r.BackendModel)
+	}
+	if r.DefaultRouted {
+		t.Fatalf("display-name route must be pinned (not default-routed)")
+	}
+	if r.ExposedLabel != "智谱GLM" {
+		t.Fatalf("expected exposed label 智谱GLM, got %q", r.ExposedLabel)
+	}
+}
+
 // TestResolveRouteActiveFallbackIsDefaultRouted verifies that the
 // ActiveProviderID fallback path is marked DefaultRouted=true so the proxy
 // knows it may fail this request over to another default candidate.

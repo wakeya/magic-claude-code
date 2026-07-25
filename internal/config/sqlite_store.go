@@ -90,10 +90,10 @@ func (s *SQLiteStore) init(dbExisted bool) error {
 	return s.migrateExposedModelIDs()
 }
 
-// migrateExposedModelIDs 一次性迁移：把非 "em-" 前缀的旧手输 ExposedModel.ID
-// 重新生成为 em-<hex> 随机 ID。迁移后均为 em- 前缀，不再触发。
-// 旧 ID 形如 glm-5.2-ky（用户手输），新 ID 由系统自动生成、前端不再展示。
-// 注意：迁移后用户 ~/.claude.json 里的旧 mainLoopModelOverride 失效，需重新 /model 选择。
+// migrateExposedModelIDs 一次性迁移（所见即所得方向）：把存量随机 em-<hex> ID
+// 统一重写为 TrimSpace(Label)，使显示名即路由键。迁移后 ID==Label，幂等不再触发。
+// 用 s.save（不触发 Validate），避免存量含空格 Label 在迁移阶段被新字符集校验拒绝；
+// 其字符集约束在下次编辑保存时暴露。副作用：客户端旧 mainLoopModelOverride 失效，需重新 /model 选择。
 func (s *SQLiteStore) migrateExposedModelIDs() error {
 	cfg, err := s.Load()
 	if err != nil {
@@ -106,8 +106,8 @@ func (s *SQLiteStore) migrateExposedModelIDs() error {
 	for i := range cfg.Providers {
 		for j := range cfg.Providers[i].ExposedModels {
 			em := &cfg.Providers[i].ExposedModels[j]
-			if em.ID != "" && !strings.HasPrefix(em.ID, "em-") {
-				em.ID = generateExposedModelID()
+			if label := strings.TrimSpace(em.Label); label != "" && em.ID != label {
+				em.ID = label
 				changed = true
 			}
 		}
