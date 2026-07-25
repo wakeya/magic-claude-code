@@ -5,7 +5,18 @@ set -euo pipefail
 #   ./release.sh <tag>          # 例: ./release.sh v0.6.0
 #
 # 前置条件:
-#   - 已设置 GITEE_TOKEN 和 GITCODE_TOKEN 环境变量
+#   - 发布 token 用 gopass 管理（推荐），或临时 export 环境变量（CI 场景）：
+#       gopass insert tokens/gitee-release
+#       gopass insert tokens/gitcode-release
+#       gopass insert tokens/gitlab-release
+#     本地切勿把 token 写进 .bashrc——会被所有交互 shell 与 Claude Code/Codex
+#     等工具的子进程继承而泄露。
+#     脚本启动时的 [预检] 步会自动解密读取全部 token（等同于执行
+#     `gopass show tokens/<x>-release`）：若 store 已上锁，会在此提示输入口令
+#     完成解锁。token 一次性读入【非导出】变量，之后构建耗时多久都不再依赖
+#     gopass 口令缓存（该缓存闲置 10 分钟 / 累计 2 小时会自动失效）。
+#     若某条目存在却读不出来（上锁且无法交互输入口令），脚本会明确报错并退出，
+#     而非静默跳过——解锁后重跑即可（脚本幂等，已建的 Release 会自动跳过）。
 #   - sdd-docs/changes/release-notes/<tag>.md 存在（作为 Release 说明）
 #   - git remotes: gitee, gitcode, gitlab, origin 已配置
 
@@ -32,6 +43,53 @@ info()  { echo -e "${GREEN}▶${NC} $*"; }
 warn()  { echo -e "${YELLOW}⚠${NC} $*"; }
 error() { echo -e "${RED}✗${NC} $*" >&2; }
 
+# ===== Secret 管理（gopass 按需读取，降低泄露）=====
+# 三层防护：
+#   1) token 不进 .bashrc，且在本脚本内【不 export】——只是非导出 shell 变量，
+#      npm/go/git 等子进程拿不到（只有被 export 的变量才会进入子进程 environ）。
+#   2) 预检一次性读取：启动时 [预检] 步解密全部 token 到内存，规避"构建耗时
+#      超过口令缓存有效期（10 分钟）导致第 6/7/8 步读取失败"；非导出保证子进程不可见。
+#   3) 传给 curl 时走 --config 管道，而非 `-H "X: <token>"`，token 不出现在
+#      curl 命令行（/proc/<pid>/cmdline 与 ps 中不可见）。
+#
+# gopass 中的路径（按需修改，须与 `gopass insert <path>` 时一致）：
+GOPASS_PATH_GITEE="${GOPASS_PATH_GITEE:-tokens/gitee-release}"
+GOPASS_PATH_GITCODE="${GOPASS_PATH_GITCODE:-tokens/gitcode-release}"
+GOPASS_PATH_GITLAB="${GOPASS_PATH_GITLAB:-tokens/gitlab-release}"
+
+# load_secret <变量名> <gopass路径>
+#   - 已有同名环境变量（CI 注入）→ 沿用；
+#   - 未装 gopass 或 gopass 中无此条目 → 静默返回（按"未配置"跳过该平台）；
+#   - 条目存在但解密失败（store 上锁且无法交互输入口令）→ 明确报错并返回 1。
+# 读取到的值写入同名【非导出】变量。首次解密会触发 gpg-agent 口令提示=解锁。
+load_secret() {
+  local var="$1" path="$2" val
+  if [ -n "${!var:-}" ]; then
+    return 0
+  fi
+  if ! command -v gopass >/dev/null 2>&1; then
+    return 0
+  fi
+  # 仅列名字、不解密，判断条目是否存在（store 上锁时也能列出）
+  if ! gopass ls --flat 2>/dev/null | grep -qxF "$path"; then
+    return 0
+  fi
+  if ! val=$(gopass show -o "$path" 2>/dev/null) || [ -z "$val" ]; then
+    error "$var: gopass 条目 '$path' 存在但读取失败——store 可能已上锁。"
+    error "  请解锁后重跑（脚本幂等）：gopass show $path >/dev/null"
+    return 1
+  fi
+  printf -v "$var" '%s' "$val"
+}
+
+# curl_auth <header名> <header值> [curl 参数...]
+# 通过 --config 从进程管道传 header，token 不进入 curl 命令行。
+# 用法: curl_auth "Authorization" "Bearer ${TOKEN}" -sf "<url>"
+curl_auth() {
+  local hname="$1" hval="$2"; shift 2
+  curl --config <(printf 'header = "%s: %s"\n' "$hname" "$hval") "$@"
+}
+
 # ===== 检查 =====
 if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   error "Tag 格式应为 vX.Y.Z，当前: $TAG"
@@ -48,14 +106,7 @@ if ! command -v jq &>/dev/null; then
   exit 1
 fi
 
-check_token() {
-  local name="$1"
-  if [ -z "${!name:-}" ]; then
-    warn "$name 未设置，将跳过对应平台的 Release 创建"
-  fi
-}
-check_token GITEE_TOKEN
-check_token GITCODE_TOKEN
+# token 在启动后的 [预检] 步统一读取（见下文），此处不再做 token 检查。
 
 if [ ! -f "$RELEASE_NOTES" ]; then
   warn "未找到 $RELEASE_NOTES，将使用默认说明"
@@ -66,6 +117,14 @@ else
 fi
 
 info "发布 $TAG"
+
+# ===== [预检] 读取发布 token（自动解锁 gopass）=====
+# 首次解密会触发 gpg-agent 口令提示（=解锁）；token 读入非导出变量后，
+# 后续构建无论耗时多久都不再依赖 gopass 缓存。条目存在却读不出会报错退出。
+info "[预检] 读取发布 token（若 gopass 已上锁，将提示输入口令解锁）"
+load_secret GITEE_TOKEN   "$GOPASS_PATH_GITEE"
+load_secret GITCODE_TOKEN "$GOPASS_PATH_GITCODE"
+load_secret GITLAB_TOKEN  "$GOPASS_PATH_GITLAB"
 
 # ===== [1/8] 同步代码到目标 ref =====
 # 默认 checkout main（正常发版：main == tag 对应代码）；
@@ -160,17 +219,16 @@ done
 info "[6/8] Gitee Release + 附件上传"
 if [ -n "${GITEE_TOKEN:-}" ]; then
   # 创建或获取 Release
-  GITEE_RELEASE_ID=$(curl -sf \
-    -H "Authorization: Bearer ${GITEE_TOKEN}" \
+  GITEE_RELEASE_ID=$(curl_auth "Authorization" "Bearer ${GITEE_TOKEN}" -sf \
     "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases/tags/${TAG}" \
     2>/dev/null | jq -r '.id // empty') || true
 
   if [ -n "$GITEE_RELEASE_ID" ]; then
     info "Gitee Release 已存在 (id=${GITEE_RELEASE_ID})"
   else
-    STATUS=$(curl -s -o /tmp/gitee-release.json -w "%{http_code}" \
+    STATUS=$(curl_auth "Authorization" "Bearer ${GITEE_TOKEN}" \
+      -s -o /tmp/gitee-release.json -w "%{http_code}" \
       -X POST \
-      -H "Authorization: Bearer ${GITEE_TOKEN}" \
       -H "Content-Type: application/json" \
       -d "$(jq -n --arg tag "$TAG" --arg body "$RELEASE_BODY" \
         '{tag_name:$tag, name:$tag, body:$body, target_commitish:"main"}')" \
@@ -190,9 +248,9 @@ if [ -n "${GITEE_TOKEN:-}" ]; then
     info "上传 Gitee 附件..."
     for f in "$BUILD_DIR"/*; do
       fname=$(basename "$f")
-      STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+      STATUS=$(curl_auth "Authorization" "Bearer ${GITEE_TOKEN}" \
+        -s -o /dev/null -w "%{http_code}" \
         -X POST \
-        -H "Authorization: Bearer ${GITEE_TOKEN}" \
         -F "file=@${f}" \
         "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases/${GITEE_RELEASE_ID}/attach_files" || true)
 
@@ -211,17 +269,16 @@ fi
 info "[7/8] GitCode Release + 附件上传"
 if [ -n "${GITCODE_TOKEN:-}" ]; then
   # 检查 Release 是否已存在
-  GITCODE_RELEASE_EXISTS=$(curl -sf -o /dev/null \
-    -H "PRIVATE-TOKEN: ${GITCODE_TOKEN}" \
+  GITCODE_RELEASE_EXISTS=$(curl_auth "PRIVATE-TOKEN" "${GITCODE_TOKEN}" -sf -o /dev/null \
     "https://api.gitcode.com/api/v5/repos/${GITCODE_REPO}/releases/tags/${TAG}" \
     2>/dev/null && echo "yes" || echo "no")
 
   if [ "$GITCODE_RELEASE_EXISTS" = "yes" ]; then
     info "GitCode Release 已存在"
   else
-    STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+    STATUS=$(curl_auth "PRIVATE-TOKEN" "${GITCODE_TOKEN}" \
+      -s -o /dev/null -w "%{http_code}" \
       -X POST \
-      -H "PRIVATE-TOKEN: ${GITCODE_TOKEN}" \
       -H "Content-Type: application/json" \
       -d "$(jq -n --arg tag "$TAG" --arg body "$RELEASE_BODY" \
         '{tag_name:$tag, name:$tag, body:$body, target_commitish:"main"}')" \
@@ -240,8 +297,7 @@ if [ -n "${GITCODE_TOKEN:-}" ]; then
     fname=$(basename "$f")
 
     # Step 1: 获取 OBS 预签名上传 URL 和所需 headers
-    RESP=$(curl -sf \
-      -H "PRIVATE-TOKEN: ${GITCODE_TOKEN}" \
+    RESP=$(curl_auth "PRIVATE-TOKEN" "${GITCODE_TOKEN}" -sf \
       "https://api.gitcode.com/api/v5/repos/${GITCODE_REPO}/releases/${TAG}/upload_url?file_name=${fname}" \
       2>/dev/null) || true
 
@@ -288,11 +344,11 @@ if [ -n "${GITLAB_TOKEN:-}" ]; then
       '. + [{name: $name, url: $url, link_type: "other"}]')
   done
 
-  STATUS=$(curl -s -o /tmp/gitlab-release.json -w "%{http_code}" \
+  STATUS=$(curl_auth "PRIVATE-TOKEN" "${GITLAB_TOKEN}" \
+    -s -o /tmp/gitlab-release.json -w "%{http_code}" \
     --noproxy '*' \
     -k \
     -X POST \
-    -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "$(jq -n \
       --arg tag "$TAG" \
