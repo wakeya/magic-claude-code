@@ -233,11 +233,12 @@ func (p *Provider) Validate() error {
 			return fmt.Errorf("exposed_models[%d]: display name (id) %q is reserved by Claude Code model aliases", i, em.ID)
 		}
 		// 显示名（路由键）允许 Unicode（兼容中文显示名），但禁止空格与控制字符：
-		// 空格在 shell `claude --model` 需引号、易错。
+		// 空格在 shell `claude --model` 需引号、易错。报错用 %q 原样回显，
+		// 便于用户发现不可见的全角空格（U+3000）/NBSP（U+00A0）等。
 		if strings.IndexFunc(em.ID, func(r rune) bool {
 			return unicode.IsSpace(r) || unicode.IsControl(r)
 		}) >= 0 {
-			return fmt.Errorf("exposed_models[%d]: display name (id) must not contain spaces or control characters", i)
+			return fmt.Errorf("exposed_models[%d]: display name (id) %q must not contain spaces or control characters (check for invisible/full-width spaces)", i, em.ID)
 		}
 		if seenExposedIDs[em.ID] {
 			return fmt.Errorf("exposed_models[%d]: duplicate display name (id) %q within provider", i, em.ID)
