@@ -7,6 +7,18 @@
 
 ---
 
+## v0.18.0 (2026-07-25)
+
+### Added
+- **暴露模型显示名作为可路由模型 ID（所见即所得），解决 `claude --model` 可用性矛盾**：供应商编辑「/model 可切换模型」中，`ExposedModel.ID` 此前为自动生成的随机 `em-<hex>`（前端隐藏 ID 输入），而 Claude Code 对话框/菜单展示的是显示名（`Label`），二者不一致导致 `claude --model` 无法使用（`--model <ID>` 的 ID 无从得知；`--model <显示名>` 不参与路由 → 回退 active provider 后端 404）。现 `Provider.Validate` 保存时令 `em.ID = TrimSpace(em.Label)`，显示名同时成为 `/model` 菜单 value、请求 model 字段与路由键，`claude --model <显示名>` 直接可用。字符集：允许 Unicode（中文 OK），禁空格/控制字符（含全角空格 U+3000/NBSP U+00A0）；保留 `claude-` 前缀、`[1m]`、`sonnet|opus|haiku|opusplan` 别名禁用；Label 跨 provider 全局唯一。bootstrap/`v1/models`/admin 透传链路在 ID=Label 后零改动，天然满足 `model==name`、`id==display_name`。
+- **迁移反向 + 碰撞防护**：`migrateExposedModelIDs` 把存量 `em-` ID 重写为 `TrimSpace(Label)`。旧 Label 历史无唯一性保证，迁移先按 `TrimSpace(Label)` 全局计数，`count>1`（相同、或仅首尾空白不同）的全部保留原 `em-` ID 不重写并 log 警告——碰撞模型仍可路由、菜单仍可见，避免被菜单 `seen[id]` 静默去重 / 被路由首命中吞没；判定与遍历顺序无关（幂等稳定）。含内部不可见空白/保留字的 Label 不强制归一化，留给下次编辑 `Validate` 收敛。
+- **校验报错双语本地化**：后端校验错误用 `%q` 回显显示名（暴露不可见的全角空格）；前端新增 `utils/providerError.ts` 把英文校验错误（空格/控制字符、`claude-` 前缀、`[1m]`、保留别名、provider 内/跨 provider 重复、必填）映射为中英双语文案，中文页面显示中文报错。
+
+### Docs
+- 暴露模型显示名即路由 ID feature spec（中英双语）：`sdd-docs/features/2026-07-25-exposed-model-label-as-id/`
+
+---
+
 ## v0.17.1 (2026-07-21)
 
 ### Fixed
