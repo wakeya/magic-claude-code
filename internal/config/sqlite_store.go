@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -91,9 +92,17 @@ func (s *SQLiteStore) init(dbExisted bool) error {
 }
 
 // migrateExposedModelIDs 一次性迁移（所见即所得方向）：把存量随机 em-<hex> ID
-// 统一重写为 TrimSpace(Label)，使显示名即路由键。迁移后 ID==Label，幂等不再触发。
-// 用 s.save（不触发 Validate），避免存量含空格 Label 在迁移阶段被新字符集校验拒绝；
-// 其字符集约束在下次编辑保存时暴露。副作用：客户端旧 mainLoopModelOverride 失效，需重新 /model 选择。
+// 重写为 TrimSpace(Label)，使显示名即路由键。用 s.save（不触发 Validate），
+// 存量含空格/保留字的 Label 不在此处被拒，留给下次编辑保存时 Validate 收敛。
+//
+// 碰撞防护：旧 Label 历史从无唯一性保证（旧 ID 是随机 hex 必然唯一），若迁移 blindly
+// 把重复 Label 都改成同一 ID，会被 collectAdditionalModelOptions/collectModels 的
+// seen[id] 静默去重、被 ResolveRoute 首命中吞没，导致部分模型不可见且不可路由。
+// 故迁移先按 TrimSpace(Label) 统计出现次数，count>1 的（相同或仅首尾空白不同的 Label）
+// 全部保留原 em- ID 不重写并 log 警告——碰撞模型仍可路由、菜单仍可见，由用户下次编辑
+// 保存时 Validate 的全局唯一校验强制收敛。该判定基于全局计数，与遍历顺序无关（幂等稳定）。
+//
+// 副作用：被重写模型的客户端旧 mainLoopModelOverride 失效，需重新 /model 选择。
 func (s *SQLiteStore) migrateExposedModelIDs() error {
 	cfg, err := s.Load()
 	if err != nil {
@@ -102,14 +111,38 @@ func (s *SQLiteStore) migrateExposedModelIDs() error {
 	if cfg == nil {
 		return nil
 	}
-	changed := false
+
+	// 全局统计每个归一化显示名的出现次数，用于碰撞检测（与遍历顺序无关）。
+	labelCount := make(map[string]int)
 	for i := range cfg.Providers {
 		for j := range cfg.Providers[i].ExposedModels {
-			em := &cfg.Providers[i].ExposedModels[j]
-			if label := strings.TrimSpace(em.Label); label != "" && em.ID != label {
-				em.ID = label
-				changed = true
+			if label := strings.TrimSpace(cfg.Providers[i].ExposedModels[j].Label); label != "" {
+				labelCount[label]++
 			}
+		}
+	}
+
+	changed := false
+	for i := range cfg.Providers {
+		p := &cfg.Providers[i]
+		for j := range p.ExposedModels {
+			em := &p.ExposedModels[j]
+			label := strings.TrimSpace(em.Label)
+			if label == "" {
+				continue // 空显示名：不置 ID=""，保留原值（下次编辑时 Validate 报错）
+			}
+			if em.ID == label && em.Label == label {
+				continue // 已处于目标态（幂等）
+			}
+			if labelCount[label] > 1 {
+				// 显示名碰撞：保留原 em- ID，避免迁移后 ID 碰撞导致静默去重/不可路由。
+				log.Printf("[migrate] exposed model display name %q (provider %q) is not globally unique; keeping ID %q to avoid collision; rename it to a globally-unique display name in the admin UI",
+					label, p.Name, em.ID)
+				continue
+			}
+			em.ID = label
+			em.Label = label
+			changed = true
 		}
 	}
 	if changed {

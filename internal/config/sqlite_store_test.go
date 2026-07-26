@@ -1023,6 +1023,66 @@ func TestSQLiteStoreMigratesLegacyExposedModelIDs(t *testing.T) {
 	}
 }
 
+// TestSQLiteStoreMigrateKeepsDistinctIDsForDuplicateLabels 验证迁移的碰撞防护：
+// 旧 Label 历史无唯一性保证，若盲目把重复 Label 都改成同一 ID，会被菜单去重/路由首命中
+// 静默吞没，部分模型不可见且不可路由。碰撞（跨 provider、仅首尾空白不同）的 Label
+// 全部保留原 em- ID 不重写——迁移后 ID 仍两两不同，模型均可见可路由，留待下次编辑 Validate 收敛。
+func TestSQLiteStoreMigrateKeepsDistinctIDsForDuplicateLabels(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "proxy.db")
+	store, err := NewSQLiteStore(dbPath, "")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	cfg := DefaultConfig()
+	pa := NewProvider("A", "https://a.example/anthropic", "token")
+	pa.ExposedModels = []ExposedModel{
+		{ID: "em-aaa00001", Label: "GLM", BackendModel: "x"},      // 与 B 的 Label 碰撞（跨 provider）
+		{ID: "em-aaa00002", Label: "Unique-A", BackendModel: "u"}, // 唯一，正常迁移
+	}
+	pb := NewProvider("B", "https://b.example/anthropic", "token")
+	pb.ExposedModels = []ExposedModel{
+		{ID: "em-bbb00001", Label: "GLM", BackendModel: "y"},  // 与 A[0] 碰撞（跨 provider）
+		{ID: "em-bbb00002", Label: "GLM ", BackendModel: "z"}, // 仅尾部空白与 "GLM" 不同，亦碰撞
+	}
+	cfg.Providers = []Provider{*pa, *pb}
+	if err := store.Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	store.Close()
+
+	store2, err := NewSQLiteStore(dbPath, "")
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer store2.Close()
+	loaded, err := store2.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	ids := map[string]bool{}
+	for _, p := range loaded.Providers {
+		for _, em := range p.ExposedModels {
+			ids[em.ID] = true
+		}
+	}
+	// 三个碰撞模型（GLM / GLM / "GLM "）均保留原 em- ID，菜单均可见、可路由
+	for _, want := range []string{"em-aaa00001", "em-bbb00001", "em-bbb00002"} {
+		if !ids[want] {
+			t.Fatalf("colliding model should keep original ID %q, got ids=%v", want, ids)
+		}
+	}
+	// 唯一模型正常迁移为显示名
+	if !ids["Unique-A"] {
+		t.Fatalf("unique-label model should migrate to its label, got ids=%v", ids)
+	}
+	// 不得产生 ID 碰撞（4 个模型 → 4 个不同 ID）
+	if len(ids) != 4 {
+		t.Fatalf("expected 4 distinct IDs after migration, got %d: %v", len(ids), ids)
+	}
+}
+
 func TestSQLiteStoreRoundTripsContext1M(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.db")
 	store, err := NewSQLiteStore(path, "")

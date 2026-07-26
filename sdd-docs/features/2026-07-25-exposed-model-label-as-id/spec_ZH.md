@@ -77,8 +77,8 @@
 ### 向后兼容
 
 - **存量随机 em- ID**：启动迁移 `em.ID = TrimSpace(em.Label)` 重写为 Label。副作用：客户端旧 `mainLoopModelOverride`（存的是旧 em- ID）失效，需重新 `/model` 选择——与历史迁移副作用一致，可接受（`/model` 为会话级内存状态，事实见 cross-provider spec）。
-- **存量含空格的 Label**：迁移不做空格清洗（`TrimSpace` 只去首尾），ID=Label 保留内部空格，**路由仍可命中**（`--model "Kimi K2"` 经 `parseUserSpecifiedModel` 仅 trim 首尾、保留内部空格）。但新字符集校验在下次编辑保存（`store.Update → Validate`）时会拒绝含空格 Label，用户需将其改为无空格——属「 surfaced（主动暴露）」而非静默破坏，符合项目编码规范第 6 条。
-- **存量跨 provider 重复 Label**：迁移后 ID 重复，路由首个命中（不崩溃）；全局唯一校验在下次编辑保存时报 400，错误信息含 provider 名便于定位。
+- **存量含内部不可见空格的 Label**（全角空格 U+3000 / NBSP U+00A0）：迁移**不强制归一化**，原样保留（ID=Label，路由仍可命中），但下次编辑保存时字符集校验会拒绝、强制去除——属「surfaced（主动暴露）」而非静默持久化脏数据，符合编码规范第 6 条。
+- **存量重复 Label**（provider 内/跨 provider、或仅首尾空白不同）：迁移**检测碰撞**，对重复者**全部保留原 `em-` ID 不重写**并 `log` 警告，模型仍可见可路由（绝不被静默去重/不可路由）；下次编辑保存时全局唯一校验报 400，错误信息含 provider 名便于定位。
 - **JSON Store**：`cmd/server/main.go:121` 仅用 `NewSQLiteStore`，JSON `Store` 为遗留迁移源，**无需迁移**；其用户下次编辑保存时经 `Validate` 自动归一。
 
 ## 开发检查清单
@@ -98,7 +98,7 @@
 1. `Provider.Validate`（`provider.go`）对每个 `ExposedModel` 在 TrimSpace 后设 `em.ID = em.Label`；移除「ID 留空 → `generateExposedModelID()`」分支；删除 `generateExposedModelID` 函数。
 2. `Provider.Validate` 的 ID 字符集校验由 ASCII 白名单 `[a-zA-Z0-9._:-]` 改为黑名单：**禁止空格（`unicode.IsSpace`）与控制字符（`unicode.IsControl`）**，其余 Unicode 字符放行。保留 `claude-` 前缀、`[1m]`、`sonnet|opus|haiku|opusplan` 别名的禁止校验。报错用 `%q` 原样回显显示名，便于用户发现不可见的全角空格（U+3000）/NBSP（U+00A0）——这类字符在中文输入法下常见且肉眼难辨，是「显示名看着没空格却报错」的根因；`Description` 不参与此校验（可含空格）。
 3. `Config.Validate`（`config.go`）跨 provider 全局唯一校验逻辑不变（仍按 `em.ID`，ID=Label 后即 Label 全局唯一）；错误信息措辞由 "exposed model id %q is duplicated" 调整为提示「显示名（模型 ID）」，便于用户理解。
-4. `SQLiteStore.migrateExposedModelIDs`（`sqlite_store.go`）反向迁移：对每个 `ExposedModel`，当 `TrimSpace(em.Label)` 非空且 `em.ID != TrimSpace(em.Label)` 时，设 `em.ID = TrimSpace(em.Label)` 并标记变更；有变更则 `s.save(cfg)`。幂等（二次启动不再触发）。移除对 `generateExposedModelID` 的调用。
+4. `SQLiteStore.migrateExposedModelIDs`（`sqlite_store.go`）反向迁移：把存量 `em-` ID 重写为 `TrimSpace(Label)`。**碰撞防护**（审查缺陷修复）：旧 Label 历史无唯一性保证，迁移先按 `TrimSpace(Label)` 全局统计出现次数，`count>1` 的（相同、或仅首尾空白不同的 Label）**全部保留原 `em-` ID 不重写**并 `log` 警告——碰撞模型仍可路由、菜单仍可见（避免被 `collectModels`/`collectAdditionalModelOptions` 的 `seen[id]` 静默去重、被 `ResolveRoute` 首命中吞没），由下次编辑保存时 `Validate` 全局唯一校验强制收敛；判定基于全局计数、与遍历顺序无关（幂等稳定）。含内部不可见空白（全角空格 U+3000/NBSP）或保留字的 Label 不在此处强制归一化/拒绝，原样保留（仍可路由），同样留给下次编辑 `Validate` 收敛。空 Label 跳过（不置 ID=""）。幂等。
 5. 前端 `ProviderModal.vue` 暴露模型区增加提示：显示名即模型 ID，可直接用于 `claude --model <显示名>`；`useI18n.ts` 中英双语，并把过时的「ID 由系统自动生成」表述改为「显示名将作为模型 ID」。新增 `utils/providerError.ts` 把后端英文校验错误本地化（中文页面显示中文报错）：覆盖空格/控制字符、`claude-` 前缀、`[1m]`、保留别名、provider 内/跨 provider 重复、显示名/后端模型名必填等情形，并回显触发校验的显示名；无法识别的错误原样兜底。
 6. `internal/proxy/hardcoded.go`、`internal/admin/provider_handler.go` **不改**（ID=Label 后天然满足）。
 
@@ -187,13 +187,13 @@
 
 **Objective（目标）** — 把 `migrateExposedModelIDs` 从历史的「手输 ID → 随机 em-」反转为「随机 em- ID → Label」，使存量配置启动后 ID 与显示名统一，`claude --model <显示名>` 立即对存量数据生效。
 
-**Outcomes（成果）** — `sqlite_store.go:97-119` 的 `migrateExposedModelIDs` 改为：遍历所有 provider 的 `ExposedModels`，当 `label := strings.TrimSpace(em.Label)` 非空且 `em.ID != label` 时设 `em.ID = label`、`changed = true`；有变更 `s.save(cfg)`。移除 `generateExposedModelID` 调用。更新函数注释说明新方向与副作用（旧 mainLoopModelOverride 失效需重新 /model）。
+**Outcomes（成果）** — 重写 `sqlite_store.go` 的 `migrateExposedModelIDs`：先按 `TrimSpace(Label)` 全局统计出现次数（与遍历顺序无关）；`count>1` 的 Label（重复、或仅首尾空白不同）**全部保留原 `em-` ID 不重写**并 `log` 警告（碰撞防护，避免迁移后 ID 碰撞被菜单去重/路由首命中静默吞没）；唯一 Label 设 `em.ID = em.Label = TrimSpace(Label)`。有变更 `s.save(cfg)`（不触发 Validate）。幂等。
 
 **Evidence（证据）** — `go test ./internal/config/ -run TestMigrate` 通过：预置 `ExposedModels: [{ID:"em-abcd1234", Label:"GLM-4.6", BackendModel:"x"}, {ID:"em-ffff0000", Label:"Kimi", BackendModel:"y"}]`，新开 store 触发迁移后二者 ID 分别变为 `"GLM-4.6"`、`"Kimi"`；二次 Load 不再变更（幂等）；Label 为空的项 ID 不被置空。
 
 **Constraints（约束）** — 迁移用 `s.save(cfg)`（小写，**不触发 Validate**），避免存量含空格 Label 在迁移阶段被校验拒绝；迁移幂等；仅 SQLite store（`cmd/server/main.go:121` 唯一在用 store），JSON Store 无需迁移。
 
-**Edge Cases（边界）** — Label 空 → 跳过（不设 ID=""）；ID 已 == Label → 不变（幂等）；含内部空格 Label → ID 保留内部空格（迁移不清洗，下次编辑校验时暴露）；跨 provider 重复 Label → 迁移照写（不校验），路由首个命中，编辑保存时报 400。
+**Edge Cases（边界）** — Label 空 → 跳过（不设 ID=""）；ID 已 == Label → 不变（幂等）；重复 Label（provider 内/跨 provider/仅首尾空白不同）→ 全部保留原 em- ID 并警告，仍可见可路由，下次编辑 Validate 收敛；含内部不可见空白/保留字 Label → 不强制归一化，原样保留仍可路由，下次编辑 Validate 收敛。
 
 **Verification（验证）** — `go test ./internal/config/ -run TestMigrate` 全绿；`go test ./internal/config/` 全包回归。
 
@@ -208,10 +208,12 @@
 2. **确认失败。** `go test ./internal/config/ -run TestMigrate` → 失败（ID 仍是 em-）。
 3. **最小实现。** `internal/config/sqlite_store.go` 把 `migrateExposedModelIDs`（L97-119）改为：
    ```go
-   // migrateExposedModelIDs 一次性迁移（所见即所得方向）：把存量随机 em-<hex> ID
-   // 统一重写为 TrimSpace(Label)，使显示名即路由键。迁移后 ID==Label，幂等不再触发。
-   // 用 s.save（不触发 Validate），避免存量含空格 Label 在迁移阶段被拒；其字符集
-   // 约束在下次编辑保存时暴露。副作用：客户端旧 mainLoopModelOverride 失效，需重新 /model。
+   // migrateExposedModelIDs 一次性迁移（所见即所得方向）：把存量随机 em-<hex> ID 重写为
+   // TrimSpace(Label)。碰撞防护：旧 Label 无唯一性保证，先按 TrimSpace(Label) 全局计数，
+   // count>1（重复/仅首尾空白不同）的全部保留原 em- ID 不重写并 log 警告，避免迁移后 ID
+   // 碰撞被菜单去重/路由首命中静默吞没；判定与遍历顺序无关（幂等稳定）。含内部不可见空白/
+   // 保留字的 Label 不强制归一化，留给下次编辑 Validate 收敛。副作用：被重写模型的旧
+   // mainLoopModelOverride 失效，需重新 /model。
    func (s *SQLiteStore) migrateExposedModelIDs() error {
        cfg, err := s.Load()
        if err != nil {
@@ -220,14 +222,33 @@
        if cfg == nil {
            return nil
        }
-       changed := false
+       labelCount := make(map[string]int)
        for i := range cfg.Providers {
            for j := range cfg.Providers[i].ExposedModels {
-               em := &cfg.Providers[i].ExposedModels[j]
-               if label := strings.TrimSpace(em.Label); label != "" && em.ID != label {
-                   em.ID = label
-                   changed = true
+               if label := strings.TrimSpace(cfg.Providers[i].ExposedModels[j].Label); label != "" {
+                   labelCount[label]++
                }
+           }
+       }
+       changed := false
+       for i := range cfg.Providers {
+           p := &cfg.Providers[i]
+           for j := range p.ExposedModels {
+               em := &p.ExposedModels[j]
+               label := strings.TrimSpace(em.Label)
+               if label == "" {
+                   continue
+               }
+               if em.ID == label && em.Label == label {
+                   continue // 已处于目标态（幂等）
+               }
+               if labelCount[label] > 1 {
+                   log.Printf("[migrate] exposed model display name %q (provider %q) is not globally unique; keeping ID %q to avoid collision; rename it to a globally-unique display name in the admin UI", label, p.Name, em.ID)
+                   continue
+               }
+               em.ID = label
+               em.Label = label
+               changed = true
            }
        }
        if changed {
@@ -243,6 +264,7 @@
 #### 验证
 
 - [x] `go test ./internal/config/ -run TestSQLiteStoreMigratesLegacyExposedModelIDs` — 全过（em- → Label、幂等、空 Label 不置空）。
+- [x] `go test ./internal/config/ -run TestSQLiteStoreMigrateKeepsDistinctIDsForDuplicateLabels` — 全过（碰撞 Label 保留各异 em- ID 并告警、唯一 Label 正常迁移、无 ID 碰撞）。
 - [x] `go test ./internal/config/` 与 `go vet` — 干净。
 
 ### 任务 3：前端提示文案 + i18n

@@ -77,8 +77,8 @@ Why A:
 ### Backward compatibility
 
 - **Existing random em- IDs**: the startup migration `em.ID = TrimSpace(em.Label)` rewrites them to Label. Side effect: the client's stale `mainLoopModelOverride` (holding the old em- ID) is invalidated and must be re-selected via `/model` — consistent with the historical migration's side effect, acceptable (`/model` is session-level in-memory state; see the cross-provider spec).
-- **Existing Labels containing spaces**: the migration does not strip interior spaces (`TrimSpace` only trims the ends); ID=Label keeps interior spaces and **routing still hits** (`--model "Kimi K2"` goes through `parseUserSpecifiedModel` which trims ends only, preserving interior spaces). But the new charset check will reject a space-containing Label on the next edit-save (`store.Update → Validate`); the user must rename it to be space-free — this is "surfaced", not silently broken, per coding guideline #6.
-- **Existing duplicate Labels across providers**: after migration the IDs duplicate; routing hits the first (no crash); the global-uniqueness check returns 400 on the next edit-save, with the provider names in the error for locating the conflict.
+- **Existing Labels with interior invisible spaces** (full-width space U+3000 / NBSP U+00A0): the migration **does not force normalization**; they are kept as-is (ID=Label, routing still hits), but the charset check rejects them on the next edit-save and forces removal — "surfaced", not silently persisting dirty data, per coding guideline #6.
+- **Existing duplicate Labels** (within/across providers, or differing only by leading/trailing whitespace): the migration **detects collisions** and **keeps the original `em-` ID for all duplicates without rewriting**, logging a warning; the models stay visible and routable (never silently deduped/unroutable); the global-uniqueness check returns 400 on the next edit-save, with provider names in the error for locating the conflict.
 - **JSON Store**: `cmd/server/main.go:121` uses `NewSQLiteStore` only; the JSON `Store` is a legacy migration source and **needs no migration**; its users get normalized on the next edit-save via `Validate`.
 
 ## Development Checklist
@@ -98,7 +98,7 @@ Why A:
 1. `Provider.Validate` (`provider.go`) sets `em.ID = em.Label` for each `ExposedModel` after TrimSpace; removes the "empty ID → `generateExposedModelID()`" branch; deletes the `generateExposedModelID` function.
 2. `Provider.Validate`'s ID charset check changes from the ASCII allowlist `[a-zA-Z0-9._:-]` to a denylist: **forbid spaces (`unicode.IsSpace`) and control characters (`unicode.IsControl`)**, allowing all other Unicode. Keep the `claude-` prefix, `[1m]`, and `sonnet|opus|haiku|opusplan` alias prohibitions. The error echoes the display name with `%q` so invisible full-width spaces (U+3000)/NBSP (U+00A0) become visible — these are common with Chinese IMEs and hard to spot by eye, the root cause of "the display name looks space-free yet errors"; `Description` is not subject to this check (it may contain spaces).
 3. `Config.Validate` (`config.go`) global-uniqueness logic is unchanged (still keyed on `em.ID`, which equals Label); the error wording changes from "exposed model id %q is duplicated" to mention "display name (model id)" for clarity.
-4. `SQLiteStore.migrateExposedModelIDs` (`sqlite_store.go`) reverses direction: for each `ExposedModel`, when `TrimSpace(em.Label)` is non-empty and `em.ID != TrimSpace(em.Label)`, set `em.ID = TrimSpace(em.Label)` and mark changed; `s.save(cfg)` if any change. Idempotent (no re-trigger on second startup). Remove the `generateExposedModelID` call.
+4. `SQLiteStore.migrateExposedModelIDs` (`sqlite_store.go`) reverses direction: rewrite existing `em-` IDs to `TrimSpace(Label)`. **Collision protection** (review-defect fix): old Labels were never guaranteed unique, so the migration first counts occurrences by `TrimSpace(Label)` globally; those with `count>1` (identical, or differing only by leading/trailing whitespace) **all keep their original `em-` ID without rewriting**, with a `log` warning — colliding models stay routable and visible (never silently deduped by the `seen[id]` in `collectModels`/`collectAdditionalModelOptions` nor swallowed by `ResolveRoute`'s first hit), converged by the global-uniqueness check in `Validate` on the next edit-save; the decision uses a global count, independent of iteration order (idempotent, stable). Labels with interior invisible spaces (full-width space U+3000/NBSP) or reserved words are not force-normalized/rejected here — kept as-is (still routable), likewise left to the next edit's `Validate`. Empty Labels are skipped (ID not set to ""). Idempotent.
 5. Frontend `ProviderModal.vue` adds a hint in the exposed-models section: the display name is the model ID, usable directly with `claude --model <name>`; `useI18n.ts` bilingual, and the stale "ID is auto-generated" wording becomes "the display name becomes the model ID". Adds `utils/providerError.ts` to localize backend English validation errors (Chinese page shows Chinese errors): covers spaces/control chars, `claude-` prefix, `[1m]`, reserved aliases, within/cross-provider duplicates, and required display-name/backend-model, echoing the offending display name; unrecognized errors fall through unchanged.
 6. `internal/proxy/hardcoded.go` and `internal/admin/provider_handler.go` are **not changed** (naturally satisfied once ID=Label).
 
@@ -187,13 +187,13 @@ Why A:
 
 **Objective** — Reverse `migrateExposedModelIDs` from the historical "hand-typed ID → random em-" to "random em- ID → Label", so existing configs unify ID and display name on startup and `claude --model <display-name>` works immediately for existing data.
 
-**Outcomes** — `migrateExposedModelIDs` in `sqlite_store.go:97-119` becomes: iterate every provider's `ExposedModels`; when `label := strings.TrimSpace(em.Label)` is non-empty and `em.ID != label`, set `em.ID = label`, `changed = true`; `s.save(cfg)` if changed. Remove the `generateExposedModelID` call. Update the function comment to describe the new direction and the side effect (stale mainLoopModelOverride invalidated; re-select via /model).
+**Outcomes** — `migrateExposedModelIDs` in `sqlite_store.go` is rewritten: first count occurrences by `TrimSpace(Label)` globally (order-independent); Labels with `count>1` (duplicates, or differing only by leading/trailing whitespace) **all keep their original `em-` ID without rewriting**, with a `log` warning (collision protection: avoids post-migration ID collisions being silently deduped/swallowed); unique Labels get `em.ID = em.Label = TrimSpace(Label)`. `s.save(cfg)` if changed (no Validate). Idempotent.
 
 **Evidence** — `go test ./internal/config/ -run TestMigrate` passes: seed `ExposedModels: [{ID:"em-abcd1234", Label:"GLM-4.6", BackendModel:"x"}, {ID:"em-ffff0000", Label:"Kimi", BackendModel:"y"}]`; after opening a fresh store (triggering migration) the two IDs become `"GLM-4.6"` and `"Kimi"`; a second Load makes no further change (idempotent); an entry with an empty Label does not get its ID blanked.
 
 **Constraints** — Migration uses `s.save(cfg)` (lowercase, **does not trigger Validate**), so existing space-containing Labels are not rejected during migration; migration is idempotent; SQLite store only (`cmd/server/main.go:121` is the sole store in use); the JSON Store needs no migration.
 
-**Edge Cases** — Empty Label → skipped (ID not set to ""); ID already == Label → unchanged (idempotent); Label with interior spaces → ID keeps interior spaces (migration does not scrub; surfaced on next edit validation); duplicate Labels across providers → migration writes them anyway (no validation), routing hits the first, edit-save returns 400.
+**Edge Cases** — Empty Label → skipped (ID not set to ""); ID already == Label → unchanged (idempotent); duplicate Labels (within/across providers, or differing only by leading/trailing whitespace) → all keep their original em- IDs with a warning, staying visible and routable, converged on the next edit by Validate; Labels with interior invisible spaces/reserved words → not force-normalized, kept as-is and routable, converged on the next edit by Validate.
 
 **Verification** — `go test ./internal/config/ -run TestMigrate` green; `go test ./internal/config/` full package regression.
 
@@ -209,11 +209,13 @@ Why A:
 3. **Minimal implementation.** In `internal/config/sqlite_store.go`, replace `migrateExposedModelIDs` (L97-119) with:
    ```go
    // migrateExposedModelIDs one-time migration (what-you-see-is-what-you-get direction): rewrite
-   // existing random em-<hex> IDs to TrimSpace(Label), making the display name the routing key.
-   // After migration ID==Label, so it is idempotent and never re-triggers. Uses s.save (no Validate)
-   // so existing space-containing Labels are not rejected during migration; their charset constraint
-   // is surfaced on the next edit-save. Side effect: the client's stale mainLoopModelOverride is
-   // invalidated and must be re-selected via /model.
+   // existing random em-<hex> IDs to TrimSpace(Label). Collision protection: old Labels were never
+   // unique, so first count occurrences by TrimSpace(Label) globally; count>1 (duplicates / differing
+   // only by leading/trailing whitespace) all keep their original em- ID without rewriting, with a log
+   // warning — avoids post-migration ID collisions being silently deduped by the menu / swallowed by
+   // routing's first hit; order-independent (idempotent, stable). Labels with interior invisible
+   // spaces / reserved words are not force-normalized, left to the next edit's Validate. Side effect:
+   // the stale mainLoopModelOverride of rewritten models is invalidated; re-select via /model.
    func (s *SQLiteStore) migrateExposedModelIDs() error {
        cfg, err := s.Load()
        if err != nil {
@@ -222,14 +224,33 @@ Why A:
        if cfg == nil {
            return nil
        }
-       changed := false
+       labelCount := make(map[string]int)
        for i := range cfg.Providers {
            for j := range cfg.Providers[i].ExposedModels {
-               em := &cfg.Providers[i].ExposedModels[j]
-               if label := strings.TrimSpace(em.Label); label != "" && em.ID != label {
-                   em.ID = label
-                   changed = true
+               if label := strings.TrimSpace(cfg.Providers[i].ExposedModels[j].Label); label != "" {
+                   labelCount[label]++
                }
+           }
+       }
+       changed := false
+       for i := range cfg.Providers {
+           p := &cfg.Providers[i]
+           for j := range p.ExposedModels {
+               em := &p.ExposedModels[j]
+               label := strings.TrimSpace(em.Label)
+               if label == "" {
+                   continue
+               }
+               if em.ID == label && em.Label == label {
+                   continue // already in target state (idempotent)
+               }
+               if labelCount[label] > 1 {
+                   log.Printf("[migrate] exposed model display name %q (provider %q) is not globally unique; keeping ID %q to avoid collision; rename it to a globally-unique display name in the admin UI", label, p.Name, em.ID)
+                   continue
+               }
+               em.ID = label
+               em.Label = label
+               changed = true
            }
        }
        if changed {
@@ -245,6 +266,7 @@ Why A:
 #### Verification
 
 - [x] `go test ./internal/config/ -run TestSQLiteStoreMigratesLegacyExposedModelIDs` — all pass (em- → Label, idempotent, empty Label not blanked).
+- [x] `go test ./internal/config/ -run TestSQLiteStoreMigrateKeepsDistinctIDsForDuplicateLabels` — all pass (colliding Labels keep distinct em- IDs with a warning, unique Labels migrate normally, no ID collision).
 - [x] `go test ./internal/config/` and `go vet` — clean.
 
 ### Task 3: Frontend hint + i18n
