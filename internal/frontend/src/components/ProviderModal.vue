@@ -149,6 +149,7 @@
 
       <div class="mb-5 pt-4" style="border-top: 1px solid var(--app-border)">
         <label class="block text-[13px] font-semibold mb-2">{{ t('modal.exposed_models') }}</label>
+        <p class="app-muted text-xs mb-2">{{ t('modal.exposed_model_label_hint') }}</p>
         <div class="space-y-2.5">
           <div v-for="(em, i) in exposedModels" :key="i" class="grid grid-cols-1 md:grid-cols-[1fr_1.2fr_1fr_auto_auto] gap-2 items-center">
             <input v-model="em.label" type="text" :placeholder="t('modal.exposed_model_label')" class="app-control px-3 py-2 rounded-md text-sm outline-none focus:border-primary" />
@@ -189,6 +190,7 @@ import { ref, reactive, onMounted, computed, watch } from 'vue'
 import { useApi, type Provider } from '@/composables/useApi'
 import { useI18n } from '@/composables/useI18n'
 import { isOpenAICompatibleFormat, shouldDefaultClaudeCodeCompatHint, type ProviderAPIFormat } from '@/utils/providerForm'
+import { localizeExposedModelError } from '@/utils/providerError'
 
 const props = defineProps<{ provider: Provider | null }>()
 const emit = defineEmits<{ close: []; saved: [] }>()
@@ -368,7 +370,7 @@ async function save() {
     message.value = { text: props.provider ? t('modal.provider_updated') : t('modal.provider_created'), ok: true }
     setTimeout(() => emit('saved'), 800)
   } catch (e: any) {
-    message.value = { text: e.message || t('modal.save_failed'), ok: false }
+    message.value = { text: localizeExposedModelError(e.message || '', t) || t('modal.save_failed'), ok: false }
   }
 }
 

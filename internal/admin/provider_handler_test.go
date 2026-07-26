@@ -1059,8 +1059,8 @@ func TestCreateProvider_WithExposedModels(t *testing.T) {
 		t.Fatalf("expected 1 exposed model, got %d", len(models))
 	}
 	m := models[0].(map[string]any)
-	if m["id"] != "glm-4.6" || m["backend_model"] != "glm-4.6" {
-		t.Fatalf("exposed model fields wrong: %v", m)
+	if m["id"] != "GLM-4.6" || m["label"] != "GLM-4.6" || m["backend_model"] != "glm-4.6" {
+		t.Fatalf("exposed model fields wrong (id should equal label): %v", m)
 	}
 }
 
@@ -1072,7 +1072,7 @@ func TestUpdateProvider_ExposedModels(t *testing.T) {
 	store := config.NewMockStore(cfg)
 	server := NewServer(&AdminConfig{Password: "secret"}, store, nil)
 
-	body := `{"exposed_models":[{"id":"kimi-k2","label":"Kimi K2","description":"","backend_model":"moonshot-v1"}]}`
+	body := `{"exposed_models":[{"id":"stale-id","label":"Kimi-K2","description":"","backend_model":"moonshot-v1"}]}`
 	req := httptest.NewRequest("PUT", "/api/providers/"+provider.ID, strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	server.handleProvider(rec, req)
@@ -1080,10 +1080,10 @@ func TestUpdateProvider_ExposedModels(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	// 验证 store 已更新
+	// 验证 store 已更新（ID 归一为 Label）
 	loaded, _ := store.Load()
 	p := loaded.GetProviderByID(provider.ID)
-	if len(p.ExposedModels) != 1 || p.ExposedModels[0].ID != "kimi-k2" {
+	if len(p.ExposedModels) != 1 || p.ExposedModels[0].ID != "Kimi-K2" {
 		t.Fatalf("ExposedModels not updated: %v", p.ExposedModels)
 	}
 }
@@ -1201,8 +1201,8 @@ func TestCreateProvider_ReturnsTrimmedExposedModels(t *testing.T) {
 	provider := resp["provider"].(map[string]any)
 	models := provider["exposed_models"].([]any)
 	m := models[0].(map[string]any)
-	if m["id"] != "glm-4.6" {
-		t.Fatalf("response id not trimmed: %v", m["id"])
+	if m["id"] != "GLM" { // ID 归一为 TrimSpace(label)
+		t.Fatalf("response id not normalized to label: %v", m["id"])
 	}
 	if m["label"] != "GLM" {
 		t.Fatalf("response label not trimmed: %v", m["label"])

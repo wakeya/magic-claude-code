@@ -143,7 +143,7 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	// 校验 ExposedModel.ID 跨 provider 全局唯一
+	// 校验 ExposedModel.ID（= 显示名 Label）跨 provider 全局唯一
 	exposedIDs := make(map[string]string) // id -> 首次出现的 provider name
 	for i := range c.Providers {
 		for _, em := range c.Providers[i].ExposedModels {
@@ -152,7 +152,7 @@ func (c *Config) Validate() error {
 				continue // 单项空 ID 由 Provider.Validate 捕获
 			}
 			if firstProvider, exists := exposedIDs[id]; exists {
-				return fmt.Errorf("exposed model id %q is duplicated between provider %q and %q",
+				return fmt.Errorf("exposed model display name (id) %q is duplicated between provider %q and %q",
 					id, firstProvider, c.Providers[i].Name)
 			}
 			exposedIDs[id] = c.Providers[i].Name

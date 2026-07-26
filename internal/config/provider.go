@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
 
 	"magic-claude-code/internal/providerquota"
 )
@@ -52,7 +53,7 @@ type Provider struct {
 	// ExposedModels 对外暴露给 Claude Code /model 菜单的模型列表。
 	// 用户在 /model 选中某项后，该会话后续请求的 model 字段等于 ExposedModel.ID，
 	// mcc 据此路由到此 provider 并把 model 替换为 BackendModel。
-	// ID 跨所有 provider 全局唯一（由 Config.Validate 校验）。
+	// 所见即所得：ID 由 Validate 归一为 Label（显示名即路由键），跨所有 provider 全局唯一（由 Config.Validate 校验）。
 	ExposedModels []ExposedModel `json:"exposed_models,omitempty"`
 
 	// SupportsThinking 后端是否支持 thinking 字段
@@ -211,10 +212,10 @@ func (p *Provider) Validate() error {
 	seenExposedIDs := make(map[string]bool)
 	for i := range p.ExposedModels {
 		em := &p.ExposedModels[i]
-		// ID 留空时自动生成稳定随机 ID（前端隐藏 ID 输入，用户无需手输）
-		if em.ID == "" {
-			em.ID = generateExposedModelID()
-		}
+		// 所见即所得：显示名即唯一路由键，ID 统一归一为 Label。
+		// 用户只需填写显示名，它同时是 /model 菜单 value、请求 model 字段
+		// 与 `claude --model <显示名>` 的可用值。
+		em.ID = em.Label
 		if em.Label == "" {
 			return fmt.Errorf("exposed_models[%d]: label is required", i)
 		}
@@ -222,22 +223,25 @@ func (p *Provider) Validate() error {
 			return fmt.Errorf("exposed_models[%d]: backend_model is required", i)
 		}
 		if strings.HasPrefix(em.ID, "claude-") {
-			return fmt.Errorf("exposed_models[%d]: id must not start with \"claude-\" (conflicts with built-in menu items)", i)
+			return fmt.Errorf("exposed_models[%d]: display name (id) must not start with \"claude-\" (conflicts with built-in menu items)", i)
 		}
 		if strings.Contains(em.ID, "[1m]") {
-			return fmt.Errorf("exposed_models[%d]: id must not contain \"[1m]\" (reserved by Claude Code 1M-context handling)", i)
+			return fmt.Errorf("exposed_models[%d]: display name (id) must not contain \"[1m]\" (reserved by Claude Code 1M-context handling)", i)
 		}
 		switch em.ID {
 		case "sonnet", "opus", "haiku", "opusplan":
-			return fmt.Errorf("exposed_models[%d]: id %q is reserved by Claude Code model aliases", i, em.ID)
+			return fmt.Errorf("exposed_models[%d]: display name (id) %q is reserved by Claude Code model aliases", i, em.ID)
 		}
+		// 显示名（路由键）允许 Unicode（兼容中文显示名），但禁止空格与控制字符：
+		// 空格在 shell `claude --model` 需引号、易错。报错用 %q 原样回显，
+		// 便于用户发现不可见的全角空格（U+3000）/NBSP（U+00A0）等。
 		if strings.IndexFunc(em.ID, func(r rune) bool {
-			return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == ':' || r == '-')
+			return unicode.IsSpace(r) || unicode.IsControl(r)
 		}) >= 0 {
-			return fmt.Errorf("exposed_models[%d]: id may only contain letters, digits, '.', '_', ':' and '-'", i)
+			return fmt.Errorf("exposed_models[%d]: display name (id) %q must not contain spaces or control characters (check for invisible/full-width spaces)", i, em.ID)
 		}
 		if seenExposedIDs[em.ID] {
-			return fmt.Errorf("exposed_models[%d]: duplicate id %q within provider", i, em.ID)
+			return fmt.Errorf("exposed_models[%d]: duplicate display name (id) %q within provider", i, em.ID)
 		}
 		seenExposedIDs[em.ID] = true
 	}
@@ -297,12 +301,13 @@ func (p *Provider) MapModel(model string) string {
 
 // ExposedModel 声明一个对外暴露给 Claude Code /model 菜单的模型。
 type ExposedModel struct {
-	// ID 是全局唯一的逻辑模型名，同时是 /model 菜单选项的 value。
-	// 用户选中后，Claude Code 把它作为请求的 model 字段。
-	// 不得以 "claude-" 开头（会与内置菜单项撞名被忽略），不得含 "[1m]"。
+	// ID 是全局唯一的路由键，同时是 /model 菜单选项的 value。
+	// 所见即所得：Provider.Validate 会把 ID 归一为 Label（显示名即 ID），
+	// 因此它等于用户填写的显示名，可直接用于 `claude --model <显示名>`。
+	// 不得以 "claude-" 开头（会与内置菜单项撞名被忽略），不得含 "[1m]"、空格或控制字符。
 	ID string `json:"id"`
 
-	// Label 是 /model 菜单里显示的名称。
+	// Label 是 /model 菜单里显示的名称，也是路由键来源（ID = Label）。
 	Label string `json:"label"`
 
 	// Description 是 /model 菜单里的描述文案。
@@ -322,13 +327,6 @@ type ExposedModel struct {
 // generateProviderID 生成唯一的供应商 ID
 func generateProviderID() string {
 	return "provider-" + randomHex(8) + "-" + randomHex(4)
-}
-
-// generateExposedModelID 生成对外暴露模型的稳定随机 ID。
-// ID 纯内部用（Claude Code /model 菜单 value + mcc 路由键），用户无需感知，
-// 故用 em- 前缀 + 随机 hex，无语义、稳定（生成后写回 struct，不随重排变化）。
-func generateExposedModelID() string {
-	return "em-" + randomHex(8)
 }
 
 // randomHex 生成指定长度的十六进制字符串

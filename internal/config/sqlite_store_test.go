@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -959,7 +958,7 @@ func TestSQLiteStoreRoundTripsNilExposedModels(t *testing.T) {	path := filepath.
 func TestSQLiteStoreMigratesLegacyExposedModelIDs(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "proxy.db")
-	// 第一次：存入旧格式（非 em- 前缀）ID
+	// 第一次：存入旧格式（随机 em- 前缀）ID
 	store, err := NewSQLiteStore(dbPath, "")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore: %v", err)
@@ -967,8 +966,9 @@ func TestSQLiteStoreMigratesLegacyExposedModelIDs(t *testing.T) {
 	cfg := DefaultConfig()
 	provider := NewProvider("A", "https://a.example/anthropic", "token")
 	provider.ExposedModels = []ExposedModel{
-		{ID: "glm-5.2-ky", Label: "GLM-5.2", BackendModel: "glm-5.2", Context1M: true},
-		{ID: "em-abcd1234", Label: "Already New", BackendModel: "x"}, // 已是 em- 前缀，不应变
+		{ID: "em-abcd1234", Label: "GLM-5.2", BackendModel: "glm-5.2", Context1M: true},
+		{ID: "em-ffff0000", Label: "Kimi", BackendModel: "y"},
+		{ID: "em-empty00", Label: "", BackendModel: "z"}, // Label 空：迁移不置空
 	}
 	cfg.Providers = []Provider{*provider}
 	cfg.ActiveProviderID = provider.ID
@@ -979,30 +979,107 @@ func TestSQLiteStoreMigratesLegacyExposedModelIDs(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	// 第二次：重新打开，触发 migrateExposedModelIDs
+	// 第二次：重新打开，触发 migrateExposedModelIDs（反向：em- ID -> Label）
 	store2, err := NewSQLiteStore(dbPath, "")
 	if err != nil {
 		t.Fatalf("reopen NewSQLiteStore: %v", err)
+	}
+	loaded, err := store2.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := loaded.GetProviderByID(provider.ID).ExposedModels
+	if got[0].ID != "GLM-5.2" {
+		t.Fatalf("ID not migrated to Label: %q, want GLM-5.2", got[0].ID)
+	}
+	if got[1].ID != "Kimi" {
+		t.Fatalf("ID not migrated to Label: %q, want Kimi", got[1].ID)
+	}
+	// 保留其他字段
+	if got[0].Label != "GLM-5.2" || got[0].BackendModel != "glm-5.2" || !got[0].Context1M {
+		t.Fatalf("migration lost fields: %#v", got[0])
+	}
+	// 空 Label 不置空
+	if got[2].ID != "em-empty00" {
+		t.Fatalf("empty-label ID should be untouched: %q", got[2].ID)
+	}
+	if err := store2.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// 第三次：再次打开，幂等（ID==Label，不再触发）
+	store3, err := NewSQLiteStore(dbPath, "")
+	if err != nil {
+		t.Fatalf("third open NewSQLiteStore: %v", err)
+	}
+	defer store3.Close()
+	loaded3, err := store3.Load()
+	if err != nil {
+		t.Fatalf("Load3: %v", err)
+	}
+	got3 := loaded3.GetProviderByID(provider.ID).ExposedModels
+	if got3[0].ID != "GLM-5.2" || got3[1].ID != "Kimi" {
+		t.Fatalf("migration not idempotent: %q / %q", got3[0].ID, got3[1].ID)
+	}
+}
+
+// TestSQLiteStoreMigrateKeepsDistinctIDsForDuplicateLabels 验证迁移的碰撞防护：
+// 旧 Label 历史无唯一性保证，若盲目把重复 Label 都改成同一 ID，会被菜单去重/路由首命中
+// 静默吞没，部分模型不可见且不可路由。碰撞（跨 provider、仅首尾空白不同）的 Label
+// 全部保留原 em- ID 不重写——迁移后 ID 仍两两不同，模型均可见可路由，留待下次编辑 Validate 收敛。
+func TestSQLiteStoreMigrateKeepsDistinctIDsForDuplicateLabels(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "proxy.db")
+	store, err := NewSQLiteStore(dbPath, "")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	cfg := DefaultConfig()
+	pa := NewProvider("A", "https://a.example/anthropic", "token")
+	pa.ExposedModels = []ExposedModel{
+		{ID: "em-aaa00001", Label: "GLM", BackendModel: "x"},      // 与 B 的 Label 碰撞（跨 provider）
+		{ID: "em-aaa00002", Label: "Unique-A", BackendModel: "u"}, // 唯一，正常迁移
+	}
+	pb := NewProvider("B", "https://b.example/anthropic", "token")
+	pb.ExposedModels = []ExposedModel{
+		{ID: "em-bbb00001", Label: "GLM", BackendModel: "y"},  // 与 A[0] 碰撞（跨 provider）
+		{ID: "em-bbb00002", Label: "GLM ", BackendModel: "z"}, // 仅尾部空白与 "GLM" 不同，亦碰撞
+	}
+	cfg.Providers = []Provider{*pa, *pb}
+	if err := store.Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	store.Close()
+
+	store2, err := NewSQLiteStore(dbPath, "")
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
 	}
 	defer store2.Close()
 	loaded, err := store2.Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	got := loaded.GetProviderByID(provider.ID).ExposedModels
-	if !strings.HasPrefix(got[0].ID, "em-") {
-		t.Fatalf("legacy ID not migrated: %q", got[0].ID)
+
+	ids := map[string]bool{}
+	for _, p := range loaded.Providers {
+		for _, em := range p.ExposedModels {
+			ids[em.ID] = true
+		}
 	}
-	if got[0].ID == "glm-5.2-ky" {
-		t.Fatal("legacy ID should have changed")
+	// 三个碰撞模型（GLM / GLM / "GLM "）均保留原 em- ID，菜单均可见、可路由
+	for _, want := range []string{"em-aaa00001", "em-bbb00001", "em-bbb00002"} {
+		if !ids[want] {
+			t.Fatalf("colliding model should keep original ID %q, got ids=%v", want, ids)
+		}
 	}
-	// 保留其他字段
-	if got[0].Label != "GLM-5.2" || got[0].BackendModel != "glm-5.2" || !got[0].Context1M {
-		t.Fatalf("migration lost fields: %#v", got[0])
+	// 唯一模型正常迁移为显示名
+	if !ids["Unique-A"] {
+		t.Fatalf("unique-label model should migrate to its label, got ids=%v", ids)
 	}
-	// 已是 em- 的不变
-	if got[1].ID != "em-abcd1234" {
-		t.Fatalf("em- ID should be unchanged: %q", got[1].ID)
+	// 不得产生 ID 碰撞（4 个模型 → 4 个不同 ID）
+	if len(ids) != 4 {
+		t.Fatalf("expected 4 distinct IDs after migration, got %d: %v", len(ids), ids)
 	}
 }
 

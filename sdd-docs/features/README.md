@@ -236,6 +236,7 @@ Simple examples for each task are provided below; in practice, a more granular a
 | Claude Code 2.1.211 Endpoint Compatibility | `2026-07-15-cc-2.1.211-endpoint-compat/spec.md` | `2026-07-15-cc-2.1.211-endpoint-compat/spec_ZH.md` |
 | Kimi Quota Query and Usage Statistics Parsing Fixes | `2026-07-17-kimi-quota-usage-parsing-fixes/spec.md` | `2026-07-17-kimi-quota-usage-parsing-fixes/spec_ZH.md` |
 | Preserve tool_reference in Proactive Cleanup | `2026-07-21-preserve-tool-reference/spec.md` | `2026-07-21-preserve-tool-reference/spec_ZH.md` |
+| Exposed Model Label as Routing ID | `2026-07-25-exposed-model-label-as-id/spec.md` | `2026-07-25-exposed-model-label-as-id/spec_ZH.md` |
 
 ## 状态生命周期
 

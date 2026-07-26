@@ -628,10 +628,10 @@ func TestHandleBootstrap_EmitsExposedModels(t *testing.T) {
 	store := config.NewMockStore(&config.Config{
 		Providers: []config.Provider{
 			{ID: "a", Name: "智谱", Enabled: true, ExposedModels: []config.ExposedModel{
-				{ID: "glm-4.6", Label: "GLM-4.6", Description: "日常编码", BackendModel: "glm-4.6"},
+				{ID: "GLM-4.6", Label: "GLM-4.6", Description: "日常编码", BackendModel: "glm-4.6"}, // 所见即所得：ID=Label
 			}},
 			{ID: "b", Name: "B", Enabled: false, ExposedModels: []config.ExposedModel{
-				{ID: "disabled-model", Label: "Disabled"},
+				{ID: "disabled-model", Label: "disabled-model"},
 			}},
 		},
 	})
@@ -652,8 +652,12 @@ func TestHandleBootstrap_EmitsExposedModels(t *testing.T) {
 			len(resp.AdditionalModelOptions), resp.AdditionalModelOptions)
 	}
 	opt := resp.AdditionalModelOptions[0]
-	if opt["model"] != "glm-4.6" || opt["name"] != "GLM-4.6" || opt["description"] != "日常编码 · 智谱" {
+	if opt["model"] != "GLM-4.6" || opt["name"] != "GLM-4.6" || opt["description"] != "日常编码 · 智谱" {
 		t.Fatalf("unexpected option fields (description should auto-append provider name): %v", opt)
+	}
+	// 所见即所得：菜单 value（model）== 展示文本（name），即显示名可直接用于 claude --model
+	if opt["model"] != opt["name"] {
+		t.Fatalf("what-you-see-is-what-you-get violated: model %q != name %q", opt["model"], opt["name"])
 	}
 }
 
@@ -661,7 +665,7 @@ func TestHandleBootstrap_DescriptionEmptyUsesProviderName(t *testing.T) {
 	store := config.NewMockStore(&config.Config{
 		Providers: []config.Provider{
 			{ID: "a", Name: "月之暗面", Enabled: true, ExposedModels: []config.ExposedModel{
-				{ID: "kimi-k2", Label: "Kimi K2", Description: ""}, // description 空
+				{ID: "Kimi-K2", Label: "Kimi-K2", Description: ""}, // description 空；ID=Label
 			}},
 		},
 	})
@@ -700,8 +704,8 @@ func TestHandleBootstrap_Context1MAppendsBracket1m(t *testing.T) {
 	store := config.NewMockStore(&config.Config{
 		Providers: []config.Provider{
 			{ID: "a", Name: "GLM", Enabled: true, ExposedModels: []config.ExposedModel{
-				{ID: "glm-5.2", Label: "GLM-5.2", BackendModel: "glm-5.2", Context1M: true},
-				{ID: "glm-4.6", Label: "GLM-4.6", BackendModel: "glm-4.6"}, // Context1M=false
+				{ID: "GLM-5.2", Label: "GLM-5.2", BackendModel: "glm-5.2", Context1M: true}, // ID=Label
+				{ID: "GLM-4.6", Label: "GLM-4.6", BackendModel: "glm-4.6"},                 // Context1M=false
 			}},
 		},
 	})
@@ -722,13 +726,13 @@ func TestHandleBootstrap_Context1MAppendsBracket1m(t *testing.T) {
 	for _, opt := range resp.AdditionalModelOptions {
 		byModel[opt["name"]] = opt["model"]
 	}
-	// Context1M=true 的模型，菜单 value 附 [1m]
-	if byModel["GLM-5.2"] != "glm-5.2[1m]" {
-		t.Fatalf("Context1M model value = %q, want glm-5.2[1m]", byModel["GLM-5.2"])
+	// Context1M=true 的模型，菜单 value 附 [1m]（ID=Label，故为 Label+[1m]）
+	if byModel["GLM-5.2"] != "GLM-5.2[1m]" {
+		t.Fatalf("Context1M model value = %q, want GLM-5.2[1m]", byModel["GLM-5.2"])
 	}
-	// Context1M=false 的模型，菜单 value 保持纯 ID
-	if byModel["GLM-4.6"] != "glm-4.6" {
-		t.Fatalf("non-1M model value = %q, want glm-4.6", byModel["GLM-4.6"])
+	// Context1M=false 的模型，菜单 value 保持纯 ID（=Label）
+	if byModel["GLM-4.6"] != "GLM-4.6" {
+		t.Fatalf("non-1M model value = %q, want GLM-4.6", byModel["GLM-4.6"])
 	}
 }
 
@@ -816,11 +820,11 @@ func TestHardcodedModelsUsesConfiguredProviders(t *testing.T) {
 	store := config.NewMockStore(&config.Config{
 		Providers: []config.Provider{
 			{ID: "a", Name: "智谱", Enabled: true, ExposedModels: []config.ExposedModel{
-				{ID: "glm-4.6", Label: "GLM-4.6", BackendModel: "glm-4.6"},
-				{ID: "kimi-k2", Label: "Kimi K2", BackendModel: "kimi"},
+				{ID: "GLM-4.6", Label: "GLM-4.6", BackendModel: "glm-4.6"}, // 所见即所得：ID=Label
+				{ID: "Kimi-K2", Label: "Kimi-K2", BackendModel: "kimi"},
 			}},
 			{ID: "b", Name: "Disabled", Enabled: false, ExposedModels: []config.ExposedModel{
-				{ID: "disabled-model", Label: "D"},
+				{ID: "disabled-model", Label: "disabled-model"},
 			}},
 		},
 	})
@@ -854,24 +858,17 @@ func TestHardcodedModelsUsesConfiguredProviders(t *testing.T) {
 			t.Fatalf("data len = %d, want 2 (disabled provider excluded): %+v", len(resp.Data), resp.Data)
 		}
 		// 按 id 升序
-		if resp.Data[0].ID != "glm-4.6" || resp.Data[1].ID != "kimi-k2" {
+		if resp.Data[0].ID != "GLM-4.6" || resp.Data[1].ID != "Kimi-K2" {
 			t.Fatalf("unexpected order: %s, %s", resp.Data[0].ID, resp.Data[1].ID)
 		}
 		for _, m := range resp.Data {
 			if m.Type != "model" {
 				t.Errorf("model %s type = %q, want model", m.ID, m.Type)
 			}
-		}
-		// display_name 用 Label（GLM-4.6 / Kimi K2），id 保持不变用于模型选择
-		byID := map[string]string{}
-		for _, m := range resp.Data {
-			byID[m.ID] = m.DisplayName
-		}
-		if byID["glm-4.6"] != "GLM-4.6" {
-			t.Errorf("glm-4.6 display_name = %q, want Label 'GLM-4.6'", byID["glm-4.6"])
-		}
-		if byID["kimi-k2"] != "Kimi K2" {
-			t.Errorf("kimi-k2 display_name = %q, want Label 'Kimi K2'", byID["kimi-k2"])
+			// 所见即所得：id == display_name（同为 Label），显示名可直接用于 claude --model
+			if m.DisplayName != m.ID {
+				t.Errorf("what-you-see-is-what-you-get violated: id %q != display_name %q", m.ID, m.DisplayName)
+			}
 		}
 	})
 
