@@ -190,6 +190,7 @@ import { ref, reactive, onMounted, computed, watch } from 'vue'
 import { useApi, type Provider } from '@/composables/useApi'
 import { useI18n } from '@/composables/useI18n'
 import { isOpenAICompatibleFormat, shouldDefaultClaudeCodeCompatHint, type ProviderAPIFormat } from '@/utils/providerForm'
+import { localizeExposedModelError } from '@/utils/providerError'
 
 const props = defineProps<{ provider: Provider | null }>()
 const emit = defineEmits<{ close: []; saved: [] }>()
@@ -369,7 +370,7 @@ async function save() {
     message.value = { text: props.provider ? t('modal.provider_updated') : t('modal.provider_created'), ok: true }
     setTimeout(() => emit('saved'), 800)
   } catch (e: any) {
-    message.value = { text: e.message || t('modal.save_failed'), ok: false }
+    message.value = { text: localizeExposedModelError(e.message || '', t) || t('modal.save_failed'), ok: false }
   }
 }
 

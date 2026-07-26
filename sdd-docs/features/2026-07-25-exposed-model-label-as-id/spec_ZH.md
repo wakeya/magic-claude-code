@@ -99,7 +99,7 @@
 2. `Provider.Validate` 的 ID 字符集校验由 ASCII 白名单 `[a-zA-Z0-9._:-]` 改为黑名单：**禁止空格（`unicode.IsSpace`）与控制字符（`unicode.IsControl`）**，其余 Unicode 字符放行。保留 `claude-` 前缀、`[1m]`、`sonnet|opus|haiku|opusplan` 别名的禁止校验。报错用 `%q` 原样回显显示名，便于用户发现不可见的全角空格（U+3000）/NBSP（U+00A0）——这类字符在中文输入法下常见且肉眼难辨，是「显示名看着没空格却报错」的根因；`Description` 不参与此校验（可含空格）。
 3. `Config.Validate`（`config.go`）跨 provider 全局唯一校验逻辑不变（仍按 `em.ID`，ID=Label 后即 Label 全局唯一）；错误信息措辞由 "exposed model id %q is duplicated" 调整为提示「显示名（模型 ID）」，便于用户理解。
 4. `SQLiteStore.migrateExposedModelIDs`（`sqlite_store.go`）反向迁移：对每个 `ExposedModel`，当 `TrimSpace(em.Label)` 非空且 `em.ID != TrimSpace(em.Label)` 时，设 `em.ID = TrimSpace(em.Label)` 并标记变更；有变更则 `s.save(cfg)`。幂等（二次启动不再触发）。移除对 `generateExposedModelID` 的调用。
-5. 前端 `ProviderModal.vue` 暴露模型区增加提示：显示名即模型 ID，可直接用于 `claude --model <显示名>`；`useI18n.ts` 中英双语，并把过时的「ID 由系统自动生成」表述改为「显示名将作为模型 ID」。
+5. 前端 `ProviderModal.vue` 暴露模型区增加提示：显示名即模型 ID，可直接用于 `claude --model <显示名>`；`useI18n.ts` 中英双语，并把过时的「ID 由系统自动生成」表述改为「显示名将作为模型 ID」。新增 `utils/providerError.ts` 把后端英文校验错误本地化（中文页面显示中文报错）：覆盖空格/控制字符、`claude-` 前缀、`[1m]`、保留别名、provider 内/跨 provider 重复、显示名/后端模型名必填等情形，并回显触发校验的显示名；无法识别的错误原样兜底。
 6. `internal/proxy/hardcoded.go`、`internal/admin/provider_handler.go` **不改**（ID=Label 后天然满足）。
 
 ### 约束
