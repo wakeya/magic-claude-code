@@ -276,6 +276,7 @@ func TestEncodeDecodeQuotaConfigRoundTrip(t *testing.T) {
 		AutoQueryIntervalMinutes: 10,
 		BaseURL:                  "https://example.com",
 		ScriptAPIKey:             "script-secret",
+		ScriptAPIKey2:            "script2-secret",
 		ZenMuxBaseURL:            "https://quota.zenmux.example/usage",
 		ZenMuxAPIKey:             "zenmux-secret",
 	}
@@ -292,6 +293,9 @@ func TestEncodeDecodeQuotaConfigRoundTrip(t *testing.T) {
 	}
 	if decoded.ScriptAPIKey != cfg.ScriptAPIKey {
 		t.Errorf("script_api_key = %q, want %q", decoded.ScriptAPIKey, cfg.ScriptAPIKey)
+	}
+	if decoded.ScriptAPIKey2 != cfg.ScriptAPIKey2 {
+		t.Errorf("script_api_key_2 = %q, want %q", decoded.ScriptAPIKey2, cfg.ScriptAPIKey2)
 	}
 	if decoded.ZenMuxBaseURL != cfg.ZenMuxBaseURL {
 		t.Errorf("zenmux_base_url = %q, want %q", decoded.ZenMuxBaseURL, cfg.ZenMuxBaseURL)
@@ -418,6 +422,7 @@ func TestToPublicConfig(t *testing.T) {
 		TemplateType:    TemplateNewAPI,
 		TimeoutSeconds:  15,
 		ScriptAPIKey:    "script-secret",
+		ScriptAPIKey2:   "script2-secret",
 		ZenMuxBaseURL:   "https://quota.zenmux.example/usage",
 		ZenMuxAPIKey:    "zenmux-secret",
 		AccessToken:     "secret-token",
@@ -428,6 +433,9 @@ func TestToPublicConfig(t *testing.T) {
 	pub := ToPublicConfig(cfg)
 	if !pub.ScriptAPIKeyConfigured {
 		t.Error("script_api_key_configured should be true")
+	}
+	if !pub.ScriptAPIKey2Configured {
+		t.Error("script_api_key_2_configured should be true")
 	}
 	if !pub.ZenMuxAPIKeyConfigured {
 		t.Error("zenmux_api_key_configured should be true")
@@ -448,7 +456,7 @@ func TestToPublicConfig(t *testing.T) {
 	// Verify secrets are not in the public config.
 	data, _ := json.Marshal(pub)
 	s := string(data)
-	if contains(s, "script-secret") || contains(s, "zenmux-secret") || contains(s, "secret-token") || contains(s, "secret-sk") {
+	if contains(s, "script-secret") || contains(s, "script2-secret") || contains(s, "zenmux-secret") || contains(s, "secret-token") || contains(s, "secret-sk") {
 		t.Errorf("public config contains secret: %s", s)
 	}
 }
@@ -473,6 +481,11 @@ func TestHasSecrets(t *testing.T) {
 	c.ZenMuxAPIKey = "zenmux-key"
 	if !c.HasSecrets() {
 		t.Error("config with zenmux_api_key should have secrets")
+	}
+	c.ZenMuxAPIKey = ""
+	c.ScriptAPIKey2 = "script2-key"
+	if !c.HasSecrets() {
+		t.Error("config with script_api_key_2 should have secrets")
 	}
 }
 
