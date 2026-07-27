@@ -3,12 +3,14 @@ package admin
 import (
 	"database/sql"
 	"encoding/json"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"magic-claude-code/internal/frontend"
 	"magic-claude-code/internal/usage"
 	_ "modernc.org/sqlite"
 )
@@ -144,4 +146,61 @@ func newAdminUsageStore(t *testing.T) *usage.Store {
 		t.Fatalf("Migrate() error = %v", err)
 	}
 	return store
+}
+
+// TestStaticCacheHeaders verifies the frontend static file handler emits
+// cache-control headers that let hashed assets be cached long-term while
+// forcing index.html (and SPA fallback routes) to revalidate on every load —
+// so a new frontend build is picked up without a hard refresh.
+func TestStaticCacheHeaders(t *testing.T) {
+	fileServer := http.FileServer(http.FS(subFS(t, frontend.DistFS, "dist")))
+	srv := &Server{}
+	handler := srv.authMiddleware(cacheHeadersHandler(fileServer))
+
+	get := func(path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", path, nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		return w
+	}
+
+	t.Run("index.html root forces revalidation", func(t *testing.T) {
+		w := get("/")
+		if w.Code != 200 {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+		if got := w.Header().Get("Cache-Control"); got != "no-cache" {
+			t.Errorf("Cache-Control = %q, want no-cache", got)
+		}
+	})
+
+	t.Run("SPA fallback route forces revalidation", func(t *testing.T) {
+		w := get("/providers/test-p/usage")
+		if w.Code != 200 {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+		if got := w.Header().Get("Cache-Control"); got != "no-cache" {
+			t.Errorf("Cache-Control = %q, want no-cache", got)
+		}
+	})
+
+	t.Run("hashed asset is immutable long-cache", func(t *testing.T) {
+		w := get("/assets/index-B8YBkTdE.js")
+		if w.Code != 200 {
+			t.Fatalf("status = %d, want 200 (asset must exist in dist)", w.Code)
+		}
+		if got := w.Header().Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
+			t.Errorf("Cache-Control = %q, want immutable", got)
+		}
+	})
+}
+
+// subFS returns a sub-filesystem of the embedded frontend dist, or fails.
+func subFS(t *testing.T, fsys fs.FS, dir string) fs.FS {
+	t.Helper()
+	sub, err := fs.Sub(fsys, dir)
+	if err != nil {
+		t.Fatalf("fs.Sub(%q): %v", dir, err)
+	}
+	return sub
 }
