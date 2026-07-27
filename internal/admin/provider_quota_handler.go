@@ -317,6 +317,7 @@ type providerQuotaUpdateRequest struct {
 	Script                   *string `json:"script"`
 	BaseURL                  *string `json:"base_url"`
 	ScriptAPIKey             *string `json:"script_api_key"`
+	ScriptAPIKey2            *string `json:"script_api_key_2"`
 	ZenMuxBaseURL            *string `json:"zenmux_base_url"`
 	ZenMuxAPIKey             *string `json:"zenmux_api_key"`
 	APIKey                   *string `json:"api_key"` // backward-compatible client input
@@ -326,6 +327,7 @@ type providerQuotaUpdateRequest struct {
 	AccessKeyID              *string `json:"access_key_id"`
 	SecretAccessKey          *string `json:"secret_access_key"`
 	ClearScriptAPIKey        bool    `json:"clear_script_api_key"`
+	ClearScriptAPIKey2       bool    `json:"clear_script_api_key_2"`
 	ClearZenMuxAPIKey        bool    `json:"clear_zenmux_api_key"`
 	ClearAPIKey              bool    `json:"clear_api_key"` // backward-compatible client input
 	ClearAccessToken         bool    `json:"clear_access_token"`
@@ -339,6 +341,7 @@ func validateProviderQuotaSecretPatches(req providerQuotaUpdateRequest) error {
 		clear bool
 	}{
 		{name: "script_api_key", value: req.ScriptAPIKey, clear: req.ClearScriptAPIKey},
+		{name: "script_api_key_2", value: req.ScriptAPIKey2, clear: req.ClearScriptAPIKey2},
 		{name: "zenmux_api_key", value: req.ZenMuxAPIKey, clear: req.ClearZenMuxAPIKey},
 		{name: "access_token", value: req.AccessToken, clear: req.ClearAccessToken},
 		{name: "secret_access_key", value: req.SecretAccessKey, clear: req.ClearSecretAccessKey},
@@ -395,6 +398,7 @@ func applyQuotaUpdate(existing *providerquota.ProviderQuotaConfig, req providerQ
 
 	// Purpose-specific secret patch semantics.
 	applySecretPatch(&c.ScriptAPIKey, req.ScriptAPIKey, req.ClearScriptAPIKey)
+	applySecretPatch(&c.ScriptAPIKey2, req.ScriptAPIKey2, req.ClearScriptAPIKey2)
 	applySecretPatch(&c.ZenMuxAPIKey, req.ZenMuxAPIKey, req.ClearZenMuxAPIKey)
 	applySecretPatch(&c.AccessToken, req.AccessToken, req.ClearAccessToken)
 	applySecretPatch(&c.SecretAccessKey, req.SecretAccessKey, req.ClearSecretAccessKey)

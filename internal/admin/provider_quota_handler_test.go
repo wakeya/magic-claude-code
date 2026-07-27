@@ -342,6 +342,7 @@ func TestProviderUsageSecretRedaction(t *testing.T) {
 				TemplateType:    "newapi",
 				AccessToken:     "super-secret-at",
 				ScriptAPIKey:    "super-secret-script-key",
+				ScriptAPIKey2:   "super-secret-script2-key",
 				ZenMuxBaseURL:   "https://quota.zenmux.example/usage",
 				ZenMuxAPIKey:    "super-secret-zenmux-key",
 				SecretAccessKey: "super-secret-sk",
@@ -366,7 +367,7 @@ func TestProviderUsageSecretRedaction(t *testing.T) {
 
 	body := w.Body.String()
 	// Must not contain raw secrets.
-	for _, secret := range []string{"super-secret-at", "super-secret-script-key", "super-secret-zenmux-key", "super-secret-sk"} {
+	for _, secret := range []string{"super-secret-at", "super-secret-script-key", "super-secret-script2-key", "super-secret-zenmux-key", "super-secret-sk"} {
 		if containsStr(body, secret) {
 			t.Errorf("response contains secret %q", secret)
 		}
@@ -376,7 +377,7 @@ func TestProviderUsageSecretRedaction(t *testing.T) {
 	var resp map[string]any
 	json.Unmarshal(w.Body.Bytes(), &resp)
 	cfgDTO := resp["config"].(map[string]any)
-	if cfgDTO["script_api_key_configured"] != true || cfgDTO["zenmux_api_key_configured"] != true {
+	if cfgDTO["script_api_key_configured"] != true || cfgDTO["script_api_key_2_configured"] != true || cfgDTO["zenmux_api_key_configured"] != true {
 		t.Error("expected separated configured flags")
 	}
 	if cfgDTO["access_token_configured"] != true {
@@ -614,6 +615,55 @@ func TestApplyQuotaUpdateSeparatesCredentialPurposes(t *testing.T) {
 			t.Fatalf("separated keys = %q/%q", result.ScriptAPIKey, result.ZenMuxAPIKey)
 		}
 	})
+}
+
+func TestApplyQuotaUpdateScriptAPIKey2(t *testing.T) {
+	str := func(v string) *string { return &v }
+
+	t.Run("replace", func(t *testing.T) {
+		existing := &providerquota.ProviderQuotaConfig{TemplateType: providerquota.TemplateCustom, ScriptAPIKey2: "old"}
+		result := applyQuotaUpdate(existing, providerQuotaUpdateRequest{ScriptAPIKey2: str("new-sec")}, "")
+		if result.ScriptAPIKey2 != "new-sec" {
+			t.Fatalf("ScriptAPIKey2 = %q, want new-sec", result.ScriptAPIKey2)
+		}
+	})
+
+	t.Run("preserve when field omitted", func(t *testing.T) {
+		existing := &providerquota.ProviderQuotaConfig{TemplateType: providerquota.TemplateCustom, ScriptAPIKey2: "old"}
+		result := applyQuotaUpdate(existing, providerQuotaUpdateRequest{TemplateType: str(providerquota.TemplateCustom)}, "")
+		if result.ScriptAPIKey2 != "old" {
+			t.Fatalf("ScriptAPIKey2 = %q, want old (preserved)", result.ScriptAPIKey2)
+		}
+	})
+
+	t.Run("clear", func(t *testing.T) {
+		existing := &providerquota.ProviderQuotaConfig{TemplateType: providerquota.TemplateCustom, ScriptAPIKey2: "old"}
+		result := applyQuotaUpdate(existing, providerQuotaUpdateRequest{ClearScriptAPIKey2: true}, "")
+		if result.ScriptAPIKey2 != "" {
+			t.Fatalf("ScriptAPIKey2 = %q, want empty (cleared)", result.ScriptAPIKey2)
+		}
+	})
+
+	t.Run("clear is independent from script_api_key", func(t *testing.T) {
+		existing := &providerquota.ProviderQuotaConfig{TemplateType: providerquota.TemplateCustom, ScriptAPIKey: "k1", ScriptAPIKey2: "k2"}
+		result := applyQuotaUpdate(existing, providerQuotaUpdateRequest{ClearScriptAPIKey2: true}, "")
+		if result.ScriptAPIKey != "k1" || result.ScriptAPIKey2 != "" {
+			t.Fatalf("ScriptAPIKey/2 = %q/%q, want k1/empty", result.ScriptAPIKey, result.ScriptAPIKey2)
+		}
+	})
+}
+
+func TestValidateProviderQuotaSecretPatchesScriptAPIKey2(t *testing.T) {
+	str := func(v string) *string { return &v }
+	if err := validateProviderQuotaSecretPatches(providerQuotaUpdateRequest{ScriptAPIKey2: str("x"), ClearScriptAPIKey2: true}); err == nil {
+		t.Fatal("expected error when script_api_key_2 is both replaced and cleared")
+	}
+	if err := validateProviderQuotaSecretPatches(providerQuotaUpdateRequest{ScriptAPIKey2: str("x")}); err != nil {
+		t.Fatalf("replace only: %v", err)
+	}
+	if err := validateProviderQuotaSecretPatches(providerQuotaUpdateRequest{ClearScriptAPIKey2: true}); err != nil {
+		t.Fatalf("clear only: %v", err)
+	}
 }
 
 func TestApplyQuotaUpdateRoutesLegacyAPIKeyByEffectivePurpose(t *testing.T) {
