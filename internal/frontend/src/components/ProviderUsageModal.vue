@@ -95,6 +95,15 @@
               </div>
             </div>
 
+            <div v-if="showAPIKey">
+              <label class="block text-sm font-medium mb-1">{{ t('quota.script_api_key_2') }}</label>
+              <div class="flex flex-wrap sm:flex-nowrap gap-2 min-w-0">
+                <input v-model="form.script_api_key_2" type="password" class="min-w-0 flex-1 app-control rounded-md px-3 py-2 text-sm" :placeholder="savedConfig?.script_api_key_2_configured ? t('quota.script_api_key_configured') : ''" />
+                <button v-if="savedConfig?.script_api_key_2_configured" type="button" class="text-xs text-danger hover:underline whitespace-nowrap" @click="form.clear_script_api_key_2 = true">{{ t('quota.clear_script_key') }}</button>
+              </div>
+              <div class="text-xs text-text-secondary mt-1">{{ t('quota.script_api_key_2_hint') }}</div>
+            </div>
+
             <template v-if="showZenMuxFields">
               <div>
                 <label class="block text-sm font-medium mb-1">{{ t('quota.zenmux_base_url') }}</label>
@@ -275,6 +284,7 @@ const form = reactive<QuotaFormState>({
   script: '',
   base_url: '',
   script_api_key: '',
+  script_api_key_2: '',
   zenmux_base_url: '',
   zenmux_api_key: '',
   access_token: '',
@@ -282,6 +292,7 @@ const form = reactive<QuotaFormState>({
   access_key_id: '',
   secret_access_key: '',
   clear_script_api_key: false,
+  clear_script_api_key_2: false,
   clear_zenmux_api_key: false,
   clear_access_token: false,
   clear_secret_access_key: false,
@@ -361,10 +372,12 @@ function clearZenMuxOverride() {
 
 function clearSubmittedSecrets() {
   form.script_api_key = ''
+  form.script_api_key_2 = ''
   form.zenmux_api_key = ''
   form.access_token = ''
   form.secret_access_key = ''
   form.clear_script_api_key = false
+  form.clear_script_api_key_2 = false
   form.clear_zenmux_api_key = false
   form.clear_access_token = false
   form.clear_secret_access_key = false

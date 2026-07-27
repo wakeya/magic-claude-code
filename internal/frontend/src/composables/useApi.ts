@@ -291,6 +291,7 @@ export interface PublicQuotaConfig {
   script?: string
   base_url?: string
   script_api_key_configured: boolean
+  script_api_key_2_configured: boolean
   zenmux_base_url?: string
   zenmux_api_key_configured: boolean
   access_token_configured: boolean
@@ -387,6 +388,7 @@ export interface ProviderUsageUpdateRequest {
   script?: string
   base_url?: string
   script_api_key?: string
+  script_api_key_2?: string
   zenmux_base_url?: string
   zenmux_api_key?: string
   access_token?: string
@@ -395,6 +397,7 @@ export interface ProviderUsageUpdateRequest {
   access_key_id?: string
   secret_access_key?: string
   clear_script_api_key?: boolean
+  clear_script_api_key_2?: boolean
   clear_zenmux_api_key?: boolean
   clear_access_token?: boolean
   clear_secret_access_key?: boolean

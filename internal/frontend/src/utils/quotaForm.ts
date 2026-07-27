@@ -18,6 +18,7 @@ export interface QuotaFormState {
   script: string
   base_url: string
   script_api_key: string
+  script_api_key_2: string
   zenmux_base_url: string
   zenmux_api_key: string
   access_token: string
@@ -25,6 +26,7 @@ export interface QuotaFormState {
   access_key_id: string
   secret_access_key: string
   clear_script_api_key: boolean
+  clear_script_api_key_2: boolean
   clear_zenmux_api_key: boolean
   clear_access_token: boolean
   clear_secret_access_key: boolean
@@ -85,6 +87,7 @@ export function showAPIKeyField(templateType: TemplateType, _provider: string): 
 
 export interface SavedConfig {
   script_api_key_configured?: boolean
+  script_api_key_2_configured?: boolean
   zenmux_api_key_configured?: boolean
   access_token_configured?: boolean
   secret_access_key_configured?: boolean
@@ -110,6 +113,7 @@ export function buildSavePayload(
   const usesAccessToken = form.template_type === 'newapi'
   const usesVolcSK = showVolcengineFields(form.template_type, provider)
   const replacesScriptAPIKey = usesScriptAPIKey && !!form.script_api_key
+  const replacesScriptAPIKey2 = usesScriptAPIKey && !!form.script_api_key_2
   const replacesZenMuxAPIKey = zenmux && !!form.zenmux_api_key
   const replacesAccessToken = usesAccessToken && !!form.access_token
   const replacesSecretAccessKey = usesVolcSK && !!form.secret_access_key
@@ -134,6 +138,7 @@ export function buildSavePayload(
     data.base_url = ''
   }
   if (replacesScriptAPIKey) data.script_api_key = form.script_api_key
+  if (replacesScriptAPIKey2) data.script_api_key_2 = form.script_api_key_2
   if (zenmux) {
     // Empty URL + omitted key selects the complete card credential fallback.
     data.zenmux_base_url = form.zenmux_base_url
@@ -152,6 +157,7 @@ export function buildSavePayload(
   // Explicit clears propagate only when the same request does not replace the
   // credential. This keeps the backend patch contract unambiguous.
   if (form.clear_script_api_key && !replacesScriptAPIKey) data.clear_script_api_key = true
+  if (form.clear_script_api_key_2 && !replacesScriptAPIKey2) data.clear_script_api_key_2 = true
   if (form.clear_zenmux_api_key && !replacesZenMuxAPIKey) data.clear_zenmux_api_key = true
   if (form.clear_access_token && !replacesAccessToken) data.clear_access_token = true
   if (form.clear_secret_access_key && !replacesSecretAccessKey) data.clear_secret_access_key = true
@@ -186,6 +192,7 @@ export function buildTestPayload(
     data.coding_plan_provider = provider
   }
   if (usesScriptAPIKey && form.script_api_key) data.script_api_key = form.script_api_key
+  if (usesScriptAPIKey && form.script_api_key_2) data.script_api_key_2 = form.script_api_key_2
   if (zenmux) {
     data.zenmux_base_url = form.zenmux_base_url
     if (form.zenmux_api_key) data.zenmux_api_key = form.zenmux_api_key
