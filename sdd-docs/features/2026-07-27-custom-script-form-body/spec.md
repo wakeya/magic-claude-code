@@ -1,6 +1,6 @@
 # Custom Script Form Body & Additional Secret Spec (Qianwen Token Plan Usage)
 
-Local page: admin provider card "Usage" modal (`ProviderUsageModal.vue`) / Proxy entry: no change to model proxy chain; new fields reuse existing `/api/providers/{id}/usage*` admin APIs / Reference sources: qianwen AI platform console `platform.qianwenai.com` private gateway `cs-data.qianwenai.com` (no official public API docs; this spec is based on a live capture from 2026-07-27) / Stack: Go 1.26 stdlib + `github.com/dop251/goja` + Vue 3 + TypeScript + Tailwind / Last updated: 2026-07-27 / Status: validating / Progress: 6 / 6 implemented
+Local page: admin provider card "Usage" modal (`ProviderUsageModal.vue`) / Proxy entry: no change to model proxy chain; new fields reuse existing `/api/providers/{id}/usage*` admin APIs / Reference sources: qianwen AI platform console `platform.qianwenai.com` private gateway `cs-data.qianwenai.com` (no official public API docs; this spec is based on a live capture from 2026-07-27) / Stack: Go 1.26 stdlib + `github.com/dop251/goja` + Vue 3 + TypeScript + Tailwind / Last updated: 2026-07-27 / Status: validating / Progress: 7 / 7 implemented
 
 ## Overall Analysis (Source Analysis)
 
@@ -829,3 +829,37 @@ reqConfig.Body = substitutePlaceholdersInBody(reqConfig.Body, placeholderValues)
   - `per1WeekPercentage: 1.0` → mcc `seven_day.utilization: 100` (× 100; used 100% = page remaining 0%)
   - `per1WeekResetTime: 1785462900000` → mcc `seven_day.resetsAt`, frontend shows 2026-07-30 18:55:00 (matches page)
   - **Fix record**: the first verification revealed a `perXxxPercentage` semantic misjudgment — the first capture only saw `per5HourPercentage:0.0`, where both semantics (0–100 used percentage vs 0–1 used ratio) hold, and was misjudged as the former; the end-to-end run with `per1WeekPercentage:1.0` plus the page's "remaining 0.0%" confirmed it is a **0–1 used ratio**. The extractor was fixed to `utilization = percentage * 100`, and the fixture test assertion updated (`seven_day.utilization == 100`). **The user must replace the old script saved in mcc config with the latest §5.2 script**, otherwise 7-day will show 1% (should be 100%).
+
+---
+
+### Task 7: frontend static asset cache headers (fix frontend-not-updating found in deployment)
+
+#### Requirements
+
+**Objective** — Fix the defect where "after `docker compose up -d --build` the browser still shows the old frontend": the mcc config service sent no `Cache-Control` for any static asset (including `index.html`), so browsers cached a stale `index.html` (referencing stale JS hashes) and the new frontend embedded in the binary stayed invisible.
+
+**Outcomes** — `internal/admin/server.go` gains `cacheHeadersHandler`; `auth_test.go` gains `TestStaticCacheHeaders`.
+
+**Evidence** — tests assert: `GET /` and the SPA route `/providers/{id}/usage` return `Cache-Control: no-cache`; `GET /assets/<hash>.js` returns `public, max-age=31536000, immutable`. Live container: curl of the served index.html already references the new JS hash and the `useI18n` JS contains `script_api_key_2`.
+
+**Constraints** — no routing or auth-logic changes; only wrap the static handler with a header-injection layer; no impact on APIs (`/api/*` is routed away by `authMiddleware` and never reaches the header branches).
+
+**Edge Cases** — extension-less SPA routes (serve index.html → no-cache); `/assets/` (content-hash filename → immutable long cache, safe because the name changes with content); root images (.png/.ico/.svg → no header, default behavior).
+
+**Verification** — `go test -v ./internal/admin/ -run TestStaticCacheHeaders` green.
+
+#### Plan
+
+1. In `internal/admin/server.go` `Start` (line 86) change `s.authMiddleware(fileServer)` to `s.authMiddleware(cacheHeadersHandler(fileServer))`.
+2. Before `authMiddleware` add `cacheHeadersHandler(next http.Handler) http.Handler`: `/assets/` prefix → `public, max-age=31536000, immutable`; `/`, `index.html`, and extension-less paths (SPA routes) → `no-cache`; others (images, etc.) → no header.
+3. `internal/admin/auth_test.go` add `TestStaticCacheHeaders`: build `fileServer` and `cacheHeadersHandler` over the real `frontend.DistFS`, route through `authMiddleware`, assert `Cache-Control` for the three path classes.
+4. `gofmt` + `go test ./internal/admin/ -run TestStaticCacheHeaders`.
+
+#### Verification
+
+- [x] `TestStaticCacheHeaders` green (3 subtests: root / SPA / hashed asset).
+- [x] `go test ./internal/admin/` + `go vet` green.
+- [x] Live container: `curl -sk https://localhost:8442/` JS hashes match the worktree dist; `curl /assets/useI18n-*.js` contains `script_api_key_2`; index.html response header `Cache-Control: no-cache`.
+- [x] Commit `45a859c`.
+
+**Mechanism**: vite-built JS/CSS filenames already carry a content hash (e.g. `useI18n-BzJfoWFA.js`); every frontend change produces a new hash → files are never reused → `/assets/` is safe under an immutable long cache. The only thing a browser must revalidate every time is `index.html` (which references the newest hashes), hence `no-cache` (revalidate each load) rather than `no-store` — the browser may cache index.html but confirms with the server first (304/200), so the new frontend is visible immediately while most requests are cheap 304s.

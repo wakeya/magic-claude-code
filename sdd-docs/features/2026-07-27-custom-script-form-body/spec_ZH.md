@@ -1,6 +1,6 @@
 # Custom 脚本 Form Body 与附加密钥规格（千问 Token Plan 用量查询）
 
-本地页面：管理后台供应商卡片「用量」弹窗（`ProviderUsageModal.vue`）/ 代理入口：不修改模型代理链路；新增字段复用已有 `/api/providers/{id}/usage*` 管理 API / 参考源站：千问 AI 平台控制台 `platform.qianwenai.com` 私有网关 `cs-data.qianwenai.com`（无官方公开 API 文档，本规格基于 2026-07-27 实抓请求）/ 技术栈：Go 1.26 标准库 + `github.com/dop251/goja` + Vue 3 + TypeScript + Tailwind / 最后更新：2026-07-27 / 状态：validating / 进度：6 / 6 implemented
+本地页面：管理后台供应商卡片「用量」弹窗（`ProviderUsageModal.vue`）/ 代理入口：不修改模型代理链路；新增字段复用已有 `/api/providers/{id}/usage*` 管理 API / 参考源站：千问 AI 平台控制台 `platform.qianwenai.com` 私有网关 `cs-data.qianwenai.com`（无官方公开 API 文档，本规格基于 2026-07-27 实抓请求）/ 技术栈：Go 1.26 标准库 + `github.com/dop251/goja` + Vue 3 + TypeScript + Tailwind / 最后更新：2026-07-27 / 状态：validating / 进度：7 / 7 implemented
 
 ## 整体分析（源站分析）
 
@@ -833,3 +833,37 @@ reqConfig.Body = substitutePlaceholdersInBody(reqConfig.Body, placeholderValues)
   - `per1WeekPercentage: 1.0` → mcc `seven_day.utilization: 100`（× 100；已用 100% = 页面剩余 0%）
   - `per1WeekResetTime: 1785462900000` → mcc `seven_day.resetsAt`，前端显示 2026-07-30 18:55:00（与页面一致）
   - **修正记录**：首次验证发现 `perXxxPercentage` 语义误判——首次抓包仅见 `per5HourPercentage:0.0`，两种语义（0–100 已用百分比 vs 0–1 已用比例）都成立，误判为前者；端到端实测 `per1WeekPercentage:1.0` 配合页面「剩余量 0.0%」确认为 **0–1 已用比例**。extractor 已修正为 `utilization = percentage * 100`，fixture 测试断言同步更新（`seven_day.utilization == 100`）。**用户需用 §5.2 最新脚本替换 mcc 配置中已保存的旧脚本**，否则 7 天会显示 1%（应为 100%）。
+
+---
+
+### 任务 7：前端静态资源缓存 header（修复端到端部署后发现的前端不更新问题）
+
+#### 需求
+
+**Objective（目标）** — 修复「`docker compose up -d --build` 重建后浏览器仍显示旧前端」的缺陷：mcc 配置服务对所有静态资源（含 `index.html`）不发任何 `Cache-Control`，浏览器缓存旧 `index.html`（引用旧 JS hash），即使容器内二进制已含新前端也不可见。
+
+**Outcomes（成果）** — `internal/admin/server.go` 新增 `cacheHeadersHandler`；`auth_test.go` 新增 `TestStaticCacheHeaders`。
+
+**Evidence（证据）** — 测试断言：`GET /` 与 SPA 路由 `/providers/{id}/usage` 返回 `Cache-Control: no-cache`；`GET /assets/<hash>.js` 返回 `public, max-age=31536000, immutable`。容器实测：curl 容器 serve 的 index.html 已含新 JS hash、`useI18n` JS 含 `script_api_key_2`。
+
+**Constraints（约束）** — 不改路由与认证逻辑；只在静态 handler 外层包一层 header 注入；不影响 API（`/api/*` 由 `authMiddleware` 分流，不经此 handler 的 header 分支判断）。
+
+**Edge Cases（边界）** — SPA 无扩展名路由（返回 index.html → no-cache）；`/assets/`（内容 hash 文件名 → immutable 长缓存，安全因文件名随内容变化）；根目录图片（.png/.ico/.svg → 无 header，默认行为）。
+
+**Verification（验证）** — `go test -v ./internal/admin/ -run TestStaticCacheHeaders` 全绿。
+
+#### 计划
+
+1. 在 `internal/admin/server.go` `Start`（第 86 行）将 `s.authMiddleware(fileServer)` 改为 `s.authMiddleware(cacheHeadersHandler(fileServer))`。
+2. 在 `authMiddleware` 之前新增 `cacheHeadersHandler(next http.Handler) http.Handler`：`/assets/` 前缀 → `public, max-age=31536000, immutable`；`/`、`index.html`、无扩展名路径（SPA 路由）→ `no-cache`；其余（图片等）不加 header。
+3. `internal/admin/auth_test.go` 新增 `TestStaticCacheHeaders`：用真实 `frontend.DistFS` 构造 `fileServer` 与 `cacheHeadersHandler`，经 `authMiddleware`，断言三类路径的 `Cache-Control`。
+4. `gofmt` + `go test ./internal/admin/ -run TestStaticCacheHeaders`。
+
+#### 验证
+
+- [x] `TestStaticCacheHeaders` 全绿（3 子测试：root / SPA / hashed asset）。
+- [x] `go test ./internal/admin/` + `go vet` 全绿。
+- [x] 容器实测：`curl -sk https://localhost:8442/` 引用的 JS hash 与 worktree dist 一致；`curl /assets/useI18n-*.js` 含 `script_api_key_2`；index.html 响应头 `Cache-Control: no-cache`。
+- [x] 提交 `45a859c`。
+
+**机制说明**：vite 构建的 JS/CSS 文件名已含内容 hash（如 `useI18n-BzJfoWFA.js`），每次前端改动 hash 变化 → 文件永不复用 → `/assets/` 可安全用 immutable 长缓存。浏览器每次需重新验证的只是 `index.html`（引用最新 hash），故 `index.html` 用 `no-cache`（每次 revalidate）而非 `no-store`——浏览器可缓存 index.html 但每次用前先与服务器确认（304/200），这样新前端立即可见且多数请求是廉价的 304。
