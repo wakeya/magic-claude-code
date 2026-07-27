@@ -5,7 +5,7 @@
 **参考来源：** `/home/www/workspace/open-software/claude_code/073_claude_spy/claude_code_src_2.1.220.js`（`Pi.post("/api/frame/deploy/prepare"...)`、`Pi.post("/api/frame/upload"...)`、降级函数 `T`）；`sdd-docs/research/2026-07-15-intercepted-endpoints.md`（C 节 Frame 子端点展开）；2.1.211 vs 2.1.220 路径字面量 diff（仅 2 条新增，均在本族）
 **技术栈：** Go 1.26 标准库
 **最后更新：** 2026-07-26
-**进度：** 0 / 3
+**进度：** 3 / 3
 
 ## 整体分析（源站分析）
 
@@ -87,9 +87,9 @@ Pi.post("/api/frame/upload",
 
 | 序号 | 状态 | 任务 | 产出 | 验证 |
 | --- | --- | --- | --- | --- |
-| 1 | Planned | `frame.go`：403 写门 case 扩展覆盖 `deploy/prepare` + `upload`；更新函数头注释 | `internal/proxy/frame.go` | `go test ./internal/proxy/ -run TestFrameEndpointCompatibility` |
-| 2 | Planned | `frame_test.go`：新增 2 个子测试断言 403 `write_gate_disabled` | `internal/proxy/frame_test.go` | 同上 |
-| 3 | Planned | 全量回归 + 提交 | 验证记录 | `go test ./...` + `go vet ./...`；`git commit`（不 push） |
+| 1 | ✅ | `frame.go`：403 写门 case 扩展覆盖 `deploy/prepare` + `upload`；更新函数头注释 | `internal/proxy/frame.go` | `go test ./internal/proxy/ -run TestFrameEndpointCompatibility` |
+| 2 | ✅ | `frame_test.go`：新增 2 个子测试断言 403 `write_gate_disabled` | `internal/proxy/frame_test.go` | 同上 |
+| 3 | ✅ | 全量回归 + 提交 | 验证记录 | `go test ./...` + `go vet ./...`；`git commit`（不 push） |
 
 ## 需求
 
@@ -194,8 +194,8 @@ Pi.post("/api/frame/upload",
 
 #### 验证
 
-- [ ] `go test ./internal/proxy/ -run TestFrameEndpointCompatibility` —— 全部子测试通过（含 deploy prepare、upload 两条新）。
-- [ ] `go vet ./internal/proxy/` —— 干净。
+- [x] `go test ./internal/proxy/ -run TestFrameEndpointCompatibility` —— 12 个子测试全过（含 deploy prepare、upload 两条新；既有 deploy init/direct 与 wrong-method-405 仍过，确认同族与非 POST 行为不变）。
+- [x] `go vet ./internal/proxy/` —— 干净。
 
 ### 任务 2：全量回归 + 提交收尾
 
@@ -222,9 +222,9 @@ Pi.post("/api/frame/upload",
 
 #### 验证
 
-- [ ] `go test -race ./...` —— 全部包 ok，0 失败。
-- [ ] `go vet ./...` —— 干净。
-- [ ] `git status` 仅本功能变更；未 push。
+- [x] `go test -race ./...` —— 15 包全 ok，0 失败（exit 0）。
+- [x] `go vet ./...` —— 干净。
+- [x] `git status` 仅本功能变更；未 push。
 
 ### 任务 3（可选）：拦截接口清单 research 文档补注
 
@@ -245,4 +245,4 @@ Pi.post("/api/frame/upload",
 
 #### 验证
 
-- [ ] research 文档反映 2.1.220 复审结论与本次收敛。
+- [x] research 文档反映 2.1.220 复审结论与本次收敛（C 节补 2 行 + 文末复审纪要）。

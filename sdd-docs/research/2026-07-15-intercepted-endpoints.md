@@ -159,8 +159,11 @@
 | `POST` | `/api/frame/track` | 204 |
 | `POST` | `/api/frame/deploy/complete` | 204 |
 | `POST` | `/api/frame/deploy/init`、`/api/frame/deploy/direct` | 403 `write_gate_disabled` |
+| `POST` | `/api/frame/deploy/prepare`、`/api/frame/upload`（CC 2.1.220 多文件发布） | 403 `write_gate_disabled` |
 | `GET` | `/api/frame/contract/*` | 404 `local_unavailable` |
 | `GET/DELETE` | `/api/frame/{slug}` | 404 `not_found` |
+
+> **2026-07-26 复审 CC 2.1.220**：对 `claude_code_src_2.1.211.js` 与 `2.1.220.js` 做路径字面量 diff，仅 2 条新增——`POST /api/frame/deploy/prepare` 与 `POST /api/frame/upload`（多文件 frame 发布的预检+上传），均在本族、已被 `/api/frame/` 前缀覆盖。客户端对两者用 `validateStatus:()=>true` + 非 2xx `break`（不重试）+ 兜底文案 "multi-file publish is not available here yet (server or proxy rejected it: …)"，故 mcc 即便返回拒绝也被优雅降级（无泄露/无重试风暴/无崩溃）。初版 default 返回的 405 对 POST 端点语义误导（`Allow: GET, DELETE`），本次收敛为与同族 `deploy/init|direct` 一致的 403 `write_gate_disabled`（`internal/proxy/frame.go`，feature `2026-07-26-frame-multifile-publish-write-gate`）。**结论：无新增未拦截泄露端点。**
 
 ---
 

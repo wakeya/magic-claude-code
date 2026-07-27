@@ -5,7 +5,7 @@
 **Reference sources:** `/home/www/workspace/open-software/claude_code/073_claude_spy/claude_code_src_2.1.220.js` (`Pi.post("/api/frame/deploy/prepare"...)`, `Pi.post("/api/frame/upload"...)`, fallback function `T`); `sdd-docs/research/2026-07-15-intercepted-endpoints.md` (section C, Frame sub-endpoint expansion); the 2.1.211 vs 2.1.220 path-literal diff (only 2 new, both in this family)
 **Stack:** Go 1.26 standard library
 **Last updated:** 2026-07-26
-**Progress:** 0 / 3
+**Progress:** 3 / 3
 
 ## Overall Analysis (Source Analysis)
 
@@ -87,9 +87,9 @@ Why A:
 
 | # | Status | Task | Output | Verification |
 | --- | --- | --- | --- | --- |
-| 1 | Planned | `frame.go`: extend the 403 write-gate case to cover `deploy/prepare` + `upload`; update the header comment | `internal/proxy/frame.go` | `go test ./internal/proxy/ -run TestFrameEndpointCompatibility` |
-| 2 | Planned | `frame_test.go`: add 2 sub-tests asserting 403 `write_gate_disabled` | `internal/proxy/frame_test.go` | same as above |
-| 3 | Planned | Full regression + commit | verification record | `go test ./...` + `go vet ./...`; `git commit` (no push) |
+| 1 | ✅ | `frame.go`: extend the 403 write-gate case to cover `deploy/prepare` + `upload`; update the header comment | `internal/proxy/frame.go` | `go test ./internal/proxy/ -run TestFrameEndpointCompatibility` |
+| 2 | ✅ | `frame_test.go`: add 2 sub-tests asserting 403 `write_gate_disabled` | `internal/proxy/frame_test.go` | same as above |
+| 3 | ✅ | Full regression + commit | verification record | `go test ./...` + `go vet ./...`; `git commit` (no push) |
 
 ## Requirements
 
@@ -194,8 +194,8 @@ Why A:
 
 #### Verification
 
-- [ ] `go test ./internal/proxy/ -run TestFrameEndpointCompatibility` — all sub-tests pass (incl. the two new deploy prepare, upload).
-- [ ] `go vet ./internal/proxy/` — clean.
+- [x] `go test ./internal/proxy/ -run TestFrameEndpointCompatibility` — all 12 sub-tests pass (incl. the two new deploy prepare, upload; existing deploy init/direct and wrong-method-405 still pass, confirming the family and non-POST behavior unchanged).
+- [x] `go vet ./internal/proxy/` — clean.
 
 ### Task 2: Full regression + commit wrap-up
 
@@ -222,9 +222,9 @@ Why A:
 
 #### Verification
 
-- [ ] `go test -race ./...` — all packages ok, 0 failures.
-- [ ] `go vet ./...` — clean.
-- [ ] `git status` shows only this feature's changes; not pushed.
+- [x] `go test -race ./...` — all 15 packages ok, 0 failures (exit 0).
+- [x] `go vet ./...` — clean.
+- [x] `git status` shows only this feature's changes; not pushed.
 
 ### Task 3 (optional): annotate the intercepted-endpoints research doc
 
@@ -245,4 +245,4 @@ Why A:
 
 #### Verification
 
-- [ ] The research doc reflects the 2.1.220 re-audit conclusion and this convergence.
+- [x] The research doc reflects the 2.1.220 re-audit conclusion and this convergence (section C + 2 rows + re-audit note).
