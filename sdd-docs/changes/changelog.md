@@ -7,6 +7,16 @@
 
 ---
 
+## v0.18.1 (2026-07-26)
+
+### Fixed
+- **Frame 写门覆盖 CC 2.1.220 多文件发布端点**：CC 2.1.220 新增 `POST /api/frame/deploy/prepare`（预检）与 `POST /api/frame/upload`（上传）两条多文件 frame 发布端点。此前 mcc 无显式 case，落 `frame.go` default 返回误导性 405 `Allow: GET, DELETE`（对 POST 端点语义错误）。现并入 `deploy/init`|`deploy/direct` 同族的 **403 `write_gate_disabled`** 分支：语义正确、与同族一致、客户端兜底文案错误详情更清晰；用户最终所见不变（仍「not available」优雅降级）。2.1.211 vs 2.1.220 路径字面量 diff 审查确认**无新增未拦截泄露端点**（2 条新增均在 `/api/frame/` 前缀族内，fail-closed 兜底始终生效）。
+
+### Docs
+- **拦截接口清单升级为活文档**：`sdd-docs/research/2026-07-15-intercepted-endpoints.md` 新增「版本兼容性设计」节（fail-closed 兜底 + 12 个前缀族匹配 + 客户端优雅降级三层机制，阐明 mcc 面向未来 CC 版本）+「复审新 CC 版本的方法」节（路径字面量 diff 方法论，可复用）+ 判断标准表。新版本发布后只需复审 diff 出的少数端点。
+
+---
+
 ## v0.18.0 (2026-07-25)
 
 ### Added
