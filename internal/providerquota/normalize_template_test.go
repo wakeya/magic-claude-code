@@ -96,6 +96,7 @@ func TestNormalizeForTemplateClearsOnlyInapplicableTemplateFields(t *testing.T) 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tt.cfg.ScriptAPIKey = "script-preserved"
+			tt.cfg.ScriptAPIKey2 = "script2-preserved"
 			if tt.cfg.ZenMuxBaseURL == "" {
 				tt.cfg.ZenMuxBaseURL = "https://quota.zenmux.example/usage"
 				tt.cfg.ZenMuxAPIKey = "zenmux-preserved"
@@ -107,7 +108,7 @@ func TestNormalizeForTemplateClearsOnlyInapplicableTemplateFields(t *testing.T) 
 			if tt.cfg.AccessKeyID != tt.wantAK || tt.cfg.SecretAccessKey != tt.wantSK {
 				t.Fatalf("AK/SK = %q/%q, want %q/%q", tt.cfg.AccessKeyID, tt.cfg.SecretAccessKey, tt.wantAK, tt.wantSK)
 			}
-			if tt.cfg.ScriptAPIKey != "script-preserved" || tt.cfg.ZenMuxAPIKey == "" || tt.cfg.ZenMuxBaseURL == "" {
+			if tt.cfg.ScriptAPIKey != "script-preserved" || tt.cfg.ScriptAPIKey2 != "script2-preserved" || tt.cfg.ZenMuxAPIKey == "" || tt.cfg.ZenMuxBaseURL == "" {
 				t.Fatalf("separated credentials were cleared: %+v", tt.cfg)
 			}
 		})

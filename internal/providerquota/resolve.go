@@ -24,6 +24,7 @@ type queryPlan struct {
 	scriptURL   string // base URL for script placeholders (general/custom/newapi)
 	adapterURL  string // URL passed to the token_plan adapter (card URL or zenmux URL)
 	token       string // Bearer token
+	token2      string // custom/general second secret (ScriptAPIKey2); zero for other templates
 	userID      string // newapi
 	accessKeyID string // volcengine
 	secretKey   string // volcengine
@@ -190,7 +191,7 @@ func resolveQueryPlan(cfg *ProviderQuotaConfig, cardAPIURL, cardAPIToken string)
 		if cfg.ScriptAPIKey != "" {
 			token = cfg.ScriptAPIKey
 		}
-		return &queryPlan{template: cfg.TemplateType, scriptURL: baseURL, token: token}, nil
+		return &queryPlan{template: cfg.TemplateType, scriptURL: baseURL, token: token, token2: cfg.ScriptAPIKey2}, nil
 
 	case TemplateNewAPI:
 		if cfg.AccessToken == "" {

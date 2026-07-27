@@ -166,7 +166,7 @@ Qianwen therefore remains a `custom` template configuration example with a recom
 2. **Backward compatibility of body substitution**: existing `general` default script and all stock custom scripts do not contain `{{...}}` in body (because body was never substituted before); introducing body substitution is a no-op for them (`strings.ReplaceAll` on a string without the placeholder is a no-op). Task 3 must cover "JSON body without placeholders is byte-identical".
 3. **Form body encoding determinism**: `url.Values.Encode()` outputs keys in sorted order; form-urlencoded does not care about field order, so the gateway tolerates it. Task 3 asserts the encoded string verbatim.
 4. **Second secret slot semantics**: `ScriptAPIKey2` has no domain name (not `sec_token`/`cookie`) because it serves any custom script's second-secret need. The frontend label is generic "Additional secret (apiKey2)" with a tooltip explaining usage.
-5. **`NormalizeForTemplate` field cleanup**: `resolve.go:36-72` clears irrelevant fields per template. `ScriptAPIKey2` is only meaningful for custom/general and must be cleared for other templates. Task 2 covers this.
+5. **`NormalizeForTemplate` field cleanup**: `resolve.go:36-72` clears irrelevant fields per template. `ScriptAPIKey2` belongs to the same "independent security domain" as `ScriptAPIKey`/`ZenMuxAPIKey` (`resolve.go:33-35` comment) and is **preserved for all templates, never cleared**; safety is guaranteed by `resolveQueryPlan` — only the custom/general branch reads it, so residue is never misused (same as `ScriptAPIKey` residue in newapi/token_plan that is never read).
 6. **Frontend modal field density**: the custom template already has Base URL + Script API Key + script editor; adding "Additional secret" increases vertical height. Task 5 places it directly under script_api_key in the same grid; mobile layout must not break.
 7. **Public API must not leak secrets**: `PublicQuotaConfig` (`types.go:366-382`) must expose only `script_api_key_2_configured: bool`, never the plaintext. Tasks 1 and 4 together guarantee this.
 
@@ -189,7 +189,7 @@ Qianwen therefore remains a `custom` template configuration example with a recom
 
 1. `custom`/`general` supports `request.bodyType: "form"`; Go encodes an object body with `url.Values`; missing or `"json"` `bodyType` preserves the current JSON serialization.
 2. Placeholder substitution (`{{baseUrl}}` `{{apiKey}}` `{{apiKey2}}` `{{accessToken}}` `{{userId}}`) is extended to all string values inside `request.body`, for both JSON and form bodies; substitution happens before encoding, in the Go layer.
-3. `ProviderQuotaConfig` gains `ScriptAPIKey2 string`, symmetric to `ScriptAPIKey`: under custom/general it is the second independent secret, referenced via `{{apiKey2}}`; under other templates it is cleared by `NormalizeForTemplate`.
+3. `ProviderQuotaConfig` gains `ScriptAPIKey2 string`, symmetric to `ScriptAPIKey`: under custom/general it is the second independent secret, referenced via `{{apiKey2}}`; it shares `ScriptAPIKey`'s independent security domain and is not cleared by `NormalizeForTemplate` (other template branches do not read it).
 4. `PublicQuotaConfig` gains `ScriptAPIKey2Configured bool`; `ToPublicConfig` outputs only that boolean; admin public responses (GET config, batch snapshots) never return `script_api_key_2` plaintext.
 5. admin `PUT /api/providers/{id}/usage` secret-update semantics supports `script_api_key_2` (non-empty replaces; `clear_script_api_key_2=true` clears; omitted preserves), symmetric to `script_api_key`; `POST /usage/test` draft supports it too.
 6. Frontend `ProviderUsageModal.vue` adds an "Additional secret (apiKey2)" input (password type + "clear" button when configured) directly under "Script API Key", visible under custom/general, visually consistent with script_api_key.
@@ -384,7 +384,7 @@ reqConfig.Body = substitutePlaceholdersInBody(reqConfig.Body, placeholderValues)
 
 1. **New field persistence**: `ProviderQuotaConfig` is JSON-pass-through (`EncodeQuotaConfig`/`DecodeQuotaConfig`, `types.go:419-467`); `ScriptAPIKey2` persists automatically via the JSON column — no SQLite schema change (unlike `ExposedModels`, `providerquota` config is stored as a single JSON text column).
 2. **Old config compatibility**: a missing `script_api_key_2` field deserializes to empty string — equivalent to "second secret not configured".
-3. **Template switching**: `NormalizeForTemplate` (`resolve.go:36-72`) clears `ScriptAPIKey2` for non-custom/general templates (grouped with `BaseURL` cleanup), preventing newapi/token_plan residue.
+3. **Template switching**: `NormalizeForTemplate` (`resolve.go:36-72`) **does not clear `ScriptAPIKey2`** (same independent security domain as `ScriptAPIKey`/`ZenMuxAPIKey`); after switching to newapi/token_plan the residue is never misused because `resolveQueryPlan` branches read only their own credentials.
 4. **Import/export/duplicate**: `ScriptAPIKey2` is exported with `ProviderQuotaConfig` (existing secret-export warning applies); duplicate copies config but not snapshot (existing rule; the new field follows automatically).
 5. **Credential-expiry degradation**: query failure → `result.success=false` + error code; `last_success_json` retains the last success (existing mechanism); card shows a warning icon + the old value.
 6. **Origin check**: the qianwen request URL must share origin with Base URL `https://cs-data.qianwenai.com`; a mistyped Base URL is rejected by `validateScriptRequest` (`invalid_config`).
@@ -440,15 +440,15 @@ reqConfig.Body = substitutePlaceholdersInBody(reqConfig.Body, placeholderValues)
 
 #### Requirements
 
-**Objective** — Make the custom/general query plan carry the second secret `token2`, inject `apiKey2` when `manager.go` builds placeholders, and clear `ScriptAPIKey2` in `NormalizeForTemplate` for non-custom/general templates.
+**Objective** — Make the custom/general query plan carry the second secret `token2` and inject `apiKey2` when `manager.go` builds placeholders. `ScriptAPIKey2` shares `ScriptAPIKey`'s independent security domain and is not cleared by `NormalizeForTemplate`.
 
 **Outcomes** — `internal/providerquota/resolve.go`, `internal/providerquota/manager.go` changes; targeted tests pass.
 
-**Evidence** — `resolveQueryPlan` returns `queryPlan.token2 == cfg.ScriptAPIKey2` for custom/general; `NormalizeForTemplate` clears `ScriptAPIKey2` for newapi/token_plan/official_balance; manager placeholders contain `apiKey2`.
+**Evidence** — `resolveQueryPlan` returns `queryPlan.token2 == cfg.ScriptAPIKey2` for custom/general, `token2==""` for other templates (branch does not read it); `NormalizeForTemplate` preserves `ScriptAPIKey2` (same as `ScriptAPIKey`, independent security domain); manager placeholders contain `apiKey2`.
 
 **Constraints** — `token2` does not participate in `ValidateForCard` "missing_credentials" validation (second secret is optional); the custom/general first-secret fallback (`ScriptAPIKey` else card APIToken) is unchanged.
 
-**Edge Cases** — `ScriptAPIKey2` empty → `token2=""`, placeholder substituted to empty string (same semantics as `apiKey`); switching template from custom to newapi clears `ScriptAPIKey2`.
+**Edge Cases** — `ScriptAPIKey2` empty → `token2=""`, placeholder substituted to empty string (same semantics as `apiKey`); switching template from custom to newapi leaves `ScriptAPIKey2` residue but `token2` is never read (newapi branch uses only AccessToken).
 
 **Verification** — `go test -v -race ./internal/providerquota/ -run 'Resolve|Normalize|QueryPlan'` green.
 
@@ -466,14 +466,7 @@ reqConfig.Body = substitutePlaceholdersInBody(reqConfig.Body, placeholderValues)
        token2:    cfg.ScriptAPIKey2, // NEW
    }, nil
    ```
-3. In `NormalizeForTemplate` (lines 36-72), manage `ScriptAPIKey2` together with `ScriptAPIKey`: preserve for custom/general, clear otherwise. Near the existing `baseURLApplies` logic add:
-   ```go
-   // ScriptAPIKey2 applies only to custom/general (same scope as ScriptAPIKey).
-   if !isScriptBased {
-       c.ScriptAPIKey2 = ""
-   }
-   ```
-   (`isScriptBased` is already defined at line 42 as `TemplateGeneral || TemplateCustom`; reuse it.)
+3. `NormalizeForTemplate` (lines 36-72) **needs no cleanup logic for `ScriptAPIKey2`** — `ScriptAPIKey` and `ZenMuxAPIKey` are "independent security domains" in the current design (`resolve.go:33-35` comment), preserved for all templates, never cleared on switch; `ScriptAPIKey2` follows the same principle. Safety is guaranteed by `resolveQueryPlan`: only the custom/general branch reads `ScriptAPIKey2` (as `token2`), other template branches do not, so residue is never misused.
 
 **File: `internal/providerquota/manager.go`**
 

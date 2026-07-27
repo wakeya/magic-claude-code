@@ -166,7 +166,7 @@ placeholders := map[string]string{
 2. **body 占位符替换的向后兼容**：现有 `general` 默认脚本与所有存量 custom 脚本的 body 不含 `{{...}}` 占位符（因为之前 body 不替换），引入 body 替换对它们无影响（字符串不含占位符时 `strings.ReplaceAll` 是 no-op）。任务 3 的回归测试必须覆盖「JSON body 不含占位符时字节级不变」。
 3. **form body 编码确定性**：`url.Values.Encode()` 按键名字典序输出，与千问网关是否容忍字段顺序无关（form-urlencoded 规范不关心顺序）。任务 3 测试固定断言编码后的字符串。
 4. **第二秘密槽的语义泛化**：`ScriptAPIKey2` 没有领域命名（不叫 `sec_token`/`cookie`），因为它服务于任意 custom 脚本的第二个秘密需求。前端标签用通用文案「附加密钥（apiKey2）」，tooltip 说明用途。
-5. **`NormalizeForTemplate` 字段清理**：`resolve.go:36-72` 按模板清空无关字段。`ScriptAPIKey2` 只对 custom/general 有意义，必须在 `NormalizeForTemplate` 里对其他模板清空，避免 newapi/token_plan 残留。任务 2 覆盖。
+5. **`NormalizeForTemplate` 字段清理**：`resolve.go:36-72` 按模板清空无关字段。`ScriptAPIKey2` 与 `ScriptAPIKey`/`ZenMuxAPIKey` 同属「独立安全域」（`resolve.go:33-35` 注释），**所有模板保留、不清空**；安全性由 `resolveQueryPlan` 保证——只有 custom/general 分支读取它，其他分支不读，残留不会被误用（与 `ScriptAPIKey` 在 newapi/token_plan 残留但不被读取一致）。
 6. **前端弹窗字段密度**：custom 模板已有 Base URL + Script API Key + 脚本编辑器，再加「附加密钥」会增加纵向高度。任务 5 在 script_api_key 正下方紧邻放置，复用同一栅格，不破坏移动端布局。
 7. **公开 API 不泄露秘密**：`PublicQuotaConfig`（`types.go:366-382`）必须只暴露 `script_api_key_2_configured: bool`，绝不返回原文。任务 1 + 任务 4 共同保证。
 
@@ -189,7 +189,7 @@ placeholders := map[string]string{
 
 1. `custom`/`general` 模板支持 `request.bodyType: "form"`，Go 层用 `url.Values` 编码对象型 body；`bodyType` 缺省或为 `"json"` 时维持现有 JSON 序列化行为。
 2. 占位符替换（`{{baseUrl}}` `{{apiKey}}` `{{apiKey2}}` `{{accessToken}}` `{{userId}}`）扩展到 `request.body` 的所有字符串值，对 JSON 与 form body 都生效；替换发生在编码前、在 Go 层。
-3. `ProviderQuotaConfig` 新增 `ScriptAPIKey2 string`，对称于 `ScriptAPIKey`：custom/general 模板下作为第二个独立秘密，通过 `{{apiKey2}}` 引用；其他模板下在 `NormalizeForTemplate` 清空。
+3. `ProviderQuotaConfig` 新增 `ScriptAPIKey2 string`，对称于 `ScriptAPIKey`：custom/general 模板下作为第二个独立秘密，通过 `{{apiKey2}}` 引用；与 `ScriptAPIKey` 同属独立安全域，`NormalizeForTemplate` 不清空（其他模板分支不读取它）。
 4. `PublicQuotaConfig` 新增 `ScriptAPIKey2Configured bool`，`ToPublicConfig` 只输出该布尔值；admin 公开响应（GET 配置、批量快照）不返回 `script_api_key_2` 原文。
 5. admin `PUT /api/providers/{id}/usage` 的秘密更新语义支持 `script_api_key_2`（非空替换、`clear_script_api_key_2=true` 清除、缺省保留），与现有 `script_api_key` 三态对称；`POST /usage/test` 草稿同样支持。
 6. 前端 `ProviderUsageModal.vue` 在 custom/general 模板下、现有「Script API Key」正下方新增「附加密钥（apiKey2）」输入框（password 类型 + 已配置时显示「清除」按钮），与 script_api_key 视觉一致。
@@ -384,7 +384,7 @@ reqConfig.Body = substitutePlaceholdersInBody(reqConfig.Body, placeholderValues)
 
 1. **新字段持久化**：`ProviderQuotaConfig` 是 JSON 透传（`EncodeQuotaConfig`/`DecodeQuotaConfig`，`types.go:419-467`），新增 `ScriptAPIKey2` 自动随 JSON column 持久化，无需改 SQLite schema（与 `ExposedModels` 不同，`providerquota` 配置整体存为一个 JSON 文本列）。
 2. **旧配置兼容**：缺失 `script_api_key_2` 字段时反序列化为空字符串，行为等同「未配置第二秘密」。
-3. **模板切换**：`NormalizeForTemplate`（`resolve.go:36-72`）对非 custom/general 模板清空 `ScriptAPIKey2`（与 `BaseURL` 同组清理），避免 newapi/token_plan 残留。
+3. **模板切换**：`NormalizeForTemplate`（`resolve.go:36-72`）**不清空 `ScriptAPIKey2`**（与 `ScriptAPIKey`/`ZenMuxAPIKey` 同属独立安全域）；切换到 newapi/token_plan 后残留值不会被误用，因为 `resolveQueryPlan` 对应分支只读各自凭据。
 4. **导入/导出/复制**：`ScriptAPIKey2` 随 `ProviderQuotaConfig` 一起导出（沿用现有导出秘密警告）；复制 provider 复制配置但不复制 snapshot（已有规则，新字段自动跟随）。
 5. **凭据过期降级**：查询失败时 `result.success=false` + 对应错误码；`last_success_json` 保留上次成功（已有机制）；卡片显示警告图标 + 旧值。
 6. **同源校验**：千问请求 URL 必须与 Base URL `https://cs-data.qianwenai.com` 同源；用户若误填 Base URL 会被 `validateScriptRequest` 拒绝（`invalid_config`）。
@@ -443,15 +443,15 @@ reqConfig.Body = substitutePlaceholdersInBody(reqConfig.Body, placeholderValues)
 
 #### 需求
 
-**Objective（目标）** — 让 custom/general 模板的查询计划携带第二秘密 `token2`，并在 `manager.go` 构造 placeholders 时注入 `apiKey2`，同时对非 custom/general 模板在 `NormalizeForTemplate` 清空 `ScriptAPIKey2`。
+**Objective（目标）** — 让 custom/general 模板的查询计划携带第二秘密 `token2`，并在 `manager.go` 构造 placeholders 时注入 `apiKey2`。`ScriptAPIKey2` 与 `ScriptAPIKey` 同属独立安全域，`NormalizeForTemplate` 不清空。
 
 **Outcomes（成果）** — `internal/providerquota/resolve.go`、`internal/providerquota/manager.go` 变更；定向测试通过。
 
-**Evidence（证据）** — `resolveQueryPlan` 对 custom/general 返回 `queryPlan.token2 == cfg.ScriptAPIKey2`；`NormalizeForTemplate` 对 newapi/token_plan/official_balance 清空 `ScriptAPIKey2`；manager 的 placeholders 含 `apiKey2`。
+**Evidence（证据）** — `resolveQueryPlan` 对 custom/general 返回 `queryPlan.token2 == cfg.ScriptAPIKey2`，其他模板 `token2==""`（分支不读）；`NormalizeForTemplate` 保留 `ScriptAPIKey2`（与 `ScriptAPIKey` 一致，独立安全域）；manager 的 placeholders 含 `apiKey2`。
 
 **Constraints（约束）** — `token2` 不参与 `ValidateForCard` 的「missing_credentials」校验（第二秘密可选）；custom/general 的第一秘密回退逻辑（`ScriptAPIKey` 否则 card APIToken）不变。
 
-**Edge Cases（边界）** — `ScriptAPIKey2` 为空时 `token2=""`、占位符替换为空字符串（与 `apiKey` 同语义）；模板从 custom 切到 newapi 后 `ScriptAPIKey2` 被清空。
+**Edge Cases（边界）** — `ScriptAPIKey2` 为空时 `token2=""`、占位符替换为空字符串（与 `apiKey` 同语义）；模板从 custom 切到 newapi 后 `ScriptAPIKey2` 残留但 `token2` 不被读取（newapi 分支只用 AccessToken）。
 
 **Verification（验证）** — `go test -v -race ./internal/providerquota/ -run 'Resolve|Normalize|QueryPlan'` 全绿。
 
@@ -469,14 +469,7 @@ reqConfig.Body = substitutePlaceholdersInBody(reqConfig.Body, placeholderValues)
        token2:    cfg.ScriptAPIKey2, // 新增
    }, nil
    ```
-3. 在 `NormalizeForTemplate`（第 36-72 行），`ScriptAPIKey2` 与 `ScriptAPIKey` 同组管理：custom/general 保留，其他模板清空。具体做法——在现有 `baseURLApplies` 逻辑附近新增：
-   ```go
-   // ScriptAPIKey2 applies only to custom/general (same as ScriptAPIKey scope).
-   if !isScriptBased {
-       c.ScriptAPIKey2 = ""
-   }
-   ```
-   （`isScriptBased` 已在第 42 行定义为 `TemplateGeneral || TemplateCustom`，直接复用。）
+3. `NormalizeForTemplate`（第 36-72 行）**不需要为 `ScriptAPIKey2` 增加清理逻辑**——`ScriptAPIKey` 与 `ZenMuxAPIKey` 在现有设计里是「独立安全域」（`resolve.go:33-35` 注释），所有模板保留、模板切换不清空；`ScriptAPIKey2` 遵循同一原则。安全性由 `resolveQueryPlan` 保证：只有 custom/general 分支读取 `ScriptAPIKey2`（作为 `token2`），其他模板分支不读，残留值不会被误用。
 
 **文件：`internal/providerquota/manager.go`**
 
