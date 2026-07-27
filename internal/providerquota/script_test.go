@@ -3,8 +3,10 @@ package providerquota
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -493,5 +495,246 @@ func TestSubstitutePlaceholders(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("substitutePlaceholders(%q, %v) = %q, want %q", tt.input, tt.values, got, tt.want)
 		}
+	}
+}
+
+func TestSubstitutePlaceholdersInBody(t *testing.T) {
+	values := map[string]string{"apiKey": "k", "apiKey2": "sec"}
+	// string
+	if got := substitutePlaceholdersInBody("{{apiKey2}}", values); got != "sec" {
+		t.Errorf("string = %v, want sec", got)
+	}
+	// nested object; input must not be mutated
+	objIn := map[string]any{"a": map[string]any{"b": "{{apiKey2}}"}}
+	objOut := substitutePlaceholdersInBody(objIn, values)
+	m, ok := objOut.(map[string]any)
+	if !ok {
+		t.Fatalf("object got %T", objOut)
+	}
+	inner, ok := m["a"].(map[string]any)
+	if !ok {
+		t.Fatalf("a got %T", m["a"])
+	}
+	if inner["b"] != "sec" {
+		t.Errorf("nested = %v, want sec", inner["b"])
+	}
+	if objIn["a"].(map[string]any)["b"] != "{{apiKey2}}" {
+		t.Error("input map was mutated")
+	}
+	// array
+	arrOut := substitutePlaceholdersInBody([]any{"{{apiKey}}", 1}, values)
+	arr, ok := arrOut.([]any)
+	if !ok || arr[0] != "k" || arr[1] != 1 {
+		t.Errorf("array = %v, want [k 1]", arrOut)
+	}
+	// number/bool unchanged
+	if substitutePlaceholdersInBody(42, values) != 42 {
+		t.Error("number changed")
+	}
+	if substitutePlaceholdersInBody(true, values) != true {
+		t.Error("bool changed")
+	}
+	// nil unchanged
+	if substitutePlaceholdersInBody(nil, values) != nil {
+		t.Error("nil changed")
+	}
+}
+
+func TestEncodeRequestBodyForm(t *testing.T) {
+	// simple fields, url.Values.Encode sorts keys
+	b, err := encodeRequestBody(&ScriptRequest{BodyType: "form", Body: map[string]any{"a": "1", "b": "2"}})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if string(b) != "a=1&b=2" {
+		t.Errorf("simple form = %q, want a=1&b=2", string(b))
+	}
+	// object value JSON-marshaled then URL-encoded
+	b, err = encodeRequestBody(&ScriptRequest{BodyType: "form", Body: map[string]any{"params": map[string]any{"x": 1}}})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if string(b) != `params=%7B%22x%22%3A1%7D` {
+		t.Errorf("object value form = %q, want params=%%7B%%22x%%22%%3A1%%7D", string(b))
+	}
+	// nil value skipped
+	b, err = encodeRequestBody(&ScriptRequest{BodyType: "form", Body: map[string]any{"skip": nil, "keep": "y"}})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if string(b) != "keep=y" {
+		t.Errorf("nil skip = %q, want keep=y", string(b))
+	}
+	// non-object body errors
+	if _, err := encodeRequestBody(&ScriptRequest{BodyType: "form", Body: "string"}); err == nil {
+		t.Error("expected error for non-object form body")
+	}
+	// JSON body (default BodyType) unaffected
+	b, err = encodeRequestBody(&ScriptRequest{Body: map[string]any{"a": "1"}})
+	if err != nil {
+		t.Fatalf("json encode: %v", err)
+	}
+	if string(b) != `{"a":"1"}` {
+		t.Errorf("json = %q, want {\"a\":\"1\"}", string(b))
+	}
+}
+
+func TestExecuteScriptFormBodyQianwenFixture(t *testing.T) {
+	var gotMethod, gotBody, gotCT, gotCookie string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotCT = r.Header.Get("Content-Type")
+		gotCookie = r.Header.Get("Cookie")
+		buf, _ := io.ReadAll(r.Body)
+		gotBody = string(buf)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"code": "200",
+			"data": map[string]any{
+				"DataV2": map[string]any{
+					"data": map[string]any{
+						"data": map[string]any{
+							"per5HourPercentage": 0.0,
+							"per1WeekResetTime":  1785462900000,
+							"per1WeekPercentage": 1.0,
+						},
+						"success": true,
+					},
+				},
+				"success":  true,
+				"errorMsg": "",
+			},
+			"successResponse": true,
+		})
+	}))
+	defer srv.Close()
+
+	script := `({
+		request: {
+			url: "{{baseUrl}}/data/api.json",
+			method: "POST",
+			bodyType: "form",
+			headers: {
+				"Cookie": "{{apiKey}}",
+				"Content-Type": "application/x-www-form-urlencoded"
+			},
+			body: {
+				product: "sfm_bailian",
+				action: "BroadScopeAspnGateway",
+				sec_token: "{{apiKey2}}",
+				region: "cn-beijing",
+				params: {Api: "usage", V: "1.0"}
+			}
+		},
+		extractor: function(response) {
+			if (response.code !== "200" || response.successResponse !== true) {
+				return {__error_code: "upstream_business_error", __error_message: "fail"};
+			}
+			var inner = response.data.DataV2.data.data;
+			return [
+				{window: "five_hour", utilization: inner.per5HourPercentage},
+				{window: "seven_day", utilization: inner.per1WeekPercentage, resetsAt: inner.per1WeekResetTime}
+			];
+		}
+	})`
+
+	exec := NewScriptExecutor(5 * time.Second)
+	result, err := exec.ExecuteScript(context.Background(), script,
+		map[string]string{"baseUrl": srv.URL, "apiKey": "cookie-val", "apiKey2": "sec-tok"}, srv.URL)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("query failed: %s - %s", result.ErrorCode, result.ErrorMessage)
+	}
+	if gotMethod != "POST" {
+		t.Errorf("method = %q, want POST", gotMethod)
+	}
+	if !strings.HasPrefix(gotCT, "application/x-www-form-urlencoded") {
+		t.Errorf("content-type = %q", gotCT)
+	}
+	if gotCookie != "cookie-val" {
+		t.Errorf("cookie = %q, want cookie-val", gotCookie)
+	}
+	form, err := url.ParseQuery(gotBody)
+	if err != nil {
+		t.Fatalf("parse form body: %v (raw %q)", err, gotBody)
+	}
+	if form.Get("sec_token") != "sec-tok" {
+		t.Errorf("sec_token = %q, want sec-tok", form.Get("sec_token"))
+	}
+	if form.Get("product") != "sfm_bailian" {
+		t.Errorf("product = %q", form.Get("product"))
+	}
+	var params map[string]any
+	if err := json.Unmarshal([]byte(form.Get("params")), &params); err != nil {
+		t.Fatalf("params not JSON: %v (raw %q)", err, form.Get("params"))
+	}
+	if params["Api"] != "usage" {
+		t.Errorf("params.Api = %v", params["Api"])
+	}
+	if len(result.Tiers) != 2 {
+		t.Fatalf("expected 2 tiers, got %d", len(result.Tiers))
+	}
+	var five, seven *QuotaTier
+	for i := range result.Tiers {
+		switch result.Tiers[i].Name {
+		case "five_hour":
+			five = &result.Tiers[i]
+		case "seven_day":
+			seven = &result.Tiers[i]
+		}
+	}
+	if five == nil || five.Utilization != 0 {
+		t.Errorf("five_hour tier = %+v", five)
+	}
+	if seven == nil || seven.Utilization != 1 {
+		t.Errorf("seven_day tier = %+v", seven)
+	}
+	if seven == nil || seven.ResetsAt == nil || !seven.ResetsAt.Equal(time.UnixMilli(1785462900000).UTC()) {
+		t.Errorf("seven_day resetsAt = %v, want 1785462900000ms", seven)
+	}
+}
+
+func TestExecuteScriptJSONBodyBackwardCompat(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf, _ := io.ReadAll(r.Body)
+		gotBody = string(buf)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"balance": 5})
+	}))
+	defer srv.Close()
+
+	// JSON body (no BodyType) with {{apiKey}} inside body — previously not
+	// substituted, now substituted (intentional enhancement). Asserts the
+	// placeholder reaches the body and existing JSON shape is preserved.
+	script := `({
+		request: {
+			url: "{{baseUrl}}/balance",
+			method: "POST",
+			headers: {"Content-Type": "application/json"},
+			body: {key: "{{apiKey}}", n: 1}
+		},
+		extractor: function(r) {return {remaining: r.balance, unit: "USD"};}
+	})`
+	exec := NewScriptExecutor(5 * time.Second)
+	result, err := exec.ExecuteScript(context.Background(), script,
+		map[string]string{"baseUrl": srv.URL, "apiKey": "REAL"}, srv.URL)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("failed: %s", result.ErrorMessage)
+	}
+	var bodyMap map[string]any
+	if err := json.Unmarshal([]byte(gotBody), &bodyMap); err != nil {
+		t.Fatalf("body not JSON: %v (raw %q)", err, gotBody)
+	}
+	if bodyMap["key"] != "REAL" {
+		t.Errorf("body.key = %v, want REAL (placeholder must be substituted in body)", bodyMap["key"])
+	}
+	if bodyMap["n"] != float64(1) {
+		t.Errorf("body.n = %v, want 1", bodyMap["n"])
 	}
 }
