@@ -11,7 +11,7 @@ import (
 //  1. GET /api/frame/frames        -> 200 {"frames":[]}
 //  2. POST /api/frame/track        -> 204
 //  3. POST /api/frame/deploy/complete -> 204
-//  4. POST /api/frame/deploy/init|direct -> 403 write_gate_disabled
+//  4. POST /api/frame/deploy/init|direct|prepare、POST /api/frame/upload -> 403 write_gate_disabled
 //  5. GET /api/frame/contract/*    -> 404 local_unavailable
 //  6. GET|DELETE /api/frame/{slug} -> 404 not_found
 //  7. 其它方法                      -> 405
@@ -42,8 +42,10 @@ func (h *Handler) handleFrameEndpoint(w http.ResponseWriter, r *http.Request) {
 		}
 		writeNoContent(w)
 
-	// deploy init/direct - POST 403，客户端发布路径能识别 write_gate_disabled
-	case path == "/api/frame/deploy/init" || path == "/api/frame/deploy/direct":
+	// deploy init/direct/prepare、frame/upload - POST 403，客户端发布路径能识别 write_gate_disabled
+	// （prepare/upload 为 CC 2.1.220 多文件 frame 发布新增，与 init/direct 同族）
+	case path == "/api/frame/deploy/init" || path == "/api/frame/deploy/direct" ||
+		path == "/api/frame/deploy/prepare" || path == "/api/frame/upload":
 		if !methodAllowed(w, r, http.MethodPost) {
 			return
 		}

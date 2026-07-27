@@ -83,6 +83,45 @@ func TestFrameEndpointCompatibility(t *testing.T) {
 		}
 	})
 
+	// CC 2.1.220 多文件 frame 发布新增的预检端点，须与 deploy/init|direct 同族返回 403
+	t.Run("deploy prepare returns write-gate denied", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/frame/deploy/prepare", strings.NewReader(`{"slug":"x","shas":["abc"]}`))
+		rec := httptest.NewRecorder()
+		handler.handleHardcodedEndpoint(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403", rec.Code)
+		}
+		var resp struct {
+			Error  string `json:"error"`
+			Reason string `json:"reason"`
+		}
+		json.NewDecoder(rec.Body).Decode(&resp)
+		if resp.Reason != "write_gate_disabled" {
+			t.Errorf("reason = %q, want write_gate_disabled", resp.Reason)
+		}
+		if !strings.Contains(resp.Error, "unavailable") {
+			t.Errorf("error = %q", resp.Error)
+		}
+	})
+
+	// CC 2.1.220 多文件 frame 发布新增的上传端点，须与 deploy/init|direct 同族返回 403
+	t.Run("upload returns write-gate denied", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/frame/upload", strings.NewReader(`{"slug":"x","files":[]}`))
+		rec := httptest.NewRecorder()
+		handler.handleHardcodedEndpoint(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403", rec.Code)
+		}
+		var resp struct {
+			Error  string `json:"error"`
+			Reason string `json:"reason"`
+		}
+		json.NewDecoder(rec.Body).Decode(&resp)
+		if resp.Reason != "write_gate_disabled" {
+			t.Errorf("reason = %q, want write_gate_disabled", resp.Reason)
+		}
+	})
+
 	t.Run("contract returns local unavailable", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/frame/contract/latest", nil)
 		rec := httptest.NewRecorder()
