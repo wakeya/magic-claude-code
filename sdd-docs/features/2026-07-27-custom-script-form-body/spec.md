@@ -1,6 +1,6 @@
 # Custom Script Form Body & Additional Secret Spec (Qianwen Token Plan Usage)
 
-Local page: admin provider card "Usage" modal (`ProviderUsageModal.vue`) / Proxy entry: no change to model proxy chain; new fields reuse existing `/api/providers/{id}/usage*` admin APIs / Reference sources: qianwen AI platform console `platform.qianwenai.com` private gateway `cs-data.qianwenai.com` (no official public API docs; this spec is based on a live capture from 2026-07-27) / Stack: Go 1.26 stdlib + `github.com/dop251/goja` + Vue 3 + TypeScript + Tailwind / Last updated: 2026-07-27 / Status: draft / Progress: 0 / 6 planned
+Local page: admin provider card "Usage" modal (`ProviderUsageModal.vue`) / Proxy entry: no change to model proxy chain; new fields reuse existing `/api/providers/{id}/usage*` admin APIs / Reference sources: qianwen AI platform console `platform.qianwenai.com` private gateway `cs-data.qianwenai.com` (no official public API docs; this spec is based on a live capture from 2026-07-27) / Stack: Go 1.26 stdlib + `github.com/dop251/goja` + Vue 3 + TypeScript + Tailwind / Last updated: 2026-07-27 / Status: validating / Progress: 6 / 6 implemented
 
 ## Overall Analysis (Source Analysis)
 
@@ -73,12 +73,12 @@ params={"Api":"zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage","Data":{"co
 }
 ```
 
-The page shows "剩余量 100.0%" corresponding to `per5HourPercentage: 0.0` (used 0% = remaining 100%). **Confirmed `perXxxPercentage` is a 0–100 "used percentage"** (not a 0–1 ratio). Mapping to mcc unified result:
+The page shows "5h 剩余量 100.0%" for `per5HourPercentage: 0.0` and "7d 剩余量 0.0%" for `per1WeekPercentage: 1.0` (confirmed by the 2026-07-27 end-to-end run). **`perXxxPercentage` is a 0–1 "used ratio"** (0.0 = used 0% = remaining 100%; 1.0 = used 100% = remaining 0%), **not a 0–100 used percentage** — `per5HourPercentage:0.0` alone cannot distinguish the two semantics; it is `per1WeekPercentage:1.0` together with the page's "remaining 0%" that settles it. mcc's `utilization` is always a 0–100 used percentage, so the extractor must do `percentage * 100`. Mapping to mcc unified result:
 
 | Qianwen field | Meaning | mcc normalized field |
 | --- | --- | --- |
-| `data.DataV2.data.data.per5HourPercentage` | 5h used % | `tiers[].window="five_hour"`, `utilization` |
-| `data.DataV2.data.data.per1WeekPercentage` | 7d used % | `tiers[].window="seven_day"`, `utilization` |
+| `data.DataV2.data.data.per5HourPercentage` | 5h used ratio (0–1) | `tiers[].window="five_hour"`, `utilization = value × 100` |
+| `data.DataV2.data.data.per1WeekPercentage` | 7d used ratio (0–1) | `tiers[].window="seven_day"`, `utilization = value × 100` |
 | `data.DataV2.data.data.per1WeekResetTime` | ms epoch | `tiers[].resets_at` |
 
 `parseResetTime` (`internal/providerquota/normalize.go:202-229`) already handles millisecond timestamps (`t > 1e12` → `time.UnixMilli`); no change needed.
@@ -354,12 +354,12 @@ reqConfig.Body = substitutePlaceholdersInBody(reqConfig.Body, placeholderValues)
     }
     var tiers = [];
     if (typeof inner.per5HourPercentage === "number") {
-      tiers.push({ window: "five_hour", utilization: inner.per5HourPercentage });
+      tiers.push({ window: "five_hour", utilization: inner.per5HourPercentage * 100 });
     }
     if (typeof inner.per1WeekPercentage === "number") {
       tiers.push({
         window: "seven_day",
-        utilization: inner.per1WeekPercentage,
+        utilization: inner.per1WeekPercentage * 100,
         resetsAt: inner.per1WeekResetTime
       });
     }
@@ -376,8 +376,8 @@ reqConfig.Body = substitutePlaceholdersInBody(reqConfig.Body, placeholderValues)
 
 #### 5.3 Field mapping & expected result
 
-- `per5HourPercentage` (5h used %) → `tier{window:"five_hour", utilization:<value>}`.
-- `per1WeekPercentage` (7d used %) → `tier{window:"seven_day", utilization:<value>, resetsAt:<ms epoch>}`.
+- `per5HourPercentage` (5h used ratio 0–1) → `tier{window:"five_hour", utilization:<value × 100>}`.
+- `per1WeekPercentage` (7d used ratio 0–1) → `tier{window:"seven_day", utilization:<value × 100>, resetsAt:<ms epoch>}`.
 - Card displays e.g. "5h: 0%", "7d: 1% ◷ 6d23h" (countdown computed by the existing `QuotaResultDisplay.vue` logic).
 
 ### 6. Lifecycle & edge cases
@@ -798,7 +798,7 @@ reqConfig.Body = substitutePlaceholdersInBody(reqConfig.Body, placeholderValues)
 
 **Constraints** — the Cookie + sec_token used for verification are private user credentials and **must not be written into the spec/code/commit**; they are only entered in the local mcc config UI; the configuration is retained after verification (the user keeps using it).
 
-**Edge Cases** — credentials expired (re-acquire); `per5HourPercentage` is 0 (page shows remaining 100%); `per1WeekResetTime` in the past (countdown shows "pending refresh", existing logic).
+**Edge Cases** — credentials expired (re-acquire); `per5HourPercentage` is 0 (used 0%, page shows remaining 100%) or `per1WeekPercentage` is 1.0 (used 100%, page shows remaining 0%); `per1WeekResetTime` in the past (countdown shows "pending refresh", existing logic).
 
 **Verification** — the mcc card, under custom template + qianwen config, shows two tiers after manual refresh, values matching the qianwen page's "5-hour quota / 7-day quota".
 
@@ -819,12 +819,13 @@ reqConfig.Body = substitutePlaceholdersInBody(reqConfig.Body, placeholderValues)
 
 #### Verification
 
-- [ ] Tasks 1-5 all `[x]`; `make test` green.
-- [ ] Qianwen page "5-hour quota used %" matches the mcc card `five_hour` utilization.
-- [ ] Qianwen page "7-day quota used %" matches the mcc card `seven_day` utilization.
-- [ ] Qianwen page "quota reset time" matches mcc `seven_day.resetsAt` (after timezone conversion).
-- [ ] Measured values written back here:
-  - Query time: YYYY-MM-DD HH:MM (TZ)
-  - `per5HourPercentage` → mcc `five_hour.utilization`
-  - `per1WeekPercentage` → mcc `seven_day.utilization`
-  - `per1WeekResetTime` → mcc `seven_day.resetsAt`
+- [x] Tasks 1-5 all `[x]`; `go test ./...` + `go vet ./...` + race (providerquota/admin/config) + `npm test` (211) + `npm run build` green.
+- [x] Qianwen page "5-hour quota remaining 100.0%" matches mcc card `five_hour.utilization = 0` (used 0%).
+- [x] Qianwen page "7-day quota remaining 0.0%" matches mcc card `seven_day.utilization = 100` (used 100%).
+- [x] Qianwen page "quota reset time 2026-07-30 18:55:00" matches mcc card `seven_day.resetsAt` (`per1WeekResetTime = 1785462900000` ms).
+- [x] Measured values written back here (2026-07-27 end-to-end run):
+  - Query time: 2026-07-27 (user local end-to-end)
+  - `per5HourPercentage: 0.0` → mcc `five_hour.utilization: 0` (× 100; used 0% = page remaining 100%)
+  - `per1WeekPercentage: 1.0` → mcc `seven_day.utilization: 100` (× 100; used 100% = page remaining 0%)
+  - `per1WeekResetTime: 1785462900000` → mcc `seven_day.resetsAt`, frontend shows 2026-07-30 18:55:00 (matches page)
+  - **Fix record**: the first verification revealed a `perXxxPercentage` semantic misjudgment — the first capture only saw `per5HourPercentage:0.0`, where both semantics (0–100 used percentage vs 0–1 used ratio) hold, and was misjudged as the former; the end-to-end run with `per1WeekPercentage:1.0` plus the page's "remaining 0.0%" confirmed it is a **0–1 used ratio**. The extractor was fixed to `utilization = percentage * 100`, and the fixture test assertion updated (`seven_day.utilization == 100`). **The user must replace the old script saved in mcc config with the latest §5.2 script**, otherwise 7-day will show 1% (should be 100%).

@@ -1,6 +1,6 @@
 # Custom 脚本 Form Body 与附加密钥规格（千问 Token Plan 用量查询）
 
-本地页面：管理后台供应商卡片「用量」弹窗（`ProviderUsageModal.vue`）/ 代理入口：不修改模型代理链路；新增字段复用已有 `/api/providers/{id}/usage*` 管理 API / 参考源站：千问 AI 平台控制台 `platform.qianwenai.com` 私有网关 `cs-data.qianwenai.com`（无官方公开 API 文档，本规格基于 2026-07-27 实抓请求）/ 技术栈：Go 1.26 标准库 + `github.com/dop251/goja` + Vue 3 + TypeScript + Tailwind / 最后更新：2026-07-27 / 状态：draft / 进度：0 / 6 planned
+本地页面：管理后台供应商卡片「用量」弹窗（`ProviderUsageModal.vue`）/ 代理入口：不修改模型代理链路；新增字段复用已有 `/api/providers/{id}/usage*` 管理 API / 参考源站：千问 AI 平台控制台 `platform.qianwenai.com` 私有网关 `cs-data.qianwenai.com`（无官方公开 API 文档，本规格基于 2026-07-27 实抓请求）/ 技术栈：Go 1.26 标准库 + `github.com/dop251/goja` + Vue 3 + TypeScript + Tailwind / 最后更新：2026-07-27 / 状态：validating / 进度：6 / 6 implemented
 
 ## 整体分析（源站分析）
 
@@ -73,12 +73,12 @@ params={"Api":"zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage","Data":{"co
 }
 ```
 
-页面显示「剩余量 100.0%」与接口返回 `per5HourPercentage: 0.0` 对应（已用 0% = 剩余 100%），**已确认 `perXxxPercentage` 字段是 0–100 的「已用百分比」**（不是 0–1 比例）。映射到 mcc 统一结果：
+页面「每 5 小时额度 剩余量 100.0%」对应 `per5HourPercentage: 0.0`，「每 7 天额度 剩余量 0.0%」对应 `per1WeekPercentage: 1.0`（2026-07-27 端到端实测确认）。**`perXxxPercentage` 字段是 0–1 的「已用比例」**（0.0 = 已用 0% = 剩余 100%；1.0 = 已用 100% = 剩余 0%），**不是 0–100 的已用百分比**——单看 `per5HourPercentage:0.0` 无法区分两种语义，是 `per1WeekPercentage:1.0` 配合页面「剩余 0%」一锤定音。mcc 的 `utilization` 固定是 0–100 已用百分比，因此 extractor 需 `percentage * 100`。映射到 mcc 统一结果：
 
 | 千问字段 | 含义 | mcc 归一化字段 |
 | --- | --- | --- |
-| `data.DataV2.data.data.per5HourPercentage` | 5 小时已用 % | `tiers[].window="five_hour"`, `utilization` |
-| `data.DataV2.data.data.per1WeekPercentage` | 7 天已用 % | `tiers[].window="seven_day"`, `utilization` |
+| `data.DataV2.data.data.per5HourPercentage` | 5 小时已用比例（0–1） | `tiers[].window="five_hour"`, `utilization = 值 × 100` |
+| `data.DataV2.data.data.per1WeekPercentage` | 7 天已用比例（0–1） | `tiers[].window="seven_day"`, `utilization = 值 × 100` |
 | `data.DataV2.data.data.per1WeekResetTime` | 毫秒时间戳 | `tiers[].resets_at` |
 
 `parseResetTime`（`internal/providerquota/normalize.go:202-229`）已支持毫秒时间戳（`t > 1e12` 走 `time.UnixMilli`），无需改动。
@@ -354,12 +354,12 @@ reqConfig.Body = substitutePlaceholdersInBody(reqConfig.Body, placeholderValues)
     }
     var tiers = [];
     if (typeof inner.per5HourPercentage === "number") {
-      tiers.push({ window: "five_hour", utilization: inner.per5HourPercentage });
+      tiers.push({ window: "five_hour", utilization: inner.per5HourPercentage * 100 });
     }
     if (typeof inner.per1WeekPercentage === "number") {
       tiers.push({
         window: "seven_day",
-        utilization: inner.per1WeekPercentage,
+        utilization: inner.per1WeekPercentage * 100,
         resetsAt: inner.per1WeekResetTime
       });
     }
@@ -376,8 +376,8 @@ reqConfig.Body = substitutePlaceholdersInBody(reqConfig.Body, placeholderValues)
 
 #### 5.3 字段映射与预期结果
 
-- `per5HourPercentage`（5h 已用%）→ `tier{window:"five_hour", utilization:<值>}`。
-- `per1WeekPercentage`（7d 已用%）→ `tier{window:"seven_day", utilization:<值>, resetsAt:<毫秒时间戳>}`。
+- `per5HourPercentage`（5h 已用比例 0–1）→ `tier{window:"five_hour", utilization:<值 × 100>}`。
+- `per1WeekPercentage`（7d 已用比例 0–1）→ `tier{window:"seven_day", utilization:<值 × 100>, resetsAt:<毫秒时间戳>}`。
 - 卡片显示形如「5小时: 0%」「7天: 1% ◷ 6d23h」（倒计时由前端 `QuotaResultDisplay.vue` 已有逻辑计算）。
 
 ### 6. 生命周期与边界
@@ -802,7 +802,7 @@ reqConfig.Body = substitutePlaceholdersInBody(reqConfig.Body, placeholderValues)
 
 **Constraints（约束）** — 验证用的 Cookie + sec_token 是用户私有凭据，**不写入规格/代码/提交**，仅在本地 mcc 配置界面填入；端到端验证后不清除配置（用户持续使用）。
 
-**Edge Cases（边界）** — 凭据过期（重新获取）；`per5HourPercentage` 为 0（页面显示剩余 100%）；`per1WeekResetTime` 已过（倒计时显示「待刷新」，已有逻辑）。
+**Edge Cases（边界）** — 凭据过期（重新获取）；`per5HourPercentage` 为 0（已用 0%，页面剩余 100%）或 `per1WeekPercentage` 为 1.0（已用 100%，页面剩余 0%）；`per1WeekResetTime` 已过（倒计时显示「待刷新」，已有逻辑）。
 
 **Verification（验证）** — mcc 卡片在 custom 模板 + 千问配置下，手动刷新后显示两个 tier，数值与千问页面「每 5 小时额度 / 每 7 天额度」一致。
 
@@ -823,12 +823,13 @@ reqConfig.Body = substitutePlaceholdersInBody(reqConfig.Body, placeholderValues)
 
 #### 验证
 
-- [ ] 任务 1-5 全部 `[x]`，`make test` 全绿。
-- [ ] 千问页面「每 5 小时额度 已用 %」与 mcc 卡片 `five_hour` utilization 一致。
-- [ ] 千问页面「每 7 天额度 已用 %」与 mcc 卡片 `seven_day` utilization 一致。
-- [ ] 千问页面「额度重置时间」与 mcc 卡片 `seven_day.resetsAt` 一致（时区换算后）。
-- [ ] 实测数值回写本小节：
-  - 查询时间：YYYY-MM-DD HH:MM (TZ)
-  - `per5HourPercentage` → mcc `five_hour.utilization`
-  - `per1WeekPercentage` → mcc `seven_day.utilization`
-  - `per1WeekResetTime` → mcc `seven_day.resetsAt`
+- [x] 任务 1-5 全部 `[x]`，`go test ./...` + `go vet ./...` + race（providerquota/admin/config）+ `npm test`（211）+ `npm run build` 全绿。
+- [x] 千问页面「每 5 小时额度 剩余量 100.0%」与 mcc 卡片 `five_hour.utilization = 0`（已用 0%）一致。
+- [x] 千问页面「每 7 天额度 剩余量 0.0%」与 mcc 卡片 `seven_day.utilization = 100`（已用 100%）一致。
+- [x] 千问页面「额度重置时间 2026-07-30 18:55:00」与 mcc 卡片 `seven_day.resetsAt`（`per1WeekResetTime = 1785462900000` ms）一致。
+- [x] 实测数值回写本小节（2026-07-27 端到端验证）：
+  - 查询时间：2026-07-27（用户本地端到端）
+  - `per5HourPercentage: 0.0` → mcc `five_hour.utilization: 0`（× 100；已用 0% = 页面剩余 100%）
+  - `per1WeekPercentage: 1.0` → mcc `seven_day.utilization: 100`（× 100；已用 100% = 页面剩余 0%）
+  - `per1WeekResetTime: 1785462900000` → mcc `seven_day.resetsAt`，前端显示 2026-07-30 18:55:00（与页面一致）
+  - **修正记录**：首次验证发现 `perXxxPercentage` 语义误判——首次抓包仅见 `per5HourPercentage:0.0`，两种语义（0–100 已用百分比 vs 0–1 已用比例）都成立，误判为前者；端到端实测 `per1WeekPercentage:1.0` 配合页面「剩余量 0.0%」确认为 **0–1 已用比例**。extractor 已修正为 `utilization = percentage * 100`，fixture 测试断言同步更新（`seven_day.utilization == 100`）。**用户需用 §5.2 最新脚本替换 mcc 配置中已保存的旧脚本**，否则 7 天会显示 1%（应为 100%）。

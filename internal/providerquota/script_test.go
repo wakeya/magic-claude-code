@@ -632,8 +632,8 @@ func TestExecuteScriptFormBodyQianwenFixture(t *testing.T) {
 			}
 			var inner = response.data.DataV2.data.data;
 			return [
-				{window: "five_hour", utilization: inner.per5HourPercentage},
-				{window: "seven_day", utilization: inner.per1WeekPercentage, resetsAt: inner.per1WeekResetTime}
+				{window: "five_hour", utilization: inner.per5HourPercentage * 100},
+				{window: "seven_day", utilization: inner.per1WeekPercentage * 100, resetsAt: inner.per1WeekResetTime}
 			];
 		}
 	})`
@@ -688,7 +688,7 @@ func TestExecuteScriptFormBodyQianwenFixture(t *testing.T) {
 	if five == nil || five.Utilization != 0 {
 		t.Errorf("five_hour tier = %+v", five)
 	}
-	if seven == nil || seven.Utilization != 1 {
+	if seven == nil || seven.Utilization != 100 {
 		t.Errorf("seven_day tier = %+v", seven)
 	}
 	if seven == nil || seven.ResetsAt == nil || !seven.ResetsAt.Equal(time.UnixMilli(1785462900000).UTC()) {
