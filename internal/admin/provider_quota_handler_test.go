@@ -98,16 +98,25 @@ func TestGenerateScriptSuccess(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
+	bodyBytes := rec.Body.Bytes()
 	var resp struct {
-		Script       string `json:"script"`
-		ErrorCode    string `json:"error_code"`
-		ErrorMessage string `json:"error_message"`
+		Script       string   `json:"script"`
+		Warnings     []string `json:"warnings"`
+		ErrorCode    string   `json:"error_code"`
+		ErrorMessage string   `json:"error_message"`
 	}
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+	if err := json.Unmarshal(bodyBytes, &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 	if resp.ErrorCode != "" || resp.Script != script {
 		t.Fatalf("response = %#v", resp)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(bodyBytes, &raw); err != nil {
+		t.Fatalf("unmarshal raw response: %v", err)
+	}
+	if _, ok := raw["warnings"]; !ok {
+		t.Fatalf("response missing warnings field: %s", rec.Body.String())
 	}
 	if strings.Contains(rec.Body.String(), "sk-llm-secret") {
 		t.Fatalf("response leaked APIToken: %s", rec.Body.String())

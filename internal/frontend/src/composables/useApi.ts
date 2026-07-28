@@ -414,6 +414,7 @@ export interface GenerateScriptRequest {
 
 export interface GenerateScriptResponse {
   script: string
+  warnings?: string[]
   error_code?: string
   error_message?: string
 }

@@ -573,9 +573,11 @@ async function saveConfig() {
   }
 }
 
-function onGeneratedScript(script: string) {
+function onGeneratedScript(script: string, warnings: string[] = []) {
   form.script = script
-  showGenerator.value = false
+  if (warnings.length === 0) {
+    showGenerator.value = false
+  }
 }
 
 onMounted(async () => {

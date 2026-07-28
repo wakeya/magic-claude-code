@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -106,6 +107,109 @@ func TestExtractScript(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Fatalf("script = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAuditScript(t *testing.T) {
+	cleanQwenScript := `({
+  request: {
+    url: "{{baseUrl}}/data/api.json",
+    method: "POST",
+    bodyType: "form",
+    headers: {
+      "Cookie": "{{apiKey}}",
+      "Content-Type": "application/x-www-form-urlencoded"
+    },
+    body: {
+      sec_token: "{{apiKey2}}",
+      params: { Api: "usage" }
+    }
+  },
+  extractor: function(response) {
+    return { window: "seven_day", utilization: response.used_pct };
+  }
+})`
+
+	tests := []struct {
+		name        string
+		requestInfo string
+		script      string
+		wantSubstrs []string
+	}{
+		{
+			name:        "clean script has no warnings",
+			requestInfo: "POST /data/api.json\nCookie: sid=abc\nsec_token=xyz",
+			script:      cleanQwenScript,
+		},
+		{
+			name:        "cookie in request info missing from script",
+			requestInfo: "GET /usage\ncookie: sid=abc",
+			script:      `({request:{url:"{{baseUrl}}/usage",method:"GET",headers:{"Authorization":"Bearer {{apiKey}}"}},extractor:function(response){return response;}})`,
+			wantSubstrs: []string{"Cookie header"},
+		},
+		{
+			name:        "authorization in request info missing from script",
+			requestInfo: "GET /usage\nauthorization: bearer token",
+			script:      `({request:{url:"{{baseUrl}}/usage",method:"GET",headers:{"Cookie":"{{apiKey}}"}},extractor:function(response){return response;}})`,
+			wantSubstrs: []string{"Authorization/Bearer"},
+		},
+		{
+			name:        "sec token in request info missing from script",
+			requestInfo: "POST /usage\nsec_token=xyz",
+			script:      `({request:{url:"{{baseUrl}}/usage",method:"POST",headers:{"Cookie":"{{apiKey}}"},body:{page:1}},extractor:function(response){return response;}})`,
+			wantSubstrs: []string{"sec_token"},
+		},
+		{
+			name:        "response body misuse",
+			requestInfo: "",
+			script:      `({request:{url:"{{baseUrl}}/usage",method:"GET",headers:{"Authorization":"Bearer {{apiKey}}"}},extractor:function(response){return response.body.data;}})`,
+			wantSubstrs: []string{"response.body"},
+		},
+		{
+			name:        "json parse response misuse",
+			requestInfo: "",
+			script:      `({request:{url:"{{baseUrl}}/usage",method:"GET",headers:{"Authorization":"Bearer {{apiKey}}"}},extractor:function(response){var data=JSON.parse(response);return data;}})`,
+			wantSubstrs: []string{"JSON.parse(response)"},
+		},
+		{
+			name:        "post empty body",
+			requestInfo: "",
+			script:      `({request:{url:"{{baseUrl}}/usage",method:"POST",headers:{"Authorization":"Bearer {{apiKey}}"},body: {}},extractor:function(response){return response;}})`,
+			wantSubstrs: []string{"empty body"},
+		},
+		{
+			name:        "no credential placeholder",
+			requestInfo: "",
+			script:      `({request:{url:"{{baseUrl}}/usage",method:"GET"},extractor:function(response){return response;}})`,
+			wantSubstrs: []string{"no credential placeholder"},
+		},
+		{
+			name:        "hardcoded url",
+			requestInfo: "",
+			script:      `({request:{url:"https://api.example.com/usage",method:"GET",headers:{"Authorization":"Bearer {{apiKey}}"}},extractor:function(response){return response;}})`,
+			wantSubstrs: []string{"{{baseUrl}}"},
+		},
+		{
+			name:        "multiple warnings",
+			requestInfo: "POST /usage\nCookie: sid=abc\nAuthorization: Bearer abc",
+			script:      `({request:{url:"https://api.example.com/usage",method:"POST",body:{}},extractor:function(response){return response.body;}})`,
+			wantSubstrs: []string{"Cookie header", "Authorization/Bearer", "response.body", "empty body", "no credential placeholder", "{{baseUrl}}"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			warnings := auditScript(tt.requestInfo, tt.script)
+			if len(warnings) != len(tt.wantSubstrs) {
+				t.Fatalf("warnings len = %d, want %d; warnings=%v", len(warnings), len(tt.wantSubstrs), warnings)
+			}
+			joined := strings.Join(warnings, "\n")
+			for _, substr := range tt.wantSubstrs {
+				if !strings.Contains(joined, substr) {
+					t.Fatalf("warnings = %v, want substring %q", warnings, substr)
+				}
 			}
 		})
 	}
@@ -239,6 +343,34 @@ func TestScriptGenerator(t *testing.T) {
 			if result.ErrorCode != "invalid_config" {
 				t.Fatalf("GenerateScript(%#v) ErrorCode = %q, want invalid_config", req, result.ErrorCode)
 			}
+		}
+	})
+
+	t.Run("populates script audit warnings", func(t *testing.T) {
+		script := `({request:{url:"{{baseUrl}}/balance",method:"GET"},extractor:function(r){return {remaining:r.balance,unit:"USD"};}})`
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":` + strconv.Quote(script) + `}}]}`))
+		}))
+		defer server.Close()
+
+		result := GenerateScript(context.Background(), NewLLMClient(time.Second), LLMProvider{
+			APIFormat: "openai_chat",
+			APIURL:    server.URL,
+			APIToken:  "sk-test",
+		}, GenerateScriptRequest{
+			Model:          "m",
+			Prompt:         "p",
+			ResponseSample: `{"balance":42}`,
+			RequestInfo:    "GET /balance\nCookie: sid=abc",
+		}, time.Second)
+		if result.ErrorCode != "" {
+			t.Fatalf("GenerateScript() error = %s: %s", result.ErrorCode, result.ErrorMessage)
+		}
+		if len(result.Warnings) == 0 {
+			t.Fatalf("Warnings = nil, want cookie warning")
+		}
+		if !strings.Contains(strings.Join(result.Warnings, "\n"), "Cookie") {
+			t.Fatalf("Warnings = %v, want Cookie warning", result.Warnings)
 		}
 	})
 }

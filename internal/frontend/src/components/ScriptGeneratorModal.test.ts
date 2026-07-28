@@ -117,7 +117,7 @@ test('ScriptGeneratorModal exists and declares the required props and events', (
   assert.match(modalSource, /providerId:\s*string/)
   assert.match(modalSource, /llmProviders:\s*LLMProviderOption\[\]/)
   assert.match(modalSource, /id:\s*string[\s\S]*name:\s*string[\s\S]*exposed_models\?:\s*\{\s*backend_model:\s*string\s*\}\[\][\s\S]*model_mappings\?:\s*Record<string,\s*string>/)
-  assert.match(modalSource, /generated:\s*\[script:\s*string\]/)
+  assert.match(modalSource, /generated:\s*\[script:\s*string,\s*warnings\?:\s*string\[\]\]/)
   assert.match(modalSource, /close:\s*\[\]/)
 })
 
@@ -153,9 +153,23 @@ test('ScriptGeneratorModal calls generateUsageScript and emits generated script 
   assert.match(modalSource, /model:\s*model\.value/)
   assert.match(modalSource, /response_sample:\s*responseSample\.value/)
   assert.match(modalSource, /request_info:\s*requestInfo\.value/)
-  assert.match(modalSource, /emit\('generated',\s*response\.script\)/)
+  assert.match(modalSource, /emit\('generated',\s*response\.script,\s*warnings\.value\)/)
   assert.match(modalSource, /emit\('close'\)/)
   assert.doesNotMatch(modalSource, /updateProviderUsage|saveConfig/)
+})
+
+test('ScriptGeneratorModal stores and renders script audit warnings', () => {
+  assert.match(modalSource, /const warnings = ref<string\[\]>\(\[\]\)/)
+  assert.match(modalSource, /warnings\.value\s*=\s*response\.warnings \|\| \[\]/)
+  assert.match(modalSource, /v-if="warnings\.length > 0"/)
+  assert.match(modalSource, /t\('quota\.ai_generate_warnings'\)/)
+  assert.match(modalSource, /v-for="\(\s*w,\s*i\s*\) in warnings"/)
+  assert.match(modalSource, /\{\{ w \}\}/)
+  assert.match(modalSource, /rgba\(234,\s*179,\s*8,\s*0\.15\)/)
+})
+
+test('ScriptGeneratorModal keeps warning results visible without blocking generated script', () => {
+  assert.match(modalSource, /emit\('generated',\s*response\.script,\s*warnings\.value\)[\s\S]*if \(warnings\.value\.length === 0\) \{[\s\S]*emit\('close'\)/)
 })
 
 test('ScriptGeneratorModal disables generation while loading and displays translated errors', () => {
@@ -205,7 +219,7 @@ test('ScriptGeneratorModal copies an example script and shows copied or failed f
 
 test('useApi exposes generateUsageScript with the specified request and response types', () => {
   assert.match(apiSource, /export interface GenerateScriptRequest[\s\S]*llm_provider_id\?:\s*string[\s\S]*model:\s*string[\s\S]*response_sample:\s*string[\s\S]*request_info\?:\s*string/)
-  assert.match(apiSource, /export interface GenerateScriptResponse[\s\S]*script:\s*string[\s\S]*error_code\?:\s*string/)
+  assert.match(apiSource, /export interface GenerateScriptResponse[\s\S]*script:\s*string[\s\S]*warnings\?:\s*string\[\][\s\S]*error_code\?:\s*string/)
   assert.match(apiSource, /async function generateUsageScript\(providerId:\s*string,\s*req:\s*GenerateScriptRequest\):\s*Promise<GenerateScriptResponse>/)
   assert.match(apiSource, /fetch\(`\/api\/providers\/\$\{providerId\}\/usage\/generate-script`/)
   assert.match(apiSource, /generateUsageScript,/)
@@ -222,7 +236,7 @@ test('ProviderUsageModal shows AI generation only for script templates and fills
   assert.match(providerUsageSource, /\['anthropic',\s*'openai_chat',\s*'openai_responses'\]\.includes\(provider\.api_format\)/)
   assert.match(providerUsageSource, /provider\.enabled/)
   assert.match(providerUsageSource, /provider\.api_token_configured \?\? !!provider\.api_token_mask/)
-  assert.match(providerUsageSource, /function onGeneratedScript\(script:\s*string\)[\s\S]*form\.script\s*=\s*script[\s\S]*showGenerator\.value\s*=\s*false/)
+  assert.match(providerUsageSource, /function onGeneratedScript\(script:\s*string,\s*warnings:\s*string\[\]\s*=\s*\[\]\)[\s\S]*form\.script\s*=\s*script[\s\S]*if \(warnings\.length === 0\) \{[\s\S]*showGenerator\.value\s*=\s*false/)
   assert.match(providerUsageSource, /api\.getProviders\(\)/)
 })
 
@@ -240,6 +254,7 @@ test('defines required bilingual AI generation messages and error codes', () => 
     'quota.ai_generate_request_info',
     'quota.ai_generate_submit',
     'quota.ai_generating',
+    'quota.ai_generate_warnings',
     'quota.ai_generate_examples_title',
     'quota.ai_generate_copy',
     'quota.ai_generate_copied',

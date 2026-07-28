@@ -76,6 +76,17 @@
             </div>
 
             <div v-if="error" class="text-sm text-danger" role="alert">{{ error }}</div>
+            <div
+              v-if="warnings.length > 0"
+              class="text-sm rounded-md p-3"
+              style="background: rgba(234, 179, 8, 0.15); color: rgb(161, 98, 7);"
+              role="status"
+            >
+              <div class="font-medium mb-1">{{ t('quota.ai_generate_warnings') }}</div>
+              <ul class="list-disc ml-5 space-y-1">
+                <li v-for="(w, i) in warnings" :key="i" class="text-xs">{{ w }}</li>
+              </ul>
+            </div>
           </div>
 
           <aside class="w-full md:w-[320px] shrink-0">
@@ -253,7 +264,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  generated: [script: string]
+  generated: [script: string, warnings?: string[]]
   close: []
 }>()
 
@@ -266,6 +277,7 @@ const responseSample = ref('')
 const requestInfo = ref('')
 const loading = ref(false)
 const error = ref('')
+const warnings = ref<string[]>([])
 const expanded = ref<Record<string, boolean>>({})
 const copiedId = ref('')
 const copyFailedId = ref('')
@@ -370,6 +382,7 @@ async function generate() {
   if (!canSubmit.value || loading.value) return
   loading.value = true
   error.value = ''
+  warnings.value = []
   try {
     const response = await api.generateUsageScript(props.providerId, {
       llm_provider_id: selectedProviderId.value,
@@ -382,8 +395,11 @@ async function generate() {
       error.value = translatedError(response.error_code, response.error_message)
       return
     }
-    emit('generated', response.script)
-    emit('close')
+    warnings.value = response.warnings || []
+    emit('generated', response.script, warnings.value)
+    if (warnings.value.length === 0) {
+      emit('close')
+    }
   } catch (cause: unknown) {
     error.value = cause instanceof Error ? cause.message : String(cause)
   } finally {

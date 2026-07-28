@@ -18,6 +18,7 @@ type GenerateScriptRequest struct {
 // GenerateScriptResult is the generated script or a structured error.
 type GenerateScriptResult struct {
 	Script       string
+	Warnings     []string
 	ErrorCode    string
 	ErrorMessage string
 }
@@ -55,7 +56,55 @@ func GenerateScript(ctx context.Context, llm *LLMClient, provider LLMProvider, r
 			ErrorMessage: fmt.Sprintf("generated script failed to parse request: %v; llm_output=%s", err, summarizeLLMText(call.Text)),
 		}
 	}
-	return GenerateScriptResult{Script: script}
+	warnings := auditScript(req.RequestInfo, script)
+	return GenerateScriptResult{Script: script, Warnings: warnings}
+}
+
+// auditScript scans the user's request info and the generated script for
+// common AI mistakes and returns human-readable warnings (empty if clean).
+// Warnings are advisory; the script is still returned for the user to use or fix.
+func auditScript(requestInfo, script string) []string {
+	warnings := make([]string, 0)
+	ri := strings.ToLower(requestInfo)
+	sc := script // case-sensitive for placeholders
+
+	// 1. Credential in request info but missing from script
+	if (strings.Contains(ri, "cookie:") || strings.Contains(ri, "cookie =")) &&
+		!strings.Contains(strings.ToLower(sc), "cookie") {
+		warnings = append(warnings, "request info contains a Cookie header but the script does not set Cookie — authentication will likely fail")
+	}
+	if (strings.Contains(ri, "authorization:") || strings.Contains(ri, "bearer ")) &&
+		!strings.Contains(strings.ToLower(sc), "authorization") {
+		warnings = append(warnings, "request info contains Authorization/Bearer but the script does not set the Authorization header")
+	}
+	if strings.Contains(ri, "sec_token") && !strings.Contains(sc, "sec_token") {
+		warnings = append(warnings, "request info contains sec_token but the script does not include a sec_token field in body/url")
+	}
+
+	// 2. response fetch-API misuse (response is already a parsed JSON object)
+	if strings.Contains(sc, "response.body") || strings.Contains(sc, "JSON.parse(response") {
+		warnings = append(warnings, "script uses response.body or JSON.parse(response) — the extractor receives an already-parsed JSON object; use response.xxx directly")
+	}
+
+	// 3. POST with empty body
+	if strings.Contains(strings.ToLower(sc), "\"post\"") || strings.Contains(strings.ToLower(sc), "'post'") {
+		if strings.Contains(sc, "body: {}") || strings.Contains(sc, "body:{}") {
+			warnings = append(warnings, "POST request with empty body {} — required fields are likely missing")
+		}
+	}
+
+	// 4. No credential placeholder (configured secrets won't be injected)
+	if !strings.Contains(sc, "{{apiKey}}") && !strings.Contains(sc, "{{apiKey2}}") &&
+		!strings.Contains(sc, "{{accessToken}}") && !strings.Contains(sc, "{{userId}}") {
+		warnings = append(warnings, "script uses no credential placeholder ({{apiKey}}/{{apiKey2}}/{{accessToken}}); configured secrets will not be injected")
+	}
+
+	// 5. Hardcoded URL (no {{baseUrl}}) — same-origin check may reject
+	if (strings.Contains(sc, "url:") || strings.Contains(sc, "url :")) && !strings.Contains(sc, "{{baseUrl}}") {
+		warnings = append(warnings, "script URL does not use the {{baseUrl}} placeholder; the same-origin check may reject it")
+	}
+
+	return warnings
 }
 
 func systemPromptForScript() string {

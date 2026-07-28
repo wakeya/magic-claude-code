@@ -331,7 +331,13 @@ func (s *Server) handleGenerateUsageScript(w http.ResponseWriter, r *http.Reques
 		})
 		return
 	}
-	_ = json.NewEncoder(w).Encode(map[string]string{"script": result.Script})
+	_ = json.NewEncoder(w).Encode(struct {
+		Script   string   `json:"script"`
+		Warnings []string `json:"warnings"`
+	}{
+		Script:   result.Script,
+		Warnings: result.Warnings,
+	})
 }
 
 // handleProviderUsageQuery runs a manual production query.
