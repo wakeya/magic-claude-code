@@ -153,7 +153,8 @@ func newAdminUsageStore(t *testing.T) *usage.Store {
 // forcing index.html (and SPA fallback routes) to revalidate on every load —
 // so a new frontend build is picked up without a hard refresh.
 func TestStaticCacheHeaders(t *testing.T) {
-	fileServer := http.FileServer(http.FS(subFS(t, frontend.DistFS, "dist")))
+	distFS := subFS(t, frontend.DistFS, "dist")
+	fileServer := http.FileServer(http.FS(distFS))
 	srv := &Server{}
 	handler := srv.authMiddleware(cacheHeadersHandler(fileServer))
 
@@ -185,7 +186,14 @@ func TestStaticCacheHeaders(t *testing.T) {
 	})
 
 	t.Run("hashed asset is immutable long-cache", func(t *testing.T) {
-		w := get("/assets/index-B8YBkTdE.js")
+		matches, err := fs.Glob(distFS, "assets/index-*.js")
+		if err != nil {
+			t.Fatalf("glob hashed asset: %v", err)
+		}
+		if len(matches) == 0 {
+			t.Fatal("no hashed index asset found in dist")
+		}
+		w := get("/" + matches[0])
 		if w.Code != 200 {
 			t.Fatalf("status = %d, want 200 (asset must exist in dist)", w.Code)
 		}
