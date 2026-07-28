@@ -332,11 +332,13 @@ func (s *Server) handleGenerateUsageScript(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	_ = json.NewEncoder(w).Encode(struct {
-		Script   string   `json:"script"`
-		Warnings []string `json:"warnings"`
+		Script     string                       `json:"script"`
+		Warnings   []providerquota.AuditWarning `json:"warnings"`
+		Iterations int                          `json:"iterations"`
 	}{
-		Script:   result.Script,
-		Warnings: result.Warnings,
+		Script:     result.Script,
+		Warnings:   result.Warnings,
+		Iterations: result.Iterations,
 	})
 }
 

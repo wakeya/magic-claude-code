@@ -4,6 +4,12 @@
       <header class="sticky top-0 z-10 app-panel border-b border-default px-6 py-4 flex items-start justify-between gap-4">
         <div>
           <h2 id="script-generator-title" class="text-lg font-bold m-0">{{ t('quota.ai_generate_title') }}</h2>
+          <div
+            v-if="iterations > 1"
+            class="inline-flex items-center mt-2 px-2 py-0.5 rounded text-xs font-medium bg-primary/10 text-primary"
+          >
+            {{ t('quota.ai_generate_iterations', { n: iterations }) }}
+          </div>
         </div>
         <button
           type="button"
@@ -84,7 +90,7 @@
             >
               <div class="font-medium mb-1">{{ t('quota.ai_generate_warnings') }}</div>
               <ul class="list-disc ml-5 space-y-1">
-                <li v-for="(w, i) in warnings" :key="i" class="text-xs">{{ w }}</li>
+                <li v-for="(w, i) in warnings" :key="i" class="text-xs whitespace-pre-line">{{ translatedWarning(w) }}</li>
               </ul>
             </div>
           </div>
@@ -138,6 +144,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useApi } from '@/composables/useApi'
+import type { ScriptAuditWarning } from '@/composables/useApi'
 import { useI18n } from '@/composables/useI18n'
 
 interface LLMProviderOption {
@@ -264,7 +271,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  generated: [script: string, warnings?: string[]]
+  generated: [script: string, warnings?: ScriptAuditWarning[]]
   close: []
 }>()
 
@@ -277,7 +284,8 @@ const responseSample = ref('')
 const requestInfo = ref('')
 const loading = ref(false)
 const error = ref('')
-const warnings = ref<string[]>([])
+const warnings = ref<ScriptAuditWarning[]>([])
+const iterations = ref(0)
 const expanded = ref<Record<string, boolean>>({})
 const copiedId = ref('')
 const copyFailedId = ref('')
@@ -339,6 +347,12 @@ function translatedError(code: string, message?: string): string {
   return message || code
 }
 
+function translatedWarning(warning: ScriptAuditWarning): string {
+  const localized = t(`warning.${warning.code}`)
+  if (localized !== `warning.${warning.code}`) return localized
+  return warning.message
+}
+
 function toggleExample(id: string) {
   expanded.value = {
     ...expanded.value,
@@ -383,6 +397,7 @@ async function generate() {
   loading.value = true
   error.value = ''
   warnings.value = []
+  iterations.value = 0
   try {
     const response = await api.generateUsageScript(props.providerId, {
       llm_provider_id: selectedProviderId.value,
@@ -396,6 +411,7 @@ async function generate() {
       return
     }
     warnings.value = response.warnings || []
+    iterations.value = response.iterations || 0
     emit('generated', response.script, warnings.value)
     if (warnings.value.length === 0) {
       emit('close')

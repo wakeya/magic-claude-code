@@ -245,6 +245,7 @@ import type {
   ProviderUsageUpdateRequest,
   PublicQuotaConfig,
   QuotaSnapshot,
+  ScriptAuditWarning,
 } from '@/composables/useApi'
 import QuotaResultDisplay from '@/components/QuotaResultDisplay.vue'
 import ScriptGeneratorModal from '@/components/ScriptGeneratorModal.vue'
@@ -573,7 +574,7 @@ async function saveConfig() {
   }
 }
 
-function onGeneratedScript(script: string, warnings: string[] = []) {
+function onGeneratedScript(script: string, warnings: ScriptAuditWarning[] = []) {
   form.script = script
   if (warnings.length === 0) {
     showGenerator.value = false

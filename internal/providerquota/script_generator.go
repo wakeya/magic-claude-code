@@ -15,10 +15,17 @@ type GenerateScriptRequest struct {
 	RequestInfo    string
 }
 
+// AuditWarning is a structured script audit warning. Code is stable for i18n.
+type AuditWarning struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
 // GenerateScriptResult is the generated script or a structured error.
 type GenerateScriptResult struct {
 	Script       string
-	Warnings     []string
+	Warnings     []AuditWarning
+	Iterations   int
 	ErrorCode    string
 	ErrorMessage string
 }
@@ -40,7 +47,9 @@ func GenerateScript(ctx context.Context, llm *LLMClient, provider LLMProvider, r
 	}
 	defer cancel()
 
-	call := llm.Call(callCtx, provider, strings.TrimSpace(req.Model), systemPromptForScript(), buildUserMessage(req))
+	model := strings.TrimSpace(req.Model)
+	executor := &ScriptExecutor{}
+	call := llm.Call(callCtx, provider, model, systemPromptForScript(), buildUserMessage(req))
 	if call.ErrorCode != "" {
 		return GenerateScriptResult{ErrorCode: call.ErrorCode, ErrorMessage: call.ErrorMessage}
 	}
@@ -50,61 +59,83 @@ func GenerateScript(ctx context.Context, llm *LLMClient, provider LLMProvider, r
 		return GenerateScriptResult{ErrorCode: "invalid_response", ErrorMessage: err.Error()}
 	}
 
-	if _, err := (&ScriptExecutor{}).parseRequest(script); err != nil {
+	if _, err := executor.parseRequest(script); err != nil {
 		return GenerateScriptResult{
 			ErrorCode:    "script_error",
 			ErrorMessage: fmt.Sprintf("generated script failed to parse request: %v; llm_output=%s", err, summarizeLLMText(call.Text)),
 		}
 	}
 	warnings := auditScript(req.RequestInfo, script)
-	return GenerateScriptResult{Script: script, Warnings: warnings}
+	iterations := 1
+	const maxIterations = 10
+	for len(warnings) > 0 && iterations < maxIterations {
+		fixCall := llm.Call(callCtx, provider, model, systemPromptForFix(), buildFixMessage(script, warnings, req))
+		if fixCall.ErrorCode != "" {
+			break
+		}
+		newScript, err := extractScript(fixCall.Text)
+		if err != nil {
+			break
+		}
+		if _, err := executor.parseRequest(newScript); err != nil {
+			break
+		}
+		script = newScript
+		warnings = auditScript(req.RequestInfo, script)
+		iterations++
+	}
+	return GenerateScriptResult{Script: script, Warnings: warnings, Iterations: iterations}
 }
 
 // auditScript scans the user's request info and the generated script for
 // common AI mistakes and returns human-readable warnings (empty if clean).
 // Warnings are advisory; the script is still returned for the user to use or fix.
-func auditScript(requestInfo, script string) []string {
-	warnings := make([]string, 0)
+func auditScript(requestInfo, script string) []AuditWarning {
+	warnings := make([]AuditWarning, 0)
 	ri := strings.ToLower(requestInfo)
 	sc := script // case-sensitive for placeholders
 
 	// 1. Credential in request info but missing from script
 	if (strings.Contains(ri, "cookie:") || strings.Contains(ri, "cookie =")) &&
 		!strings.Contains(strings.ToLower(sc), "cookie") {
-		warnings = append(warnings, "request info contains a Cookie header but the script does not set Cookie — authentication will likely fail")
+		warnings = append(warnings, AuditWarning{Code: "missing_cookie", Message: "request info contains a Cookie header but the script does not set Cookie - authentication will likely fail"})
 	}
 	if (strings.Contains(ri, "authorization:") || strings.Contains(ri, "bearer ")) &&
 		!strings.Contains(strings.ToLower(sc), "authorization") {
-		warnings = append(warnings, "request info contains Authorization/Bearer but the script does not set the Authorization header")
+		warnings = append(warnings, AuditWarning{Code: "missing_authorization", Message: "request info contains Authorization/Bearer but the script does not set the Authorization header"})
 	}
 	if strings.Contains(ri, "sec_token") && !strings.Contains(sc, "sec_token") {
-		warnings = append(warnings, "request info contains sec_token but the script does not include a sec_token field in body/url")
+		warnings = append(warnings, AuditWarning{Code: "missing_sec_token", Message: "request info contains sec_token but the script does not include a sec_token field in body/url"})
 	}
 
 	// 2. response fetch-API misuse (response is already a parsed JSON object)
 	if strings.Contains(sc, "response.body") || strings.Contains(sc, "JSON.parse(response") {
-		warnings = append(warnings, "script uses response.body or JSON.parse(response) — the extractor receives an already-parsed JSON object; use response.xxx directly")
+		warnings = append(warnings, AuditWarning{Code: "response_body_misuse", Message: "script uses response.body or JSON.parse(response) - the extractor receives an already-parsed JSON object; use response.xxx directly"})
 	}
 
 	// 3. POST with empty body
 	if strings.Contains(strings.ToLower(sc), "\"post\"") || strings.Contains(strings.ToLower(sc), "'post'") {
 		if strings.Contains(sc, "body: {}") || strings.Contains(sc, "body:{}") {
-			warnings = append(warnings, "POST request with empty body {} — required fields are likely missing")
+			warnings = append(warnings, AuditWarning{Code: "empty_post_body", Message: "POST request with empty body {} - required fields are likely missing"})
 		}
 	}
 
 	// 4. No credential placeholder (configured secrets won't be injected)
 	if !strings.Contains(sc, "{{apiKey}}") && !strings.Contains(sc, "{{apiKey2}}") &&
 		!strings.Contains(sc, "{{accessToken}}") && !strings.Contains(sc, "{{userId}}") {
-		warnings = append(warnings, "script uses no credential placeholder ({{apiKey}}/{{apiKey2}}/{{accessToken}}); configured secrets will not be injected")
+		warnings = append(warnings, AuditWarning{Code: "no_credential_placeholder", Message: "script uses no credential placeholder ({{apiKey}}/{{apiKey2}}/{{accessToken}}/{{userId}}); configured secrets will not be injected"})
 	}
 
 	// 5. Hardcoded URL (no {{baseUrl}}) — same-origin check may reject
 	if (strings.Contains(sc, "url:") || strings.Contains(sc, "url :")) && !strings.Contains(sc, "{{baseUrl}}") {
-		warnings = append(warnings, "script URL does not use the {{baseUrl}} placeholder; the same-origin check may reject it")
+		warnings = append(warnings, AuditWarning{Code: "hardcoded_url", Message: "script URL does not use the {{baseUrl}} placeholder; the same-origin check may reject it"})
 	}
 
 	return warnings
+}
+
+func systemPromptForFix() string {
+	return systemPromptForScript() + "\n\n" + "You are now in FIX mode. The user previously generated a script, but an automated audit found the issues below. Return a COMPLETE corrected script (same `({request, extractor})` format) that fixes every listed issue. Preserve the working parts of the previous script. Do not regress fields that were correct."
 }
 
 func systemPromptForScript() string {
@@ -143,6 +174,32 @@ func buildUserMessage(req GenerateScriptRequest) string {
 		info,
 		strings.TrimSpace(req.ResponseSample),
 	)
+}
+
+func buildFixMessage(script string, warnings []AuditWarning, req GenerateScriptRequest) string {
+	var b strings.Builder
+	b.WriteString("Previous script:\n")
+	b.WriteString(strings.TrimSpace(script))
+	b.WriteString("\n\nAudit warnings (fix ALL of them):\n")
+	for _, warning := range warnings {
+		b.WriteString("- [")
+		b.WriteString(warning.Code)
+		b.WriteString("] ")
+		b.WriteString(warning.Message)
+		b.WriteByte('\n')
+	}
+	info := strings.TrimSpace(req.RequestInfo)
+	if info == "" {
+		info = "(not provided)"
+	}
+	b.WriteString("\nOriginal need: ")
+	b.WriteString(strings.TrimSpace(req.Prompt))
+	b.WriteString("\nOriginal response sample (authoritative for extractor field paths):\n")
+	b.WriteString(strings.TrimSpace(req.ResponseSample))
+	b.WriteString("\nRequest info (where the credentials live):\n")
+	b.WriteString(info)
+	b.WriteString("\n\nReturn the corrected full script.")
+	return b.String()
 }
 
 func extractScript(text string) (string, error) {

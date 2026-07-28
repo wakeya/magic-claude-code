@@ -66,7 +66,7 @@ func TestProviderUsageGetNotFound(t *testing.T) {
 }
 
 func TestGenerateScriptSuccess(t *testing.T) {
-	script := `({request:{url:"{{baseUrl}}/balance",method:"GET"},extractor:function(r){return {remaining:r.balance,unit:"USD"};}})`
+	script := `({request:{url:"{{baseUrl}}/balance",method:"GET",headers:{"Authorization":"Bearer {{apiKey}}"}},extractor:function(r){return {remaining:r.balance,unit:"USD"};}})`
 	llmServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/messages" {
 			t.Fatalf("LLM path = %q, want /v1/messages", r.URL.Path)
@@ -100,16 +100,23 @@ func TestGenerateScriptSuccess(t *testing.T) {
 	}
 	bodyBytes := rec.Body.Bytes()
 	var resp struct {
-		Script       string   `json:"script"`
-		Warnings     []string `json:"warnings"`
-		ErrorCode    string   `json:"error_code"`
-		ErrorMessage string   `json:"error_message"`
+		Script   string `json:"script"`
+		Warnings []struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"warnings"`
+		Iterations   int    `json:"iterations"`
+		ErrorCode    string `json:"error_code"`
+		ErrorMessage string `json:"error_message"`
 	}
 	if err := json.Unmarshal(bodyBytes, &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 	if resp.ErrorCode != "" || resp.Script != script {
 		t.Fatalf("response = %#v", resp)
+	}
+	if resp.Iterations != 1 {
+		t.Fatalf("iterations = %d, want 1", resp.Iterations)
 	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(bodyBytes, &raw); err != nil {
@@ -118,13 +125,67 @@ func TestGenerateScriptSuccess(t *testing.T) {
 	if _, ok := raw["warnings"]; !ok {
 		t.Fatalf("response missing warnings field: %s", rec.Body.String())
 	}
+	if _, ok := raw["iterations"]; !ok {
+		t.Fatalf("response missing iterations field: %s", rec.Body.String())
+	}
 	if strings.Contains(rec.Body.String(), "sk-llm-secret") {
 		t.Fatalf("response leaked APIToken: %s", rec.Body.String())
 	}
 }
 
+func TestGenerateScriptReturnsStructuredWarningsAndIterations(t *testing.T) {
+	script := `({request:{url:"{{baseUrl}}/balance",method:"GET",headers:{"Authorization":"Bearer {{apiKey}}"}},extractor:function(r){return {remaining:r.balance,unit:"USD"};}})`
+	var calls int
+	llmServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"content": []map[string]string{{"type": "text", "text": script}},
+		})
+	}))
+	defer llmServer.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{{
+		ID: "test-p", Name: "Test", APIURL: llmServer.URL, APIToken: "sk-llm-secret",
+		APIFormat: config.APIFormatAnthropic, Enabled: true, CreatedAt: timeNow(), UpdatedAt: timeNow(),
+	}}
+	srv := NewServer(&AdminConfig{Password: "test"}, config.NewMockStore(cfg), nil)
+
+	body := bytes.NewBufferString(`{"model":"claude-test","prompt":"query balance","response_sample":"{\"balance\":42}","request_info":"GET /balance\nCookie: sid=abc"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/test-p/usage/generate-script", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "session", Value: srv.GetAuth().GenerateToken()})
+	rec := httptest.NewRecorder()
+	srv.authMiddlewareFunc(srv.handleProviderRoutes)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Script   string `json:"script"`
+		Warnings []struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"warnings"`
+		Iterations int `json:"iterations"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Script != script {
+		t.Fatalf("script = %q, want %q", resp.Script, script)
+	}
+	if resp.Iterations != 10 || calls != 10 {
+		t.Fatalf("iterations=%d calls=%d, want max iterations", resp.Iterations, calls)
+	}
+	if len(resp.Warnings) != 1 || resp.Warnings[0].Code != "missing_cookie" || resp.Warnings[0].Message == "" {
+		t.Fatalf("warnings = %#v, want structured missing_cookie warning", resp.Warnings)
+	}
+}
+
 func TestGenerateScriptUsesBodyLLMProviderID(t *testing.T) {
-	script := `({request:{url:"{{baseUrl}}/usage",method:"GET"},extractor:function(r){return {remaining:r.remaining,unit:"credits"};}})`
+	script := `({request:{url:"{{baseUrl}}/usage",method:"GET",headers:{"Authorization":"Bearer {{apiKey}}"}},extractor:function(r){return {remaining:r.remaining,unit:"credits"};}})`
 	var urlProviderHits atomic.Int32
 	urlProviderServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		urlProviderHits.Add(1)

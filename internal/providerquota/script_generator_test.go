@@ -136,7 +136,7 @@ func TestAuditScript(t *testing.T) {
 		name        string
 		requestInfo string
 		script      string
-		wantSubstrs []string
+		wantCodes   []string
 	}{
 		{
 			name:        "clean script has no warnings",
@@ -147,68 +147,70 @@ func TestAuditScript(t *testing.T) {
 			name:        "cookie in request info missing from script",
 			requestInfo: "GET /usage\ncookie: sid=abc",
 			script:      `({request:{url:"{{baseUrl}}/usage",method:"GET",headers:{"Authorization":"Bearer {{apiKey}}"}},extractor:function(response){return response;}})`,
-			wantSubstrs: []string{"Cookie header"},
+			wantCodes:   []string{"missing_cookie"},
 		},
 		{
 			name:        "authorization in request info missing from script",
 			requestInfo: "GET /usage\nauthorization: bearer token",
 			script:      `({request:{url:"{{baseUrl}}/usage",method:"GET",headers:{"Cookie":"{{apiKey}}"}},extractor:function(response){return response;}})`,
-			wantSubstrs: []string{"Authorization/Bearer"},
+			wantCodes:   []string{"missing_authorization"},
 		},
 		{
 			name:        "sec token in request info missing from script",
 			requestInfo: "POST /usage\nsec_token=xyz",
 			script:      `({request:{url:"{{baseUrl}}/usage",method:"POST",headers:{"Cookie":"{{apiKey}}"},body:{page:1}},extractor:function(response){return response;}})`,
-			wantSubstrs: []string{"sec_token"},
+			wantCodes:   []string{"missing_sec_token"},
 		},
 		{
 			name:        "response body misuse",
 			requestInfo: "",
 			script:      `({request:{url:"{{baseUrl}}/usage",method:"GET",headers:{"Authorization":"Bearer {{apiKey}}"}},extractor:function(response){return response.body.data;}})`,
-			wantSubstrs: []string{"response.body"},
+			wantCodes:   []string{"response_body_misuse"},
 		},
 		{
 			name:        "json parse response misuse",
 			requestInfo: "",
 			script:      `({request:{url:"{{baseUrl}}/usage",method:"GET",headers:{"Authorization":"Bearer {{apiKey}}"}},extractor:function(response){var data=JSON.parse(response);return data;}})`,
-			wantSubstrs: []string{"JSON.parse(response)"},
+			wantCodes:   []string{"response_body_misuse"},
 		},
 		{
 			name:        "post empty body",
 			requestInfo: "",
 			script:      `({request:{url:"{{baseUrl}}/usage",method:"POST",headers:{"Authorization":"Bearer {{apiKey}}"},body: {}},extractor:function(response){return response;}})`,
-			wantSubstrs: []string{"empty body"},
+			wantCodes:   []string{"empty_post_body"},
 		},
 		{
 			name:        "no credential placeholder",
 			requestInfo: "",
 			script:      `({request:{url:"{{baseUrl}}/usage",method:"GET"},extractor:function(response){return response;}})`,
-			wantSubstrs: []string{"no credential placeholder"},
+			wantCodes:   []string{"no_credential_placeholder"},
 		},
 		{
 			name:        "hardcoded url",
 			requestInfo: "",
 			script:      `({request:{url:"https://api.example.com/usage",method:"GET",headers:{"Authorization":"Bearer {{apiKey}}"}},extractor:function(response){return response;}})`,
-			wantSubstrs: []string{"{{baseUrl}}"},
+			wantCodes:   []string{"hardcoded_url"},
 		},
 		{
 			name:        "multiple warnings",
 			requestInfo: "POST /usage\nCookie: sid=abc\nAuthorization: Bearer abc",
 			script:      `({request:{url:"https://api.example.com/usage",method:"POST",body:{}},extractor:function(response){return response.body;}})`,
-			wantSubstrs: []string{"Cookie header", "Authorization/Bearer", "response.body", "empty body", "no credential placeholder", "{{baseUrl}}"},
+			wantCodes:   []string{"missing_cookie", "missing_authorization", "response_body_misuse", "empty_post_body", "no_credential_placeholder", "hardcoded_url"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			warnings := auditScript(tt.requestInfo, tt.script)
-			if len(warnings) != len(tt.wantSubstrs) {
-				t.Fatalf("warnings len = %d, want %d; warnings=%v", len(warnings), len(tt.wantSubstrs), warnings)
+			if len(warnings) != len(tt.wantCodes) {
+				t.Fatalf("warnings len = %d, want %d; warnings=%v", len(warnings), len(tt.wantCodes), warnings)
 			}
-			joined := strings.Join(warnings, "\n")
-			for _, substr := range tt.wantSubstrs {
-				if !strings.Contains(joined, substr) {
-					t.Fatalf("warnings = %v, want substring %q", warnings, substr)
+			for i, wantCode := range tt.wantCodes {
+				if warnings[i].Code != wantCode {
+					t.Fatalf("warning[%d].Code = %q, want %q; warnings=%v", i, warnings[i].Code, wantCode, warnings)
+				}
+				if warnings[i].Message == "" {
+					t.Fatalf("warning[%d].Message is empty; warnings=%v", i, warnings)
 				}
 			}
 		})
@@ -216,7 +218,7 @@ func TestAuditScript(t *testing.T) {
 }
 
 func TestScriptGenerator(t *testing.T) {
-	validScript := `({request:{url:"{{baseUrl}}/balance",method:"GET"},extractor:function(r){return {remaining:r.balance,unit:"USD"};}})`
+	validScript := `({request:{url:"{{baseUrl}}/balance",method:"GET",headers:{"Authorization":"Bearer {{apiKey}}"}},extractor:function(r){return {remaining:r.balance,unit:"USD"};}})`
 
 	t.Run("calls llm, extracts fenced script, and prevalidates request", func(t *testing.T) {
 		var seenSystem, seenUser string
@@ -260,6 +262,9 @@ func TestScriptGenerator(t *testing.T) {
 		}
 		if result.Script != validScript {
 			t.Fatalf("Script = %q, want %q", result.Script, validScript)
+		}
+		if result.Iterations != 1 {
+			t.Fatalf("Iterations = %d, want 1", result.Iterations)
 		}
 		if _, err := (&ScriptExecutor{}).parseRequest(result.Script); err != nil {
 			t.Fatalf("generated script did not parse: %v", err)
@@ -346,9 +351,34 @@ func TestScriptGenerator(t *testing.T) {
 		}
 	})
 
-	t.Run("populates script audit warnings", func(t *testing.T) {
-		script := `({request:{url:"{{baseUrl}}/balance",method:"GET"},extractor:function(r){return {remaining:r.balance,unit:"USD"};}})`
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	t.Run("fixes script audit warnings in multiple rounds", func(t *testing.T) {
+		firstScript := `({request:{url:"{{baseUrl}}/balance",method:"GET",headers:{"Authorization":"Bearer {{apiKey}}"}},extractor:function(r){return {remaining:r.balance,unit:"USD"};}})`
+		fixedScript := `({request:{url:"{{baseUrl}}/balance",method:"GET",headers:{"Cookie":"{{apiKey}}"}},extractor:function(r){return {remaining:r.balance,unit:"USD"};}})`
+		var calls int
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			var body struct {
+				System   string `json:"system"`
+				Messages []struct {
+					Content string `json:"content"`
+				} `json:"messages"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			if calls == 2 {
+				allContent := body.System
+				for _, msg := range body.Messages {
+					allContent += "\n" + msg.Content
+				}
+				if !strings.Contains(allContent, "FIX mode") || !strings.Contains(allContent, "[missing_cookie]") || !strings.Contains(allContent, firstScript) {
+					t.Fatalf("fix prompt missing context: system=%q messages=%#v", body.System, body.Messages)
+				}
+			}
+			script := firstScript
+			if calls > 1 {
+				script = fixedScript
+			}
 			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":` + strconv.Quote(script) + `}}]}`))
 		}))
 		defer server.Close()
@@ -366,11 +396,115 @@ func TestScriptGenerator(t *testing.T) {
 		if result.ErrorCode != "" {
 			t.Fatalf("GenerateScript() error = %s: %s", result.ErrorCode, result.ErrorMessage)
 		}
-		if len(result.Warnings) == 0 {
-			t.Fatalf("Warnings = nil, want cookie warning")
+		if result.Script != fixedScript || !strings.Contains(result.Script, `"Cookie":"{{apiKey}}"`) {
+			t.Fatalf("Script = %q, want fixed script", result.Script)
 		}
-		if !strings.Contains(strings.Join(result.Warnings, "\n"), "Cookie") {
-			t.Fatalf("Warnings = %v, want Cookie warning", result.Warnings)
+		if len(result.Warnings) != 0 {
+			t.Fatalf("Warnings = %v, want none", result.Warnings)
+		}
+		if result.Iterations != 2 {
+			t.Fatalf("Iterations = %d, want 2", result.Iterations)
+		}
+	})
+
+	t.Run("stops at max iterations and returns last script", func(t *testing.T) {
+		script := `({request:{url:"{{baseUrl}}/balance",method:"GET",headers:{"Authorization":"Bearer {{apiKey}}"}},extractor:function(r){return {remaining:r.balance,unit:"USD"};}})`
+		var calls int
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			calls++
+			iterScript := strings.Replace(script, "/balance", "/balance-"+strconv.Itoa(calls), 1)
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":` + strconv.Quote(iterScript) + `}}]}`))
+		}))
+		defer server.Close()
+
+		result := GenerateScript(context.Background(), NewLLMClient(time.Second), LLMProvider{
+			APIFormat: "openai_chat",
+			APIURL:    server.URL,
+			APIToken:  "sk-test",
+		}, GenerateScriptRequest{
+			Model:          "m",
+			Prompt:         "p",
+			ResponseSample: `{"balance":42}`,
+			RequestInfo:    "GET /balance\nCookie: sid=abc",
+		}, time.Second)
+		if result.ErrorCode != "" {
+			t.Fatalf("GenerateScript() error = %s: %s", result.ErrorCode, result.ErrorMessage)
+		}
+		if result.Iterations != 10 {
+			t.Fatalf("Iterations = %d, want 10", result.Iterations)
+		}
+		if !strings.Contains(result.Script, "/balance-10") {
+			t.Fatalf("Script = %q, want last iteration script", result.Script)
+		}
+		if len(result.Warnings) != 1 || result.Warnings[0].Code != "missing_cookie" {
+			t.Fatalf("Warnings = %v, want missing_cookie", result.Warnings)
+		}
+	})
+
+	t.Run("returns previous script when fix llm call fails", func(t *testing.T) {
+		firstScript := `({request:{url:"{{baseUrl}}/balance",method:"GET",headers:{"Authorization":"Bearer {{apiKey}}"}},extractor:function(r){return {remaining:r.balance,unit:"USD"};}})`
+		var calls int
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			calls++
+			if calls == 2 {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":` + strconv.Quote(firstScript) + `}}]}`))
+		}))
+		defer server.Close()
+
+		result := GenerateScript(context.Background(), NewLLMClient(time.Second), LLMProvider{
+			APIFormat: "openai_chat",
+			APIURL:    server.URL,
+			APIToken:  "sk-test",
+		}, GenerateScriptRequest{
+			Model:          "m",
+			Prompt:         "p",
+			ResponseSample: `{"balance":42}`,
+			RequestInfo:    "GET /balance\nCookie: sid=abc",
+		}, time.Second)
+		if result.ErrorCode != "" {
+			t.Fatalf("GenerateScript() error = %s: %s", result.ErrorCode, result.ErrorMessage)
+		}
+		if result.Script != firstScript {
+			t.Fatalf("Script = %q, want first script", result.Script)
+		}
+		if result.Iterations != 1 {
+			t.Fatalf("Iterations = %d, want 1", result.Iterations)
+		}
+		if len(result.Warnings) != 1 || result.Warnings[0].Code != "missing_cookie" {
+			t.Fatalf("Warnings = %v, want missing_cookie", result.Warnings)
+		}
+	})
+
+	t.Run("does not iterate when first round has no warnings", func(t *testing.T) {
+		script := `({request:{url:"{{baseUrl}}/balance",method:"GET",headers:{"Cookie":"{{apiKey}}"}},extractor:function(r){return {remaining:r.balance,unit:"USD"};}})`
+		var calls int
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			calls++
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":` + strconv.Quote(script) + `}}]}`))
+		}))
+		defer server.Close()
+
+		result := GenerateScript(context.Background(), NewLLMClient(time.Second), LLMProvider{
+			APIFormat: "openai_chat",
+			APIURL:    server.URL,
+			APIToken:  "sk-test",
+		}, GenerateScriptRequest{
+			Model:          "m",
+			Prompt:         "p",
+			ResponseSample: `{"balance":42}`,
+			RequestInfo:    "GET /balance\nCookie: sid=abc",
+		}, time.Second)
+		if result.ErrorCode != "" {
+			t.Fatalf("GenerateScript() error = %s: %s", result.ErrorCode, result.ErrorMessage)
+		}
+		if result.Iterations != 1 || calls != 1 {
+			t.Fatalf("Iterations=%d calls=%d, want one round", result.Iterations, calls)
+		}
+		if len(result.Warnings) != 0 {
+			t.Fatalf("Warnings = %v, want none", result.Warnings)
 		}
 	})
 }

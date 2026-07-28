@@ -412,9 +412,15 @@ export interface GenerateScriptRequest {
   request_info?: string
 }
 
+export interface ScriptAuditWarning {
+  code: string
+  message: string
+}
+
 export interface GenerateScriptResponse {
   script: string
-  warnings?: string[]
+  warnings?: ScriptAuditWarning[]
+  iterations?: number
   error_code?: string
   error_message?: string
 }
