@@ -98,6 +98,8 @@ func buildUserMessage(req GenerateScriptRequest) string {
 
 func extractScript(text string) (string, error) {
 	s := strings.TrimSpace(text)
+
+	// Strip a single surrounding markdown fence (```js / ```javascript / ```).
 	if strings.HasPrefix(s, "```") {
 		if idx := strings.IndexByte(s, '\n'); idx >= 0 {
 			s = strings.TrimSpace(s[idx+1:])
@@ -108,10 +110,40 @@ func extractScript(text string) (string, error) {
 			s = strings.TrimSpace(strings.TrimSuffix(s, "```"))
 		}
 	}
-	if !strings.HasPrefix(s, "(") || !strings.HasSuffix(s, ")") {
-		return "", fmt.Errorf("LLM output does not look like an object literal (expected leading '(' and trailing ')')")
+
+	// Fast path: the remainder is already a bare object literal.
+	if strings.HasPrefix(s, "(") && strings.HasSuffix(s, ")") {
+		return s, nil
 	}
-	return s, nil
+
+	// Fallback: LLMs often wrap the script in explanation despite instructions.
+	// Locate the outermost ({ ... }) anywhere in the text.
+	if extracted, ok := locateObjectLiteral(s); ok {
+		return extracted, nil
+	}
+
+	return "", fmt.Errorf("LLM output does not contain a recognizable ({...}) object literal; first %d bytes: %s", maxErrorBodyBytes, summarizeLLMText(text))
+}
+
+// locateObjectLiteral finds the first "({" (or "(") and the last "})" (or ")")
+// in s and returns the inclusive slice. Returns false when no span is found.
+// This lets extractScript tolerate leading/trailing explanation text that
+// LLMs commonly emit around the script.
+func locateObjectLiteral(s string) (string, bool) {
+	start := strings.Index(s, "({")
+	if start < 0 {
+		start = strings.Index(s, "(")
+	}
+	if start < 0 {
+		return "", false
+	}
+	if end := strings.LastIndex(s, "})"); end > start {
+		return s[start : end+2], true
+	}
+	if end := strings.LastIndex(s, ")"); end > start {
+		return s[start : end+1], true
+	}
+	return "", false
 }
 
 func summarizeLLMText(text string) string {

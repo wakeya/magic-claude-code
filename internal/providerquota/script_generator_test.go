@@ -74,11 +74,22 @@ func TestExtractScript(t *testing.T) {
 			want:  `({request:{url:"{{baseUrl}}/balance",method:"GET"},extractor:function(r){return {remaining:r.balance};}})`,
 		},
 		{
-			name:    "leading explanation rejected",
-			input:   "Here is the script:\n({request:{url:\"{{baseUrl}}/balance\",method:\"GET\"},extractor:function(r){return {remaining:r.balance};}})",
-			wantErr: true,
+			name:  "leading explanation tolerated",
+			input: "Here is the script:\n({request:{url:\"{{baseUrl}}/balance\",method:\"GET\"},extractor:function(r){return {remaining:r.balance};}})",
+			want:  `({request:{url:"{{baseUrl}}/balance",method:"GET"},extractor:function(r){return {remaining:r.balance};}})`,
+		},
+		{
+			name:  "trailing explanation tolerated",
+			input: "({request:{url:\"{{baseUrl}}/balance\",method:\"GET\"},extractor:function(r){return {remaining:r.balance};}})\n\nHope this helps.",
+			want:  `({request:{url:"{{baseUrl}}/balance",method:"GET"},extractor:function(r){return {remaining:r.balance};}})`,
+		},
+		{
+			name:  "explanation both sides with fence (zh LLM style)",
+			input: "好的，这是脚本：\n```javascript\n({request:{url:\"{{baseUrl}}/balance\",method:\"GET\"},extractor:function(r){return {remaining:r.balance};}})\n```\n以上脚本会查询余额。",
+			want:  `({request:{url:"{{baseUrl}}/balance",method:"GET"},extractor:function(r){return {remaining:r.balance};}})`,
 		},
 		{name: "empty rejected", input: "", wantErr: true},
+		{name: "no object literal rejected", input: "I cannot generate that script.", wantErr: true},
 	}
 
 	for _, tt := range tests {
