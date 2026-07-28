@@ -154,7 +154,7 @@ EXTRACTOR CONTRACT - extractor(response) where response is the upstream response
 - Time-window tier (preferred when the response has a time-bounded quota): { window: "five_hour"|"seven_day"|"monthly"|"weekly", utilization: <0-100 USED percent>, resetsAt: <RFC3339|string>|<unix seconds>|<unix ms number>, used?: number, total?: number, remaining?: number, unit?: string }
 - Balance (no time window): { planName?: string, remaining?: number, used?: number, total?: number, unit?: string, isValid?: boolean, invalidMessage?: string }
 - If the upstream returned a business error, return { __error_code: "upstream_business_error"|"invalid_credentials"|..., __error_message: "..." }.
-- utilization is ALWAYS "used percent" in 0-100. If the source field is a 0-1 ratio, multiply by 100. If the source is "remaining percent", compute 100 - remaining.
+- utilization is ALWAYS "used percent" in 0-100. If the source field is a 0-1 ratio, multiply by 100. If the source is "remaining percent", compute 100 - remaining. When unsure whether a "Percentage"/"Usage"/"Rate" field means used vs remaining, DEFAULT to "used" (utilization = value * 100); only use (100 - value) if the field name explicitly contains "remaining"/"left" or the response sample clearly proves remaining semantics. Most quota APIs report "used", not "remaining".
 
 SECURITY - the script runs in a sandboxed goja runtime WITHOUT fetch/require/file/env/process. Do not call any global API; only manipulate the response argument and return literals.
 

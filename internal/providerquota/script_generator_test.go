@@ -13,7 +13,7 @@ import (
 
 func TestSystemPromptContainsContract(t *testing.T) {
 	prompt := systemPromptForScript()
-	for _, want := range []string{"extractor", "utilization", "window", "{{apiKey}}", "bodyType", "sandbox", "ALREADY PARSED", "JSON.parse"} {
+	for _, want := range []string{"extractor", "utilization", "window", "{{apiKey}}", "bodyType", "sandbox", "ALREADY PARSED", "JSON.parse", `DEFAULT to "used"`} {
 		t.Run(want, func(t *testing.T) {
 			if !strings.Contains(prompt, want) {
 				t.Fatalf("system prompt does not contain %q", want)
