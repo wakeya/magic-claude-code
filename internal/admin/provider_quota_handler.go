@@ -21,6 +21,11 @@ func (s *Server) handleProviderQuotaRoutes(w http.ResponseWriter, r *http.Reques
 		s.handleProviderUsageTest(w, r)
 		return
 	}
+	// /api/providers/{id}/usage/generate-script
+	if strings.HasSuffix(path, "/usage/generate-script") {
+		s.handleGenerateUsageScript(w, r)
+		return
+	}
 	// /api/providers/{id}/usage/query
 	if strings.HasSuffix(path, "/usage/query") {
 		s.handleProviderUsageQuery(w, r)
@@ -257,6 +262,73 @@ func (s *Server) handleProviderUsageTest(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+// handleGenerateUsageScript calls an existing provider card as an LLM and
+// returns a generated custom/general quota script for the editor.
+func (s *Server) handleGenerateUsageScript(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error": "method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	path := strings.TrimSuffix(r.URL.Path, "/usage/generate-script")
+	id := strings.TrimPrefix(path, "/api/providers/")
+
+	cfg, err := s.configStore.Load()
+	if err != nil {
+		writeGenerateScriptError(w, http.StatusInternalServerError, "internal_error", "failed to load config")
+		return
+	}
+
+	provider := cfg.GetProviderByID(id)
+	if provider == nil {
+		http.Error(w, `{"error": "provider not found"}`, http.StatusNotFound)
+		return
+	}
+	if !isConfiguredLLMProvider(provider) {
+		writeGenerateScriptError(w, http.StatusBadRequest, "invalid_config", "provider must have a supported api_format and api_token")
+		return
+	}
+
+	var req generateScriptRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeGenerateScriptError(w, http.StatusBadRequest, "invalid_config", "invalid request")
+		return
+	}
+	if strings.TrimSpace(req.Model) == "" || strings.TrimSpace(req.Prompt) == "" || strings.TrimSpace(req.ResponseSample) == "" {
+		writeGenerateScriptError(w, http.StatusBadRequest, "invalid_config", "model, prompt and response_sample are required")
+		return
+	}
+
+	timeout := 30 * time.Second
+	factory := s.providerQuotaLLMClientFunc
+	if factory == nil {
+		factory = providerquota.NewLLMClient
+	}
+	result := providerquota.GenerateScript(
+		r.Context(),
+		factory(timeout),
+		llmProviderFromConfig(provider),
+		providerquota.GenerateScriptRequest{
+			Model:          req.Model,
+			Prompt:         req.Prompt,
+			ResponseSample: req.ResponseSample,
+			RequestInfo:    req.RequestInfo,
+		},
+		timeout,
+	)
+
+	w.Header().Set("Content-Type", "application/json")
+	if result.ErrorCode != "" {
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"script":        "",
+			"error_code":    result.ErrorCode,
+			"error_message": result.ErrorMessage,
+		})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]string{"script": result.Script})
+}
+
 // handleProviderUsageQuery runs a manual production query.
 func (s *Server) handleProviderUsageQuery(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -332,6 +404,37 @@ type providerQuotaUpdateRequest struct {
 	ClearAPIKey              bool    `json:"clear_api_key"` // backward-compatible client input
 	ClearAccessToken         bool    `json:"clear_access_token"`
 	ClearSecretAccessKey     bool    `json:"clear_secret_access_key"`
+}
+
+type generateScriptRequest struct {
+	Model          string `json:"model"`
+	Prompt         string `json:"prompt"`
+	ResponseSample string `json:"response_sample"`
+	RequestInfo    string `json:"request_info,omitempty"`
+}
+
+func isConfiguredLLMProvider(provider *config.Provider) bool {
+	if provider == nil {
+		return false
+	}
+	return provider.APIToken != "" && providerquota.IsLLMAPIFormat(string(provider.APIFormat))
+}
+
+func llmProviderFromConfig(provider *config.Provider) providerquota.LLMProvider {
+	return providerquota.LLMProvider{
+		APIURL:    provider.APIURL,
+		APIToken:  provider.APIToken,
+		APIFormat: string(provider.APIFormat),
+	}
+}
+
+func writeGenerateScriptError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error_code":    code,
+		"error_message": message,
+	})
 }
 
 func validateProviderQuotaSecretPatches(req providerQuotaUpdateRequest) error {

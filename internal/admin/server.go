@@ -44,6 +44,7 @@ type Server struct {
 	// providerTestHTTPClient 仅测试注入：非 nil 时 handleTestProviderByID 用它代替默认客户端，
 	// 让测试在不绑定真实上游/不被 SSRF 拦截的情况下验证凭据恢复钩子。
 	providerTestHTTPClient     *http.Client
+	providerQuotaLLMClientFunc func(time.Duration) *providerquota.LLMClient
 	updater                    *updater.Updater
 	updateApplyDisabledMessage string
 	gatewayRestarter           GatewayRestarter
@@ -225,6 +226,10 @@ func (s *Server) SetFailoverManager(m *failover.Manager) {
 // setProviderTestHTTPClient 是测试专用注入：覆盖 handleTestProviderByID 的 HTTP 客户端。
 func (s *Server) setProviderTestHTTPClient(c *http.Client) {
 	s.providerTestHTTPClient = c
+}
+
+func (s *Server) setProviderQuotaLLMClientFactory(f func(time.Duration) *providerquota.LLMClient) {
+	s.providerQuotaLLMClientFunc = f
 }
 
 // SetEffectiveListenState records the proxy/admin listen addresses/ports that
