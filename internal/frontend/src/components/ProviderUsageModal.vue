@@ -228,8 +228,7 @@
     <ScriptGeneratorModal
       v-if="showGenerator"
       :providerId="providerId"
-      :exposedModels="aiExposedModels"
-      :modelMappings="aiModelMappings"
+      :llmProviders="llmProviders"
       @generated="onGeneratedScript"
       @close="closeGenerator"
     />
@@ -291,7 +290,7 @@ const detectedTokenPlan = ref('')
 const detectedBalance = ref('')
 const isMiMoDetected = ref(false)
 const showGenerator = ref(false)
-const aiProvider = ref<Provider | null>(null)
+const aiProviders = ref<Provider[]>([])
 let previousBodyOverflow = ''
 let disposed = false
 let savedTimer: ReturnType<typeof setTimeout> | null = null
@@ -333,15 +332,19 @@ const isMiMo = computed(() => isMiMoDetected.value)
 const showMiMoWarning = computed(() => shouldShowMiMoWarning(form.template_type, isMiMoDetected.value))
 const showOfficialBalanceInfo = computed(() => shouldShowOfficialBalanceInfo(form.template_type, detectedBalance.value))
 const showZenMuxFields = isZenMux
-const aiExposedModels = computed(() =>
-  (aiProvider.value?.exposed_models || [])
-    .map(model => model.id)
-    .filter((id): id is string => !!id)
-)
-const aiModelMappings = computed(() =>
-  Object.values(aiProvider.value?.model_mappings || {})
-    .map(model => String(model))
-    .filter(model => model.trim() !== '')
+const llmProviders = computed(() =>
+  aiProviders.value.filter(provider =>
+    ['anthropic', 'openai_chat', 'openai_responses'].includes(provider.api_format) &&
+    provider.enabled &&
+    (provider.api_token_configured ?? !!provider.api_token_mask)
+  ).map(provider => ({
+    id: provider.id,
+    name: provider.name,
+    exposed_models: (provider.exposed_models || []).map(model => ({
+      backend_model: model.backend_model,
+    })),
+    model_mappings: provider.model_mappings || {},
+  }))
 )
 
 function errorMessage(error: unknown): string {
@@ -433,9 +436,9 @@ async function loadAIProviderOptions() {
   try {
     const data = await api.getProviders()
     if (disposed) return
-    aiProvider.value = data.providers.find(provider => provider.id === props.providerId) || null
+    aiProviders.value = data.providers
   } catch {
-    aiProvider.value = null
+    aiProviders.value = []
   }
 }
 

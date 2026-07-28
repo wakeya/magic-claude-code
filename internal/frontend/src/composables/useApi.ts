@@ -39,6 +39,7 @@ export interface Provider {
   name: string
   api_url: string
   api_token_mask: string
+  api_token_configured?: boolean
   api_format: 'anthropic' | 'openai_chat' | 'openai_responses'
   openai_extra_params?: Record<string, unknown>
   claude_code_compat_hint: boolean
@@ -404,6 +405,7 @@ export interface ProviderUsageUpdateRequest {
 }
 
 export interface GenerateScriptRequest {
+  llm_provider_id?: string
   model: string
   prompt: string
   response_sample: string

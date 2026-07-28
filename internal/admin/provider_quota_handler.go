@@ -279,7 +279,17 @@ func (s *Server) handleGenerateUsageScript(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	provider := cfg.GetProviderByID(id)
+	var req generateScriptRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeGenerateScriptError(w, http.StatusBadRequest, "invalid_config", "invalid request")
+		return
+	}
+
+	llmProviderID := strings.TrimSpace(req.LLMProviderID)
+	if llmProviderID == "" {
+		llmProviderID = id
+	}
+	provider := cfg.GetProviderByID(llmProviderID)
 	if provider == nil {
 		http.Error(w, `{"error": "provider not found"}`, http.StatusNotFound)
 		return
@@ -289,11 +299,6 @@ func (s *Server) handleGenerateUsageScript(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	var req generateScriptRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeGenerateScriptError(w, http.StatusBadRequest, "invalid_config", "invalid request")
-		return
-	}
 	if strings.TrimSpace(req.Model) == "" || strings.TrimSpace(req.Prompt) == "" || strings.TrimSpace(req.ResponseSample) == "" {
 		writeGenerateScriptError(w, http.StatusBadRequest, "invalid_config", "model, prompt and response_sample are required")
 		return
@@ -407,6 +412,7 @@ type providerQuotaUpdateRequest struct {
 }
 
 type generateScriptRequest struct {
+	LLMProviderID  string `json:"llm_provider_id,omitempty"`
 	Model          string `json:"model"`
 	Prompt         string `json:"prompt"`
 	ResponseSample string `json:"response_sample"`

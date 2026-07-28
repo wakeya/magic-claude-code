@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -110,6 +111,72 @@ func TestGenerateScriptSuccess(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), "sk-llm-secret") {
 		t.Fatalf("response leaked APIToken: %s", rec.Body.String())
+	}
+}
+
+func TestGenerateScriptUsesBodyLLMProviderID(t *testing.T) {
+	script := `({request:{url:"{{baseUrl}}/usage",method:"GET"},extractor:function(r){return {remaining:r.remaining,unit:"credits"};}})`
+	var urlProviderHits atomic.Int32
+	urlProviderServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		urlProviderHits.Add(1)
+		http.Error(w, "wrong provider", http.StatusInternalServerError)
+	}))
+	defer urlProviderServer.Close()
+
+	var selectedProviderHits atomic.Int32
+	selectedProviderServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		selectedProviderHits.Add(1)
+		if r.URL.Path != "/v1/messages" {
+			t.Fatalf("LLM path = %q, want /v1/messages", r.URL.Path)
+		}
+		if got := r.Header.Get("x-api-key"); got != "sk-selected-secret" {
+			t.Fatalf("x-api-key = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"content": []map[string]string{{"type": "text", "text": script}},
+		})
+	}))
+	defer selectedProviderServer.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{
+		{
+			ID: "provider-a", Name: "URL Provider", APIURL: urlProviderServer.URL, APIToken: "sk-url-secret",
+			APIFormat: config.APIFormatAnthropic, Enabled: true, CreatedAt: timeNow(), UpdatedAt: timeNow(),
+		},
+		{
+			ID: "provider-b", Name: "Selected Provider", APIURL: selectedProviderServer.URL, APIToken: "sk-selected-secret",
+			APIFormat: config.APIFormatAnthropic, Enabled: true, CreatedAt: timeNow(), UpdatedAt: timeNow(),
+		},
+	}
+	srv := NewServer(&AdminConfig{Password: "test"}, config.NewMockStore(cfg), nil)
+
+	body := bytes.NewBufferString(`{"llm_provider_id":"provider-b","model":"claude-test","prompt":"query usage","response_sample":"{\"remaining\":7}"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/provider-a/usage/generate-script", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "session", Value: srv.GetAuth().GenerateToken()})
+	rec := httptest.NewRecorder()
+	srv.authMiddlewareFunc(srv.handleProviderRoutes)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Script    string `json:"script"`
+		ErrorCode string `json:"error_code"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.ErrorCode != "" || resp.Script != script {
+		t.Fatalf("response = %#v", resp)
+	}
+	if got := selectedProviderHits.Load(); got != 1 {
+		t.Fatalf("selected provider hits = %d, want 1", got)
+	}
+	if got := urlProviderHits.Load(); got != 0 {
+		t.Fatalf("URL provider hits = %d, want 0", got)
 	}
 }
 
