@@ -16,6 +16,102 @@ const providerUsageSource = readFileSync(providerUsagePath, 'utf8')
 const apiSource = readFileSync(apiPath, 'utf8')
 const i18nSource = readFileSync(i18nPath, 'utf8')
 
+const qwenScript = `({
+  request: {
+    url: "{{baseUrl}}/data/api.json?product=sfm_bailian&action=BroadScopeAspnGateway&api=zeldaHttp.apikeyMgr.%2Ftokenplan%2Fpersonal%2Fapi%2Fv2%2Fusage",
+    method: "POST",
+    bodyType: "form",
+    headers: {
+      "Cookie": "{{apiKey}}",
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Accept": "application/json, text/plain, */*",
+      "Referer": "https://platform.qianwenai.com/home/billing/subscription/token-plan-individual"
+    },
+    body: {
+      product: "sfm_bailian",
+      action: "BroadScopeAspnGateway",
+      sec_token: "{{apiKey2}}",
+      region: "cn-beijing",
+      params: {
+        Api: "zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage",
+        Data: {
+          cornerstoneParam: {
+            domain: "platform.qianwenai.com",
+            consoleSite: "QIANWENAI",
+            console: "ONE_CONSOLE",
+            xsp_lang: "zh-CN",
+            protocol: "V2",
+            productCode: "p_efm"
+          }
+        },
+        V: "1.0"
+      }
+    }
+  },
+  extractor: function(response) {
+    if (response.code !== "200" || response.successResponse !== true) {
+      return { __error_code: "upstream_business_error", __error_message: (response.data && response.data.errorMsg) || "qianwen usage query failed" };
+    }
+    var inner = response.data && response.data.DataV2 && response.data.DataV2.data && response.data.DataV2.data.data;
+    if (!inner) { return { __error_code: "invalid_response", __error_message: "missing data.DataV2.data.data" }; }
+    var tiers = [];
+    if (typeof inner.per5HourPercentage === "number") { tiers.push({ window: "five_hour", utilization: inner.per5HourPercentage * 100 }); }
+    if (typeof inner.per1WeekPercentage === "number") { tiers.push({ window: "seven_day", utilization: inner.per1WeekPercentage * 100, resetsAt: inner.per1WeekResetTime }); }
+    if (tiers.length === 0) { return { __error_code: "empty_result", __error_message: "no percentage fields" }; }
+    return tiers;
+  }
+})`
+
+const balanceScript = `({
+  request: {
+    url: "{{baseUrl}}/user/balance",
+    method: "GET",
+    headers: {
+      "Authorization": "Bearer {{apiKey}}",
+      "Accept": "application/json"
+    }
+  },
+  extractor: function(response) {
+    var infos = response.balance_infos || [];
+    var balances = [];
+    for (var i = 0; i < infos.length; i++) {
+      balances.push({
+        planName: infos[i].currency,
+        remaining: infos[i].total_balance,
+        unit: infos[i].currency
+      });
+    }
+    return balances;
+  }
+})`
+
+const templateScript = `({
+  request: {
+    // {{baseUrl}} is replaced from the Base URL field; the URL must share host with it (same-origin).
+    url: "{{baseUrl}}/your/endpoint",
+    method: "POST",
+    // bodyType:"form" encodes body as application/x-www-form-urlencoded;
+    // nested object values are JSON-marshaled automatically (e.g. params).
+    bodyType: "form",
+    headers: {
+      // {{apiKey}} / {{apiKey2}} are replaced from Script API Key / Additional secret; never appear in JS runtime.
+      "Cookie": "{{apiKey}}",
+      "Content-Type": "application/x-www-form-urlencoded"
+    },
+    body: {
+      token: "{{apiKey2}}",
+      param1: "value1",
+      nested: { key: "value" }
+    }
+  },
+  extractor: function(response) {
+    // window: five_hour | seven_day | monthly; utilization is always 0-100 used percent.
+    return [
+      { window: "five_hour", utilization: response.used_pct }
+    ];
+  }
+})`
+
 test('ScriptGeneratorModal exists and declares the required props and events', () => {
   assert.equal(modalExists, true, 'ScriptGeneratorModal.vue must exist')
   assert.match(modalSource, /providerId:\s*string/)
@@ -70,6 +166,43 @@ test('ScriptGeneratorModal disables generation while loading and displays transl
   assert.match(modalSource, /role="alert"/)
 })
 
+test('ScriptGeneratorModal renders the hardcoded script examples library', () => {
+  assert.match(modalSource, /max-w-\[1100px\]/)
+  assert.match(modalSource, /const scriptExamples = \[/)
+  assert.match(modalSource, /id: 'qwen'/)
+  assert.match(modalSource, /id: 'balance'/)
+  assert.match(modalSource, /id: 'template'/)
+  for (const key of [
+    'quota.ai_generate_examples_title',
+    'quota.ai_generate_ex_qwen_title',
+    'quota.ai_generate_ex_balance_title',
+    'quota.ai_generate_ex_template_title',
+  ]) {
+    assert.match(modalSource, new RegExp(`'${key}'`), `missing example key ${key}`)
+  }
+  assert.match(modalSource, /v-for="ex in scriptExamples"/)
+  assert.match(modalSource, /\{\{ t\(ex\.titleKey\) \}\}/)
+  assert.match(modalSource, /<pre[\s\S]*>\{\{ ex\.script \}\}<\/pre>/)
+})
+
+test('ScriptGeneratorModal keeps example script bodies exactly as specified', () => {
+  assert.ok(modalSource.includes(qwenScript), 'qwen example script differs from spec')
+  assert.ok(modalSource.includes(balanceScript), 'balance example script differs from spec')
+  assert.ok(modalSource.includes(templateScript), 'template example script differs from spec')
+})
+
+test('ScriptGeneratorModal copies an example script and shows copied or failed feedback', () => {
+  assert.match(modalSource, /async function copyExample\(id: string\)/)
+  assert.match(modalSource, /navigator\.clipboard\?\.writeText/)
+  assert.match(modalSource, /await navigator\.clipboard\.writeText\(ex\.script\)/)
+  assert.match(modalSource, /document\.execCommand\('copy'\)/)
+  assert.match(modalSource, /copiedId\.value = id/)
+  assert.match(modalSource, /copyFailedId\.value = id/)
+  assert.match(modalSource, /t\('quota\.ai_generate_copied'\)/)
+  assert.match(modalSource, /t\('quota\.ai_generate_copy_failed'\)/)
+  assert.match(modalSource, /setTimeout\(\(\) => \{ if \(copiedId\.value === id\) copiedId\.value = '' \}, 2000\)/)
+})
+
 test('useApi exposes generateUsageScript with the specified request and response types', () => {
   assert.match(apiSource, /export interface GenerateScriptRequest[\s\S]*llm_provider_id\?:\s*string[\s\S]*model:\s*string[\s\S]*response_sample:\s*string[\s\S]*request_info\?:\s*string/)
   assert.match(apiSource, /export interface GenerateScriptResponse[\s\S]*script:\s*string[\s\S]*error_code\?:\s*string/)
@@ -107,6 +240,16 @@ test('defines required bilingual AI generation messages and error codes', () => 
     'quota.ai_generate_request_info',
     'quota.ai_generate_submit',
     'quota.ai_generating',
+    'quota.ai_generate_examples_title',
+    'quota.ai_generate_copy',
+    'quota.ai_generate_copied',
+    'quota.ai_generate_copy_failed',
+    'quota.ai_generate_ex_qwen_title',
+    'quota.ai_generate_ex_qwen_desc',
+    'quota.ai_generate_ex_balance_title',
+    'quota.ai_generate_ex_balance_desc',
+    'quota.ai_generate_ex_template_title',
+    'quota.ai_generate_ex_template_desc',
     'error.invalid_config',
     'error.missing_credentials',
     'error.request_timeout',
