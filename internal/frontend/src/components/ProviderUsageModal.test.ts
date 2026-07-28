@@ -31,7 +31,7 @@ test('declares route-independent provider props and close/saved events', () => {
   assert.match(modalSource, /defineEmits<\{\s*close:\s*\[\]\s*saved:\s*\[snapshot:\s*QuotaSnapshot\s*\|\s*null\]\s*\}>\(\)/s)
   assert.doesNotMatch(modalSource, /useRoute|useRouter|vue-router/)
   assert.match(modalSource, /api\.getProviderUsage\(props\.providerId\)/)
-  assert.doesNotMatch(modalSource, /api\.getProviders\(/)
+  assert.match(modalSource, /api\.getProviders\(\)/)
 })
 
 test('renders the responsive, accessible shared modal shell and complete result layout', () => {

@@ -157,7 +157,17 @@
             </div>
 
             <div v-if="showScript">
-              <label class="block text-sm font-medium mb-1">{{ t('quota.script') }}</label>
+              <div class="flex items-center justify-between gap-3 mb-1">
+                <label class="block text-sm font-medium">{{ t('quota.script') }}</label>
+                <button
+                  v-if="showScript"
+                  type="button"
+                  class="text-xs text-primary hover:underline whitespace-nowrap"
+                  @click="openGenerator"
+                >
+                  {{ t('quota.ai_generate') }}
+                </button>
+              </div>
               <textarea v-model="form.script" rows="12" class="w-full app-control rounded-md px-3 py-2 text-sm font-mono" spellcheck="false"></textarea>
               <div v-if="form.template_type === 'custom'" class="text-xs text-text-secondary mt-1">
                 {{ t('quota.return_fields_help') }}
@@ -215,6 +225,14 @@
         </div>
       </footer>
     </div>
+    <ScriptGeneratorModal
+      v-if="showGenerator"
+      :providerId="providerId"
+      :exposedModels="aiExposedModels"
+      :modelMappings="aiModelMappings"
+      @generated="onGeneratedScript"
+      @close="closeGenerator"
+    />
   </div>
 </template>
 
@@ -223,12 +241,14 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useApi } from '@/composables/useApi'
 import { useI18n } from '@/composables/useI18n'
 import type {
+  Provider,
   ProviderQuotaResult,
   ProviderUsageUpdateRequest,
   PublicQuotaConfig,
   QuotaSnapshot,
 } from '@/composables/useApi'
 import QuotaResultDisplay from '@/components/QuotaResultDisplay.vue'
+import ScriptGeneratorModal from '@/components/ScriptGeneratorModal.vue'
 import {
   effectiveTokenPlanProvider as resolveEffectiveProvider,
   showBaseURLField,
@@ -270,6 +290,8 @@ const testResult = ref<ProviderQuotaResult | null>(null)
 const detectedTokenPlan = ref('')
 const detectedBalance = ref('')
 const isMiMoDetected = ref(false)
+const showGenerator = ref(false)
+const aiProvider = ref<Provider | null>(null)
 let previousBodyOverflow = ''
 let disposed = false
 let savedTimer: ReturnType<typeof setTimeout> | null = null
@@ -311,6 +333,16 @@ const isMiMo = computed(() => isMiMoDetected.value)
 const showMiMoWarning = computed(() => shouldShowMiMoWarning(form.template_type, isMiMoDetected.value))
 const showOfficialBalanceInfo = computed(() => shouldShowOfficialBalanceInfo(form.template_type, detectedBalance.value))
 const showZenMuxFields = isZenMux
+const aiExposedModels = computed(() =>
+  (aiProvider.value?.exposed_models || [])
+    .map(model => model.id)
+    .filter((id): id is string => !!id)
+)
+const aiModelMappings = computed(() =>
+  Object.values(aiProvider.value?.model_mappings || {})
+    .map(model => String(model))
+    .filter(model => model.trim() !== '')
+)
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -397,6 +429,24 @@ function populateForm(config: PublicQuotaConfig) {
   clearSubmittedSecrets()
 }
 
+async function loadAIProviderOptions() {
+  try {
+    const data = await api.getProviders()
+    if (disposed) return
+    aiProvider.value = data.providers.find(provider => provider.id === props.providerId) || null
+  } catch {
+    aiProvider.value = null
+  }
+}
+
+function openGenerator() {
+  showGenerator.value = true
+}
+
+function closeGenerator() {
+  showGenerator.value = false
+}
+
 function formatRelativeTime(isoStr: string): string {
   const diffMs = Date.now() - new Date(isoStr).getTime()
   if (diffMs < 60000) return t('quota.just_now')
@@ -420,6 +470,7 @@ async function loadConfig() {
     detectedBalance.value = data.detected_balance || ''
     isMiMoDetected.value = !!data.is_mimo
     populateForm(data.config)
+    await loadAIProviderOptions()
   } catch (error: unknown) {
     if (disposed) return
     const detail = errorMessage(error)
@@ -517,6 +568,11 @@ async function saveConfig() {
   } finally {
     if (!disposed) saving.value = false
   }
+}
+
+function onGeneratedScript(script: string) {
+  form.script = script
+  showGenerator.value = false
 }
 
 onMounted(async () => {

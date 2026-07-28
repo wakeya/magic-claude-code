@@ -403,6 +403,19 @@ export interface ProviderUsageUpdateRequest {
   clear_secret_access_key?: boolean
 }
 
+export interface GenerateScriptRequest {
+  model: string
+  prompt: string
+  response_sample: string
+  request_info?: string
+}
+
+export interface GenerateScriptResponse {
+  script: string
+  error_code?: string
+  error_message?: string
+}
+
 export function useApi() {
   function buildQuery(params?: UsageParams): string {
     const search = new URLSearchParams()
@@ -767,6 +780,19 @@ export function useApi() {
     return res.json()
   }
 
+  async function generateUsageScript(providerId: string, req: GenerateScriptRequest): Promise<GenerateScriptResponse> {
+    const res = await fetch(`/api/providers/${providerId}/usage/generate-script`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    })
+    const body = await res.json().catch(() => ({ script: '', error_message: 'request failed' }))
+    if (!res.ok) {
+      throw new Error(body.error_message || body.error || `HTTP ${res.status}`)
+    }
+    return body
+  }
+
   async function getAllProviderUsageSnapshots(): Promise<{ snapshots: Record<string, QuotaSnapshot> }> {
     const res = await fetch('/api/providers/usage')
     if (!res.ok) throw new Error('Failed to fetch snapshots')
@@ -849,6 +875,7 @@ export function useApi() {
     updateProviderUsage,
     testProviderUsage,
     queryProviderUsage,
+    generateUsageScript,
     getAllProviderUsageSnapshots,
     getFailoverSettings,
     setFailoverSettings,
