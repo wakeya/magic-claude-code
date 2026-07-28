@@ -70,7 +70,7 @@ REQUEST CONTRACT:
 - request.body: for POST, a JSON object (default), OR set request.bodyType: "form" and make body a flat object whose values may be strings/numbers/booleans/nested objects (nested values are JSON-marshaled then form-encoded).
 - The request URL must share scheme+host+port with {{baseUrl}} (same-origin enforced).
 
-EXTRACTOR CONTRACT - extractor(response) returns one object or an array of objects. Each item:
+EXTRACTOR CONTRACT - extractor(response) where response is the upstream response ALREADY PARSED as a JSON object (object/array/string/number) by the runtime. Do NOT call JSON.parse on it and do NOT access response.body or response.json() (those are browser fetch APIs that do not exist here) — use its fields directly (e.g. response.data.DataV2.data.data). extractor returns one object or an array of objects. Each item:
 - Time-window tier (preferred when the response has a time-bounded quota): { window: "five_hour"|"seven_day"|"monthly"|"weekly", utilization: <0-100 USED percent>, resetsAt: <RFC3339|string>|<unix seconds>|<unix ms number>, used?: number, total?: number, remaining?: number, unit?: string }
 - Balance (no time window): { planName?: string, remaining?: number, used?: number, total?: number, unit?: string, isValid?: boolean, invalidMessage?: string }
 - If the upstream returned a business error, return { __error_code: "upstream_business_error"|"invalid_credentials"|..., __error_message: "..." }.
