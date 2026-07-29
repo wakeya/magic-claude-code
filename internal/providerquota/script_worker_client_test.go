@@ -101,3 +101,43 @@ func TestProcessScriptWorkerRejectsTrailingOutput(t *testing.T) {
 		t.Fatalf("ParseRequest() error = %q", err)
 	}
 }
+
+func TestProcessScriptWorkerMemoryLimit(t *testing.T) {
+	if scriptWorkerRaceBuild {
+		t.Skip("production 128 MiB limit is verified by a non-race worker")
+	}
+	if scriptWorkerHardMemoryLimit != 128*1024*1024 {
+		t.Fatalf("hard memory limit = %d, want 128 MiB", scriptWorkerHardMemoryLimit)
+	}
+	if scriptWorkerSoftMemoryLimit >= int64(scriptWorkerHardMemoryLimit) {
+		t.Fatalf("soft memory limit %d must be below hard limit %d",
+			scriptWorkerSoftMemoryLimit, scriptWorkerHardMemoryLimit)
+	}
+
+	runner := newProcessScriptWorkerRunner()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := runner.ParseRequest(ctx, `({
+		request: {url: "https://api.example.com", method: "GET"},
+		bomb: Array(Number("20000000")).fill(1),
+		extractor: function(response) { return response; }
+	})`)
+	if err == nil {
+		t.Fatal("ParseRequest() error = nil, want hard memory termination")
+	}
+	if err.Error() != "script worker terminated unexpectedly" {
+		t.Fatalf("ParseRequest() error = %q, want hard memory termination", err)
+	}
+
+	req, err := runner.ParseRequest(ctx, `({
+		request: {url: "https://api.example.com/healthy", method: "GET"},
+		extractor: function(response) { return response; }
+	})`)
+	if err != nil {
+		t.Fatalf("normal worker after memory termination: %v", err)
+	}
+	if req.URL != "https://api.example.com/healthy" {
+		t.Fatalf("normal worker URL = %q", req.URL)
+	}
+}

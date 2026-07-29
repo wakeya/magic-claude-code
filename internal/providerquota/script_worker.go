@@ -9,9 +9,7 @@ import (
 type scriptWorkerLimitFunc func() (cleanup func(), err error)
 
 func RunScriptWorker(in io.Reader, out io.Writer) int {
-	return runScriptWorker(in, out, func() (func(), error) {
-		return nil, nil
-	})
+	return runScriptWorker(in, out, applyScriptWorkerResourceLimits)
 }
 
 func runScriptWorker(in io.Reader, out io.Writer, applyLimits scriptWorkerLimitFunc) int {

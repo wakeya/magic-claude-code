@@ -7,7 +7,7 @@
 **Stack:** Go 1.26, `os/exec`, `runtime/debug`, `golang.org/x/sys/unix|windows`, goja
 **Last updated:** 2026-07-29
 **Status:** implementing
-**Progress:** 2 / 5
+**Progress:** 3 / 5
 
 ## Overall Analysis (Source Analysis)
 
@@ -174,7 +174,7 @@ Linux/macOS workers use `unix.Setrlimit(RLIMIT_DATA, ...)`. Windows workers use 
 | --- | --- | --- | --- | --- |
 | 1 | ✅ | Define the protocol and split existing in-process goja operations | protocol + worker server | worker unit tests |
 | 2 | ✅ | Implement current-binary re-exec client and hidden entry | client + main/TestMain dispatch | re-exec integration tests |
-| 3 | ⬜ | Add cross-platform memory, time, and IPC boundaries | limit files + bounded I/O | resource tests and cross-builds |
+| 3 | ✅ | Add cross-platform memory, time, and IPC boundaries | limit files + bounded I/O | resource tests and cross-builds |
 | 4 | ⬜ | Integrate `ScriptExecutor` and prove behavior compatibility | `script.go` + regressions | full providerquota tests |
 | 5 | ⬜ | Validate OOM isolation, run full regression, and write back evidence | validation evidence | race, vet, six builds |
 
@@ -327,7 +327,7 @@ Linux/macOS workers use `unix.Setrlimit(RLIMIT_DATA, ...)`. Windows workers use 
 
 - [ ] First test limit setup order and setup-failure fail-closed behavior; verify a normal non-race Linux fixture under 128 MiB.
 - [ ] Add `script_worker_memory_default.go` (`!race`, 128 MiB hard and lower soft) and `script_worker_memory_race.go` (`race`, higher ThreadSanitizer-only values).
-- [ ] Add `script_worker_limit_linux_darwin.go` (`linux || darwin`) calling `unix.Setrlimit(unix.RLIMIT_DATA, &unix.Rlimit{Cur: limit, Max: limit})`.
+- [ ] Add `script_worker_limit_unix.go` (`linux || darwin`; use a neutral filename to avoid Go's implicit `_darwin.go` suffix constraint) calling `unix.Setrlimit(unix.RLIMIT_DATA, &unix.Rlimit{Cur: limit, Max: limit})`.
 - [ ] Add `script_worker_limit_windows.go`: create a Job Object, set `JOB_OBJECT_LIMIT_PROCESS_MEMORY`, set `ProcessMemoryLimit`, and call `AssignProcessToJobObject(job, windows.CurrentProcess())`; retain the handle until return.
 - [ ] Add an explicit fail-closed implementation for other platforms; apply the hard limit before `debug.SetMemoryLimit`.
 - [ ] Run Linux tests and `CGO_ENABLED=0` builds for Linux/macOS/Windows amd64/arm64.
@@ -335,7 +335,10 @@ Linux/macOS workers use `unix.Setrlimit(RLIMIT_DATA, ...)`. Windows workers use 
 
 #### Verification
 
-- [ ] Not run during the specification stage; record actual focused-command output here after this task.
+- [x] `go test ./internal/providerquota -run TestProcessScriptWorkerMemoryLimit -count=1 -v` — one non-race production-boundary test passed; after the dynamic array terminated its worker, the parent started a healthy worker.
+- [x] `go test -race ./internal/providerquota -run 'TestProcessScriptWorker$|TestProcessScriptWorkerMemoryLimit' -count=1 -v` — the re-exec happy path passed and the production 128 MiB case skipped as designed in race builds.
+- [x] `CGO_ENABLED=0` cross-builds for Linux/macOS/Windows amd64/arm64 — all six builds succeeded.
+- [x] Debug record: Go filename rules implicitly constrained `script_worker_limit_linux_darwin.go` to Darwin; a neutral `script_worker_limit_unix.go` filename plus the explicit build tag restored the Linux implementation.
 
 ### Task 4: ScriptExecutor integration and full compatibility regression
 

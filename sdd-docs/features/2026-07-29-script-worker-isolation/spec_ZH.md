@@ -7,7 +7,7 @@
 **技术栈：** Go 1.26、`os/exec`、`runtime/debug`、`golang.org/x/sys/unix|windows`、goja
 **最后更新：** 2026-07-29
 **状态：** implementing
-**进度：** 2 / 5
+**进度：** 3 / 5
 
 ## 整体分析（源站分析）
 
@@ -174,7 +174,7 @@ Linux/macOS worker 使用 `unix.Setrlimit(RLIMIT_DATA, ...)`；Windows worker �
 | --- | --- | --- | --- | --- |
 | 1 | ✅ | 定义协议并拆分现有 goja in-process 操作 | protocol + worker server | worker 单元测试 |
 | 2 | ✅ | 实现当前二进制重启 client 与隐藏入口 | client + main/TestMain dispatch | re-exec 集成测试 |
-| 3 | ⬜ | 加入跨平台内存、时间和 IPC 边界 | limit 文件 + bounded I/O | 资源边界测试、交叉编译 |
+| 3 | ✅ | 加入跨平台内存、时间和 IPC 边界 | limit 文件 + bounded I/O | 资源边界测试、交叉编译 |
 | 4 | ⬜ | 接入 `ScriptExecutor` 并证明行为兼容 | `script.go` + 回归测试 | providerquota 全包测试 |
 | 5 | ⬜ | OOM 攻击验证、全量回归和规格回写 | 验证证据 | race、vet、六平台构建 |
 
@@ -327,7 +327,7 @@ Linux/macOS worker 使用 `unix.Setrlimit(RLIMIT_DATA, ...)`；Windows worker �
 
 - [ ] 先写资源限制调用顺序与失败 fail-closed 测试，并在非 race Linux 测试中验证正常脚本可在 128 MiB 下运行。
 - [ ] 新增 `script_worker_memory_default.go`（`!race`，128 MiB hard、较低 soft）和 `script_worker_memory_race.go`（`race`，仅供 ThreadSanitizer 的较高值）。
-- [ ] 新增 `script_worker_limit_linux_darwin.go`（build tags `linux || darwin`），调用 `unix.Setrlimit(unix.RLIMIT_DATA, &unix.Rlimit{Cur: limit, Max: limit})`。
+- [ ] 新增 `script_worker_limit_unix.go`（build tags `linux || darwin`；使用中性文件名避免 Go 的 `_darwin.go` 隐式后缀约束），调用 `unix.Setrlimit(unix.RLIMIT_DATA, &unix.Rlimit{Cur: limit, Max: limit})`。
 - [ ] 新增 `script_worker_limit_windows.go`：创建 Job Object，设置 `JOB_OBJECT_LIMIT_PROCESS_MEMORY`，赋值 `ProcessMemoryLimit`，再 `AssignProcessToJobObject(job, windows.CurrentProcess())`；保持 handle 到 worker 返回。
 - [ ] 新增其他平台 fail-closed 实现；在共同 worker 初始化中先应用硬上限，再调用 `debug.SetMemoryLimit`。
 - [ ] 执行 Linux 定向测试；运行 Linux、macOS、Windows amd64/arm64 的 `CGO_ENABLED=0 go build ./cmd/server`。
@@ -335,7 +335,10 @@ Linux/macOS worker 使用 `unix.Setrlimit(RLIMIT_DATA, ...)`；Windows worker �
 
 #### 验证
 
-- [ ] 规格阶段尚未执行；完成本任务的定向命令后在此记录实际输出。
+- [x] `go test ./internal/providerquota -run TestProcessScriptWorkerMemoryLimit -count=1 -v` —— 1 个非 race 生产边界测试通过；动态数组终止 worker 后，父进程成功启动健康 worker。
+- [x] `go test -race ./internal/providerquota -run 'TestProcessScriptWorker$|TestProcessScriptWorkerMemoryLimit' -count=1 -v` —— re-exec 正常路径通过，生产 128 MiB 用例按设计在 race 构建跳过。
+- [x] `CGO_ENABLED=0` 对 Linux/macOS/Windows amd64/arm64 六目标交叉编译 —— 6 个 build 全部成功。
+- [x] 调试记录：`script_worker_limit_linux_darwin.go` 被 Go 文件名规则隐式限制为 Darwin；改用中性文件名 `script_worker_limit_unix.go` + 显式 build tag 后 Linux 测试通过。
 
 ### 任务 4：接入 ScriptExecutor 与完全兼容回归
 
