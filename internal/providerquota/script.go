@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +23,17 @@ const (
 	maxResponseBodySize  = 2 * 1024 * 1024 // 2 MiB
 	maxRedirects         = 3
 	maxErrorBodyBytes    = 512
+	maxScriptArrayLength = 1_000_000
+	maxScriptStringBytes = 100 * 1024
+	maxArrayCallCount    = 32
+)
+
+var (
+	scriptArrayCallPattern = regexp.MustCompile(`(?i)(?:\bnew\s+)?\bArray\s*\(\s*([0-9]+(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?)\s*\)`)
+	scriptAnyArrayPattern  = regexp.MustCompile(`(?i)(?:\bnew\s+)?\bArray\s*\(`)
+	scriptArrayApply       = regexp.MustCompile(`(?i)\bArray\s*\.\s*apply\s*\(`)
+	scriptWhileLoopPattern = regexp.MustCompile(`(?i)\bwhile\s*\(\s*(?:true|1)\s*\)`)
+	scriptForLoopPattern   = regexp.MustCompile(`(?i)\bfor\s*\(\s*;\s*;\s*\)`)
 )
 
 // ScriptRequest describes the HTTP request produced by the script's first phase.
@@ -148,6 +161,10 @@ func (e *ScriptExecutor) ExecuteScript(ctx context.Context, script string, place
 }
 
 func (e *ScriptExecutor) parseRequest(script string) (*ScriptRequest, error) {
+	if err := rejectPotentialResourceAbuse(script); err != nil {
+		return nil, err
+	}
+
 	vm := goja.New()
 	defer vm.Interrupt("")
 
@@ -190,6 +207,63 @@ func (e *ScriptExecutor) parseRequest(script string) (*ScriptRequest, error) {
 	}
 
 	return &req, nil
+}
+
+func rejectPotentialResourceAbuse(script string) error {
+	if scriptWhileLoopPattern.MatchString(script) || scriptForLoopPattern.MatchString(script) || scriptArrayApply.MatchString(script) {
+		return fmt.Errorf("script parse rejected: potential resource abuse")
+	}
+	for _, match := range scriptArrayCallPattern.FindAllStringSubmatch(script, -1) {
+		n, err := strconv.ParseFloat(match[1], 64)
+		if err == nil && n > maxScriptArrayLength {
+			return fmt.Errorf("script parse rejected: potential resource abuse")
+		}
+	}
+	if len(scriptAnyArrayPattern.FindAllString(script, maxArrayCallCount+1)) > maxArrayCallCount {
+		return fmt.Errorf("script parse rejected: potential resource abuse")
+	}
+	if hasHugeScriptStringLiteral(script) {
+		return fmt.Errorf("script parse rejected: potential resource abuse")
+	}
+	return nil
+}
+
+func hasHugeScriptStringLiteral(script string) bool {
+	var quote byte
+	start := 0
+	escaped := false
+
+	for i := 0; i < len(script); i++ {
+		ch := script[i]
+		if quote == 0 {
+			if ch == '\'' || ch == '"' || ch == '`' {
+				quote = ch
+				start = i + 1
+			}
+			continue
+		}
+
+		if escaped {
+			escaped = false
+			continue
+		}
+		if ch == '\\' {
+			escaped = true
+			continue
+		}
+		if ch == quote {
+			if i-start > maxScriptStringBytes {
+				return true
+			}
+			quote = 0
+			continue
+		}
+		if i-start > maxScriptStringBytes {
+			return true
+		}
+	}
+
+	return quote != 0 && len(script)-start > maxScriptStringBytes
 }
 
 func (e *ScriptExecutor) runExtractor(script string, responseBody string) (any, error) {
@@ -245,8 +319,10 @@ func (e *ScriptExecutor) runExtractor(script string, responseBody string) (any, 
 // doHTTPRequest performs the HTTP request with redirect origin validation.
 func (e *ScriptExecutor) doHTTPRequest(ctx context.Context, req *ScriptRequest, effectiveBaseURL string) ([]byte, int, error) {
 	var bodyReader io.Reader
+	var bodyBytes []byte
 	if req.Body != nil {
-		bodyBytes, err := encodeRequestBody(req)
+		var err error
+		bodyBytes, err = encodeRequestBody(req)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -261,13 +337,7 @@ func (e *ScriptExecutor) doHTTPRequest(ctx context.Context, req *ScriptRequest, 
 		return nil, 0, fmt.Errorf("create request: %w", err)
 	}
 
-	for k, v := range req.Headers {
-		httpReq.Header.Set(k, v)
-	}
-	// Auto-fill Content-Type for form body if the script did not set it.
-	if strings.EqualFold(req.BodyType, "form") && httpReq.Header.Get("Content-Type") == "" {
-		httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	}
+	applyScriptRequestHeaders(httpReq, req)
 
 	// Resolve the allowed origin from effective base URL.
 	var allowedOrigin *url.URL
@@ -308,13 +378,15 @@ func (e *ScriptExecutor) doHTTPRequest(ctx context.Context, req *ScriptRequest, 
 			}
 
 			currentURL = redirectURL.String()
-			httpReq, err = http.NewRequestWithContext(ctx, req.Method, currentURL, nil)
+			var redirectBody io.Reader
+			if bodyBytes != nil {
+				redirectBody = bytes.NewReader(bodyBytes)
+			}
+			httpReq, err = http.NewRequestWithContext(ctx, req.Method, currentURL, redirectBody)
 			if err != nil {
 				return nil, 0, err
 			}
-			for k, v := range req.Headers {
-				httpReq.Header.Set(k, v)
-			}
+			applyScriptRequestHeaders(httpReq, req)
 			continue
 		}
 
@@ -330,6 +402,16 @@ func (e *ScriptExecutor) doHTTPRequest(ctx context.Context, req *ScriptRequest, 
 	}
 
 	return nil, 0, fmt.Errorf("too many redirects (max %d)", maxRedirects)
+}
+
+func applyScriptRequestHeaders(httpReq *http.Request, req *ScriptRequest) {
+	for k, v := range req.Headers {
+		httpReq.Header.Set(k, v)
+	}
+	// Auto-fill Content-Type for form body if the script did not set it.
+	if strings.EqualFold(req.BodyType, "form") && httpReq.Header.Get("Content-Type") == "" {
+		httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
 }
 
 // validateScriptRequest checks that the request is safe.
