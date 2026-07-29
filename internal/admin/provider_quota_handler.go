@@ -3,12 +3,21 @@ package admin
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"magic-claude-code/internal/config"
 	"magic-claude-code/internal/providerquota"
+)
+
+const (
+	generateScriptMaxBodyBytes        = 256 * 1024
+	generateScriptMaxPromptBytes      = 8 * 1024
+	generateScriptMaxSampleBytes      = 32 * 1024
+	generateScriptMaxRequestInfoBytes = 16 * 1024
+	generateScriptMaxModelBytes       = 128
 )
 
 // handleProviderQuotaRoutes dispatches /api/providers/{id}/usage/* routes.
@@ -269,6 +278,7 @@ func (s *Server) handleGenerateUsageScript(w http.ResponseWriter, r *http.Reques
 		http.Error(w, `{"error": "method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, generateScriptMaxBodyBytes)
 
 	path := strings.TrimSuffix(r.URL.Path, "/usage/generate-script")
 	id := strings.TrimPrefix(path, "/api/providers/")
@@ -281,7 +291,15 @@ func (s *Server) handleGenerateUsageScript(w http.ResponseWriter, r *http.Reques
 
 	var req generateScriptRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if strings.Contains(err.Error(), "http: request body too large") || err == io.ErrUnexpectedEOF {
+			writeGenerateScriptError(w, http.StatusBadRequest, "invalid_config", "request body exceeds size limit")
+			return
+		}
 		writeGenerateScriptError(w, http.StatusBadRequest, "invalid_config", "invalid request")
+		return
+	}
+	if !isGenerateScriptRequestSizeValid(req) {
+		writeGenerateScriptError(w, http.StatusBadRequest, "invalid_config", "field exceeds size limit")
 		return
 	}
 
@@ -292,6 +310,10 @@ func (s *Server) handleGenerateUsageScript(w http.ResponseWriter, r *http.Reques
 	provider := cfg.GetProviderByID(llmProviderID)
 	if provider == nil {
 		http.Error(w, `{"error": "provider not found"}`, http.StatusNotFound)
+		return
+	}
+	if !provider.Enabled {
+		writeGenerateScriptError(w, http.StatusBadRequest, "invalid_config", "LLM provider is disabled")
 		return
 	}
 	if !isConfiguredLLMProvider(provider) {
@@ -431,7 +453,14 @@ func isConfiguredLLMProvider(provider *config.Provider) bool {
 	if provider == nil {
 		return false
 	}
-	return provider.APIToken != "" && providerquota.IsLLMAPIFormat(string(provider.APIFormat))
+	return provider.Enabled && provider.APIToken != "" && providerquota.IsLLMAPIFormat(string(provider.APIFormat))
+}
+
+func isGenerateScriptRequestSizeValid(req generateScriptRequest) bool {
+	return len(req.Prompt) <= generateScriptMaxPromptBytes &&
+		len(req.ResponseSample) <= generateScriptMaxSampleBytes &&
+		len(req.RequestInfo) <= generateScriptMaxRequestInfoBytes &&
+		len(req.Model) <= generateScriptMaxModelBytes
 }
 
 func llmProviderFromConfig(provider *config.Provider) providerquota.LLMProvider {

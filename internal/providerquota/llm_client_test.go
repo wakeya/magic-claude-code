@@ -3,12 +3,16 @@ package providerquota
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+const testPublicLLMAPIURL = "http://93.184.216.34"
 
 func TestLLMClientAnthropic(t *testing.T) {
 	t.Run("posts messages request and extracts text", func(t *testing.T) {
@@ -39,9 +43,9 @@ func TestLLMClientAnthropic(t *testing.T) {
 			_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"generated script"}]}`))
 		}))
 		defer server.Close()
-		provider.APIURL = server.URL
+		provider.APIURL = testPublicLLMAPIURL
 
-		result := NewLLMClient(time.Second).Call(context.Background(), provider, "claude-test", "system prompt", "user prompt")
+		result := newLLMTestClient(server).Call(context.Background(), provider, "claude-test", "system prompt", "user prompt")
 		if result.ErrorCode != "" {
 			t.Fatalf("Call() error = %s: %s", result.ErrorCode, result.ErrorMessage)
 		}
@@ -59,8 +63,8 @@ func TestLLMClientAnthropic(t *testing.T) {
 		}))
 		defer server.Close()
 
-		provider := LLMProvider{APIFormat: "anthropic", APIURL: server.URL + "/v1", APIToken: "sk-test"}
-		result := NewLLMClient(time.Second).Call(context.Background(), provider, "m", "s", "u")
+		provider := LLMProvider{APIFormat: "anthropic", APIURL: testPublicLLMAPIURL + "/v1", APIToken: "sk-test"}
+		result := newLLMTestClient(server).Call(context.Background(), provider, "m", "s", "u")
 		if result.ErrorCode != "" || result.Text != "ok" {
 			t.Fatalf("Call() = %#v", result)
 		}
@@ -90,9 +94,9 @@ func TestLLMClientOpenAIChat(t *testing.T) {
 			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"chat text"}}]}`))
 		}))
 		defer server.Close()
-		provider.APIURL = server.URL
+		provider.APIURL = testPublicLLMAPIURL
 
-		result := NewLLMClient(time.Second).Call(context.Background(), provider, "gpt-test", "system prompt", "user prompt")
+		result := newLLMTestClient(server).Call(context.Background(), provider, "gpt-test", "system prompt", "user prompt")
 		if result.ErrorCode != "" || result.Text != "chat text" {
 			t.Fatalf("Call() = %#v", result)
 		}
@@ -107,8 +111,8 @@ func TestLLMClientOpenAIChat(t *testing.T) {
 		}))
 		defer server.Close()
 
-		provider := LLMProvider{APIFormat: "openai_chat", APIURL: server.URL + "/v1", APIToken: "sk-test"}
-		result := NewLLMClient(time.Second).Call(context.Background(), provider, "m", "s", "u")
+		provider := LLMProvider{APIFormat: "openai_chat", APIURL: testPublicLLMAPIURL + "/v1", APIToken: "sk-test"}
+		result := newLLMTestClient(server).Call(context.Background(), provider, "m", "s", "u")
 		if result.ErrorCode != "" || result.Text != "ok" {
 			t.Fatalf("Call() = %#v", result)
 		}
@@ -135,9 +139,9 @@ func TestLLMClientOpenAIResponses(t *testing.T) {
 			_, _ = w.Write([]byte(`{"output_text":"responses text"}`))
 		}))
 		defer server.Close()
-		provider.APIURL = server.URL
+		provider.APIURL = testPublicLLMAPIURL
 
-		result := NewLLMClient(time.Second).Call(context.Background(), provider, "resp-test", "system prompt", "user prompt")
+		result := newLLMTestClient(server).Call(context.Background(), provider, "resp-test", "system prompt", "user prompt")
 		if result.ErrorCode != "" || result.Text != "responses text" {
 			t.Fatalf("Call() = %#v", result)
 		}
@@ -159,8 +163,8 @@ func TestLLMClientOpenAIResponses(t *testing.T) {
 					_, _ = w.Write([]byte(tt.body))
 				}))
 				defer server.Close()
-				provider := LLMProvider{APIFormat: "openai_responses", APIURL: server.URL, APIToken: "sk-test"}
-				result := NewLLMClient(time.Second).Call(context.Background(), provider, "m", "s", "u")
+				provider := LLMProvider{APIFormat: "openai_responses", APIURL: testPublicLLMAPIURL, APIToken: "sk-test"}
+				result := newLLMTestClient(server).Call(context.Background(), provider, "m", "s", "u")
 				if result.ErrorCode != "" || result.Text != tt.want {
 					t.Fatalf("Call() = %#v, want text %q", result, tt.want)
 				}
@@ -176,8 +180,8 @@ func TestLLMClientErrors(t *testing.T) {
 		}))
 		defer server.Close()
 
-		provider := LLMProvider{APIFormat: "openai_chat", APIURL: server.URL, APIToken: "sk-secret"}
-		result := NewLLMClient(time.Second).Call(context.Background(), provider, "m", "s", "u")
+		provider := LLMProvider{APIFormat: "openai_chat", APIURL: testPublicLLMAPIURL, APIToken: "sk-secret"}
+		result := newLLMTestClient(server).Call(context.Background(), provider, "m", "s", "u")
 		if result.ErrorCode != "invalid_credentials" {
 			t.Fatalf("ErrorCode = %q, want invalid_credentials", result.ErrorCode)
 		}
@@ -193,16 +197,24 @@ func TestLLMClientErrors(t *testing.T) {
 		}))
 		defer server.Close()
 
-		provider := LLMProvider{APIFormat: "openai_chat", APIURL: server.URL, APIToken: "sk-test"}
-		result := NewLLMClient(10*time.Millisecond).Call(context.Background(), provider, "m", "s", "u")
+		provider := LLMProvider{APIFormat: "openai_chat", APIURL: testPublicLLMAPIURL, APIToken: "sk-test"}
+		client := newLLMTestClient(server)
+		client.HTTPClient.Timeout = 10 * time.Millisecond
+		result := client.Call(context.Background(), provider, "m", "s", "u")
 		if result.ErrorCode != "request_timeout" {
 			t.Fatalf("ErrorCode = %q, want request_timeout; message=%q", result.ErrorCode, result.ErrorMessage)
 		}
 	})
 
 	t.Run("network error maps to network_error", func(t *testing.T) {
-		provider := LLMProvider{APIFormat: "openai_chat", APIURL: "http://127.0.0.1:1", APIToken: "sk-test"}
-		result := NewLLMClient(50*time.Millisecond).Call(context.Background(), provider, "m", "s", "u")
+		provider := LLMProvider{APIFormat: "openai_chat", APIURL: testPublicLLMAPIURL, APIToken: "sk-test"}
+		client := &LLMClient{HTTPClient: &http.Client{
+			Timeout: time.Second,
+			Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+				return nil, net.ErrClosed
+			}),
+		}}
+		result := client.Call(context.Background(), provider, "m", "s", "u")
 		if result.ErrorCode != "network_error" {
 			t.Fatalf("ErrorCode = %q, want network_error; message=%q", result.ErrorCode, result.ErrorMessage)
 		}
@@ -230,10 +242,106 @@ func TestLLMClientErrors(t *testing.T) {
 		}))
 		defer server.Close()
 
-		provider := LLMProvider{APIFormat: "openai_chat", APIURL: server.URL, APIToken: "sk-test"}
-		result := NewLLMClient(time.Second).Call(context.Background(), provider, "m", "s", "u")
+		provider := LLMProvider{APIFormat: "openai_chat", APIURL: testPublicLLMAPIURL, APIToken: "sk-test"}
+		result := newLLMTestClient(server).Call(context.Background(), provider, "m", "s", "u")
 		if result.ErrorCode != "invalid_response" {
 			t.Fatalf("ErrorCode = %q, want invalid_response", result.ErrorCode)
 		}
 	})
+}
+
+func TestLLMClientRejectsLoopback(t *testing.T) {
+	provider := LLMProvider{APIFormat: "openai_chat", APIURL: "http://127.0.0.1:65535", APIToken: "sk-test"}
+	client := &LLMClient{HTTPClient: &http.Client{
+		Timeout: time.Second,
+		Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			t.Fatal("LLMClient attempted request to loopback endpoint")
+			return nil, nil
+		}),
+	}}
+
+	result := client.Call(context.Background(), provider, "m", "s", "u")
+	if result.ErrorCode != "invalid_config" {
+		t.Fatalf("ErrorCode = %q, want invalid_config; message=%q", result.ErrorCode, result.ErrorMessage)
+	}
+	if strings.Contains(result.ErrorMessage, "127.0.0.1") {
+		t.Fatalf("ErrorMessage leaked endpoint URL: %q", result.ErrorMessage)
+	}
+}
+
+func TestLLMClientRejectsMetadata(t *testing.T) {
+	provider := LLMProvider{APIFormat: "openai_chat", APIURL: "http://169.254.169.254", APIToken: "sk-test"}
+	client := &LLMClient{HTTPClient: &http.Client{
+		Timeout: time.Second,
+		Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			t.Fatal("LLMClient attempted request to metadata endpoint")
+			return nil, nil
+		}),
+	}}
+
+	result := client.Call(context.Background(), provider, "m", "s", "u")
+	if result.ErrorCode != "invalid_config" {
+		t.Fatalf("ErrorCode = %q, want invalid_config; message=%q", result.ErrorCode, result.ErrorMessage)
+	}
+}
+
+func TestLLMClientRejectsRedirect(t *testing.T) {
+	var targetHits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		targetHits.Add(1)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"followed redirect"}}]}`))
+	}))
+	defer target.Close()
+
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Redirect(w, httptest.NewRequest(http.MethodPost, "/unused", nil), target.URL+"/v1/chat/completions", http.StatusFound)
+	}))
+	defer source.Close()
+
+	provider := LLMProvider{APIFormat: "openai_chat", APIURL: testPublicLLMAPIURL, APIToken: "sk-test"}
+	result := newLLMTestClient(source).Call(context.Background(), provider, "m", "s", "u")
+	if targetHits.Load() != 0 {
+		t.Fatalf("redirect target hits = %d, want 0", targetHits.Load())
+	}
+	if result.ErrorCode == "" {
+		t.Fatalf("Call() unexpectedly succeeded after redirect: %#v", result)
+	}
+}
+
+func TestLLMClient404NoBodyLeak(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "sensitive upstream body", http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	provider := LLMProvider{APIFormat: "openai_chat", APIURL: testPublicLLMAPIURL, APIToken: "sk-test"}
+	result := newLLMTestClient(server).Call(context.Background(), provider, "m", "s", "u")
+	if result.ErrorCode != "upstream_http_error" {
+		t.Fatalf("ErrorCode = %q, want upstream_http_error; message=%q", result.ErrorCode, result.ErrorMessage)
+	}
+	if result.ErrorMessage != "HTTP 404" {
+		t.Fatalf("ErrorMessage = %q, want HTTP 404", result.ErrorMessage)
+	}
+	if strings.Contains(result.ErrorMessage, "sensitive") {
+		t.Fatalf("ErrorMessage leaked upstream body: %q", result.ErrorMessage)
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func newLLMTestClient(server *httptest.Server) *LLMClient {
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, network, server.Listener.Addr().String())
+		},
+	}
+	return &LLMClient{HTTPClient: &http.Client{
+		Timeout:   time.Second,
+		Transport: transport,
+	}}
 }

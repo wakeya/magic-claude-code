@@ -2,7 +2,9 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -14,6 +16,8 @@ import (
 	"magic-claude-code/internal/config"
 	"magic-claude-code/internal/providerquota"
 )
+
+const testPublicGenerateScriptLLMAPIURL = "http://93.184.216.34"
 
 type adminQuotaConfigGetter struct {
 	provider providerquota.ProviderConfig
@@ -50,6 +54,21 @@ func (g *adminQuotaConfigGetter) ListEnabledProviders() []providerquota.Provider
 	return []providerquota.ProviderConfig{g.provider}
 }
 
+func setGenerateScriptTestLLMServer(srv *Server, llmServer *httptest.Server) {
+	srv.setProviderQuotaLLMClientFactory(func(timeout time.Duration) *providerquota.LLMClient {
+		transport := &http.Transport{
+			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, network, llmServer.Listener.Addr().String())
+			},
+		}
+		return &providerquota.LLMClient{HTTPClient: &http.Client{
+			Timeout:   timeout,
+			Transport: transport,
+		}}
+	})
+}
+
 func TestProviderUsageGetNotFound(t *testing.T) {
 	store := config.NewMockStore(config.DefaultConfig())
 	srv := NewServer(&AdminConfig{Password: "test"}, store, nil)
@@ -83,10 +102,11 @@ func TestGenerateScriptSuccess(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 	cfg.Providers = []config.Provider{{
-		ID: "test-p", Name: "Test", APIURL: llmServer.URL, APIToken: "sk-llm-secret",
+		ID: "test-p", Name: "Test", APIURL: testPublicGenerateScriptLLMAPIURL, APIToken: "sk-llm-secret",
 		APIFormat: config.APIFormatAnthropic, Enabled: true, CreatedAt: timeNow(), UpdatedAt: timeNow(),
 	}}
 	srv := NewServer(&AdminConfig{Password: "test"}, config.NewMockStore(cfg), nil)
+	setGenerateScriptTestLLMServer(srv, llmServer)
 
 	body := bytes.NewBufferString(`{"model":"claude-test","prompt":"query balance","response_sample":"{\"balance\":42}","request_info":"GET /balance"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/providers/test-p/usage/generate-script", body)
@@ -147,10 +167,11 @@ func TestGenerateScriptReturnsStructuredWarningsAndIterations(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 	cfg.Providers = []config.Provider{{
-		ID: "test-p", Name: "Test", APIURL: llmServer.URL, APIToken: "sk-llm-secret",
+		ID: "test-p", Name: "Test", APIURL: testPublicGenerateScriptLLMAPIURL, APIToken: "sk-llm-secret",
 		APIFormat: config.APIFormatAnthropic, Enabled: true, CreatedAt: timeNow(), UpdatedAt: timeNow(),
 	}}
 	srv := NewServer(&AdminConfig{Password: "test"}, config.NewMockStore(cfg), nil)
+	setGenerateScriptTestLLMServer(srv, llmServer)
 
 	body := bytes.NewBufferString(`{"model":"claude-test","prompt":"query balance","response_sample":"{\"balance\":42}","request_info":"GET /balance\nCookie: sid=abc"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/providers/test-p/usage/generate-script", body)
@@ -216,11 +237,12 @@ func TestGenerateScriptUsesBodyLLMProviderID(t *testing.T) {
 			APIFormat: config.APIFormatAnthropic, Enabled: true, CreatedAt: timeNow(), UpdatedAt: timeNow(),
 		},
 		{
-			ID: "provider-b", Name: "Selected Provider", APIURL: selectedProviderServer.URL, APIToken: "sk-selected-secret",
+			ID: "provider-b", Name: "Selected Provider", APIURL: testPublicGenerateScriptLLMAPIURL, APIToken: "sk-selected-secret",
 			APIFormat: config.APIFormatAnthropic, Enabled: true, CreatedAt: timeNow(), UpdatedAt: timeNow(),
 		},
 	}
 	srv := NewServer(&AdminConfig{Password: "test"}, config.NewMockStore(cfg), nil)
+	setGenerateScriptTestLLMServer(srv, selectedProviderServer)
 
 	body := bytes.NewBufferString(`{"llm_provider_id":"provider-b","model":"claude-test","prompt":"query usage","response_sample":"{\"remaining\":7}"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/providers/provider-a/usage/generate-script", body)
@@ -320,6 +342,37 @@ func TestGenerateScriptNonLLMProvider(t *testing.T) {
 	}
 }
 
+func TestGenerateScriptDisabledProvider(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{{
+		ID: "test-p", Name: "Test", APIURL: "https://api.example.com", APIToken: "sk-test",
+		APIFormat: config.APIFormatOpenAIChat, Enabled: false,
+	}}
+	srv := NewServer(&AdminConfig{Password: "test"}, config.NewMockStore(cfg), nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/test-p/usage/generate-script", bytes.NewBufferString(`{"model":"m","prompt":"p","response_sample":"{}"}`))
+	req.AddCookie(&http.Cookie{Name: "session", Value: srv.GetAuth().GenerateToken()})
+	rec := httptest.NewRecorder()
+
+	srv.authMiddlewareFunc(srv.handleProviderRoutes)(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		ErrorCode    string `json:"error_code"`
+		ErrorMessage string `json:"error_message"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.ErrorCode != "invalid_config" {
+		t.Fatalf("error_code = %q, want invalid_config", resp.ErrorCode)
+	}
+	if resp.ErrorMessage != "LLM provider is disabled" {
+		t.Fatalf("error_message = %q, want disabled provider message", resp.ErrorMessage)
+	}
+}
+
 func TestGenerateScriptMissingFields(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Providers = []config.Provider{{
@@ -353,6 +406,54 @@ func TestGenerateScriptMissingFields(t *testing.T) {
 	}
 }
 
+func TestGenerateScriptOversizedBody(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{{
+		ID: "test-p", Name: "Test", APIURL: "https://api.example.com", APIToken: "sk-test",
+		APIFormat: config.APIFormatOpenAIChat, Enabled: true,
+	}}
+	srv := NewServer(&AdminConfig{Password: "test"}, config.NewMockStore(cfg), nil)
+	body, _ := json.Marshal(map[string]string{
+		"model":           "m",
+		"prompt":          strings.Repeat("p", 8*1024+1),
+		"response_sample": "{}",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/test-p/usage/generate-script", bytes.NewReader(body))
+	req.AddCookie(&http.Cookie{Name: "session", Value: srv.GetAuth().GenerateToken()})
+	rec := httptest.NewRecorder()
+
+	srv.authMiddlewareFunc(srv.handleProviderRoutes)(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"error_code":"invalid_config"`) || !strings.Contains(rec.Body.String(), "field exceeds size limit") {
+		t.Fatalf("body = %s, want invalid_config size limit", rec.Body.String())
+	}
+}
+
+func TestGenerateScriptTotalBodyLimit(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{{
+		ID: "test-p", Name: "Test", APIURL: "https://api.example.com", APIToken: "sk-test",
+		APIFormat: config.APIFormatOpenAIChat, Enabled: true,
+	}}
+	srv := NewServer(&AdminConfig{Password: "test"}, config.NewMockStore(cfg), nil)
+	body := `{"model":"m","prompt":"p","response_sample":"{` + strings.Repeat("x", 256*1024) + `}"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/test-p/usage/generate-script", strings.NewReader(body))
+	req.AddCookie(&http.Cookie{Name: "session", Value: srv.GetAuth().GenerateToken()})
+	rec := httptest.NewRecorder()
+
+	srv.authMiddlewareFunc(srv.handleProviderRoutes)(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"error_code":"invalid_config"`) {
+		t.Fatalf("body = %s, want invalid_config", rec.Body.String())
+	}
+}
+
 func TestGenerateScriptLLMUpstreamError(t *testing.T) {
 	llmServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "token rejected", http.StatusUnauthorized)
@@ -361,10 +462,11 @@ func TestGenerateScriptLLMUpstreamError(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 	cfg.Providers = []config.Provider{{
-		ID: "test-p", Name: "Test", APIURL: llmServer.URL, APIToken: "sk-llm-secret",
+		ID: "test-p", Name: "Test", APIURL: testPublicGenerateScriptLLMAPIURL, APIToken: "sk-llm-secret",
 		APIFormat: config.APIFormatOpenAIChat, Enabled: true,
 	}}
 	srv := NewServer(&AdminConfig{Password: "test"}, config.NewMockStore(cfg), nil)
+	setGenerateScriptTestLLMServer(srv, llmServer)
 	req := httptest.NewRequest(http.MethodPost, "/api/providers/test-p/usage/generate-script", bytes.NewBufferString(`{"model":"m","prompt":"p","response_sample":"{}"}`))
 	req.AddCookie(&http.Cookie{Name: "session", Value: srv.GetAuth().GenerateToken()})
 	rec := httptest.NewRecorder()

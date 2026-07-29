@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -36,7 +37,10 @@ type LLMClient struct {
 
 // NewLLMClient builds an LLMClient with the given timeout.
 func NewLLMClient(timeout time.Duration) *LLMClient {
-	return &LLMClient{HTTPClient: &http.Client{Timeout: timeout}}
+	return &LLMClient{HTTPClient: &http.Client{
+		Timeout:       timeout,
+		CheckRedirect: disableLLMRedirect,
+	}}
 }
 
 // LLMCallResult is the text returned by the LLM or a structured error.
@@ -69,6 +73,13 @@ func (c *LLMClient) Call(ctx context.Context, provider LLMProvider, model, syste
 	if err != nil {
 		return LLMCallResult{ErrorCode: "invalid_config", ErrorMessage: sanitizeLLMError(err.Error(), provider.APIToken)}
 	}
+	endpointURL, err := url.Parse(endpoint)
+	if err != nil || endpointURL.Hostname() == "" {
+		return LLMCallResult{ErrorCode: "invalid_config", ErrorMessage: "invalid LLM endpoint"}
+	}
+	if isInternalHost(endpointURL.Hostname()) {
+		return LLMCallResult{ErrorCode: "invalid_config", ErrorMessage: "LLM endpoint resolves to an internal address"}
+	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
@@ -85,8 +96,11 @@ func (c *LLMClient) Call(ctx context.Context, provider LLMProvider, model, syste
 
 	client := c.HTTPClient
 	if client == nil {
-		client = http.DefaultClient
+		client = &http.Client{}
 	}
+	clientCopy := *client
+	clientCopy.CheckRedirect = disableLLMRedirect
+	client = &clientCopy
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		code := classifyLLMHTTPError(ctx, err)
@@ -102,19 +116,12 @@ func (c *LLMClient) Call(ctx context.Context, provider LLMProvider, model, syste
 		return LLMCallResult{ErrorCode: "invalid_response", ErrorMessage: "LLM response exceeds 262144 bytes"}
 	}
 
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode >= 300 {
 		code := "upstream_http_error"
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 			code = "invalid_credentials"
 		}
-		summary := strings.TrimSpace(string(body))
-		if len(summary) > maxErrorBodyBytes {
-			summary = summary[:maxErrorBodyBytes]
-		}
 		message := fmt.Sprintf("HTTP %d", resp.StatusCode)
-		if summary != "" {
-			message += ": " + summary
-		}
 		return LLMCallResult{ErrorCode: code, ErrorMessage: sanitizeLLMError(message, provider.APIToken)}
 	}
 
@@ -258,6 +265,34 @@ func classifyLLMHTTPError(ctx context.Context, err error) string {
 		return "request_timeout"
 	}
 	return classifyHTTPError(err)
+}
+
+func disableLLMRedirect(_ *http.Request, _ []*http.Request) error {
+	return http.ErrUseLastResponse
+}
+
+func isInternalHost(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return isInternalIP(ip)
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return true
+	}
+	for _, ip := range ips {
+		if isInternalIP(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func isInternalIP(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
 }
 
 func sanitizeLLMError(msg, token string) string {

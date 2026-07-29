@@ -47,6 +47,63 @@ func TestBuildUserMessage(t *testing.T) {
 	})
 }
 
+func TestSanitizeRequestInfo(t *testing.T) {
+	input := strings.Join([]string{
+		"GET /usage?sec_token=xyz&api_key=keysecret&access-token=tokensecret HTTP/1.1",
+		"Cookie: sid=secret; theme=dark",
+		"Authorization: Bearer abc.def",
+		"X-Note: bearer should-not-match",
+	}, "\n")
+
+	got := sanitizeRequestInfo(input)
+	for _, want := range []string{"Cookie:", "Authorization:", "sec_token=", "api_key=", "access-token=", "[REDACTED]"} {
+		if !strings.Contains(strings.ToLower(got), strings.ToLower(want)) {
+			t.Fatalf("sanitized request info missing %q:\n%s", want, got)
+		}
+	}
+	for _, secret := range []string{"secret", "abc.def", "xyz", "keysecret", "tokensecret"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("sanitized request info leaked %q:\n%s", secret, got)
+		}
+	}
+}
+
+func TestBuildUserMessageRedactsCredentials(t *testing.T) {
+	msg := buildUserMessage(GenerateScriptRequest{
+		Prompt:         "query quota",
+		ResponseSample: `{"balance": 1}`,
+		RequestInfo:    "GET /usage\nCookie: sid=secret\nAuthorization: Bearer abc.def",
+	})
+	for _, secret := range []string{"sid=secret", "abc.def"} {
+		if strings.Contains(msg, secret) {
+			t.Fatalf("buildUserMessage leaked %q:\n%s", secret, msg)
+		}
+	}
+	if !strings.Contains(msg, "Cookie: [REDACTED]") || !strings.Contains(msg, "Authorization: [REDACTED]") {
+		t.Fatalf("buildUserMessage did not preserve redacted credential fields:\n%s", msg)
+	}
+}
+
+func TestBuildFixMessageRedactsCredentials(t *testing.T) {
+	msg := buildFixMessage(
+		`({request:{url:"{{baseUrl}}/usage",method:"GET"},extractor:function(r){return r;}})`,
+		[]AuditWarning{{Code: "missing_cookie", Message: "missing cookie"}},
+		GenerateScriptRequest{
+			Prompt:         "query quota",
+			ResponseSample: `{"balance": 1}`,
+			RequestInfo:    "GET /usage\nCookie: sid=secret\nsec_token=xyz",
+		},
+	)
+	for _, secret := range []string{"sid=secret", "xyz"} {
+		if strings.Contains(msg, secret) {
+			t.Fatalf("buildFixMessage leaked %q:\n%s", secret, msg)
+		}
+	}
+	if !strings.Contains(msg, "Cookie: [REDACTED]") || !strings.Contains(msg, "sec_token=[REDACTED]") {
+		t.Fatalf("buildFixMessage did not preserve redacted credential fields:\n%s", msg)
+	}
+}
+
 func TestExtractScript(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -247,9 +304,9 @@ func TestScriptGenerator(t *testing.T) {
 		}))
 		defer server.Close()
 
-		result := GenerateScript(context.Background(), NewLLMClient(time.Second), LLMProvider{
+		result := GenerateScript(context.Background(), newLLMTestClient(server), LLMProvider{
 			APIFormat: "anthropic",
-			APIURL:    server.URL,
+			APIURL:    testPublicLLMAPIURL,
 			APIToken:  "sk-test",
 		}, GenerateScriptRequest{
 			Model:          "claude-test",
@@ -280,9 +337,9 @@ func TestScriptGenerator(t *testing.T) {
 		}))
 		defer server.Close()
 
-		result := GenerateScript(context.Background(), NewLLMClient(time.Second), LLMProvider{
+		result := GenerateScript(context.Background(), newLLMTestClient(server), LLMProvider{
 			APIFormat: "openai_chat",
-			APIURL:    server.URL,
+			APIURL:    testPublicLLMAPIURL,
 			APIToken:  "sk-test",
 		}, GenerateScriptRequest{
 			Model:          "m",
@@ -300,9 +357,9 @@ func TestScriptGenerator(t *testing.T) {
 		}))
 		defer server.Close()
 
-		result := GenerateScript(context.Background(), NewLLMClient(time.Second), LLMProvider{
+		result := GenerateScript(context.Background(), newLLMTestClient(server), LLMProvider{
 			APIFormat: "openai_chat",
-			APIURL:    server.URL,
+			APIURL:    testPublicLLMAPIURL,
 			APIToken:  "sk-test",
 		}, GenerateScriptRequest{
 			Model:          "m",
@@ -320,9 +377,9 @@ func TestScriptGenerator(t *testing.T) {
 		}))
 		defer server.Close()
 
-		result := GenerateScript(context.Background(), NewLLMClient(time.Second), LLMProvider{
+		result := GenerateScript(context.Background(), newLLMTestClient(server), LLMProvider{
 			APIFormat: "openai_chat",
-			APIURL:    server.URL,
+			APIURL:    testPublicLLMAPIURL,
 			APIToken:  "sk-test",
 		}, GenerateScriptRequest{
 			Model:          "m",
@@ -331,6 +388,29 @@ func TestScriptGenerator(t *testing.T) {
 		}, time.Second)
 		if result.ErrorCode != "script_error" {
 			t.Fatalf("ErrorCode = %q, want script_error; message=%q", result.ErrorCode, result.ErrorMessage)
+		}
+	})
+
+	t.Run("parse error does not leak llm output", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"Cookie: secret\n({extractor:function(r){return r;}})"}}]}`))
+		}))
+		defer server.Close()
+
+		result := GenerateScript(context.Background(), newLLMTestClient(server), LLMProvider{
+			APIFormat: "openai_chat",
+			APIURL:    testPublicLLMAPIURL,
+			APIToken:  "sk-test",
+		}, GenerateScriptRequest{
+			Model:          "m",
+			Prompt:         "p",
+			ResponseSample: "{}",
+		}, time.Second)
+		if result.ErrorCode != "script_error" {
+			t.Fatalf("ErrorCode = %q, want script_error; message=%q", result.ErrorCode, result.ErrorMessage)
+		}
+		if strings.Contains(result.ErrorMessage, "secret") || strings.Contains(result.ErrorMessage, "Cookie:") {
+			t.Fatalf("ErrorMessage leaked LLM output: %q", result.ErrorMessage)
 		}
 	})
 
@@ -383,9 +463,9 @@ func TestScriptGenerator(t *testing.T) {
 		}))
 		defer server.Close()
 
-		result := GenerateScript(context.Background(), NewLLMClient(time.Second), LLMProvider{
+		result := GenerateScript(context.Background(), newLLMTestClient(server), LLMProvider{
 			APIFormat: "openai_chat",
-			APIURL:    server.URL,
+			APIURL:    testPublicLLMAPIURL,
 			APIToken:  "sk-test",
 		}, GenerateScriptRequest{
 			Model:          "m",
@@ -417,9 +497,9 @@ func TestScriptGenerator(t *testing.T) {
 		}))
 		defer server.Close()
 
-		result := GenerateScript(context.Background(), NewLLMClient(time.Second), LLMProvider{
+		result := GenerateScript(context.Background(), newLLMTestClient(server), LLMProvider{
 			APIFormat: "openai_chat",
-			APIURL:    server.URL,
+			APIURL:    testPublicLLMAPIURL,
 			APIToken:  "sk-test",
 		}, GenerateScriptRequest{
 			Model:          "m",
@@ -454,9 +534,9 @@ func TestScriptGenerator(t *testing.T) {
 		}))
 		defer server.Close()
 
-		result := GenerateScript(context.Background(), NewLLMClient(time.Second), LLMProvider{
+		result := GenerateScript(context.Background(), newLLMTestClient(server), LLMProvider{
 			APIFormat: "openai_chat",
-			APIURL:    server.URL,
+			APIURL:    testPublicLLMAPIURL,
 			APIToken:  "sk-test",
 		}, GenerateScriptRequest{
 			Model:          "m",
@@ -487,9 +567,9 @@ func TestScriptGenerator(t *testing.T) {
 		}))
 		defer server.Close()
 
-		result := GenerateScript(context.Background(), NewLLMClient(time.Second), LLMProvider{
+		result := GenerateScript(context.Background(), newLLMTestClient(server), LLMProvider{
 			APIFormat: "openai_chat",
-			APIURL:    server.URL,
+			APIURL:    testPublicLLMAPIURL,
 			APIToken:  "sk-test",
 		}, GenerateScriptRequest{
 			Model:          "m",

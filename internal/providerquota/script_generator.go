@@ -3,6 +3,7 @@ package providerquota
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -28,6 +29,23 @@ type GenerateScriptResult struct {
 	Iterations   int
 	ErrorCode    string
 	ErrorMessage string
+}
+
+var requestInfoRedactionPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)(cookie\s*:\s*)([^\r\n]+)`),
+	regexp.MustCompile(`(?i)(authorization\s*:\s*)([^\r\n]+)`),
+	regexp.MustCompile(`(?i)(bearer\s+)([A-Za-z0-9._\-/+=]+)`),
+	regexp.MustCompile(`(?i)(sec_token\s*=\s*)([^\r\n&]+)`),
+	regexp.MustCompile(`(?i)(api[_-]?key\s*=\s*)([^\r\n&]+)`),
+	regexp.MustCompile(`(?i)(access[_-]?token\s*=\s*)([^\r\n&]+)`),
+}
+
+func sanitizeRequestInfo(info string) string {
+	sanitized := info
+	for _, pattern := range requestInfoRedactionPatterns {
+		sanitized = pattern.ReplaceAllString(sanitized, "${1}[REDACTED]")
+	}
+	return sanitized
 }
 
 // GenerateScript builds prompts, calls the LLM, extracts the script, and
@@ -56,13 +74,13 @@ func GenerateScript(ctx context.Context, llm *LLMClient, provider LLMProvider, r
 
 	script, err := extractScript(call.Text)
 	if err != nil {
-		return GenerateScriptResult{ErrorCode: "invalid_response", ErrorMessage: err.Error()}
+		return GenerateScriptResult{ErrorCode: "invalid_response", ErrorMessage: "LLM output does not contain a recognizable object literal"}
 	}
 
 	if _, err := executor.parseRequest(script); err != nil {
 		return GenerateScriptResult{
 			ErrorCode:    "script_error",
-			ErrorMessage: fmt.Sprintf("generated script failed to parse request: %v; llm_output=%s", err, summarizeLLMText(call.Text)),
+			ErrorMessage: "generated script failed to parse request",
 		}
 	}
 	warnings := auditScript(req.RequestInfo, script)
@@ -164,7 +182,7 @@ Given the user's description and a real response sample, produce the script. The
 }
 
 func buildUserMessage(req GenerateScriptRequest) string {
-	info := strings.TrimSpace(req.RequestInfo)
+	info := sanitizeRequestInfo(strings.TrimSpace(req.RequestInfo))
 	if info == "" {
 		info = "(not provided - infer from need)"
 	}
@@ -188,7 +206,7 @@ func buildFixMessage(script string, warnings []AuditWarning, req GenerateScriptR
 		b.WriteString(warning.Message)
 		b.WriteByte('\n')
 	}
-	info := strings.TrimSpace(req.RequestInfo)
+	info := sanitizeRequestInfo(strings.TrimSpace(req.RequestInfo))
 	if info == "" {
 		info = "(not provided)"
 	}
@@ -228,7 +246,7 @@ func extractScript(text string) (string, error) {
 		return extracted, nil
 	}
 
-	return "", fmt.Errorf("LLM output does not contain a recognizable ({...}) object literal; first %d bytes: %s", maxErrorBodyBytes, summarizeLLMText(text))
+	return "", fmt.Errorf("LLM output does not contain a recognizable object literal")
 }
 
 // locateObjectLiteral finds the first "({" (or "(") and the last "})" (or ")")
