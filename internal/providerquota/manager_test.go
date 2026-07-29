@@ -847,8 +847,8 @@ func TestSchedulerPeriodicScanNoJitter(t *testing.T) {
 		t.Fatalf("expected 2 requests, got %d", len(requestTimes))
 	}
 	// With jitter disabled, both must fire well under the 5s jitter delay.
-	if elapsed > 1*time.Second {
-		t.Errorf("periodic scan delayed by jitter: elapsed = %v (want < 1s)", elapsed)
+	if elapsed > 2*time.Second {
+		t.Errorf("periodic scan delayed by jitter: elapsed = %v (want < 2s)", elapsed)
 	}
 }
 

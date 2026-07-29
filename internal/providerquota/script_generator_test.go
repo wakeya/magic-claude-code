@@ -323,7 +323,7 @@ func TestScriptGenerator(t *testing.T) {
 		if result.Iterations != 1 {
 			t.Fatalf("Iterations = %d, want 1", result.Iterations)
 		}
-		if _, err := (&ScriptExecutor{}).parseRequest(result.Script); err != nil {
+		if _, err := parseRequestInProcess(result.Script); err != nil {
 			t.Fatalf("generated script did not parse: %v", err)
 		}
 		if !strings.Contains(seenSystem, "OUTPUT FORMAT") || !strings.Contains(seenUser, "query balance") || !strings.Contains(seenUser, `{"balance":42}`) {
@@ -472,7 +472,7 @@ func TestScriptGenerator(t *testing.T) {
 			Prompt:         "p",
 			ResponseSample: `{"balance":42}`,
 			RequestInfo:    "GET /balance\nCookie: sid=abc",
-		}, time.Second)
+		}, 5*time.Second)
 		if result.ErrorCode != "" {
 			t.Fatalf("GenerateScript() error = %s: %s", result.ErrorCode, result.ErrorMessage)
 		}
@@ -506,7 +506,7 @@ func TestScriptGenerator(t *testing.T) {
 			Prompt:         "p",
 			ResponseSample: `{"balance":42}`,
 			RequestInfo:    "GET /balance\nCookie: sid=abc",
-		}, time.Second)
+		}, 15*time.Second)
 		if result.ErrorCode != "" {
 			t.Fatalf("GenerateScript() error = %s: %s", result.ErrorCode, result.ErrorMessage)
 		}

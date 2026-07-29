@@ -7,7 +7,7 @@
 **Stack:** Go 1.26, `os/exec`, `runtime/debug`, `golang.org/x/sys/unix|windows`, goja
 **Last updated:** 2026-07-29
 **Status:** implementing
-**Progress:** 3 / 5
+**Progress:** 4 / 5
 
 ## Overall Analysis (Source Analysis)
 
@@ -175,7 +175,7 @@ Linux/macOS workers use `unix.Setrlimit(RLIMIT_DATA, ...)`. Windows workers use 
 | 1 | ✅ | Define the protocol and split existing in-process goja operations | protocol + worker server | worker unit tests |
 | 2 | ✅ | Implement current-binary re-exec client and hidden entry | client + main/TestMain dispatch | re-exec integration tests |
 | 3 | ✅ | Add cross-platform memory, time, and IPC boundaries | limit files + bounded I/O | resource tests and cross-builds |
-| 4 | ⬜ | Integrate `ScriptExecutor` and prove behavior compatibility | `script.go` + regressions | full providerquota tests |
+| 4 | ✅ | Integrate `ScriptExecutor` and prove behavior compatibility | `script.go` + regressions | full providerquota tests |
 | 5 | ⬜ | Validate OOM isolation, run full regression, and write back evidence | validation evidence | race, vet, six builds |
 
 ## Requirements
@@ -374,7 +374,12 @@ Linux/macOS workers use `unix.Setrlimit(RLIMIT_DATA, ...)`. Windows workers use 
 
 #### Verification
 
-- [ ] Not run during the specification stage; record actual focused-command output here after this task.
+- [x] Spy-runner RED failed to build because `ScriptExecutor.workerRunner` was absent; after integration, both focused ScriptExecutor worker tests passed.
+- [x] `go test ./internal/providerquota -count=1` — 290 tests passed.
+- [x] `go test -race ./internal/providerquota -count=1` — 289 tests passed (the production 128 MiB case skipped as designed).
+- [x] Source call check — only `script_worker.go` calls `parseRequestInProcess` / `runExtractorInProcess` in production; parent `ExecuteScript` calls only the runner.
+- [x] Debug record: `GenerateScript` constructed a zero-value `&ScriptExecutor{}` and therefore had no runner; it now uses `NewScriptExecutor(timeout)` without an in-process parent fallback.
+- [x] Race performance regression: multi-round generation tests use budgets consistent with the production 30-second budget; the no-jitter scheduler threshold moved from one to two seconds while remaining clearly below the tested five-second jitter; focused and full race reruns passed.
 
 ### Task 5: OOM acceptance, full validation, and spec write-back
 

@@ -7,7 +7,7 @@
 **技术栈：** Go 1.26、`os/exec`、`runtime/debug`、`golang.org/x/sys/unix|windows`、goja
 **最后更新：** 2026-07-29
 **状态：** implementing
-**进度：** 3 / 5
+**进度：** 4 / 5
 
 ## 整体分析（源站分析）
 
@@ -175,7 +175,7 @@ Linux/macOS worker 使用 `unix.Setrlimit(RLIMIT_DATA, ...)`；Windows worker �
 | 1 | ✅ | 定义协议并拆分现有 goja in-process 操作 | protocol + worker server | worker 单元测试 |
 | 2 | ✅ | 实现当前二进制重启 client 与隐藏入口 | client + main/TestMain dispatch | re-exec 集成测试 |
 | 3 | ✅ | 加入跨平台内存、时间和 IPC 边界 | limit 文件 + bounded I/O | 资源边界测试、交叉编译 |
-| 4 | ⬜ | 接入 `ScriptExecutor` 并证明行为兼容 | `script.go` + 回归测试 | providerquota 全包测试 |
+| 4 | ✅ | 接入 `ScriptExecutor` 并证明行为兼容 | `script.go` + 回归测试 | providerquota 全包测试 |
 | 5 | ⬜ | OOM 攻击验证、全量回归和规格回写 | 验证证据 | race、vet、六平台构建 |
 
 ## 需求
@@ -374,7 +374,12 @@ Linux/macOS worker 使用 `unix.Setrlimit(RLIMIT_DATA, ...)`；Windows worker �
 
 #### 验证
 
-- [ ] 规格阶段尚未执行；完成本任务的定向命令后在此记录实际输出。
+- [x] spy runner RED 因 `ScriptExecutor.workerRunner` 缺失而构建失败；接入后 `TestScriptExecutorUsesWorkerRunner` 与 `TestScriptExecutorSkipsExtractorWorkerAfterHTTPError` 共 2 个测试通过。
+- [x] `go test ./internal/providerquota -count=1` —— 290 个测试通过。
+- [x] `go test -race ./internal/providerquota -count=1` —— 289 个测试通过（生产 128 MiB 用例按设计跳过）。
+- [x] `rg` 调用检查 —— 生产代码仅 `script_worker.go` 调用 `parseRequestInProcess` / `runExtractorInProcess`；父 `ExecuteScript` 只调用 runner。
+- [x] 调试记录：`GenerateScript` 原使用零值 `&ScriptExecutor{}`，切换后无 runner；改用 `NewScriptExecutor(timeout)`，不增加父进程 goja 回退。
+- [x] race 性能回归：多轮生成测试按生产 30 秒预算提高测试预算；无 jitter scheduler 阈值由 1 秒调整为 2 秒，仍明确小于被测 5 秒 jitter；定向及全包 race 复验通过。
 
 ### 任务 5：OOM 验收、全量验证与规格回写
 

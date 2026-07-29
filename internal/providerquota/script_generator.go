@@ -66,7 +66,7 @@ func GenerateScript(ctx context.Context, llm *LLMClient, provider LLMProvider, r
 	defer cancel()
 
 	model := strings.TrimSpace(req.Model)
-	executor := &ScriptExecutor{}
+	executor := NewScriptExecutor(timeout)
 	call := llm.Call(callCtx, provider, model, systemPromptForScript(), buildUserMessage(req))
 	if call.ErrorCode != "" {
 		return GenerateScriptResult{ErrorCode: call.ErrorCode, ErrorMessage: call.ErrorMessage}
@@ -77,7 +77,7 @@ func GenerateScript(ctx context.Context, llm *LLMClient, provider LLMProvider, r
 		return GenerateScriptResult{ErrorCode: "invalid_response", ErrorMessage: "LLM output does not contain a recognizable object literal"}
 	}
 
-	if _, err := executor.parseRequest(script); err != nil {
+	if _, err := executor.parseRequest(ctx, script); err != nil {
 		return GenerateScriptResult{
 			ErrorCode:    "script_error",
 			ErrorMessage: "generated script failed to parse request",
@@ -95,7 +95,7 @@ func GenerateScript(ctx context.Context, llm *LLMClient, provider LLMProvider, r
 		if err != nil {
 			break
 		}
-		if _, err := executor.parseRequest(newScript); err != nil {
+		if _, err := executor.parseRequest(ctx, newScript); err != nil {
 			break
 		}
 		script = newScript
