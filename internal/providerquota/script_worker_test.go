@@ -180,3 +180,49 @@ func TestScriptWorkerLimitFailureIsFailClosed(t *testing.T) {
 		t.Fatalf("worker error leaked setup detail: %q", resp.Error)
 	}
 }
+
+func TestScriptWorkerInvocation(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "exact", args: []string{ScriptWorkerArg}, want: true},
+		{name: "none"},
+		{name: "prefix", args: []string{ScriptWorkerArg + "-evil"}},
+		{name: "extra argument", args: []string{ScriptWorkerArg, "--version"}},
+		{name: "normal version", args: []string{"--version"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsScriptWorkerInvocation(tt.args); got != tt.want {
+				t.Fatalf("IsScriptWorkerInvocation(%q) = %v, want %v", tt.args, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestScriptWorkerRejectsTrailingInput(t *testing.T) {
+	input := `{
+		"version": 1,
+		"operation": "parse_request",
+		"script": "({request:{url:\"https://example.com\",method:\"GET\"}})"
+	} {}`
+
+	var output bytes.Buffer
+	code := runScriptWorker(strings.NewReader(input), &output, func() (func(), error) {
+		return nil, nil
+	})
+	if code == 0 {
+		t.Fatal("worker exit code = 0, want trailing input failure")
+	}
+
+	var resp scriptWorkerResponse
+	if err := json.Unmarshal(output.Bytes(), &resp); err != nil {
+		t.Fatalf("decode worker response: %v", err)
+	}
+	if resp.OK || resp.Error != "invalid script worker protocol request" {
+		t.Fatalf("worker response = %#v", resp)
+	}
+}

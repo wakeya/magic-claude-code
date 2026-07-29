@@ -7,7 +7,7 @@
 **Stack:** Go 1.26, `os/exec`, `runtime/debug`, `golang.org/x/sys/unix|windows`, goja
 **Last updated:** 2026-07-29
 **Status:** implementing
-**Progress:** 1 / 5
+**Progress:** 2 / 5
 
 ## Overall Analysis (Source Analysis)
 
@@ -173,7 +173,7 @@ Linux/macOS workers use `unix.Setrlimit(RLIMIT_DATA, ...)`. Windows workers use 
 | # | Status | Task | Output | Verification |
 | --- | --- | --- | --- | --- |
 | 1 | ✅ | Define the protocol and split existing in-process goja operations | protocol + worker server | worker unit tests |
-| 2 | ⬜ | Implement current-binary re-exec client and hidden entry | client + main/TestMain dispatch | re-exec integration tests |
+| 2 | ✅ | Implement current-binary re-exec client and hidden entry | client + main/TestMain dispatch | re-exec integration tests |
 | 3 | ⬜ | Add cross-platform memory, time, and IPC boundaries | limit files + bounded I/O | resource tests and cross-builds |
 | 4 | ⬜ | Integrate `ScriptExecutor` and prove behavior compatibility | `script.go` + regressions | full providerquota tests |
 | 5 | ⬜ | Validate OOM isolation, run full regression, and write back evidence | validation evidence | race, vet, six builds |
@@ -303,7 +303,9 @@ Linux/macOS workers use `unix.Setrlimit(RLIMIT_DATA, ...)`. Windows workers use 
 
 #### Verification
 
-- [ ] Not run during the specification stage; record actual focused-command output here after this task.
+- [x] `go test ./internal/providerquota -run 'TestProcessScriptWorker|TestScriptWorkerInvocation|TestScriptWorkerRejectsTrailingInput' -count=1` — 11 tests passed.
+- [x] `go test ./cmd/server ./internal/providerquota -count=1` — 305 tests passed in total.
+- [x] Request and response decoding both require EOF after one JSON value; RED tests for trailing stdout logs and a second stdin object are now GREEN.
 
 ### Task 3: Cross-platform resource limits
 

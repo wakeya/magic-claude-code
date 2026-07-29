@@ -8,6 +8,12 @@ import (
 
 type scriptWorkerLimitFunc func() (cleanup func(), err error)
 
+func RunScriptWorker(in io.Reader, out io.Writer) int {
+	return runScriptWorker(in, out, func() (func(), error) {
+		return nil, nil
+	})
+}
+
 func runScriptWorker(in io.Reader, out io.Writer, applyLimits scriptWorkerLimitFunc) int {
 	cleanup, err := applyLimits()
 	if err != nil {
@@ -30,7 +36,7 @@ func runScriptWorker(in io.Reader, out io.Writer, applyLimits scriptWorkerLimitF
 	var req scriptWorkerRequest
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil {
+	if err := decoder.Decode(&req); err != nil || !jsonDecoderAtEOF(decoder) {
 		writeScriptWorkerProtocolError(out)
 		return 2
 	}
@@ -89,4 +95,9 @@ func writeScriptWorkerProtocolError(out io.Writer) {
 
 func writeScriptWorkerResponse(out io.Writer, resp scriptWorkerResponse) {
 	_ = json.NewEncoder(out).Encode(resp)
+}
+
+func jsonDecoderAtEOF(decoder *json.Decoder) bool {
+	var extra any
+	return decoder.Decode(&extra) == io.EOF
 }

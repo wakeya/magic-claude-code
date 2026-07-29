@@ -7,7 +7,7 @@
 **技术栈：** Go 1.26、`os/exec`、`runtime/debug`、`golang.org/x/sys/unix|windows`、goja
 **最后更新：** 2026-07-29
 **状态：** implementing
-**进度：** 1 / 5
+**进度：** 2 / 5
 
 ## 整体分析（源站分析）
 
@@ -173,7 +173,7 @@ Linux/macOS worker 使用 `unix.Setrlimit(RLIMIT_DATA, ...)`；Windows worker �
 | # | 状态 | 任务 | 产物 | 验证 |
 | --- | --- | --- | --- | --- |
 | 1 | ✅ | 定义协议并拆分现有 goja in-process 操作 | protocol + worker server | worker 单元测试 |
-| 2 | ⬜ | 实现当前二进制重启 client 与隐藏入口 | client + main/TestMain dispatch | re-exec 集成测试 |
+| 2 | ✅ | 实现当前二进制重启 client 与隐藏入口 | client + main/TestMain dispatch | re-exec 集成测试 |
 | 3 | ⬜ | 加入跨平台内存、时间和 IPC 边界 | limit 文件 + bounded I/O | 资源边界测试、交叉编译 |
 | 4 | ⬜ | 接入 `ScriptExecutor` 并证明行为兼容 | `script.go` + 回归测试 | providerquota 全包测试 |
 | 5 | ⬜ | OOM 攻击验证、全量回归和规格回写 | 验证证据 | race、vet、六平台构建 |
@@ -303,7 +303,9 @@ Linux/macOS worker 使用 `unix.Setrlimit(RLIMIT_DATA, ...)`；Windows worker �
 
 #### 验证
 
-- [ ] 规格阶段尚未执行；完成本任务的定向命令后在此记录实际输出。
+- [x] `go test ./internal/providerquota -run 'TestProcessScriptWorker|TestScriptWorkerInvocation|TestScriptWorkerRejectsTrailingInput' -count=1` —— 11 个测试通过。
+- [x] `go test ./cmd/server ./internal/providerquota -count=1` —— 合计 305 个测试通过。
+- [x] 请求与响应均要求单个 JSON 后到达 EOF；stdout 尾随日志和 stdin 尾随第二对象测试由 RED 失败转为 GREEN。
 
 ### 任务 3：跨平台资源限制
 
