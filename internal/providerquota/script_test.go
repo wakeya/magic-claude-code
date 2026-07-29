@@ -119,6 +119,130 @@ func TestScriptExecutorCrossOriginRedirect(t *testing.T) {
 	}
 }
 
+func TestScriptExecutorRedirectPreservesBody(t *testing.T) {
+	type redirectedRequest struct {
+		body        string
+		contentType string
+	}
+	finalReq := make(chan redirectedRequest, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/start":
+			http.Redirect(w, r, "/final", http.StatusTemporaryRedirect)
+		case "/final":
+			if r.Method != http.MethodPost {
+				t.Errorf("redirect method = %q, want POST", r.Method)
+			}
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("read redirected body: %v", err)
+			}
+			finalReq <- redirectedRequest{
+				body:        string(body),
+				contentType: r.Header.Get("Content-Type"),
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"balance": 9})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	script := `({
+		request: {
+			url: "{{baseUrl}}/start",
+			method: "POST",
+			bodyType: "form",
+			body: {alpha: "one", beta: "{{apiKey}}"}
+		},
+		extractor: function(r) { return {remaining: r.balance}; }
+	})`
+
+	exec := NewScriptExecutor(5 * time.Second)
+	result, err := exec.ExecuteScript(context.Background(), script,
+		map[string]string{"baseUrl": srv.URL, "apiKey": "two"}, srv.URL)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("query failed: %s - %s", result.ErrorCode, result.ErrorMessage)
+	}
+
+	select {
+	case got := <-finalReq:
+		if !strings.HasPrefix(got.contentType, "application/x-www-form-urlencoded") {
+			t.Fatalf("redirected content-type = %q, want form-urlencoded", got.contentType)
+		}
+		form, err := url.ParseQuery(got.body)
+		if err != nil {
+			t.Fatalf("redirected body is not form data: %v (raw %q)", err, got.body)
+		}
+		if form.Get("alpha") != "one" {
+			t.Errorf("alpha = %q, want one", form.Get("alpha"))
+		}
+		if form.Get("beta") != "two" {
+			t.Errorf("beta = %q, want two", form.Get("beta"))
+		}
+	default:
+		t.Fatal("redirect target was not called")
+	}
+}
+
+func TestParseRequestRejectsLargeArray(t *testing.T) {
+	exec := NewScriptExecutor(5 * time.Second)
+	_, err := exec.parseRequest(`({
+		request: {url: "http://example.com", method: "GET"},
+		bomb: new Array(1e9),
+		extractor: function(r) { return {}; }
+	})`)
+	if err == nil {
+		t.Fatal("expected large array script to be rejected")
+	}
+	if !strings.Contains(err.Error(), "potential resource abuse") {
+		t.Fatalf("error = %v, want potential resource abuse", err)
+	}
+}
+
+func TestParseRequestRejectsInfiniteLoop(t *testing.T) {
+	exec := NewScriptExecutor(5 * time.Second)
+	_, err := exec.parseRequest(`({
+		request: {url: "http://example.com", method: "GET"},
+		spin: (function() { while(true) {} })(),
+		extractor: function(r) { return {}; }
+	})`)
+	if err == nil {
+		t.Fatal("expected infinite loop script to be rejected")
+	}
+	if !strings.Contains(err.Error(), "potential resource abuse") {
+		t.Fatalf("error = %v, want potential resource abuse", err)
+	}
+}
+
+func TestParseRequestAllowsNormalExtractorScript(t *testing.T) {
+	exec := NewScriptExecutor(5 * time.Second)
+	req, err := exec.parseRequest(`({
+		request: {
+			url: "http://example.com/balance",
+			method: "POST",
+			bodyType: "json",
+			body: {token: "{{apiKey}}"}
+		},
+		extractor: function(response) {
+			return {remaining: response.balance, unit: "USD"};
+		}
+	})`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.URL != "http://example.com/balance" {
+		t.Errorf("url = %q, want http://example.com/balance", req.URL)
+	}
+	if req.Method != http.MethodPost {
+		t.Errorf("method = %q, want POST", req.Method)
+	}
+}
+
 func TestScriptExecutorForbidMethod(t *testing.T) {
 	script := `({
 		request: { url: "http://example.com", method: "DELETE" },
