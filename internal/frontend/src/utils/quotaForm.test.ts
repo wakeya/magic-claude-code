@@ -22,6 +22,7 @@ const baseForm: QuotaFormState = {
   script: '',
   base_url: '',
   script_api_key: '',
+  script_api_key_2: '',
   zenmux_base_url: '',
   zenmux_api_key: '',
   access_token: '',
@@ -29,6 +30,7 @@ const baseForm: QuotaFormState = {
   access_key_id: '',
   secret_access_key: '',
   clear_script_api_key: false,
+  clear_script_api_key_2: false,
   clear_zenmux_api_key: false,
   clear_access_token: false,
   clear_secret_access_key: false,
@@ -221,4 +223,35 @@ test('MiMo and official balance notices remain scoped to their templates', () =>
   assert.equal(shouldShowMiMoWarning('general', true), false)
   assert.equal(shouldShowOfficialBalanceInfo('official_balance', 'deepseek'), true)
   assert.equal(shouldShowOfficialBalanceInfo('general', 'deepseek'), false)
+})
+
+test('buildSavePayload carries script_api_key_2 for custom template', () => {
+  const payload = buildSavePayload({...baseForm, template_type: 'custom', script_api_key_2: 'sec-tok'}, '', null)
+  assert.equal(payload['script_api_key_2'], 'sec-tok')
+})
+
+test('buildSavePayload omits script_api_key_2 for newapi', () => {
+  const payload = buildSavePayload({...baseForm, template_type: 'newapi', script_api_key_2: 'sec-tok', access_token: 'at', user_id: 'u'}, '', null)
+  assert.equal('script_api_key_2' in payload, false)
+})
+
+test('buildSavePayload propagates clear_script_api_key_2 when not replacing', () => {
+  const payload = buildSavePayload({...baseForm, clear_script_api_key_2: true}, '', null)
+  assert.equal(payload['clear_script_api_key_2'], true)
+})
+
+test('buildSavePayload prefers replacement over clear for script_api_key_2', () => {
+  const payload = buildSavePayload({...baseForm, template_type: 'custom', script_api_key_2: 'x', clear_script_api_key_2: true}, '', null)
+  assert.equal(payload['script_api_key_2'], 'x')
+  assert.equal('clear_script_api_key_2' in payload, false)
+})
+
+test('buildTestPayload carries script_api_key_2 for custom', () => {
+  const payload = buildTestPayload({...baseForm, template_type: 'custom', script_api_key_2: 'sec-tok'}, '')
+  assert.equal(payload['script_api_key_2'], 'sec-tok')
+})
+
+test('buildTestPayload omits script_api_key_2 for newapi', () => {
+  const payload = buildTestPayload({...baseForm, template_type: 'newapi', script_api_key_2: 'sec-tok', access_token: 'at', user_id: 'u'}, '')
+  assert.equal('script_api_key_2' in payload, false)
 })

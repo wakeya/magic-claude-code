@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -29,20 +30,21 @@ type GatewayRestarter interface {
 
 // Server 配置服务
 type Server struct {
-	config                     *AdminConfig
-	auth                       *Auth
-	server                     *http.Server
-	startTime                  time.Time
-	configStore                config.ConfigStore
-	listenMu                   sync.RWMutex
-	effectiveListen            *config.Config
-	statsProvider              StatsProvider
-	usageHandler               *usage.Handler
-	quotaManager               *providerquota.Manager
-	failoverManager            *failover.Manager
+	config          *AdminConfig
+	auth            *Auth
+	server          *http.Server
+	startTime       time.Time
+	configStore     config.ConfigStore
+	listenMu        sync.RWMutex
+	effectiveListen *config.Config
+	statsProvider   StatsProvider
+	usageHandler    *usage.Handler
+	quotaManager    *providerquota.Manager
+	failoverManager *failover.Manager
 	// providerTestHTTPClient 仅测试注入：非 nil 时 handleTestProviderByID 用它代替默认客户端，
 	// 让测试在不绑定真实上游/不被 SSRF 拦截的情况下验证凭据恢复钩子。
-	providerTestHTTPClient *http.Client
+	providerTestHTTPClient     *http.Client
+	providerQuotaLLMClientFunc func(time.Duration) *providerquota.LLMClient
 	updater                    *updater.Updater
 	updateApplyDisabledMessage string
 	gatewayRestarter           GatewayRestarter
@@ -84,7 +86,7 @@ func (s *Server) Start(addr string, frontendFS embed.FS) error {
 	// 静态文件
 	staticFS, _ := fs.Sub(frontendFS, "dist")
 	fileServer := http.FileServer(http.FS(staticFS))
-	mux.Handle("/", s.authMiddleware(fileServer))
+	mux.Handle("/", s.authMiddleware(cacheHeadersHandler(fileServer)))
 
 	// API 路由
 	mux.HandleFunc("/api/login", s.handleLogin)
@@ -137,6 +139,24 @@ func (s *Server) Stop(ctx context.Context) error {
 		return s.server.Shutdown(ctx)
 	}
 	return nil
+}
+
+// cacheHeadersHandler wraps the static file server to set cache-control
+// headers per asset type. Content-hashed files under /assets/ are immutable
+// and safe to cache long-term; index.html and SPA fallback routes must
+// revalidate on every load so a rebuilt frontend is picked up without a hard
+// refresh.
+func cacheHeadersHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else if base := path.Base(r.URL.Path); r.URL.Path == "/" || base == "" || base == "index.html" || !strings.Contains(base, ".") {
+			// Root, index.html, and extension-less SPA routes (e.g.
+			// /providers/test-p/usage) serve index.html and must revalidate.
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // authMiddleware 认证中间件（用于静态文件和 SPA 路由）
@@ -206,6 +226,10 @@ func (s *Server) SetFailoverManager(m *failover.Manager) {
 // setProviderTestHTTPClient 是测试专用注入：覆盖 handleTestProviderByID 的 HTTP 客户端。
 func (s *Server) setProviderTestHTTPClient(c *http.Client) {
 	s.providerTestHTTPClient = c
+}
+
+func (s *Server) setProviderQuotaLLMClientFactory(f func(time.Duration) *providerquota.LLMClient) {
+	s.providerQuotaLLMClientFunc = f
 }
 
 // SetEffectiveListenState records the proxy/admin listen addresses/ports that

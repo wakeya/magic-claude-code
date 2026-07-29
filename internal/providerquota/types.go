@@ -42,6 +42,7 @@ type ProviderQuotaConfig struct {
 	// only decodes the pre-separation api_key field and is cleared by migration.
 	BaseURL            string `json:"base_url,omitempty"`
 	ScriptAPIKey       string `json:"script_api_key,omitempty"`
+	ScriptAPIKey2      string `json:"script_api_key_2,omitempty"`
 	ZenMuxBaseURL      string `json:"zenmux_base_url,omitempty"`
 	ZenMuxAPIKey       string `json:"zenmux_api_key,omitempty"`
 	LegacyAPIKey       string `json:"api_key,omitempty"`
@@ -160,7 +161,7 @@ func (c *ProviderQuotaConfig) HasSecrets() bool {
 	if c == nil {
 		return false
 	}
-	return c.ScriptAPIKey != "" || c.ZenMuxAPIKey != "" || c.LegacyAPIKey != "" ||
+	return c.ScriptAPIKey != "" || c.ScriptAPIKey2 != "" || c.ZenMuxAPIKey != "" || c.LegacyAPIKey != "" ||
 		c.AccessToken != "" || c.SecretAccessKey != ""
 }
 
@@ -372,6 +373,7 @@ type PublicQuotaConfig struct {
 
 	BaseURL                   string `json:"base_url,omitempty"`
 	ScriptAPIKeyConfigured    bool   `json:"script_api_key_configured"`
+	ScriptAPIKey2Configured   bool   `json:"script_api_key_2_configured"`
 	ZenMuxBaseURL             string `json:"zenmux_base_url,omitempty"`
 	ZenMuxAPIKeyConfigured    bool   `json:"zenmux_api_key_configured"`
 	AccessTokenConfigured     bool   `json:"access_token_configured"`
@@ -395,6 +397,7 @@ func ToPublicConfig(c *ProviderQuotaConfig) PublicQuotaConfig {
 		Script:                    c.Script,
 		BaseURL:                   c.BaseURL,
 		ScriptAPIKeyConfigured:    c.ScriptAPIKey != "",
+		ScriptAPIKey2Configured:   c.ScriptAPIKey2 != "",
 		ZenMuxBaseURL:             c.ZenMuxBaseURL,
 		ZenMuxAPIKeyConfigured:    c.ZenMuxAPIKey != "",
 		AccessTokenConfigured:     c.AccessToken != "",

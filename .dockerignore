@@ -1,5 +1,10 @@
 bin/
 data/
+node_modules/
+**/node_modules/
+.npm/
+**/.vite/
+coverage/
 *.test
 *.out
 .git/

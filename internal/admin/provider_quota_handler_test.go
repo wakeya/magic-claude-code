@@ -2,17 +2,22 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"magic-claude-code/internal/config"
 	"magic-claude-code/internal/providerquota"
 )
+
+const testPublicGenerateScriptLLMAPIURL = "http://93.184.216.34"
 
 type adminQuotaConfigGetter struct {
 	provider providerquota.ProviderConfig
@@ -49,6 +54,21 @@ func (g *adminQuotaConfigGetter) ListEnabledProviders() []providerquota.Provider
 	return []providerquota.ProviderConfig{g.provider}
 }
 
+func setGenerateScriptTestLLMServer(srv *Server, llmServer *httptest.Server) {
+	srv.setProviderQuotaLLMClientFactory(func(timeout time.Duration) *providerquota.LLMClient {
+		transport := &http.Transport{
+			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, network, llmServer.Listener.Addr().String())
+			},
+		}
+		return &providerquota.LLMClient{HTTPClient: &http.Client{
+			Timeout:   timeout,
+			Transport: transport,
+		}}
+	})
+}
+
 func TestProviderUsageGetNotFound(t *testing.T) {
 	store := config.NewMockStore(config.DefaultConfig())
 	srv := NewServer(&AdminConfig{Password: "test"}, store, nil)
@@ -61,6 +81,414 @@ func TestProviderUsageGetNotFound(t *testing.T) {
 
 	if w.Code != 404 {
 		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestGenerateScriptSuccess(t *testing.T) {
+	script := `({request:{url:"{{baseUrl}}/balance",method:"GET",headers:{"Authorization":"Bearer {{apiKey}}"}},extractor:function(r){return {remaining:r.balance,unit:"USD"};}})`
+	llmServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Fatalf("LLM path = %q, want /v1/messages", r.URL.Path)
+		}
+		if got := r.Header.Get("x-api-key"); got != "sk-llm-secret" {
+			t.Fatalf("x-api-key = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"content": []map[string]string{{"type": "text", "text": script}},
+		})
+	}))
+	defer llmServer.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{{
+		ID: "test-p", Name: "Test", APIURL: testPublicGenerateScriptLLMAPIURL, APIToken: "sk-llm-secret",
+		APIFormat: config.APIFormatAnthropic, Enabled: true, CreatedAt: timeNow(), UpdatedAt: timeNow(),
+	}}
+	srv := NewServer(&AdminConfig{Password: "test"}, config.NewMockStore(cfg), nil)
+	setGenerateScriptTestLLMServer(srv, llmServer)
+
+	body := bytes.NewBufferString(`{"model":"claude-test","prompt":"query balance","response_sample":"{\"balance\":42}","request_info":"GET /balance"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/test-p/usage/generate-script", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "session", Value: srv.GetAuth().GenerateToken()})
+	rec := httptest.NewRecorder()
+	srv.authMiddlewareFunc(srv.handleProviderRoutes)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	bodyBytes := rec.Body.Bytes()
+	var resp struct {
+		Script   string `json:"script"`
+		Warnings []struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"warnings"`
+		Iterations   int    `json:"iterations"`
+		ErrorCode    string `json:"error_code"`
+		ErrorMessage string `json:"error_message"`
+	}
+	if err := json.Unmarshal(bodyBytes, &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.ErrorCode != "" || resp.Script != script {
+		t.Fatalf("response = %#v", resp)
+	}
+	if resp.Iterations != 1 {
+		t.Fatalf("iterations = %d, want 1", resp.Iterations)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(bodyBytes, &raw); err != nil {
+		t.Fatalf("unmarshal raw response: %v", err)
+	}
+	if _, ok := raw["warnings"]; !ok {
+		t.Fatalf("response missing warnings field: %s", rec.Body.String())
+	}
+	if _, ok := raw["iterations"]; !ok {
+		t.Fatalf("response missing iterations field: %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "sk-llm-secret") {
+		t.Fatalf("response leaked APIToken: %s", rec.Body.String())
+	}
+}
+
+func TestGenerateScriptReturnsStructuredWarningsAndIterations(t *testing.T) {
+	script := `({request:{url:"{{baseUrl}}/balance",method:"GET",headers:{"Authorization":"Bearer {{apiKey}}"}},extractor:function(r){return {remaining:r.balance,unit:"USD"};}})`
+	var calls int
+	llmServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"content": []map[string]string{{"type": "text", "text": script}},
+		})
+	}))
+	defer llmServer.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{{
+		ID: "test-p", Name: "Test", APIURL: testPublicGenerateScriptLLMAPIURL, APIToken: "sk-llm-secret",
+		APIFormat: config.APIFormatAnthropic, Enabled: true, CreatedAt: timeNow(), UpdatedAt: timeNow(),
+	}}
+	srv := NewServer(&AdminConfig{Password: "test"}, config.NewMockStore(cfg), nil)
+	setGenerateScriptTestLLMServer(srv, llmServer)
+
+	body := bytes.NewBufferString(`{"model":"claude-test","prompt":"query balance","response_sample":"{\"balance\":42}","request_info":"GET /balance\nCookie: sid=abc"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/test-p/usage/generate-script", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "session", Value: srv.GetAuth().GenerateToken()})
+	rec := httptest.NewRecorder()
+	srv.authMiddlewareFunc(srv.handleProviderRoutes)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Script   string `json:"script"`
+		Warnings []struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"warnings"`
+		Iterations int `json:"iterations"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Script != script {
+		t.Fatalf("script = %q, want %q", resp.Script, script)
+	}
+	if resp.Iterations != 10 || calls != 10 {
+		t.Fatalf("iterations=%d calls=%d, want max iterations", resp.Iterations, calls)
+	}
+	if len(resp.Warnings) != 1 || resp.Warnings[0].Code != "missing_cookie" || resp.Warnings[0].Message == "" {
+		t.Fatalf("warnings = %#v, want structured missing_cookie warning", resp.Warnings)
+	}
+}
+
+func TestGenerateScriptUsesBodyLLMProviderID(t *testing.T) {
+	script := `({request:{url:"{{baseUrl}}/usage",method:"GET",headers:{"Authorization":"Bearer {{apiKey}}"}},extractor:function(r){return {remaining:r.remaining,unit:"credits"};}})`
+	var urlProviderHits atomic.Int32
+	urlProviderServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		urlProviderHits.Add(1)
+		http.Error(w, "wrong provider", http.StatusInternalServerError)
+	}))
+	defer urlProviderServer.Close()
+
+	var selectedProviderHits atomic.Int32
+	selectedProviderServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		selectedProviderHits.Add(1)
+		if r.URL.Path != "/v1/messages" {
+			t.Fatalf("LLM path = %q, want /v1/messages", r.URL.Path)
+		}
+		if got := r.Header.Get("x-api-key"); got != "sk-selected-secret" {
+			t.Fatalf("x-api-key = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"content": []map[string]string{{"type": "text", "text": script}},
+		})
+	}))
+	defer selectedProviderServer.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{
+		{
+			ID: "provider-a", Name: "URL Provider", APIURL: urlProviderServer.URL, APIToken: "sk-url-secret",
+			APIFormat: config.APIFormatAnthropic, Enabled: true, CreatedAt: timeNow(), UpdatedAt: timeNow(),
+		},
+		{
+			ID: "provider-b", Name: "Selected Provider", APIURL: testPublicGenerateScriptLLMAPIURL, APIToken: "sk-selected-secret",
+			APIFormat: config.APIFormatAnthropic, Enabled: true, CreatedAt: timeNow(), UpdatedAt: timeNow(),
+		},
+	}
+	srv := NewServer(&AdminConfig{Password: "test"}, config.NewMockStore(cfg), nil)
+	setGenerateScriptTestLLMServer(srv, selectedProviderServer)
+
+	body := bytes.NewBufferString(`{"llm_provider_id":"provider-b","model":"claude-test","prompt":"query usage","response_sample":"{\"remaining\":7}"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/provider-a/usage/generate-script", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "session", Value: srv.GetAuth().GenerateToken()})
+	rec := httptest.NewRecorder()
+	srv.authMiddlewareFunc(srv.handleProviderRoutes)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Script    string `json:"script"`
+		ErrorCode string `json:"error_code"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.ErrorCode != "" || resp.Script != script {
+		t.Fatalf("response = %#v", resp)
+	}
+	if got := selectedProviderHits.Load(); got != 1 {
+		t.Fatalf("selected provider hits = %d, want 1", got)
+	}
+	if got := urlProviderHits.Load(); got != 0 {
+		t.Fatalf("URL provider hits = %d, want 0", got)
+	}
+}
+
+func TestGenerateScriptProviderNotFound(t *testing.T) {
+	srv := NewServer(&AdminConfig{Password: "test"}, config.NewMockStore(config.DefaultConfig()), nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/missing/usage/generate-script", bytes.NewBufferString(`{"model":"m","prompt":"p","response_sample":"{}"}`))
+	req.AddCookie(&http.Cookie{Name: "session", Value: srv.GetAuth().GenerateToken()})
+	rec := httptest.NewRecorder()
+
+	srv.authMiddlewareFunc(srv.handleProviderRoutes)(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGenerateScriptUnauthorized(t *testing.T) {
+	srv := NewServer(&AdminConfig{Password: "test"}, config.NewMockStore(config.DefaultConfig()), nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/test-p/usage/generate-script", bytes.NewBufferString(`{"model":"m","prompt":"p","response_sample":"{}"}`))
+	rec := httptest.NewRecorder()
+
+	srv.authMiddlewareFunc(srv.handleProviderRoutes)(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401; body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGenerateScriptNonLLMProvider(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider config.Provider
+	}{
+		{
+			name: "missing token",
+			provider: config.Provider{
+				ID: "test-p", Name: "Test", APIURL: "https://api.example.com", APIFormat: config.APIFormatAnthropic, Enabled: true,
+			},
+		},
+		{
+			name: "unknown format",
+			provider: config.Provider{
+				ID: "test-p", Name: "Test", APIURL: "https://api.example.com", APIToken: "sk-test", APIFormat: config.APIFormat("unknown"), Enabled: true,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.Providers = []config.Provider{tt.provider}
+			srv := NewServer(&AdminConfig{Password: "test"}, config.NewMockStore(cfg), nil)
+			req := httptest.NewRequest(http.MethodPost, "/api/providers/test-p/usage/generate-script", bytes.NewBufferString(`{"model":"m","prompt":"p","response_sample":"{}"}`))
+			req.AddCookie(&http.Cookie{Name: "session", Value: srv.GetAuth().GenerateToken()})
+			rec := httptest.NewRecorder()
+
+			srv.authMiddlewareFunc(srv.handleProviderRoutes)(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+			}
+			var resp struct {
+				ErrorCode string `json:"error_code"`
+			}
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if resp.ErrorCode != "invalid_config" {
+				t.Fatalf("error_code = %q, want invalid_config", resp.ErrorCode)
+			}
+		})
+	}
+}
+
+func TestGenerateScriptDisabledProvider(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{{
+		ID: "test-p", Name: "Test", APIURL: "https://api.example.com", APIToken: "sk-test",
+		APIFormat: config.APIFormatOpenAIChat, Enabled: false,
+	}}
+	srv := NewServer(&AdminConfig{Password: "test"}, config.NewMockStore(cfg), nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/test-p/usage/generate-script", bytes.NewBufferString(`{"model":"m","prompt":"p","response_sample":"{}"}`))
+	req.AddCookie(&http.Cookie{Name: "session", Value: srv.GetAuth().GenerateToken()})
+	rec := httptest.NewRecorder()
+
+	srv.authMiddlewareFunc(srv.handleProviderRoutes)(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		ErrorCode    string `json:"error_code"`
+		ErrorMessage string `json:"error_message"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.ErrorCode != "invalid_config" {
+		t.Fatalf("error_code = %q, want invalid_config", resp.ErrorCode)
+	}
+	if resp.ErrorMessage != "LLM provider is disabled" {
+		t.Fatalf("error_message = %q, want disabled provider message", resp.ErrorMessage)
+	}
+}
+
+func TestGenerateScriptMissingFields(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{{
+		ID: "test-p", Name: "Test", APIURL: "https://api.example.com", APIToken: "sk-test",
+		APIFormat: config.APIFormatOpenAIChat, Enabled: true,
+	}}
+	srv := NewServer(&AdminConfig{Password: "test"}, config.NewMockStore(cfg), nil)
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "model", body: `{"prompt":"p","response_sample":"{}"}`},
+		{name: "prompt", body: `{"model":"m","response_sample":"{}"}`},
+		{name: "response_sample", body: `{"model":"m","prompt":"p"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/providers/test-p/usage/generate-script", bytes.NewBufferString(tt.body))
+			req.AddCookie(&http.Cookie{Name: "session", Value: srv.GetAuth().GenerateToken()})
+			rec := httptest.NewRecorder()
+
+			srv.authMiddlewareFunc(srv.handleProviderRoutes)(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), `"error_code":"invalid_config"`) {
+				t.Fatalf("body = %s, want invalid_config", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestGenerateScriptOversizedBody(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{{
+		ID: "test-p", Name: "Test", APIURL: "https://api.example.com", APIToken: "sk-test",
+		APIFormat: config.APIFormatOpenAIChat, Enabled: true,
+	}}
+	srv := NewServer(&AdminConfig{Password: "test"}, config.NewMockStore(cfg), nil)
+	body, _ := json.Marshal(map[string]string{
+		"model":           "m",
+		"prompt":          strings.Repeat("p", 8*1024+1),
+		"response_sample": "{}",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/test-p/usage/generate-script", bytes.NewReader(body))
+	req.AddCookie(&http.Cookie{Name: "session", Value: srv.GetAuth().GenerateToken()})
+	rec := httptest.NewRecorder()
+
+	srv.authMiddlewareFunc(srv.handleProviderRoutes)(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"error_code":"invalid_config"`) || !strings.Contains(rec.Body.String(), "field exceeds size limit") {
+		t.Fatalf("body = %s, want invalid_config size limit", rec.Body.String())
+	}
+}
+
+func TestGenerateScriptTotalBodyLimit(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{{
+		ID: "test-p", Name: "Test", APIURL: "https://api.example.com", APIToken: "sk-test",
+		APIFormat: config.APIFormatOpenAIChat, Enabled: true,
+	}}
+	srv := NewServer(&AdminConfig{Password: "test"}, config.NewMockStore(cfg), nil)
+	body := `{"model":"m","prompt":"p","response_sample":"{` + strings.Repeat("x", 256*1024) + `}"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/test-p/usage/generate-script", strings.NewReader(body))
+	req.AddCookie(&http.Cookie{Name: "session", Value: srv.GetAuth().GenerateToken()})
+	rec := httptest.NewRecorder()
+
+	srv.authMiddlewareFunc(srv.handleProviderRoutes)(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"error_code":"invalid_config"`) {
+		t.Fatalf("body = %s, want invalid_config", rec.Body.String())
+	}
+}
+
+func TestGenerateScriptLLMUpstreamError(t *testing.T) {
+	llmServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "token rejected", http.StatusUnauthorized)
+	}))
+	defer llmServer.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{{
+		ID: "test-p", Name: "Test", APIURL: testPublicGenerateScriptLLMAPIURL, APIToken: "sk-llm-secret",
+		APIFormat: config.APIFormatOpenAIChat, Enabled: true,
+	}}
+	srv := NewServer(&AdminConfig{Password: "test"}, config.NewMockStore(cfg), nil)
+	setGenerateScriptTestLLMServer(srv, llmServer)
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/test-p/usage/generate-script", bytes.NewBufferString(`{"model":"m","prompt":"p","response_sample":"{}"}`))
+	req.AddCookie(&http.Cookie{Name: "session", Value: srv.GetAuth().GenerateToken()})
+	rec := httptest.NewRecorder()
+
+	srv.authMiddlewareFunc(srv.handleProviderRoutes)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Script       string `json:"script"`
+		ErrorCode    string `json:"error_code"`
+		ErrorMessage string `json:"error_message"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Script != "" || resp.ErrorCode != "invalid_credentials" {
+		t.Fatalf("response = %#v, want invalid_credentials", resp)
+	}
+	if strings.Contains(rec.Body.String(), "sk-llm-secret") {
+		t.Fatalf("response leaked APIToken: %s", rec.Body.String())
 	}
 }
 
@@ -342,6 +770,7 @@ func TestProviderUsageSecretRedaction(t *testing.T) {
 				TemplateType:    "newapi",
 				AccessToken:     "super-secret-at",
 				ScriptAPIKey:    "super-secret-script-key",
+				ScriptAPIKey2:   "super-secret-script2-key",
 				ZenMuxBaseURL:   "https://quota.zenmux.example/usage",
 				ZenMuxAPIKey:    "super-secret-zenmux-key",
 				SecretAccessKey: "super-secret-sk",
@@ -366,7 +795,7 @@ func TestProviderUsageSecretRedaction(t *testing.T) {
 
 	body := w.Body.String()
 	// Must not contain raw secrets.
-	for _, secret := range []string{"super-secret-at", "super-secret-script-key", "super-secret-zenmux-key", "super-secret-sk"} {
+	for _, secret := range []string{"super-secret-at", "super-secret-script-key", "super-secret-script2-key", "super-secret-zenmux-key", "super-secret-sk"} {
 		if containsStr(body, secret) {
 			t.Errorf("response contains secret %q", secret)
 		}
@@ -376,7 +805,7 @@ func TestProviderUsageSecretRedaction(t *testing.T) {
 	var resp map[string]any
 	json.Unmarshal(w.Body.Bytes(), &resp)
 	cfgDTO := resp["config"].(map[string]any)
-	if cfgDTO["script_api_key_configured"] != true || cfgDTO["zenmux_api_key_configured"] != true {
+	if cfgDTO["script_api_key_configured"] != true || cfgDTO["script_api_key_2_configured"] != true || cfgDTO["zenmux_api_key_configured"] != true {
 		t.Error("expected separated configured flags")
 	}
 	if cfgDTO["access_token_configured"] != true {
@@ -614,6 +1043,55 @@ func TestApplyQuotaUpdateSeparatesCredentialPurposes(t *testing.T) {
 			t.Fatalf("separated keys = %q/%q", result.ScriptAPIKey, result.ZenMuxAPIKey)
 		}
 	})
+}
+
+func TestApplyQuotaUpdateScriptAPIKey2(t *testing.T) {
+	str := func(v string) *string { return &v }
+
+	t.Run("replace", func(t *testing.T) {
+		existing := &providerquota.ProviderQuotaConfig{TemplateType: providerquota.TemplateCustom, ScriptAPIKey2: "old"}
+		result := applyQuotaUpdate(existing, providerQuotaUpdateRequest{ScriptAPIKey2: str("new-sec")}, "")
+		if result.ScriptAPIKey2 != "new-sec" {
+			t.Fatalf("ScriptAPIKey2 = %q, want new-sec", result.ScriptAPIKey2)
+		}
+	})
+
+	t.Run("preserve when field omitted", func(t *testing.T) {
+		existing := &providerquota.ProviderQuotaConfig{TemplateType: providerquota.TemplateCustom, ScriptAPIKey2: "old"}
+		result := applyQuotaUpdate(existing, providerQuotaUpdateRequest{TemplateType: str(providerquota.TemplateCustom)}, "")
+		if result.ScriptAPIKey2 != "old" {
+			t.Fatalf("ScriptAPIKey2 = %q, want old (preserved)", result.ScriptAPIKey2)
+		}
+	})
+
+	t.Run("clear", func(t *testing.T) {
+		existing := &providerquota.ProviderQuotaConfig{TemplateType: providerquota.TemplateCustom, ScriptAPIKey2: "old"}
+		result := applyQuotaUpdate(existing, providerQuotaUpdateRequest{ClearScriptAPIKey2: true}, "")
+		if result.ScriptAPIKey2 != "" {
+			t.Fatalf("ScriptAPIKey2 = %q, want empty (cleared)", result.ScriptAPIKey2)
+		}
+	})
+
+	t.Run("clear is independent from script_api_key", func(t *testing.T) {
+		existing := &providerquota.ProviderQuotaConfig{TemplateType: providerquota.TemplateCustom, ScriptAPIKey: "k1", ScriptAPIKey2: "k2"}
+		result := applyQuotaUpdate(existing, providerQuotaUpdateRequest{ClearScriptAPIKey2: true}, "")
+		if result.ScriptAPIKey != "k1" || result.ScriptAPIKey2 != "" {
+			t.Fatalf("ScriptAPIKey/2 = %q/%q, want k1/empty", result.ScriptAPIKey, result.ScriptAPIKey2)
+		}
+	})
+}
+
+func TestValidateProviderQuotaSecretPatchesScriptAPIKey2(t *testing.T) {
+	str := func(v string) *string { return &v }
+	if err := validateProviderQuotaSecretPatches(providerQuotaUpdateRequest{ScriptAPIKey2: str("x"), ClearScriptAPIKey2: true}); err == nil {
+		t.Fatal("expected error when script_api_key_2 is both replaced and cleared")
+	}
+	if err := validateProviderQuotaSecretPatches(providerQuotaUpdateRequest{ScriptAPIKey2: str("x")}); err != nil {
+		t.Fatalf("replace only: %v", err)
+	}
+	if err := validateProviderQuotaSecretPatches(providerQuotaUpdateRequest{ClearScriptAPIKey2: true}); err != nil {
+		t.Fatalf("clear only: %v", err)
+	}
 }
 
 func TestApplyQuotaUpdateRoutesLegacyAPIKeyByEffectivePurpose(t *testing.T) {

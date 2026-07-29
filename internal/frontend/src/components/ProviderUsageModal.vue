@@ -95,6 +95,15 @@
               </div>
             </div>
 
+            <div v-if="showAPIKey">
+              <label class="block text-sm font-medium mb-1">{{ t('quota.script_api_key_2') }}</label>
+              <div class="flex flex-wrap sm:flex-nowrap gap-2 min-w-0">
+                <input v-model="form.script_api_key_2" type="password" class="min-w-0 flex-1 app-control rounded-md px-3 py-2 text-sm" :placeholder="savedConfig?.script_api_key_2_configured ? t('quota.script_api_key_configured') : ''" />
+                <button v-if="savedConfig?.script_api_key_2_configured" type="button" class="text-xs text-danger hover:underline whitespace-nowrap" @click="form.clear_script_api_key_2 = true">{{ t('quota.clear_script_key') }}</button>
+              </div>
+              <div class="text-xs text-text-secondary mt-1">{{ t('quota.script_api_key_2_hint') }}</div>
+            </div>
+
             <template v-if="showZenMuxFields">
               <div>
                 <label class="block text-sm font-medium mb-1">{{ t('quota.zenmux_base_url') }}</label>
@@ -148,7 +157,17 @@
             </div>
 
             <div v-if="showScript">
-              <label class="block text-sm font-medium mb-1">{{ t('quota.script') }}</label>
+              <div class="flex items-center justify-between gap-3 mb-1">
+                <label class="block text-sm font-medium">{{ t('quota.script') }}</label>
+                <button
+                  v-if="showScript"
+                  type="button"
+                  class="text-xs text-primary hover:underline whitespace-nowrap"
+                  @click="openGenerator"
+                >
+                  {{ t('quota.ai_generate') }}
+                </button>
+              </div>
               <textarea v-model="form.script" rows="12" class="w-full app-control rounded-md px-3 py-2 text-sm font-mono" spellcheck="false"></textarea>
               <div v-if="form.template_type === 'custom'" class="text-xs text-text-secondary mt-1">
                 {{ t('quota.return_fields_help') }}
@@ -206,6 +225,13 @@
         </div>
       </footer>
     </div>
+    <ScriptGeneratorModal
+      v-if="showGenerator"
+      :providerId="providerId"
+      :llmProviders="llmProviders"
+      @generated="onGeneratedScript"
+      @close="closeGenerator"
+    />
   </div>
 </template>
 
@@ -214,12 +240,15 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useApi } from '@/composables/useApi'
 import { useI18n } from '@/composables/useI18n'
 import type {
+  Provider,
   ProviderQuotaResult,
   ProviderUsageUpdateRequest,
   PublicQuotaConfig,
   QuotaSnapshot,
+  ScriptAuditWarning,
 } from '@/composables/useApi'
 import QuotaResultDisplay from '@/components/QuotaResultDisplay.vue'
+import ScriptGeneratorModal from '@/components/ScriptGeneratorModal.vue'
 import {
   effectiveTokenPlanProvider as resolveEffectiveProvider,
   showBaseURLField,
@@ -261,6 +290,8 @@ const testResult = ref<ProviderQuotaResult | null>(null)
 const detectedTokenPlan = ref('')
 const detectedBalance = ref('')
 const isMiMoDetected = ref(false)
+const showGenerator = ref(false)
+const aiProviders = ref<Provider[]>([])
 let previousBodyOverflow = ''
 let disposed = false
 let savedTimer: ReturnType<typeof setTimeout> | null = null
@@ -275,6 +306,7 @@ const form = reactive<QuotaFormState>({
   script: '',
   base_url: '',
   script_api_key: '',
+  script_api_key_2: '',
   zenmux_base_url: '',
   zenmux_api_key: '',
   access_token: '',
@@ -282,6 +314,7 @@ const form = reactive<QuotaFormState>({
   access_key_id: '',
   secret_access_key: '',
   clear_script_api_key: false,
+  clear_script_api_key_2: false,
   clear_zenmux_api_key: false,
   clear_access_token: false,
   clear_secret_access_key: false,
@@ -300,6 +333,20 @@ const isMiMo = computed(() => isMiMoDetected.value)
 const showMiMoWarning = computed(() => shouldShowMiMoWarning(form.template_type, isMiMoDetected.value))
 const showOfficialBalanceInfo = computed(() => shouldShowOfficialBalanceInfo(form.template_type, detectedBalance.value))
 const showZenMuxFields = isZenMux
+const llmProviders = computed(() =>
+  aiProviders.value.filter(provider =>
+    ['anthropic', 'openai_chat', 'openai_responses'].includes(provider.api_format) &&
+    provider.enabled &&
+    (provider.api_token_configured ?? !!provider.api_token_mask)
+  ).map(provider => ({
+    id: provider.id,
+    name: provider.name,
+    exposed_models: (provider.exposed_models || []).map(model => ({
+      backend_model: model.backend_model,
+    })),
+    model_mappings: provider.model_mappings || {},
+  }))
+)
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -361,10 +408,12 @@ function clearZenMuxOverride() {
 
 function clearSubmittedSecrets() {
   form.script_api_key = ''
+  form.script_api_key_2 = ''
   form.zenmux_api_key = ''
   form.access_token = ''
   form.secret_access_key = ''
   form.clear_script_api_key = false
+  form.clear_script_api_key_2 = false
   form.clear_zenmux_api_key = false
   form.clear_access_token = false
   form.clear_secret_access_key = false
@@ -382,6 +431,24 @@ function populateForm(config: PublicQuotaConfig) {
   form.user_id = config.user_id || ''
   form.access_key_id = config.access_key_id || ''
   clearSubmittedSecrets()
+}
+
+async function loadAIProviderOptions() {
+  try {
+    const data = await api.getProviders()
+    if (disposed) return
+    aiProviders.value = data.providers
+  } catch {
+    aiProviders.value = []
+  }
+}
+
+function openGenerator() {
+  showGenerator.value = true
+}
+
+function closeGenerator() {
+  showGenerator.value = false
 }
 
 function formatRelativeTime(isoStr: string): string {
@@ -407,6 +474,7 @@ async function loadConfig() {
     detectedBalance.value = data.detected_balance || ''
     isMiMoDetected.value = !!data.is_mimo
     populateForm(data.config)
+    await loadAIProviderOptions()
   } catch (error: unknown) {
     if (disposed) return
     const detail = errorMessage(error)
@@ -503,6 +571,13 @@ async function saveConfig() {
     emit('saved', outcome.snapshot)
   } finally {
     if (!disposed) saving.value = false
+  }
+}
+
+function onGeneratedScript(script: string, warnings: ScriptAuditWarning[] = []) {
+  form.script = script
+  if (warnings.length === 0) {
+    showGenerator.value = false
   }
 }
 

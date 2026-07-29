@@ -243,6 +243,7 @@ func (m *Manager) executeQuery(ctx context.Context, providerID string, opts Quer
 		placeholders := map[string]string{
 			"baseUrl": plan.scriptURL,
 			"apiKey":  plan.token,
+			"apiKey2": plan.token2,
 		}
 		r, err := exec.ExecuteScript(ctx, script, placeholders, plan.scriptURL)
 		if err != nil {

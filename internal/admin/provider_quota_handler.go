@@ -3,12 +3,21 @@ package admin
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"magic-claude-code/internal/config"
 	"magic-claude-code/internal/providerquota"
+)
+
+const (
+	generateScriptMaxBodyBytes        = 256 * 1024
+	generateScriptMaxPromptBytes      = 8 * 1024
+	generateScriptMaxSampleBytes      = 32 * 1024
+	generateScriptMaxRequestInfoBytes = 16 * 1024
+	generateScriptMaxModelBytes       = 128
 )
 
 // handleProviderQuotaRoutes dispatches /api/providers/{id}/usage/* routes.
@@ -19,6 +28,11 @@ func (s *Server) handleProviderQuotaRoutes(w http.ResponseWriter, r *http.Reques
 	// /api/providers/{id}/usage/test
 	if strings.HasSuffix(path, "/usage/test") {
 		s.handleProviderUsageTest(w, r)
+		return
+	}
+	// /api/providers/{id}/usage/generate-script
+	if strings.HasSuffix(path, "/usage/generate-script") {
+		s.handleGenerateUsageScript(w, r)
 		return
 	}
 	// /api/providers/{id}/usage/query
@@ -257,6 +271,99 @@ func (s *Server) handleProviderUsageTest(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+// handleGenerateUsageScript calls an existing provider card as an LLM and
+// returns a generated custom/general quota script for the editor.
+func (s *Server) handleGenerateUsageScript(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error": "method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, generateScriptMaxBodyBytes)
+
+	path := strings.TrimSuffix(r.URL.Path, "/usage/generate-script")
+	id := strings.TrimPrefix(path, "/api/providers/")
+
+	cfg, err := s.configStore.Load()
+	if err != nil {
+		writeGenerateScriptError(w, http.StatusInternalServerError, "internal_error", "failed to load config")
+		return
+	}
+
+	var req generateScriptRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if strings.Contains(err.Error(), "http: request body too large") || err == io.ErrUnexpectedEOF {
+			writeGenerateScriptError(w, http.StatusBadRequest, "invalid_config", "request body exceeds size limit")
+			return
+		}
+		writeGenerateScriptError(w, http.StatusBadRequest, "invalid_config", "invalid request")
+		return
+	}
+	if !isGenerateScriptRequestSizeValid(req) {
+		writeGenerateScriptError(w, http.StatusBadRequest, "invalid_config", "field exceeds size limit")
+		return
+	}
+
+	llmProviderID := strings.TrimSpace(req.LLMProviderID)
+	if llmProviderID == "" {
+		llmProviderID = id
+	}
+	provider := cfg.GetProviderByID(llmProviderID)
+	if provider == nil {
+		http.Error(w, `{"error": "provider not found"}`, http.StatusNotFound)
+		return
+	}
+	if !provider.Enabled {
+		writeGenerateScriptError(w, http.StatusBadRequest, "invalid_config", "LLM provider is disabled")
+		return
+	}
+	if !isConfiguredLLMProvider(provider) {
+		writeGenerateScriptError(w, http.StatusBadRequest, "invalid_config", "provider must have a supported api_format and api_token")
+		return
+	}
+
+	if strings.TrimSpace(req.Model) == "" || strings.TrimSpace(req.Prompt) == "" || strings.TrimSpace(req.ResponseSample) == "" {
+		writeGenerateScriptError(w, http.StatusBadRequest, "invalid_config", "model, prompt and response_sample are required")
+		return
+	}
+
+	timeout := 30 * time.Second
+	factory := s.providerQuotaLLMClientFunc
+	if factory == nil {
+		factory = providerquota.NewLLMClient
+	}
+	result := providerquota.GenerateScript(
+		r.Context(),
+		factory(timeout),
+		llmProviderFromConfig(provider),
+		providerquota.GenerateScriptRequest{
+			Model:          req.Model,
+			Prompt:         req.Prompt,
+			ResponseSample: req.ResponseSample,
+			RequestInfo:    req.RequestInfo,
+		},
+		timeout,
+	)
+
+	w.Header().Set("Content-Type", "application/json")
+	if result.ErrorCode != "" {
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"script":        "",
+			"error_code":    result.ErrorCode,
+			"error_message": result.ErrorMessage,
+		})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(struct {
+		Script     string                       `json:"script"`
+		Warnings   []providerquota.AuditWarning `json:"warnings"`
+		Iterations int                          `json:"iterations"`
+	}{
+		Script:     result.Script,
+		Warnings:   result.Warnings,
+		Iterations: result.Iterations,
+	})
+}
+
 // handleProviderUsageQuery runs a manual production query.
 func (s *Server) handleProviderUsageQuery(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -317,6 +424,7 @@ type providerQuotaUpdateRequest struct {
 	Script                   *string `json:"script"`
 	BaseURL                  *string `json:"base_url"`
 	ScriptAPIKey             *string `json:"script_api_key"`
+	ScriptAPIKey2            *string `json:"script_api_key_2"`
 	ZenMuxBaseURL            *string `json:"zenmux_base_url"`
 	ZenMuxAPIKey             *string `json:"zenmux_api_key"`
 	APIKey                   *string `json:"api_key"` // backward-compatible client input
@@ -326,10 +434,50 @@ type providerQuotaUpdateRequest struct {
 	AccessKeyID              *string `json:"access_key_id"`
 	SecretAccessKey          *string `json:"secret_access_key"`
 	ClearScriptAPIKey        bool    `json:"clear_script_api_key"`
+	ClearScriptAPIKey2       bool    `json:"clear_script_api_key_2"`
 	ClearZenMuxAPIKey        bool    `json:"clear_zenmux_api_key"`
 	ClearAPIKey              bool    `json:"clear_api_key"` // backward-compatible client input
 	ClearAccessToken         bool    `json:"clear_access_token"`
 	ClearSecretAccessKey     bool    `json:"clear_secret_access_key"`
+}
+
+type generateScriptRequest struct {
+	LLMProviderID  string `json:"llm_provider_id,omitempty"`
+	Model          string `json:"model"`
+	Prompt         string `json:"prompt"`
+	ResponseSample string `json:"response_sample"`
+	RequestInfo    string `json:"request_info,omitempty"`
+}
+
+func isConfiguredLLMProvider(provider *config.Provider) bool {
+	if provider == nil {
+		return false
+	}
+	return provider.Enabled && provider.APIToken != "" && providerquota.IsLLMAPIFormat(string(provider.APIFormat))
+}
+
+func isGenerateScriptRequestSizeValid(req generateScriptRequest) bool {
+	return len(req.Prompt) <= generateScriptMaxPromptBytes &&
+		len(req.ResponseSample) <= generateScriptMaxSampleBytes &&
+		len(req.RequestInfo) <= generateScriptMaxRequestInfoBytes &&
+		len(req.Model) <= generateScriptMaxModelBytes
+}
+
+func llmProviderFromConfig(provider *config.Provider) providerquota.LLMProvider {
+	return providerquota.LLMProvider{
+		APIURL:    provider.APIURL,
+		APIToken:  provider.APIToken,
+		APIFormat: string(provider.APIFormat),
+	}
+}
+
+func writeGenerateScriptError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error_code":    code,
+		"error_message": message,
+	})
 }
 
 func validateProviderQuotaSecretPatches(req providerQuotaUpdateRequest) error {
@@ -339,6 +487,7 @@ func validateProviderQuotaSecretPatches(req providerQuotaUpdateRequest) error {
 		clear bool
 	}{
 		{name: "script_api_key", value: req.ScriptAPIKey, clear: req.ClearScriptAPIKey},
+		{name: "script_api_key_2", value: req.ScriptAPIKey2, clear: req.ClearScriptAPIKey2},
 		{name: "zenmux_api_key", value: req.ZenMuxAPIKey, clear: req.ClearZenMuxAPIKey},
 		{name: "access_token", value: req.AccessToken, clear: req.ClearAccessToken},
 		{name: "secret_access_key", value: req.SecretAccessKey, clear: req.ClearSecretAccessKey},
@@ -395,6 +544,7 @@ func applyQuotaUpdate(existing *providerquota.ProviderQuotaConfig, req providerQ
 
 	// Purpose-specific secret patch semantics.
 	applySecretPatch(&c.ScriptAPIKey, req.ScriptAPIKey, req.ClearScriptAPIKey)
+	applySecretPatch(&c.ScriptAPIKey2, req.ScriptAPIKey2, req.ClearScriptAPIKey2)
 	applySecretPatch(&c.ZenMuxAPIKey, req.ZenMuxAPIKey, req.ClearZenMuxAPIKey)
 	applySecretPatch(&c.AccessToken, req.AccessToken, req.ClearAccessToken)
 	applySecretPatch(&c.SecretAccessKey, req.SecretAccessKey, req.ClearSecretAccessKey)

@@ -342,4 +342,37 @@ func TestResolveQueryPlanCredentials(t *testing.T) {
 			t.Errorf("provider = %q, want deepseek", plan.provider)
 		}
 	})
+
+	t.Run("custom carries ScriptAPIKey2 as token2", func(t *testing.T) {
+		cfg := &ProviderQuotaConfig{Enabled: true, TemplateType: TemplateCustom, BaseURL: "https://gw.example.com", ScriptAPIKey: "script-key", ScriptAPIKey2: "sec-token"}
+		plan, err := resolveQueryPlan(cfg, "https://gw.example.com", cardToken)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if plan.token2 != "sec-token" {
+			t.Errorf("token2 = %q, want sec-token", plan.token2)
+		}
+	})
+
+	t.Run("custom with empty ScriptAPIKey2 yields empty token2", func(t *testing.T) {
+		cfg := &ProviderQuotaConfig{Enabled: true, TemplateType: TemplateCustom, BaseURL: "https://gw.example.com", ScriptAPIKey: "script-key"}
+		plan, err := resolveQueryPlan(cfg, "https://gw.example.com", cardToken)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if plan.token2 != "" {
+			t.Errorf("token2 = %q, want empty", plan.token2)
+		}
+	})
+
+	t.Run("newapi does not read ScriptAPIKey2 into token2", func(t *testing.T) {
+		cfg := &ProviderQuotaConfig{Enabled: true, TemplateType: TemplateNewAPI, BaseURL: "https://panel.example.com", AccessToken: "newapi-tok", UserID: "u1", ScriptAPIKey2: "residue"}
+		plan, err := resolveQueryPlan(cfg, "https://panel.example.com", cardToken)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if plan.token2 != "" {
+			t.Errorf("token2 = %q, want empty (newapi must not read ScriptAPIKey2)", plan.token2)
+		}
+	})
 }

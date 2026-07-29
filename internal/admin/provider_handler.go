@@ -23,6 +23,7 @@ func providerResponseMap(p config.Provider, active bool) map[string]interface{} 
 		"name":                         p.Name,
 		"api_url":                      config.RedactURL(p.APIURL),
 		"api_token_mask":               maskToken(p.APIToken),
+		"api_token_configured":         p.APIToken != "",
 		"api_format":                   p.APIFormat,
 		"openai_extra_params":          p.OpenAIExtraParams,
 		"claude_code_compat_hint":      p.UseClaudeCodeCompatHint(),
@@ -85,26 +86,26 @@ func (s *Server) listProviders(w http.ResponseWriter, _ *http.Request) {
 // createProvider 创建供应商
 func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name                      string            `json:"name"`
-		APIURL                    string            `json:"api_url"`
-		APIToken                  string            `json:"api_token"`
-		APIFormat                 config.APIFormat  `json:"api_format"`
-		OpenAIExtraParams         map[string]any    `json:"openai_extra_params"`
-		ClaudeCodeCompatHint      *bool             `json:"claude_code_compat_hint"`
-		ModelMappings             map[string]string         `json:"model_mappings"`
-		ExposedModels             []config.ExposedModel     `json:"exposed_models"`
-		SupportsThinking          bool                      `json:"supports_thinking"`
-		MultimodalSwitch          bool              `json:"multimodal_switch"`
-		MultimodalModel           string            `json:"multimodal_model"`
-		StripUnknownContentBlocks bool              `json:"strip_unknown_content_blocks"`
-		RateLimitQueueEnabled     bool              `json:"rate_limit_queue_enabled"`
-		MaxConcurrentRequests     int               `json:"max_concurrent_requests"`
-		MaxQueueSize              int               `json:"max_queue_size"`
-		QueueTimeoutMS            int               `json:"queue_timeout_ms"`
-		Retry429Enabled           bool              `json:"retry_429_enabled"`
-		Retry429MaxAttempts       int               `json:"retry_429_max_attempts"`
-		Retry429InitialDelayMS    int               `json:"retry_429_initial_delay_ms"`
-		Retry429MaxDelayMS        int               `json:"retry_429_max_delay_ms"`
+		Name                      string                `json:"name"`
+		APIURL                    string                `json:"api_url"`
+		APIToken                  string                `json:"api_token"`
+		APIFormat                 config.APIFormat      `json:"api_format"`
+		OpenAIExtraParams         map[string]any        `json:"openai_extra_params"`
+		ClaudeCodeCompatHint      *bool                 `json:"claude_code_compat_hint"`
+		ModelMappings             map[string]string     `json:"model_mappings"`
+		ExposedModels             []config.ExposedModel `json:"exposed_models"`
+		SupportsThinking          bool                  `json:"supports_thinking"`
+		MultimodalSwitch          bool                  `json:"multimodal_switch"`
+		MultimodalModel           string                `json:"multimodal_model"`
+		StripUnknownContentBlocks bool                  `json:"strip_unknown_content_blocks"`
+		RateLimitQueueEnabled     bool                  `json:"rate_limit_queue_enabled"`
+		MaxConcurrentRequests     int                   `json:"max_concurrent_requests"`
+		MaxQueueSize              int                   `json:"max_queue_size"`
+		QueueTimeoutMS            int                   `json:"queue_timeout_ms"`
+		Retry429Enabled           bool                  `json:"retry_429_enabled"`
+		Retry429MaxAttempts       int                   `json:"retry_429_max_attempts"`
+		Retry429InitialDelayMS    int                   `json:"retry_429_initial_delay_ms"`
+		Retry429MaxDelayMS        int                   `json:"retry_429_max_delay_ms"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -240,27 +241,27 @@ func (s *Server) getProvider(w http.ResponseWriter, _ *http.Request, id string) 
 // updateProvider 更新供应商
 func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request, id string) {
 	var req struct {
-		Name                      string            `json:"name"`
-		APIURL                    string            `json:"api_url"`
-		APIToken                  string            `json:"api_token"`
-		APIFormat                 *config.APIFormat `json:"api_format"`
-		OpenAIExtraParams         map[string]any    `json:"openai_extra_params"`
-		ClaudeCodeCompatHint      *bool             `json:"claude_code_compat_hint"`
-		ModelMappings             map[string]string         `json:"model_mappings"`
-		ExposedModels             *[]config.ExposedModel    `json:"exposed_models"`
-		SupportsThinking          *bool                     `json:"supports_thinking"`
-		MultimodalSwitch          *bool             `json:"multimodal_switch"`
-		MultimodalModel           *string           `json:"multimodal_model"`
-		StripUnknownContentBlocks *bool             `json:"strip_unknown_content_blocks"`
-		Enabled                   *bool             `json:"enabled"`
-		RateLimitQueueEnabled     *bool             `json:"rate_limit_queue_enabled"`
-		MaxConcurrentRequests     *int              `json:"max_concurrent_requests"`
-		MaxQueueSize              *int              `json:"max_queue_size"`
-		QueueTimeoutMS            *int              `json:"queue_timeout_ms"`
-		Retry429Enabled           *bool             `json:"retry_429_enabled"`
-		Retry429MaxAttempts       *int              `json:"retry_429_max_attempts"`
-		Retry429InitialDelayMS    *int              `json:"retry_429_initial_delay_ms"`
-		Retry429MaxDelayMS        *int              `json:"retry_429_max_delay_ms"`
+		Name                      string                 `json:"name"`
+		APIURL                    string                 `json:"api_url"`
+		APIToken                  string                 `json:"api_token"`
+		APIFormat                 *config.APIFormat      `json:"api_format"`
+		OpenAIExtraParams         map[string]any         `json:"openai_extra_params"`
+		ClaudeCodeCompatHint      *bool                  `json:"claude_code_compat_hint"`
+		ModelMappings             map[string]string      `json:"model_mappings"`
+		ExposedModels             *[]config.ExposedModel `json:"exposed_models"`
+		SupportsThinking          *bool                  `json:"supports_thinking"`
+		MultimodalSwitch          *bool                  `json:"multimodal_switch"`
+		MultimodalModel           *string                `json:"multimodal_model"`
+		StripUnknownContentBlocks *bool                  `json:"strip_unknown_content_blocks"`
+		Enabled                   *bool                  `json:"enabled"`
+		RateLimitQueueEnabled     *bool                  `json:"rate_limit_queue_enabled"`
+		MaxConcurrentRequests     *int                   `json:"max_concurrent_requests"`
+		MaxQueueSize              *int                   `json:"max_queue_size"`
+		QueueTimeoutMS            *int                   `json:"queue_timeout_ms"`
+		Retry429Enabled           *bool                  `json:"retry_429_enabled"`
+		Retry429MaxAttempts       *int                   `json:"retry_429_max_attempts"`
+		Retry429InitialDelayMS    *int                   `json:"retry_429_initial_delay_ms"`
+		Retry429MaxDelayMS        *int                   `json:"retry_429_max_delay_ms"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

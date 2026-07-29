@@ -238,6 +238,8 @@ Simple examples for each task are provided below; in practice, a more granular a
 | Preserve tool_reference in Proactive Cleanup | `2026-07-21-preserve-tool-reference/spec.md` | `2026-07-21-preserve-tool-reference/spec_ZH.md` |
 | Exposed Model Label as Routing ID | `2026-07-25-exposed-model-label-as-id/spec.md` | `2026-07-25-exposed-model-label-as-id/spec_ZH.md` |
 | Frame Multi-file Publish Write-Gate | `2026-07-26-frame-multifile-publish-write-gate/spec.md` | `2026-07-26-frame-multifile-publish-write-gate/spec_ZH.md` |
+| Custom Script Form Body & Additional Secret | `2026-07-27-custom-script-form-body/spec.md` | `2026-07-27-custom-script-form-body/spec_ZH.md` |
+| Custom Script AI Generate | — | `2026-07-27-custom-script-ai-generate/spec_ZH.md` |
 
 ## 状态生命周期
 

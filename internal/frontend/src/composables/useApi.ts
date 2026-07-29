@@ -39,6 +39,7 @@ export interface Provider {
   name: string
   api_url: string
   api_token_mask: string
+  api_token_configured?: boolean
   api_format: 'anthropic' | 'openai_chat' | 'openai_responses'
   openai_extra_params?: Record<string, unknown>
   claude_code_compat_hint: boolean
@@ -291,6 +292,7 @@ export interface PublicQuotaConfig {
   script?: string
   base_url?: string
   script_api_key_configured: boolean
+  script_api_key_2_configured: boolean
   zenmux_base_url?: string
   zenmux_api_key_configured: boolean
   access_token_configured: boolean
@@ -387,6 +389,7 @@ export interface ProviderUsageUpdateRequest {
   script?: string
   base_url?: string
   script_api_key?: string
+  script_api_key_2?: string
   zenmux_base_url?: string
   zenmux_api_key?: string
   access_token?: string
@@ -395,9 +398,31 @@ export interface ProviderUsageUpdateRequest {
   access_key_id?: string
   secret_access_key?: string
   clear_script_api_key?: boolean
+  clear_script_api_key_2?: boolean
   clear_zenmux_api_key?: boolean
   clear_access_token?: boolean
   clear_secret_access_key?: boolean
+}
+
+export interface GenerateScriptRequest {
+  llm_provider_id?: string
+  model: string
+  prompt: string
+  response_sample: string
+  request_info?: string
+}
+
+export interface ScriptAuditWarning {
+  code: string
+  message: string
+}
+
+export interface GenerateScriptResponse {
+  script: string
+  warnings?: ScriptAuditWarning[]
+  iterations?: number
+  error_code?: string
+  error_message?: string
 }
 
 export function useApi() {
@@ -764,6 +789,19 @@ export function useApi() {
     return res.json()
   }
 
+  async function generateUsageScript(providerId: string, req: GenerateScriptRequest): Promise<GenerateScriptResponse> {
+    const res = await fetch(`/api/providers/${providerId}/usage/generate-script`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    })
+    const body = await res.json().catch(() => ({ script: '', error_message: 'request failed' }))
+    if (!res.ok) {
+      throw new Error(body.error_message || body.error || `HTTP ${res.status}`)
+    }
+    return body
+  }
+
   async function getAllProviderUsageSnapshots(): Promise<{ snapshots: Record<string, QuotaSnapshot> }> {
     const res = await fetch('/api/providers/usage')
     if (!res.ok) throw new Error('Failed to fetch snapshots')
@@ -846,6 +884,7 @@ export function useApi() {
     updateProviderUsage,
     testProviderUsage,
     queryProviderUsage,
+    generateUsageScript,
     getAllProviderUsageSnapshots,
     getFailoverSettings,
     setFailoverSettings,

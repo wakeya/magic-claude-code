@@ -17,7 +17,7 @@ import (
 const (
 	scriptParseTimeout   = 200 * time.Millisecond
 	scriptExtractTimeout = 500 * time.Millisecond
-	maxRequestBodySize   = 256 * 1024     // 256 KiB
+	maxRequestBodySize   = 256 * 1024      // 256 KiB
 	maxResponseBodySize  = 2 * 1024 * 1024 // 2 MiB
 	maxRedirects         = 3
 	maxErrorBodyBytes    = 512
@@ -25,10 +25,11 @@ const (
 
 // ScriptRequest describes the HTTP request produced by the script's first phase.
 type ScriptRequest struct {
-	URL     string            `json:"url"`
-	Method  string            `json:"method"`
-	Headers map[string]string `json:"headers,omitempty"`
-	Body    any               `json:"body,omitempty"`
+	URL      string            `json:"url"`
+	Method   string            `json:"method"`
+	Headers  map[string]string `json:"headers,omitempty"`
+	Body     any               `json:"body,omitempty"`
+	BodyType string            `json:"bodyType,omitempty"` // "form" produces application/x-www-form-urlencoded; "" or "json" produces JSON
 }
 
 // ScriptExecutor runs restricted JavaScript scripts to build HTTP requests
@@ -71,6 +72,10 @@ func (e *ScriptExecutor) ExecuteScript(ctx context.Context, script string, place
 	for k, v := range reqConfig.Headers {
 		reqConfig.Headers[k] = substitutePlaceholders(v, placeholderValues)
 	}
+	// Substitute placeholders in body string values (applies to both JSON and
+	// form bodies; substitution happens in the Go layer, never in the script
+	// runtime, so secrets never enter goja).
+	reqConfig.Body = substitutePlaceholdersInBody(reqConfig.Body, placeholderValues)
 
 	// Validate the request (including origin check).
 	if err := validateScriptRequest(reqConfig, effectiveBaseURL); err != nil {
@@ -241,9 +246,9 @@ func (e *ScriptExecutor) runExtractor(script string, responseBody string) (any, 
 func (e *ScriptExecutor) doHTTPRequest(ctx context.Context, req *ScriptRequest, effectiveBaseURL string) ([]byte, int, error) {
 	var bodyReader io.Reader
 	if req.Body != nil {
-		bodyBytes, err := json.Marshal(req.Body)
+		bodyBytes, err := encodeRequestBody(req)
 		if err != nil {
-			return nil, 0, fmt.Errorf("marshal request body: %w", err)
+			return nil, 0, err
 		}
 		if len(bodyBytes) > maxRequestBodySize {
 			return nil, 0, fmt.Errorf("request body exceeds %d bytes", maxRequestBodySize)
@@ -258,6 +263,10 @@ func (e *ScriptExecutor) doHTTPRequest(ctx context.Context, req *ScriptRequest, 
 
 	for k, v := range req.Headers {
 		httpReq.Header.Set(k, v)
+	}
+	// Auto-fill Content-Type for form body if the script did not set it.
+	if strings.EqualFold(req.BodyType, "form") && httpReq.Header.Get("Content-Type") == "" {
+		httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
 
 	// Resolve the allowed origin from effective base URL.
@@ -387,6 +396,79 @@ func substitutePlaceholders(s string, values map[string]string) string {
 		s = strings.ReplaceAll(s, "{{"+key+"}}", val)
 	}
 	return s
+}
+
+// substitutePlaceholdersInBody recursively replaces placeholders in all string
+// values within body. It returns a new value; the input is not mutated.
+// Non-string scalars (numbers, bools, nil) are returned as-is.
+func substitutePlaceholdersInBody(body any, values map[string]string) any {
+	switch v := body.(type) {
+	case string:
+		return substitutePlaceholders(v, values)
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for k, val := range v {
+			out[k] = substitutePlaceholdersInBody(val, values)
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, val := range v {
+			out[i] = substitutePlaceholdersInBody(val, values)
+		}
+		return out
+	default:
+		return body
+	}
+}
+
+// encodeRequestBody serializes the script body. BodyType "form" produces
+// application/x-www-form-urlencoded; "" or "json" produces JSON (existing
+// behavior). Form body must be an object; object/array field values are
+// JSON-marshaled to support nested structures like qianwen's params field.
+func encodeRequestBody(req *ScriptRequest) ([]byte, error) {
+	if strings.EqualFold(req.BodyType, "form") {
+		obj, ok := req.Body.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("form body must be an object, got %T", req.Body)
+		}
+		v := make(url.Values, len(obj))
+		for key, val := range obj {
+			s, err := formFieldValue(val)
+			if err != nil {
+				return nil, fmt.Errorf("form field %q: %w", key, err)
+			}
+			if s == nil {
+				continue
+			}
+			v.Set(key, *s)
+		}
+		return []byte(v.Encode()), nil
+	}
+	// Default: JSON (existing behavior).
+	return json.Marshal(req.Body)
+}
+
+// formFieldValue converts a script body field value to its form-urlencoded
+// string representation. Returns nil for nil values (field skipped).
+func formFieldValue(val any) (*string, error) {
+	switch v := val.(type) {
+	case nil:
+		return nil, nil
+	case string:
+		s := v
+		return &s, nil
+	case bool, float64, int, int64:
+		s := fmt.Sprintf("%v", v)
+		return &s, nil
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return nil, err
+		}
+		s := string(b)
+		return &s, nil
+	}
 }
 
 // sameOrigin reports whether two URLs share scheme, hostname and effective port.
