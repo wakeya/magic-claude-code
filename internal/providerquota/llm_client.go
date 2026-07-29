@@ -19,7 +19,14 @@ const (
 	llmAPIFormatOpenAIChat      = "openai_chat"
 	llmAPIFormatOpenAIResponses = "openai_responses"
 	maxLLMResponseBodySize      = 256 * 1024
+	llmDialTimeout              = 30 * time.Second
 )
+
+type llmLookupIPAddrFunc func(context.Context, string) ([]net.IPAddr, error)
+
+var llmLookupIPAddr llmLookupIPAddrFunc = net.DefaultResolver.LookupIPAddr
+
+var errLLMInternalAddress = errors.New("refusing to dial internal address")
 
 // LLMProvider is the subset of provider card configuration needed for AI
 // script generation. It intentionally lives in providerquota to avoid a
@@ -39,6 +46,7 @@ type LLMClient struct {
 func NewLLMClient(timeout time.Duration) *LLMClient {
 	return &LLMClient{HTTPClient: &http.Client{
 		Timeout:       timeout,
+		Transport:     newLLMTransport(llmLookupIPAddr),
 		CheckRedirect: disableLLMRedirect,
 	}}
 }
@@ -104,6 +112,9 @@ func (c *LLMClient) Call(ctx context.Context, provider LLMProvider, model, syste
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		code := classifyLLMHTTPError(ctx, err)
+		if errors.Is(err, errLLMInternalAddress) {
+			return LLMCallResult{ErrorCode: code, ErrorMessage: "LLM endpoint resolves to an internal address"}
+		}
 		return LLMCallResult{ErrorCode: code, ErrorMessage: sanitizeLLMError(err.Error(), provider.APIToken)}
 	}
 	defer resp.Body.Close()
@@ -257,6 +268,9 @@ func extractResponsesText(body []byte) (string, error) {
 }
 
 func classifyLLMHTTPError(ctx context.Context, err error) string {
+	if errors.Is(err, errLLMInternalAddress) {
+		return "invalid_config"
+	}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(ctx.Err(), context.Canceled) {
 		return "request_timeout"
 	}
@@ -271,6 +285,31 @@ func disableLLMRedirect(_ *http.Request, _ []*http.Request) error {
 	return http.ErrUseLastResponse
 }
 
+func newLLMTransport(lookupIPAddr llmLookupIPAddrFunc) *http.Transport {
+	base := http.DefaultTransport.(*http.Transport).Clone()
+	dialer := &net.Dialer{Timeout: llmDialTimeout}
+	base.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		ips, err := lookupIPAddr(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("no IP resolved for %s", host)
+		}
+		for _, ip := range ips {
+			if isInternalIP(ip.IP) {
+				return nil, fmt.Errorf("%w: %s", errLLMInternalAddress, ip.IP)
+			}
+		}
+		return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+	}
+	return base
+}
+
 func isInternalHost(host string) bool {
 	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
 	if host == "localhost" {
@@ -279,12 +318,12 @@ func isInternalHost(host string) bool {
 	if ip := net.ParseIP(host); ip != nil {
 		return isInternalIP(ip)
 	}
-	ips, err := net.LookupIP(host)
+	ips, err := llmLookupIPAddr(context.Background(), host)
 	if err != nil {
 		return true
 	}
 	for _, ip := range ips {
-		if isInternalIP(ip) {
+		if isInternalIP(ip.IP) {
 			return true
 		}
 	}

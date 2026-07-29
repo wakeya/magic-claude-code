@@ -219,7 +219,7 @@ ProviderUsageModal: form.script = script（用户可编辑/测试/保存）
   "model": "claude-sonnet-5",
   "prompt": "查询千问 token plan 5 小时/7 天已用百分比",
   "response_sample": "{\"code\":\"200\",\"data\":{...}}",
-  "request_info": "POST form-urlencoded, needs Cookie + sec_token" 
+  "request_info": "POST form-urlencoded, needs Cookie + sec_token"
 }
 ```
 
