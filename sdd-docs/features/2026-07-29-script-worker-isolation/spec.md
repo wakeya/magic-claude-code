@@ -6,8 +6,8 @@
 **References:** PR #37 (`797e3f9`, AI script generation and security hardening); PR #40 (`fbacfbd`, regex resource-abuse preflight); MEDIUM 3 follow-up in `sdd-docs/features/2026-07-28-security-fixes/spec_ZH.md`
 **Stack:** Go 1.26, `os/exec`, `runtime/debug`, `golang.org/x/sys/unix|windows`, goja
 **Last updated:** 2026-07-29
-**Status:** draft
-**Progress:** 0 / 5
+**Status:** implementing
+**Progress:** 1 / 5
 
 ## Overall Analysis (Source Analysis)
 
@@ -172,7 +172,7 @@ Linux/macOS workers use `unix.Setrlimit(RLIMIT_DATA, ...)`. Windows workers use 
 
 | # | Status | Task | Output | Verification |
 | --- | --- | --- | --- | --- |
-| 1 | ⬜ | Define the protocol and split existing in-process goja operations | protocol + worker server | worker unit tests |
+| 1 | ✅ | Define the protocol and split existing in-process goja operations | protocol + worker server | worker unit tests |
 | 2 | ⬜ | Implement current-binary re-exec client and hidden entry | client + main/TestMain dispatch | re-exec integration tests |
 | 3 | ⬜ | Add cross-platform memory, time, and IPC boundaries | limit files + bounded I/O | resource tests and cross-builds |
 | 4 | ⬜ | Integrate `ScriptExecutor` and prove behavior compatibility | `script.go` + regressions | full providerquota tests |
@@ -265,7 +265,8 @@ Linux/macOS workers use `unix.Setrlimit(RLIMIT_DATA, ...)`. Windows workers use 
 
 #### Verification
 
-- [ ] Not run during the specification stage; record actual focused-command output here after this task.
+- [x] `go test ./internal/providerquota -run 'TestRunScriptWorker|TestScriptWorker' -count=1` — 7 tests passed.
+- [x] `go test ./internal/providerquota -count=1` — 276 tests passed.
 
 ### Task 2: Process client and production/test entries
 

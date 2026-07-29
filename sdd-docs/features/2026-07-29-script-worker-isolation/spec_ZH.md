@@ -6,8 +6,8 @@
 **参考来源：** PR #37（`797e3f9`，AI 生成脚本与安全加固）；PR #40（`fbacfbd`，正则资源滥用预检）；`sdd-docs/features/2026-07-28-security-fixes/spec_ZH.md` Follow-up MEDIUM 3
 **技术栈：** Go 1.26、`os/exec`、`runtime/debug`、`golang.org/x/sys/unix|windows`、goja
 **最后更新：** 2026-07-29
-**状态：** draft
-**进度：** 0 / 5
+**状态：** implementing
+**进度：** 1 / 5
 
 ## 整体分析（源站分析）
 
@@ -172,7 +172,7 @@ Linux/macOS worker 使用 `unix.Setrlimit(RLIMIT_DATA, ...)`；Windows worker �
 
 | # | 状态 | 任务 | 产物 | 验证 |
 | --- | --- | --- | --- | --- |
-| 1 | ⬜ | 定义协议并拆分现有 goja in-process 操作 | protocol + worker server | worker 单元测试 |
+| 1 | ✅ | 定义协议并拆分现有 goja in-process 操作 | protocol + worker server | worker 单元测试 |
 | 2 | ⬜ | 实现当前二进制重启 client 与隐藏入口 | client + main/TestMain dispatch | re-exec 集成测试 |
 | 3 | ⬜ | 加入跨平台内存、时间和 IPC 边界 | limit 文件 + bounded I/O | 资源边界测试、交叉编译 |
 | 4 | ⬜ | 接入 `ScriptExecutor` 并证明行为兼容 | `script.go` + 回归测试 | providerquota 全包测试 |
@@ -265,7 +265,8 @@ Linux/macOS worker 使用 `unix.Setrlimit(RLIMIT_DATA, ...)`；Windows worker �
 
 #### 验证
 
-- [ ] 规格阶段尚未执行；完成本任务的定向命令后在此记录实际输出。
+- [x] `go test ./internal/providerquota -run 'TestRunScriptWorker|TestScriptWorker' -count=1` —— 7 个测试通过。
+- [x] `go test ./internal/providerquota -count=1` —— 276 个测试通过。
 
 ### 任务 2：进程 client 与生产/测试入口
 

@@ -161,6 +161,10 @@ func (e *ScriptExecutor) ExecuteScript(ctx context.Context, script string, place
 }
 
 func (e *ScriptExecutor) parseRequest(script string) (*ScriptRequest, error) {
+	return parseRequestInProcess(script)
+}
+
+func parseRequestInProcess(script string) (*ScriptRequest, error) {
 	if err := rejectPotentialResourceAbuse(script); err != nil {
 		return nil, err
 	}
@@ -267,6 +271,10 @@ func hasHugeScriptStringLiteral(script string) bool {
 }
 
 func (e *ScriptExecutor) runExtractor(script string, responseBody string) (any, error) {
+	return runExtractorInProcess(script, responseBody)
+}
+
+func runExtractorInProcess(script string, responseBody string) (any, error) {
 	vm := goja.New()
 	defer vm.Interrupt("")
 
