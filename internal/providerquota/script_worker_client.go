@@ -137,7 +137,7 @@ func decodeScriptWorkerResponse(data []byte) (scriptWorkerResponse, bool) {
 }
 
 type boundedWorkerBuffer struct {
-	bytes.Buffer
+	buffer   bytes.Buffer
 	limit    int
 	exceeded bool
 }
@@ -157,6 +157,14 @@ func (b *boundedWorkerBuffer) Write(p []byte) (int, error) {
 		p = p[:remaining]
 		b.exceeded = true
 	}
-	_, _ = b.Buffer.Write(p)
+	_, _ = b.buffer.Write(p)
 	return originalLength, nil
+}
+
+func (b *boundedWorkerBuffer) Bytes() []byte {
+	return b.buffer.Bytes()
+}
+
+func (b *boundedWorkerBuffer) Len() int {
+	return b.buffer.Len()
 }

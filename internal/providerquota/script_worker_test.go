@@ -226,3 +226,23 @@ func TestScriptWorkerRejectsTrailingInput(t *testing.T) {
 		t.Fatalf("worker response = %#v", resp)
 	}
 }
+
+func TestScriptWorkerRejectsOversizedInput(t *testing.T) {
+	input := strings.Repeat(" ", int(maxScriptWorkerInputSize)+1)
+	var output bytes.Buffer
+
+	code := runScriptWorker(strings.NewReader(input), &output, func() (func(), error) {
+		return nil, nil
+	})
+	if code == 0 {
+		t.Fatal("worker exit code = 0, want oversized input failure")
+	}
+
+	var resp scriptWorkerResponse
+	if err := json.Unmarshal(output.Bytes(), &resp); err != nil {
+		t.Fatalf("decode worker response: %v", err)
+	}
+	if resp.OK || resp.Error != "invalid script worker protocol request" {
+		t.Fatalf("worker response = %#v", resp)
+	}
+}

@@ -127,3 +127,61 @@ func TestScriptExecutorSkipsExtractorWorkerAfterHTTPError(t *testing.T) {
 		t.Fatalf("worker calls parse=%d extract=%d, want 1/0", spy.parseCalls, spy.extractCalls)
 	}
 }
+
+func TestScriptExecutorMapsWorkerMemoryTerminationToScriptError(t *testing.T) {
+	if scriptWorkerRaceBuild {
+		t.Skip("production 128 MiB limit is verified by a non-race worker")
+	}
+
+	t.Run("parse request", func(t *testing.T) {
+		executor := NewScriptExecutor(5 * time.Second)
+		result, err := executor.ExecuteScript(
+			context.Background(),
+			`({
+				request: {url: "https://api.example.com", method: "GET"},
+				bomb: Array(Number("20000000")).fill(1),
+				extractor: function(response) { return response; }
+			})`,
+			nil,
+			"https://api.example.com",
+		)
+		if err != nil {
+			t.Fatalf("ExecuteScript() error: %v", err)
+		}
+		if result.Success || result.ErrorCode != "script_error" {
+			t.Fatalf("ExecuteScript() result = %#v", result)
+		}
+		if result.ErrorMessage != "script worker terminated unexpectedly" {
+			t.Fatalf("error message = %q", result.ErrorMessage)
+		}
+	})
+
+	t.Run("extractor", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"value":1}`))
+		}))
+		defer server.Close()
+
+		executor := NewScriptExecutor(5 * time.Second)
+		result, err := executor.ExecuteScript(
+			context.Background(),
+			`({
+				request: {url: "{{baseUrl}}", method: "GET"},
+				extractor: function(response) {
+					return Array(Number("20000000")).fill(response.value);
+				}
+			})`,
+			map[string]string{"baseUrl": server.URL},
+			server.URL,
+		)
+		if err != nil {
+			t.Fatalf("ExecuteScript() error: %v", err)
+		}
+		if result.Success || result.ErrorCode != "script_error" {
+			t.Fatalf("ExecuteScript() result = %#v", result)
+		}
+		if result.ErrorMessage != "script worker terminated unexpectedly" {
+			t.Fatalf("error message = %q", result.ErrorMessage)
+		}
+	})
+}
