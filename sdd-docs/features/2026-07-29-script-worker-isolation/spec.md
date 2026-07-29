@@ -6,8 +6,8 @@
 **References:** PR #37 (`797e3f9`, AI script generation and security hardening); PR #40 (`fbacfbd`, regex resource-abuse preflight); MEDIUM 3 follow-up in `sdd-docs/features/2026-07-28-security-fixes/spec_ZH.md`
 **Stack:** Go 1.26, `os/exec`, `runtime/debug`, `golang.org/x/sys/unix|windows`, goja
 **Last updated:** 2026-07-29
-**Status:** implementing
-**Progress:** 4 / 5
+**Status:** validated
+**Progress:** 5 / 5
 
 ## Overall Analysis (Source Analysis)
 
@@ -165,7 +165,7 @@ Linux/macOS workers use `unix.Setrlimit(RLIMIT_DATA, ...)`. Windows workers use 
 | `internal/providerquota/script_worker_client_test.go` | Test-binary re-exec, IPC bounds, crash/timeout/OOM tests |
 | `internal/providerquota/script_test.go` | Full compatibility and ExecuteScript regression |
 | `internal/providerquota/main_test.go` | Internal worker dispatch in test binaries |
-| `cmd/server/main.go`, `cmd/server/main_test.go` | Internal worker dispatch in the production binary |
+| `cmd/server/main.go`, `internal/{providerquota,admin}/main_test.go` | Internal worker dispatch in production and test binaries |
 | `sdd-docs/features/README.md` | Register the bilingual spec |
 
 ## Development Checklist
@@ -176,7 +176,7 @@ Linux/macOS workers use `unix.Setrlimit(RLIMIT_DATA, ...)`. Windows workers use 
 | 2 | ✅ | Implement current-binary re-exec client and hidden entry | client + main/TestMain dispatch | re-exec integration tests |
 | 3 | ✅ | Add cross-platform memory, time, and IPC boundaries | limit files + bounded I/O | resource tests and cross-builds |
 | 4 | ✅ | Integrate `ScriptExecutor` and prove behavior compatibility | `script.go` + regressions | full providerquota tests |
-| 5 | ⬜ | Validate OOM isolation, run full regression, and write back evidence | validation evidence | race, vet, six builds |
+| 5 | ✅ | Validate OOM isolation, run full regression, and write back evidence | validation evidence | race, vet, six builds |
 
 ## Requirements
 
@@ -246,22 +246,22 @@ Linux/macOS workers use `unix.Setrlimit(RLIMIT_DATA, ...)`. Windows workers use 
 
 #### Plan
 
-- [ ] First add `TestRunScriptWorkerParseRequest`, `TestRunScriptWorkerExtractor`, and `TestScriptWorkerRejectsInvalidProtocol` to `internal/providerquota/script_worker_test.go`; confirm they fail because the entry does not exist.
-- [ ] Add `internal/providerquota/script_worker_protocol.go` with `ScriptWorkerArg`, the protocol version, both operations, request/response structs, and exact `IsScriptWorkerInvocation(args []string) bool`.
-- [ ] Rename the current direct goja implementations in `internal/providerquota/script.go` to:
+- [x] First add `TestRunScriptWorkerParseRequest`, `TestRunScriptWorkerExtractor`, and `TestScriptWorkerRejectsInvalidProtocol` to `internal/providerquota/script_worker_test.go`; confirm they fail because the entry does not exist.
+- [x] Add `internal/providerquota/script_worker_protocol.go` with `ScriptWorkerArg`, the protocol version, both operations, request/response structs, and exact `IsScriptWorkerInvocation(args []string) bool`.
+- [x] Rename the current direct goja implementations in `internal/providerquota/script.go` to:
   ```go
   func parseRequestInProcess(script string) (*ScriptRequest, error)
   func runExtractorInProcess(script, responseBody string) (any, error)
   ```
   Preserve PR #40's preflight, the 200/500 ms interrupts, request JSON round-trip, and extractor `Export()`.
-- [ ] Add `internal/providerquota/script_worker.go` with the real exported entry and an injectable limiter seam:
+- [x] Add `internal/providerquota/script_worker.go` with the real exported entry and an injectable limiter seam:
   ```go
   func RunScriptWorker(in io.Reader, out io.Writer) int
   func runScriptWorker(in io.Reader, out io.Writer, applyLimits func() (func(), error)) int
   ```
   The real entry applies limits before decoding at most 3 MiB, dispatches one operation, pre-marshals its payload, and encodes one response; protocol unit tests inject no-op/failing limiters.
-- [ ] Run focused tests and `go test ./internal/providerquota`.
-- [ ] Commit `feat(providerquota): add isolated script worker protocol`.
+- [x] Run focused tests and `go test ./internal/providerquota`.
+- [x] Commit `feat(providerquota): add isolated script worker protocol`.
 
 #### Verification
 
@@ -286,8 +286,8 @@ Linux/macOS workers use `unix.Setrlimit(RLIMIT_DATA, ...)`. Windows workers use 
 
 #### Plan
 
-- [ ] First add successful test-binary re-exec, cancellation, and malformed-response tests to `script_worker_client_test.go`; confirm the missing runner fails.
-- [ ] Add:
+- [x] First add successful test-binary re-exec, cancellation, and malformed-response tests to `script_worker_client_test.go`; confirm the missing runner fails.
+- [x] Add:
   ```go
   type scriptWorkerRunner interface {
       ParseRequest(context.Context, string) (*ScriptRequest, error)
@@ -295,11 +295,11 @@ Linux/macOS workers use `unix.Setrlimit(RLIMIT_DATA, ...)`. Windows workers use 
   }
   ```
   `processScriptWorkerRunner` uses `exec.CommandContext(exe, ScriptWorkerArg)` and the protocol envelope.
-- [ ] Implement bounded collectors: fail calls at 4 MiB stdout / 64 KiB stderr; map errors to fixed categories without appending stderr, script, or response data.
-- [ ] Add `internal/providerquota/main_test.go` with a `TestMain` that calls `RunScriptWorker` only for exact worker invocation and otherwise calls `m.Run()`.
-- [ ] Dispatch the same exact internal mode in `cmd/server/main.go` before locale/flags/services; add argument-recognition regressions to `cmd/server/main_test.go`.
-- [ ] Run focused re-exec tests and both package suites.
-- [ ] Commit `feat(providerquota): re-exec current binary for script workers`.
+- [x] Implement bounded collectors: fail calls at 4 MiB stdout / 64 KiB stderr; map errors to fixed categories without appending stderr, script, or response data.
+- [x] Add `internal/providerquota/main_test.go` with a `TestMain` that calls `RunScriptWorker` only for exact worker invocation and otherwise calls `m.Run()`.
+- [x] Dispatch the same exact internal mode in `cmd/server/main.go` before locale/flags/services; add argument-recognition regressions to `script_worker_test.go`.
+- [x] Run focused re-exec tests and both package suites.
+- [x] Commit `feat(providerquota): re-exec current binary for script workers`.
 
 #### Verification
 
@@ -325,13 +325,13 @@ Linux/macOS workers use `unix.Setrlimit(RLIMIT_DATA, ...)`. Windows workers use 
 
 #### Plan
 
-- [ ] First test limit setup order and setup-failure fail-closed behavior; verify a normal non-race Linux fixture under 128 MiB.
-- [ ] Add `script_worker_memory_default.go` (`!race`, 128 MiB hard and lower soft) and `script_worker_memory_race.go` (`race`, higher ThreadSanitizer-only values).
-- [ ] Add `script_worker_limit_unix.go` (`linux || darwin`; use a neutral filename to avoid Go's implicit `_darwin.go` suffix constraint) calling `unix.Setrlimit(unix.RLIMIT_DATA, &unix.Rlimit{Cur: limit, Max: limit})`.
-- [ ] Add `script_worker_limit_windows.go`: create a Job Object, set `JOB_OBJECT_LIMIT_PROCESS_MEMORY`, set `ProcessMemoryLimit`, and call `AssignProcessToJobObject(job, windows.CurrentProcess())`; retain the handle until return.
-- [ ] Add an explicit fail-closed implementation for other platforms; apply the hard limit before `debug.SetMemoryLimit`.
-- [ ] Run Linux tests and `CGO_ENABLED=0` builds for Linux/macOS/Windows amd64/arm64.
-- [ ] Commit `feat(providerquota): enforce script worker resource limits`.
+- [x] First test limit setup order and setup-failure fail-closed behavior; verify a normal non-race Linux fixture under 128 MiB.
+- [x] Add `script_worker_memory_default.go` (`!race`, 128 MiB hard and lower soft) and `script_worker_memory_race.go` (`race`, higher ThreadSanitizer-only values).
+- [x] Add `script_worker_limit_unix.go` (`linux || darwin`; use a neutral filename to avoid Go's implicit `_darwin.go` suffix constraint) calling `unix.Setrlimit(unix.RLIMIT_DATA, &unix.Rlimit{Cur: limit, Max: limit})`.
+- [x] Add `script_worker_limit_windows.go`: create a Job Object, set `JOB_OBJECT_LIMIT_PROCESS_MEMORY`, set `ProcessMemoryLimit`, and call `AssignProcessToJobObject(job, windows.CurrentProcess())`; retain the handle until return.
+- [x] Add an explicit fail-closed implementation for other platforms; apply the hard limit before `debug.SetMemoryLimit`.
+- [x] Run Linux tests and `CGO_ENABLED=0` builds for Linux/macOS/Windows amd64/arm64.
+- [x] Commit `feat(providerquota): enforce script worker resource limits`.
 
 #### Verification
 
@@ -358,8 +358,8 @@ Linux/macOS workers use `unix.Setrlimit(RLIMIT_DATA, ...)`. Windows workers use 
 
 #### Plan
 
-- [ ] Add spy-runner tests to `script_test.go`: parse/extract called once, HTTP failure calls parse only, and no placeholder map enters the runner; confirm current code fails them.
-- [ ] Change:
+- [x] Add spy-runner tests to `script_worker_integration_test.go`: parse/extract called once, HTTP failure calls parse only, and no placeholder map enters the runner; confirm current code fails them.
+- [x] Change:
   ```go
   type ScriptExecutor struct {
       HTTPClient   *http.Client
@@ -367,10 +367,10 @@ Linux/macOS workers use `unix.Setrlimit(RLIMIT_DATA, ...)`. Windows workers use 
   }
   ```
   `NewScriptExecutor` installs the process runner; same-package tests may inject spies/fakes.
-- [ ] Route `parseRequest` / `runExtractor` through the runner; only `RunScriptWorker` may call the in-process goja functions.
-- [ ] Preserve placeholder substitution, validation, HTTP, `sanitizeError`, and normalization ordering in `ExecuteScript`.
-- [ ] Run focused spies, script tests, Manager tests, and the race-enabled providerquota suite.
-- [ ] Commit `refactor(providerquota): execute javascript only in workers`.
+- [x] Route `parseRequest` / `runExtractor` through the runner; only `RunScriptWorker` may call the in-process goja functions.
+- [x] Preserve placeholder substitution, validation, HTTP, `sanitizeError`, and normalization ordering in `ExecuteScript`.
+- [x] Run focused spies, script tests, Manager tests, and the race-enabled providerquota suite.
+- [x] Commit `refactor(providerquota): execute javascript only in workers`.
 
 #### Verification
 
@@ -399,22 +399,27 @@ Linux/macOS workers use `unix.Setrlimit(RLIMIT_DATA, ...)`. Windows workers use 
 
 #### Plan
 
-- [ ] Add payloads such as `Array(Number("100000000")).fill(0)` and dynamic `"x".repeat(...)` to `script_worker_client_test.go`; cover both parse and extractor.
-- [ ] For every OOM case, assert a bounded `script_error`, no script/response/stderr in the message, then run a normal successful script in the same parent process.
-- [ ] Add stdout/stderr overflow, panic/non-zero exit, context cancellation, and protocol-version tests.
-- [ ] Run:
+- [x] Add dynamic-array and dynamic `"x".repeat(...)` payloads to `script_worker_client_test.go`; cover both parse and extractor.
+- [x] For every OOM case, assert a fixed bounded error, then run a normal successful script in the same parent process; verify `ExecuteScript` maps it to `script_error`.
+- [x] Add stdout/stderr overflow, panic/non-zero exit, context cancellation, hard-timeout, and protocol-version tests.
+- [x] Run:
   ```bash
-  go test ./internal/providerquota -run 'TestScriptWorker.*(OOM|Memory|Output|Cancel)' -count=1 -v
+  go test ./internal/providerquota -run 'Test(ProcessScriptWorker.*(MemoryLimit|OutputLimit|Abnormal|Cancellation|HardTimeout)|ScriptExecutorMapsWorkerMemoryTerminationToScriptError|BoundedWorkerBuffer|ScriptWorkerRejectsOversizedInput)' -count=1 -v
   go test -race ./internal/providerquota ./internal/admin -count=1
   make test
   go vet ./...
   npm --prefix internal/frontend test
   npm --prefix internal/frontend run build
   ```
-- [ ] Cross-build `./cmd/server` with `CGO_ENABLED=0` for Linux/macOS/Windows amd64/arm64 into a temporary output directory.
-- [ ] Check `git status --short && git diff --stat`; update status, progress, checklist, and actual evidence in both specs.
-- [ ] Commit `test(providerquota): verify script worker OOM isolation` and `docs(spec): record script worker isolation verification`.
+- [x] Cross-build `./cmd/server` with `CGO_ENABLED=0` for Linux/macOS/Windows amd64/arm64 into a temporary output directory.
+- [x] Check `git status --short && git diff --stat`; update status, progress, checklist, and actual evidence in both specs.
+- [x] Commit the tests and isolation hardening; commit this spec write-back after validation.
 
 #### Verification
 
-- [ ] Not run during the specification stage; record actual focused-command output here after this task.
+- [x] Focused OOM, output-limit, abnormal-exit, cancellation, hard-timeout, and protocol tests — 18 tests passed; a RED test proved anonymous `bytes.Buffer` embedding bypassed bounded `Write`, and the named-field fix is GREEN.
+- [x] `go test -race ./internal/providerquota ./internal/admin -count=1` — 474 tests passed.
+- [x] `make test` — the repository-wide race suite passed; `go vet ./...` reported no issues.
+- [x] `npm --prefix internal/frontend test` — 226 tests passed; `npm --prefix internal/frontend run build` succeeded.
+- [x] `CGO_ENABLED=0` cross-builds succeeded for Linux/macOS/Windows amd64/arm64; a Linux amd64 production-binary worker protocol smoke test succeeded.
+- [x] Debug record: re-executed `internal/admin.test` originally could not dispatch worker mode; after adding an exact-match `TestMain`, all six focused admin race cases and the complete race suite passed.

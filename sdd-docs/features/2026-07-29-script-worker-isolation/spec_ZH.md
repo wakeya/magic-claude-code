@@ -6,8 +6,8 @@
 **参考来源：** PR #37（`797e3f9`，AI 生成脚本与安全加固）；PR #40（`fbacfbd`，正则资源滥用预检）；`sdd-docs/features/2026-07-28-security-fixes/spec_ZH.md` Follow-up MEDIUM 3
 **技术栈：** Go 1.26、`os/exec`、`runtime/debug`、`golang.org/x/sys/unix|windows`、goja
 **最后更新：** 2026-07-29
-**状态：** implementing
-**进度：** 4 / 5
+**状态：** validated
+**进度：** 5 / 5
 
 ## 整体分析（源站分析）
 
@@ -165,7 +165,7 @@ Linux/macOS worker 使用 `unix.Setrlimit(RLIMIT_DATA, ...)`；Windows worker �
 | `internal/providerquota/script_worker_client_test.go` | 测试二进制重启、IPC 上限、崩溃/超时/OOM 测试 |
 | `internal/providerquota/script_test.go` | 完整兼容与 ExecuteScript 回归 |
 | `internal/providerquota/main_test.go` | 测试二进制内部 worker 分派 |
-| `cmd/server/main.go`、`cmd/server/main_test.go` | 生产二进制内部 worker 分派 |
+| `cmd/server/main.go`、`internal/{providerquota,admin}/main_test.go` | 生产及测试二进制内部 worker 分派 |
 | `sdd-docs/features/README.md` | 登记中英文规格 |
 
 ## 开发检查清单
@@ -176,7 +176,7 @@ Linux/macOS worker 使用 `unix.Setrlimit(RLIMIT_DATA, ...)`；Windows worker �
 | 2 | ✅ | 实现当前二进制重启 client 与隐藏入口 | client + main/TestMain dispatch | re-exec 集成测试 |
 | 3 | ✅ | 加入跨平台内存、时间和 IPC 边界 | limit 文件 + bounded I/O | 资源边界测试、交叉编译 |
 | 4 | ✅ | 接入 `ScriptExecutor` 并证明行为兼容 | `script.go` + 回归测试 | providerquota 全包测试 |
-| 5 | ⬜ | OOM 攻击验证、全量回归和规格回写 | 验证证据 | race、vet、六平台构建 |
+| 5 | ✅ | OOM 攻击验证、全量回归和规格回写 | 验证证据 | race、vet、六平台构建 |
 
 ## 需求
 
@@ -246,22 +246,22 @@ Linux/macOS worker 使用 `unix.Setrlimit(RLIMIT_DATA, ...)`；Windows worker �
 
 #### 计划
 
-- [ ] 在 `internal/providerquota/script_worker_test.go` 先写 `TestRunScriptWorkerParseRequest`、`TestRunScriptWorkerExtractor`、`TestScriptWorkerRejectsInvalidProtocol`，确认因入口不存在而失败。
-- [ ] 新增 `internal/providerquota/script_worker_protocol.go`，定义 `ScriptWorkerArg`、协议版本、两个 operation 和 request/response 结构；实现精确匹配的 `IsScriptWorkerInvocation(args []string) bool`。
-- [ ] 在 `internal/providerquota/script.go` 将当前直接 goja 实现重命名为：
+- [x] 在 `internal/providerquota/script_worker_test.go` 先写 `TestRunScriptWorkerParseRequest`、`TestRunScriptWorkerExtractor`、`TestScriptWorkerRejectsInvalidProtocol`，确认因入口不存在而失败。
+- [x] 新增 `internal/providerquota/script_worker_protocol.go`，定义 `ScriptWorkerArg`、协议版本、两个 operation 和 request/response 结构；实现精确匹配的 `IsScriptWorkerInvocation(args []string) bool`。
+- [x] 在 `internal/providerquota/script.go` 将当前直接 goja 实现重命名为：
   ```go
   func parseRequestInProcess(script string) (*ScriptRequest, error)
   func runExtractorInProcess(script, responseBody string) (any, error)
   ```
   保留 PR #40 预检、200/500 ms interrupt、request JSON round-trip 和 extractor `Export()`。
-- [ ] 新增 `internal/providerquota/script_worker.go`，导出真实入口并保留 limiter 注入 seam：
+- [x] 新增 `internal/providerquota/script_worker.go`，导出真实入口并保留 limiter 注入 seam：
   ```go
   func RunScriptWorker(in io.Reader, out io.Writer) int
   func runScriptWorker(in io.Reader, out io.Writer, applyLimits func() (func(), error)) int
   ```
   真实入口先设置资源限制，再从最多 3 MiB 输入解码一次，根据 operation 调用对应 in-process 函数，将 payload 预先 `json.Marshal` 后编码一个响应；协议单测注入 no-op/failing limiter。
-- [ ] 运行定向测试，确认 parse、extract 和非法协议全部通过；再运行 `go test ./internal/providerquota`。
-- [ ] 提交：`feat(providerquota): add isolated script worker protocol`。
+- [x] 运行定向测试，确认 parse、extract 和非法协议全部通过；再运行 `go test ./internal/providerquota`。
+- [x] 提交：`feat(providerquota): add isolated script worker protocol`。
 
 #### 验证
 
@@ -286,8 +286,8 @@ Linux/macOS worker 使用 `unix.Setrlimit(RLIMIT_DATA, ...)`；Windows worker �
 
 #### 计划
 
-- [ ] 在 `internal/providerquota/script_worker_client_test.go` 先写当前测试二进制 re-exec 的成功、取消和畸形响应测试；确认缺少 runner 时失败。
-- [ ] 新增内部接口：
+- [x] 在 `internal/providerquota/script_worker_client_test.go` 先写当前测试二进制 re-exec 的成功、取消和畸形响应测试；确认缺少 runner 时失败。
+- [x] 新增内部接口：
   ```go
   type scriptWorkerRunner interface {
       ParseRequest(context.Context, string) (*ScriptRequest, error)
@@ -295,11 +295,11 @@ Linux/macOS worker 使用 `unix.Setrlimit(RLIMIT_DATA, ...)`；Windows worker �
   }
   ```
   `processScriptWorkerRunner` 用 `exec.CommandContext(exe, ScriptWorkerArg)` 发送协议 envelope。
-- [ ] 实现有限 stdout/stderr 收集器：达到 4 MiB / 64 KiB 时停止收集并使调用失败；任何错误只映射固定分类，不拼接 stderr、脚本或 response body。
-- [ ] 新增 `internal/providerquota/main_test.go` 的 `TestMain`：仅在 `IsScriptWorkerInvocation(os.Args[1:])` 为真时调用 `RunScriptWorker`，否则 `m.Run()`。
-- [ ] 修改 `cmd/server/main.go`，在 locale/flag/service 初始化前执行相同的精确分派；在 `cmd/server/main_test.go` 增加参数识别回归测试。
-- [ ] 运行定向测试与 `go test ./cmd/server ./internal/providerquota`，确认生产入口和测试入口均可重启。
-- [ ] 提交：`feat(providerquota): re-exec current binary for script workers`。
+- [x] 实现有限 stdout/stderr 收集器：达到 4 MiB / 64 KiB 时停止收集并使调用失败；任何错误只映射固定分类，不拼接 stderr、脚本或 response body。
+- [x] 新增 `internal/providerquota/main_test.go` 的 `TestMain`：仅在 `IsScriptWorkerInvocation(os.Args[1:])` 为真时调用 `RunScriptWorker`，否则 `m.Run()`。
+- [x] 修改 `cmd/server/main.go`，在 locale/flag/service 初始化前执行相同的精确分派；在 `script_worker_test.go` 增加参数识别回归测试。
+- [x] 运行定向测试与 `go test ./cmd/server ./internal/providerquota`，确认生产入口和测试入口均可重启。
+- [x] 提交：`feat(providerquota): re-exec current binary for script workers`。
 
 #### 验证
 
@@ -325,13 +325,13 @@ Linux/macOS worker 使用 `unix.Setrlimit(RLIMIT_DATA, ...)`；Windows worker �
 
 #### 计划
 
-- [ ] 先写资源限制调用顺序与失败 fail-closed 测试，并在非 race Linux 测试中验证正常脚本可在 128 MiB 下运行。
-- [ ] 新增 `script_worker_memory_default.go`（`!race`，128 MiB hard、较低 soft）和 `script_worker_memory_race.go`（`race`，仅供 ThreadSanitizer 的较高值）。
-- [ ] 新增 `script_worker_limit_unix.go`（build tags `linux || darwin`；使用中性文件名避免 Go 的 `_darwin.go` 隐式后缀约束），调用 `unix.Setrlimit(unix.RLIMIT_DATA, &unix.Rlimit{Cur: limit, Max: limit})`。
-- [ ] 新增 `script_worker_limit_windows.go`：创建 Job Object，设置 `JOB_OBJECT_LIMIT_PROCESS_MEMORY`，赋值 `ProcessMemoryLimit`，再 `AssignProcessToJobObject(job, windows.CurrentProcess())`；保持 handle 到 worker 返回。
-- [ ] 新增其他平台 fail-closed 实现；在共同 worker 初始化中先应用硬上限，再调用 `debug.SetMemoryLimit`。
-- [ ] 执行 Linux 定向测试；运行 Linux、macOS、Windows amd64/arm64 的 `CGO_ENABLED=0 go build ./cmd/server`。
-- [ ] 提交：`feat(providerquota): enforce script worker resource limits`。
+- [x] 先写资源限制调用顺序与失败 fail-closed 测试，并在非 race Linux 测试中验证正常脚本可在 128 MiB 下运行。
+- [x] 新增 `script_worker_memory_default.go`（`!race`，128 MiB hard、较低 soft）和 `script_worker_memory_race.go`（`race`，仅供 ThreadSanitizer 的较高值）。
+- [x] 新增 `script_worker_limit_unix.go`（build tags `linux || darwin`；使用中性文件名避免 Go 的 `_darwin.go` 隐式后缀约束），调用 `unix.Setrlimit(unix.RLIMIT_DATA, &unix.Rlimit{Cur: limit, Max: limit})`。
+- [x] 新增 `script_worker_limit_windows.go`：创建 Job Object，设置 `JOB_OBJECT_LIMIT_PROCESS_MEMORY`，赋值 `ProcessMemoryLimit`，再 `AssignProcessToJobObject(job, windows.CurrentProcess())`；保持 handle 到 worker 返回。
+- [x] 新增其他平台 fail-closed 实现；在共同 worker 初始化中先应用硬上限，再调用 `debug.SetMemoryLimit`。
+- [x] 执行 Linux 定向测试；运行 Linux、macOS、Windows amd64/arm64 的 `CGO_ENABLED=0 go build ./cmd/server`。
+- [x] 提交：`feat(providerquota): enforce script worker resource limits`。
 
 #### 验证
 
@@ -358,8 +358,8 @@ Linux/macOS worker 使用 `unix.Setrlimit(RLIMIT_DATA, ...)`；Windows worker �
 
 #### 计划
 
-- [ ] 在 `script_test.go` 增加 spy runner 测试：parse/extract 各调用一次、HTTP 失败只调用 parse、runner 收不到 placeholder map；先确认现有结构不满足测试。
-- [ ] 修改 `ScriptExecutor`：
+- [x] 在 `script_worker_integration_test.go` 增加 spy runner 测试：parse/extract 各调用一次、HTTP 失败只调用 parse、runner 收不到 placeholder map；先确认现有结构不满足测试。
+- [x] 修改 `ScriptExecutor`：
   ```go
   type ScriptExecutor struct {
       HTTPClient   *http.Client
@@ -367,10 +367,10 @@ Linux/macOS worker 使用 `unix.Setrlimit(RLIMIT_DATA, ...)`；Windows worker �
   }
   ```
   `NewScriptExecutor` 注入 process runner；测试可在同包注入 spy/fake runner。
-- [ ] 将 `parseRequest` / `runExtractor` 改为 runner 调用；仅 `RunScriptWorker` 可到达 in-process goja 函数。
-- [ ] 保持 `ExecuteScript` 中 placeholder 替换、validation、HTTP、sanitizeError、normalize 顺序不变。
-- [ ] 依次运行 spy 定向测试、`script_test.go`、Manager 测试和 providerquota race 全包测试。
-- [ ] 提交：`refactor(providerquota): execute javascript only in workers`。
+- [x] 将 `parseRequest` / `runExtractor` 改为 runner 调用；仅 `RunScriptWorker` 可到达 in-process goja 函数。
+- [x] 保持 `ExecuteScript` 中 placeholder 替换、validation、HTTP、sanitizeError、normalize 顺序不变。
+- [x] 依次运行 spy 定向测试、`script_test.go`、Manager 测试和 providerquota race 全包测试。
+- [x] 提交：`refactor(providerquota): execute javascript only in workers`。
 
 #### 验证
 
@@ -399,22 +399,27 @@ Linux/macOS worker 使用 `unix.Setrlimit(RLIMIT_DATA, ...)`；Windows worker �
 
 #### 计划
 
-- [ ] 在 `script_worker_client_test.go` 增加能绕过现有字面量正则的 payload，例如 `Array(Number("100000000")).fill(0)` 和动态 `"x".repeat(...)`；分别覆盖 parse 与 extractor。
-- [ ] 每个 OOM 用例断言：调用在硬超时内返回 `script_error`、错误不含脚本/response/stderr；紧接着使用同一父测试进程执行正常脚本并成功。
-- [ ] 增加 stdout/stderr 超限、worker panic/非零退出、context cancel 和协议版本异常测试。
-- [ ] 运行：
+- [x] 在 `script_worker_client_test.go` 增加能绕过现有字面量正则的动态数组和动态 `"x".repeat(...)` payload；分别覆盖 parse 与 extractor。
+- [x] 每个 OOM 用例断言调用在硬超时内返回固定错误；紧接着使用同一父测试进程执行正常脚本并成功；`ExecuteScript` 映射为 `script_error`。
+- [x] 增加 stdout/stderr 超限、worker panic/非零退出、context cancel、硬超时和协议版本异常测试。
+- [x] 运行：
   ```bash
-  go test ./internal/providerquota -run 'TestScriptWorker.*(OOM|Memory|Output|Cancel)' -count=1 -v
+  go test ./internal/providerquota -run 'Test(ProcessScriptWorker.*(MemoryLimit|OutputLimit|Abnormal|Cancellation|HardTimeout)|ScriptExecutorMapsWorkerMemoryTerminationToScriptError|BoundedWorkerBuffer|ScriptWorkerRejectsOversizedInput)' -count=1 -v
   go test -race ./internal/providerquota ./internal/admin -count=1
   make test
   go vet ./...
   npm --prefix internal/frontend test
   npm --prefix internal/frontend run build
   ```
-- [ ] 用临时输出目录执行六个 `CGO_ENABLED=0 GOOS=<linux|darwin|windows> GOARCH=<amd64|arm64> go build ./cmd/server`，不向仓库写入二进制。
-- [ ] `git status --short && git diff --stat` 核对范围；同步回写 `spec.md` / `spec_ZH.md` 的状态、进度、检查清单和实际证据。
-- [ ] 提交：`test(providerquota): verify script worker OOM isolation` 与 `docs(spec): record script worker isolation verification`。
+- [x] 用临时输出目录执行六个 `CGO_ENABLED=0 GOOS=<linux|darwin|windows> GOARCH=<amd64|arm64> go build ./cmd/server`，不向仓库写入二进制。
+- [x] `git status --short && git diff --stat` 核对范围；同步回写 `spec.md` / `spec_ZH.md` 的状态、进度、检查清单和实际证据。
+- [x] 提交测试与隔离加固；完成验证后提交规格回写。
 
 #### 验证
 
-- [ ] 规格阶段尚未执行；完成本任务的定向命令后在此记录实际输出。
+- [x] OOM、输出上限、异常退出、取消、硬超时和协议测试定向运行 —— 18 个测试通过；匿名嵌入 `bytes.Buffer` 会绕过限长 `Write` 的 RED 用例已通过命名字段修复。
+- [x] `go test -race ./internal/providerquota ./internal/admin -count=1` —— 474 个测试通过。
+- [x] `make test` —— 全仓 race 测试通过；`go vet ./...` 无问题。
+- [x] `npm --prefix internal/frontend test` —— 226 个测试通过；`npm --prefix internal/frontend run build` 成功。
+- [x] Linux/macOS/Windows 的 amd64/arm64 六目标 `CGO_ENABLED=0` 交叉编译全部成功；Linux amd64 生产二进制 worker 协议 smoke test 成功。
+- [x] 调试记录：`internal/admin.test` 重启后原本不能进入 worker；新增精确参数匹配的 `TestMain` 分派后，6 个定向 admin race 用例及完整 race 套件通过。
