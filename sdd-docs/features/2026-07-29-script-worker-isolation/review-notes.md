@@ -185,6 +185,47 @@ No new functional logic defect or directly exploitable security defect was found
 
 Approved from this review pass. The fix closes the two low-severity framing compatibility issues without weakening the worker protocol or script isolation boundary.
 
+## Fifth Follow-up Review: Proxy Hardcoded Compatibility Endpoints
+
+Date: 2026-07-29
+Reviewer: Codex
+
+### Scope
+
+Reviewed the two new top-of-branch proxy commits:
+
+- `fix(proxy): handle /api/hello connectivity probe`
+- `fix(proxy): handle /v1/environment_providers list endpoint`
+
+Scope covered exact hardcoded endpoint matching, method handling, local response shapes, interaction with the proxy fail-closed forwarding guard, and regressions for the existing worker-isolation branch.
+
+### Findings
+
+No new functional logic defect or directly exploitable security defect was found in this review pass.
+
+### Verification Notes
+
+- `/api/hello` is an exact hardcoded endpoint. `HEAD` returns `200` with no body; `GET` returns `200` with `{}`; other methods return `405` with `Allow: HEAD, GET`.
+- `/v1/environment_providers` is an exact hardcoded endpoint. `GET` returns `{"environments":[]}`; other methods return `405` with `Allow: GET`.
+- `/v1/environment_providers/cloud/create` is not matched by the new exact endpoint and still falls through to the local fail-closed non-model endpoint guard instead of forwarding to a provider.
+- The new handlers return local empty compatibility data only. They do not expose secrets, do not read config, and do not expand the model-forwarding surface.
+
+### Verification
+
+- `go test ./internal/proxy -run 'TestIsHardcodedEndpoint|TestHandleHello|TestHandleEnvironmentProviders|TestBlockedEndpoint|TestEndpointPolicy' -count=1 -v`: passed, 90 tests.
+- `go test ./internal/proxy -count=1`: passed, 539 tests.
+- `go test -race ./internal/proxy -count=1`: passed, 539 tests.
+- `go test ./internal/providerquota ./internal/admin -count=1`: passed, 496 tests.
+- `go test -p 1 ./... -count=1`: passed, 1870 tests.
+- `npm --prefix internal/frontend test`: passed, 227 tests.
+- `npm --prefix internal/frontend run build`: passed.
+- `go vet ./...`: passed.
+- `git diff --check main...HEAD`: passed.
+
+### Conclusion
+
+Approved from this review pass. The new proxy compatibility endpoints are narrow, exact, local-only responses and do not weaken the branch's worker isolation, secret boundary, or proxy fail-closed forwarding policy.
+
 ## Deployment Note: Host Memory-Limit Dependencies
 
 Date: 2026-07-29

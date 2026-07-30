@@ -185,6 +185,47 @@
 
 本轮审查通过。该修复消除了两个低危 framing 兼容性问题，同时没有削弱 worker 协议或脚本隔离边界。
 
+## Fifth Follow-up Review: Proxy Hardcoded Compatibility Endpoints（五次后续审查：代理硬编码兼容端点）
+
+日期：2026-07-29
+审查者：Codex
+
+### Scope（范围）
+
+复审分支顶部新增的两个 proxy 提交：
+
+- `fix(proxy): handle /api/hello connectivity probe`
+- `fix(proxy): handle /v1/environment_providers list endpoint`
+
+覆盖精确 hardcoded endpoint 匹配、方法处理、本地响应格式、与 proxy fail-closed 转发守卫的交互，以及当前 worker-isolation 分支回归。
+
+### Findings（发现）
+
+本轮未发现新的功能逻辑缺陷或可直接利用的安全缺陷。
+
+### Verification Notes（验证说明）
+
+- `/api/hello` 是精确 hardcoded endpoint。`HEAD` 返回 `200` 且无 body；`GET` 返回 `200` 与 `{}`；其他方法返回 `405` 与 `Allow: HEAD, GET`。
+- `/v1/environment_providers` 是精确 hardcoded endpoint。`GET` 返回 `{"environments":[]}`；其他方法返回 `405` 与 `Allow: GET`。
+- `/v1/environment_providers/cloud/create` 不会被新的精确 endpoint 匹配，仍会落到本地 fail-closed 非模型端点守卫，而不是转发给 provider。
+- 新 handler 只返回本地空兼容数据，不暴露 secret，不读取配置，也不扩大模型请求转发表面。
+
+### Verification（验证）
+
+- `go test ./internal/proxy -run 'TestIsHardcodedEndpoint|TestHandleHello|TestHandleEnvironmentProviders|TestBlockedEndpoint|TestEndpointPolicy' -count=1 -v`：通过，90 tests。
+- `go test ./internal/proxy -count=1`：通过，539 tests。
+- `go test -race ./internal/proxy -count=1`：通过，539 tests。
+- `go test ./internal/providerquota ./internal/admin -count=1`：通过，496 tests。
+- `go test -p 1 ./... -count=1`：通过，1870 tests。
+- `npm --prefix internal/frontend test`：通过，227 tests。
+- `npm --prefix internal/frontend run build`：通过。
+- `go vet ./...`：通过。
+- `git diff --check main...HEAD`：通过。
+
+### Conclusion（结论）
+
+本轮审查通过。新增 proxy 兼容端点是窄范围、精确匹配、本地响应，不削弱该分支的 worker 隔离、秘密边界或 proxy fail-closed 转发策略。
+
 ## 部署说明：宿主机内存上限依赖
 
 日期：2026-07-29
