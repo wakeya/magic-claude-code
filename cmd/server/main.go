@@ -79,6 +79,10 @@ func resolveDataDirFromExecutablePath(exePath string) string {
 }
 
 func main() {
+	if providerquota.IsScriptWorkerInvocation(os.Args[1:]) {
+		os.Exit(providerquota.RunScriptWorker(os.Stdin, os.Stdout))
+	}
+
 	msg := i18n.Load(i18n.ResolveLocale())
 
 	setupFlagUsage()

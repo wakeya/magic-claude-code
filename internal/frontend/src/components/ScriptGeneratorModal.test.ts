@@ -191,6 +191,10 @@ test('ScriptGeneratorModal disables generation while loading and displays transl
   assert.match(modalSource, /role="alert"/)
 })
 
+test('ScriptGeneratorModal keeps backend detail for translated error codes', () => {
+  assert.match(modalSource, /return message \? `\$\{localized\}: \$\{message\}` : localized/)
+})
+
 test('ScriptGeneratorModal renders the hardcoded script examples library', () => {
   assert.match(modalSource, /max-w-\[1100px\]/)
   assert.match(modalSource, /const scriptExamples = \[/)
@@ -294,6 +298,7 @@ test('defines required bilingual AI generation messages and error codes', () => 
     'warning.empty_post_body',
     'warning.no_credential_placeholder',
     'warning.hardcoded_url',
+    'warning.swapped_cookie_sec_token_placeholders',
   ]) {
     assert.match(i18nSource, new RegExp(`'${key}':`, 'g'), `missing ${key}`)
   }
@@ -308,6 +313,7 @@ test('defines warning i18n copy with fix suggestions in both languages', () => {
     ['warning.empty_post_body', 'POST 请求的 body 为空', 'POST request body is empty'],
     ['warning.no_credential_placeholder', '脚本没用任何凭据占位符', 'The script does not use any credential placeholder'],
     ['warning.hardcoded_url', '脚本 URL 没用 {{baseUrl}} 占位符', 'The script URL does not use the {{baseUrl}} placeholder'],
+    ['warning.swapped_cookie_sec_token_placeholders', 'Cookie/sec_token 占位符疑似反了', 'Cookie/sec_token placeholders look swapped'],
   ]) {
     const escapedKey = key.replace('.', '\\.')
     assert.match(i18nSource, new RegExp(`'${escapedKey}':\\s*'[^']*${zhNeedle}[^']*→ 修复`, 's'), `missing zh fix copy for ${key}`)

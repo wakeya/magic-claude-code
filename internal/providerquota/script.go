@@ -48,7 +48,8 @@ type ScriptRequest struct {
 // ScriptExecutor runs restricted JavaScript scripts to build HTTP requests
 // and extract quota data from responses.
 type ScriptExecutor struct {
-	HTTPClient *http.Client
+	HTTPClient   *http.Client
+	workerRunner scriptWorkerRunner
 }
 
 // NewScriptExecutor creates a ScriptExecutor with the given HTTP timeout.
@@ -60,6 +61,7 @@ func NewScriptExecutor(timeout time.Duration) *ScriptExecutor {
 				return http.ErrUseLastResponse
 			},
 		},
+		workerRunner: newProcessScriptWorkerRunner(),
 	}
 }
 
@@ -70,7 +72,7 @@ func (e *ScriptExecutor) ExecuteScript(ctx context.Context, script string, place
 	start := time.Now()
 
 	// Phase 1: Parse request config from script.
-	reqConfig, err := e.parseRequest(script)
+	reqConfig, err := e.parseRequest(ctx, script)
 	if err != nil {
 		return &ProviderQuotaResult{
 			Success:      false,
@@ -126,7 +128,7 @@ func (e *ScriptExecutor) ExecuteScript(ctx context.Context, script string, place
 	}
 
 	// Phase 3: Run extractor on response.
-	extracted, err := e.runExtractor(script, string(body))
+	extracted, err := e.runExtractor(ctx, script, string(body))
 	if err != nil {
 		return &ProviderQuotaResult{
 			Success:      false,
@@ -160,7 +162,14 @@ func (e *ScriptExecutor) ExecuteScript(ctx context.Context, script string, place
 	return result, nil
 }
 
-func (e *ScriptExecutor) parseRequest(script string) (*ScriptRequest, error) {
+func (e *ScriptExecutor) parseRequest(ctx context.Context, script string) (*ScriptRequest, error) {
+	if e.workerRunner == nil {
+		return nil, fmt.Errorf("script worker runner is unavailable")
+	}
+	return e.workerRunner.ParseRequest(ctx, script)
+}
+
+func parseRequestInProcess(script string) (*ScriptRequest, error) {
 	if err := rejectPotentialResourceAbuse(script); err != nil {
 		return nil, err
 	}
@@ -266,7 +275,14 @@ func hasHugeScriptStringLiteral(script string) bool {
 	return quote != 0 && len(script)-start > maxScriptStringBytes
 }
 
-func (e *ScriptExecutor) runExtractor(script string, responseBody string) (any, error) {
+func (e *ScriptExecutor) runExtractor(ctx context.Context, script string, responseBody string) (any, error) {
+	if e.workerRunner == nil {
+		return nil, fmt.Errorf("script worker runner is unavailable")
+	}
+	return e.workerRunner.RunExtractor(ctx, script, responseBody)
+}
+
+func runExtractorInProcess(script string, responseBody string) (any, error) {
 	vm := goja.New()
 	defer vm.Interrupt("")
 

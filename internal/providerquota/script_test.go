@@ -191,7 +191,7 @@ func TestScriptExecutorRedirectPreservesBody(t *testing.T) {
 
 func TestParseRequestRejectsLargeArray(t *testing.T) {
 	exec := NewScriptExecutor(5 * time.Second)
-	_, err := exec.parseRequest(`({
+	_, err := exec.parseRequest(context.Background(), `({
 		request: {url: "http://example.com", method: "GET"},
 		bomb: new Array(1e9),
 		extractor: function(r) { return {}; }
@@ -206,7 +206,7 @@ func TestParseRequestRejectsLargeArray(t *testing.T) {
 
 func TestParseRequestRejectsInfiniteLoop(t *testing.T) {
 	exec := NewScriptExecutor(5 * time.Second)
-	_, err := exec.parseRequest(`({
+	_, err := exec.parseRequest(context.Background(), `({
 		request: {url: "http://example.com", method: "GET"},
 		spin: (function() { while(true) {} })(),
 		extractor: function(r) { return {}; }
@@ -221,7 +221,7 @@ func TestParseRequestRejectsInfiniteLoop(t *testing.T) {
 
 func TestParseRequestAllowsNormalExtractorScript(t *testing.T) {
 	exec := NewScriptExecutor(5 * time.Second)
-	req, err := exec.parseRequest(`({
+	req, err := exec.parseRequest(context.Background(), `({
 		request: {
 			url: "http://example.com/balance",
 			method: "POST",

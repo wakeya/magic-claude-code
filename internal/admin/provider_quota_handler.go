@@ -329,7 +329,7 @@ func (s *Server) handleGenerateUsageScript(w http.ResponseWriter, r *http.Reques
 	timeout := 30 * time.Second
 	factory := s.providerQuotaLLMClientFunc
 	if factory == nil {
-		factory = providerquota.NewLLMClient
+		factory = providerquota.NewConfiguredLLMClient
 	}
 	result := providerquota.GenerateScript(
 		r.Context(),

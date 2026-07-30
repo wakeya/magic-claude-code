@@ -269,19 +269,57 @@ func TestLLMClientRejectsLoopback(t *testing.T) {
 	}
 }
 
-func TestLLMClientRejectsMetadata(t *testing.T) {
-	provider := LLMProvider{APIFormat: "openai_chat", APIURL: "http://169.254.169.254", APIToken: "sk-test"}
-	client := &LLMClient{HTTPClient: &http.Client{
-		Timeout: time.Second,
-		Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
-			t.Fatal("LLMClient attempted request to metadata endpoint")
-			return nil, nil
-		}),
-	}}
+func TestConfiguredLLMClientAllowsLoopbackEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"local proxy text"}}]}`))
+	}))
+	defer server.Close()
 
-	result := client.Call(context.Background(), provider, "m", "s", "u")
-	if result.ErrorCode != "invalid_config" {
-		t.Fatalf("ErrorCode = %q, want invalid_config; message=%q", result.ErrorCode, result.ErrorMessage)
+	provider := LLMProvider{APIFormat: "openai_chat", APIURL: server.URL, APIToken: "sk-test"}
+	result := NewConfiguredLLMClient(time.Second).Call(context.Background(), provider, "m", "s", "u")
+	if result.ErrorCode != "" || result.Text != "local proxy text" {
+		t.Fatalf("Call() = %#v, want loopback configured endpoint success", result)
+	}
+}
+
+func TestConfiguredLLMClientRejectsMetadataEndpoint(t *testing.T) {
+	for _, endpoint := range []string{
+		"http://169.254.169.254",
+		"http://100.100.100.200",
+	} {
+		t.Run(endpoint, func(t *testing.T) {
+			provider := LLMProvider{APIFormat: "openai_chat", APIURL: endpoint, APIToken: "sk-test"}
+			result := NewConfiguredLLMClient(time.Second).Call(context.Background(), provider, "m", "s", "u")
+			if result.ErrorCode != "invalid_config" {
+				t.Fatalf("ErrorCode = %q, want invalid_config; message=%q", result.ErrorCode, result.ErrorMessage)
+			}
+		})
+	}
+}
+
+func TestLLMClientRejectsMetadata(t *testing.T) {
+	for _, endpoint := range []string{
+		"http://169.254.169.254",
+		"http://100.100.100.200",
+	} {
+		t.Run(endpoint, func(t *testing.T) {
+			provider := LLMProvider{APIFormat: "openai_chat", APIURL: endpoint, APIToken: "sk-test"}
+			client := &LLMClient{HTTPClient: &http.Client{
+				Timeout: time.Second,
+				Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+					t.Fatal("LLMClient attempted request to metadata endpoint")
+					return nil, nil
+				}),
+			}}
+
+			result := client.Call(context.Background(), provider, "m", "s", "u")
+			if result.ErrorCode != "invalid_config" {
+				t.Fatalf("ErrorCode = %q, want invalid_config; message=%q", result.ErrorCode, result.ErrorMessage)
+			}
+		})
 	}
 }
 
@@ -327,6 +365,35 @@ func TestLLMClientRejectsDNSRebinding(t *testing.T) {
 		t.Fatalf("ErrorCode = %q, want invalid_config; message=%q", result.ErrorCode, result.ErrorMessage)
 	}
 	if strings.Contains(result.ErrorMessage, "127.0.0.1") {
+		t.Fatalf("ErrorMessage leaked rebound IP: %q", result.ErrorMessage)
+	}
+	if lookupCalls.Load() < 2 {
+		t.Fatalf("lookup calls = %d, want request precheck plus dial check", lookupCalls.Load())
+	}
+}
+
+func TestConfiguredLLMClientRejectsMetadataDNSRebinding(t *testing.T) {
+	originalLookup := llmLookupIPAddr
+	var lookupCalls atomic.Int32
+	llmLookupIPAddr = func(_ context.Context, host string) ([]net.IPAddr, error) {
+		if host != "metadata-rebind.test" {
+			return originalLookup(context.Background(), host)
+		}
+		if lookupCalls.Add(1) == 1 {
+			return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
+		}
+		return []net.IPAddr{{IP: net.ParseIP("100.100.100.200")}}, nil
+	}
+	t.Cleanup(func() {
+		llmLookupIPAddr = originalLookup
+	})
+
+	provider := LLMProvider{APIFormat: "openai_chat", APIURL: "http://metadata-rebind.test", APIToken: "sk-test"}
+	result := NewConfiguredLLMClient(time.Second).Call(context.Background(), provider, "m", "s", "u")
+	if result.ErrorCode != "invalid_config" {
+		t.Fatalf("ErrorCode = %q, want invalid_config; message=%q", result.ErrorCode, result.ErrorMessage)
+	}
+	if strings.Contains(result.ErrorMessage, "100.100.100.200") {
 		t.Fatalf("ErrorMessage leaked rebound IP: %q", result.ErrorMessage)
 	}
 	if lookupCalls.Load() < 2 {

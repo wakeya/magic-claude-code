@@ -343,7 +343,9 @@ watch(selectedProviderId, () => {
 
 function translatedError(code: string, message?: string): string {
   const localized = t(`error.${code}`)
-  if (localized !== `error.${code}`) return localized
+  if (localized !== `error.${code}`) {
+    return message ? `${localized}: ${message}` : localized
+  }
   return message || code
 }
 

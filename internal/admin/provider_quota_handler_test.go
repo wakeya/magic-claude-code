@@ -153,6 +153,58 @@ func TestGenerateScriptSuccess(t *testing.T) {
 	}
 }
 
+func TestGenerateScriptAllowsConfiguredLoopbackLLMProvider(t *testing.T) {
+	script := `({request:{url:"{{baseUrl}}/balance",method:"GET",headers:{"Authorization":"Bearer {{apiKey}}"}},extractor:function(r){return {remaining:r.balance,unit:"USD"};}})`
+	llmServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("LLM path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-llm-secret" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]string{"content": script},
+			}},
+		})
+	}))
+	defer llmServer.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.Providers = []config.Provider{{
+		ID: "test-p", Name: "Test", APIURL: llmServer.URL, APIToken: "sk-llm-secret",
+		APIFormat: config.APIFormatOpenAIChat, Enabled: true, CreatedAt: timeNow(), UpdatedAt: timeNow(),
+	}}
+	srv := NewServer(&AdminConfig{Password: "test"}, config.NewMockStore(cfg), nil)
+
+	body := bytes.NewBufferString(`{"model":"gpt-test","prompt":"query balance","response_sample":"{\"balance\":42}","request_info":"GET /balance"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/test-p/usage/generate-script", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "session", Value: srv.GetAuth().GenerateToken()})
+	rec := httptest.NewRecorder()
+
+	srv.authMiddlewareFunc(srv.handleProviderRoutes)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Script       string `json:"script"`
+		ErrorCode    string `json:"error_code"`
+		ErrorMessage string `json:"error_message"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.ErrorCode != "" {
+		t.Fatalf("error = %s: %s", resp.ErrorCode, resp.ErrorMessage)
+	}
+	if resp.Script != script {
+		t.Fatalf("script = %q, want generated script", resp.Script)
+	}
+}
+
 func TestGenerateScriptReturnsStructuredWarningsAndIterations(t *testing.T) {
 	script := `({request:{url:"{{baseUrl}}/balance",method:"GET",headers:{"Authorization":"Bearer {{apiKey}}"}},extractor:function(r){return {remaining:r.balance,unit:"USD"};}})`
 	var calls int
