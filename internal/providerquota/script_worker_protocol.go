@@ -7,15 +7,17 @@ const (
 	scriptWorkerProtocolVersion             = 1
 	scriptWorkerOperationParseRequest       = "parse_request"
 	scriptWorkerOperationRunExtractor       = "run_extractor"
-	maxScriptWorkerInputSize          int64 = 3 * 1024 * 1024
+	maxScriptWorkerHeaderSize         int64 = 256 * 1024
+	maxScriptWorkerInputSize          int64 = maxScriptWorkerHeaderSize + 1 + maxResponseBodySize
 	maxScriptSourceSize                     = 64 * 1024
 )
 
 type scriptWorkerRequest struct {
-	Version      int    `json:"version"`
-	Operation    string `json:"operation"`
-	Script       string `json:"script"`
-	ResponseBody string `json:"response_body,omitempty"`
+	Version          int    `json:"version"`
+	Operation        string `json:"operation"`
+	Script           string `json:"script"`
+	ResponseBodySize int64  `json:"response_body_size,omitempty"`
+	ResponseBody     string `json:"-"`
 }
 
 type scriptWorkerResponse struct {

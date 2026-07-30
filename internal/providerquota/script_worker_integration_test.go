@@ -130,7 +130,7 @@ func TestScriptExecutorSkipsExtractorWorkerAfterHTTPError(t *testing.T) {
 
 func TestScriptExecutorMapsWorkerMemoryTerminationToScriptError(t *testing.T) {
 	if scriptWorkerRaceBuild {
-		t.Skip("production 128 MiB limit is verified by a non-race worker")
+		t.Skip("production memory limit is verified by a non-race worker")
 	}
 
 	t.Run("parse request", func(t *testing.T) {
@@ -139,7 +139,7 @@ func TestScriptExecutorMapsWorkerMemoryTerminationToScriptError(t *testing.T) {
 			context.Background(),
 			`({
 				request: {url: "https://api.example.com", method: "GET"},
-				bomb: Array(Number("20000000")).fill(1),
+				bomb: new ArrayBuffer(Number("800000000")),
 				extractor: function(response) { return response; }
 			})`,
 			nil,
@@ -168,7 +168,7 @@ func TestScriptExecutorMapsWorkerMemoryTerminationToScriptError(t *testing.T) {
 			`({
 				request: {url: "{{baseUrl}}", method: "GET"},
 				extractor: function(response) {
-					return Array(Number("20000000")).fill(response.value);
+					return new ArrayBuffer(Number("800000000"));
 				}
 			})`,
 			map[string]string{"baseUrl": server.URL},

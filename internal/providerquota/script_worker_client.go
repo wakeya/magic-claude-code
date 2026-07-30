@@ -73,7 +73,7 @@ func (r *processScriptWorkerRunner) run(ctx context.Context, req scriptWorkerReq
 		return nil, errors.New("script worker canceled")
 	}
 
-	input, err := json.Marshal(req)
+	input, err := encodeScriptWorkerRequest(req)
 	if err != nil {
 		return nil, errors.New("invalid script worker request")
 	}

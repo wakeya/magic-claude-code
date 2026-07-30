@@ -64,6 +64,56 @@ func TestProcessScriptWorker(t *testing.T) {
 	}
 }
 
+func TestProcessScriptWorkerHandlesMaxResponseBody(t *testing.T) {
+	if scriptWorkerRaceBuild {
+		t.Skip("production worker response-body capacity is verified by a non-race worker")
+	}
+
+	runner := newProcessScriptWorkerRunner()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	script := `({
+		request: {url: "https://api.example.com/usage", method: "GET"},
+		extractor: function(response) {
+			return {length: response.length};
+		}
+	})`
+	extracted, err := runner.RunExtractor(ctx, script, strings.Repeat("a", maxResponseBodySize))
+	if err != nil {
+		t.Fatalf("RunExtractor() with max response body: %v", err)
+	}
+	result, ok := extracted.(map[string]any)
+	if !ok || result["length"] != float64(maxResponseBodySize) {
+		t.Fatalf("extractor result = %#v, want length %d", extracted, maxResponseBodySize)
+	}
+}
+
+func TestProcessScriptWorkerHandlesEscapedMaxResponseBody(t *testing.T) {
+	if scriptWorkerRaceBuild {
+		t.Skip("production worker response-body capacity is verified by a non-race worker")
+	}
+
+	runner := newProcessScriptWorkerRunner()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	script := `({
+		request: {url: "https://api.example.com/usage", method: "GET"},
+		extractor: function(response) {
+			return {length: response.length, first: response[0]};
+		}
+	})`
+	extracted, err := runner.RunExtractor(ctx, script, strings.Repeat(`"`, maxResponseBodySize))
+	if err != nil {
+		t.Fatalf("RunExtractor() with escaped max response body: %v", err)
+	}
+	result, ok := extracted.(map[string]any)
+	if !ok || result["length"] != float64(maxResponseBodySize) || result["first"] != `"` {
+		t.Fatalf("extractor result = %#v, want quoted string length %d", extracted, maxResponseBodySize)
+	}
+}
+
 func TestProcessScriptWorkerCancellation(t *testing.T) {
 	runner := newProcessScriptWorkerRunner()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -121,10 +171,13 @@ func TestProcessScriptWorkerRejectsTrailingOutput(t *testing.T) {
 
 func TestProcessScriptWorkerMemoryLimit(t *testing.T) {
 	if scriptWorkerRaceBuild {
-		t.Skip("production 128 MiB limit is verified by a non-race worker")
+		t.Skip("production worker memory limit is verified by a non-race worker")
 	}
-	if scriptWorkerHardMemoryLimit != 128*1024*1024 {
-		t.Fatalf("hard memory limit = %d, want 128 MiB", scriptWorkerHardMemoryLimit)
+	if scriptWorkerHardMemoryLimit != 512*1024*1024 {
+		t.Fatalf("hard memory limit = %d, want 512 MiB", scriptWorkerHardMemoryLimit)
+	}
+	if scriptWorkerSoftMemoryLimit != 384*1024*1024 {
+		t.Fatalf("soft memory limit = %d, want 384 MiB", scriptWorkerSoftMemoryLimit)
 	}
 	if scriptWorkerSoftMemoryLimit >= int64(scriptWorkerHardMemoryLimit) {
 		t.Fatalf("soft memory limit %d must be below hard limit %d",
@@ -137,7 +190,7 @@ func TestProcessScriptWorkerMemoryLimit(t *testing.T) {
 
 	_, err := runner.ParseRequest(ctx, `({
 		request: {url: "https://api.example.com", method: "GET"},
-		bomb: Array(Number("20000000")).fill(1),
+		bomb: new ArrayBuffer(Number("800000000")),
 		extractor: function(response) { return response; }
 	})`)
 	if err == nil {
@@ -171,7 +224,7 @@ func TestProcessScriptWorkerExtractorMemoryLimit(t *testing.T) {
 	script := `({
 		request: {url: "https://api.example.com", method: "GET"},
 		extractor: function(response) {
-			return Array(Number("20000000")).fill(response.value);
+			return new ArrayBuffer(Number("800000000"));
 		}
 	})`
 	_, err := runner.RunExtractor(ctx, script, `{"value":1}`)
@@ -206,7 +259,7 @@ func TestProcessScriptWorkerDynamicStringMemoryLimit(t *testing.T) {
 
 	_, err := runner.ParseRequest(ctx, `({
 		request: {url: "https://api.example.com", method: "GET"},
-		bomb: "x".repeat(Number("200000000")),
+		bomb: "x".repeat(Number("800000000")),
 		extractor: function(response) { return response; }
 	})`)
 	if err == nil {

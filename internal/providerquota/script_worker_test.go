@@ -11,7 +11,7 @@ import (
 func runScriptWorkerForTest(t *testing.T, req scriptWorkerRequest) (int, scriptWorkerResponse) {
 	t.Helper()
 
-	input, err := json.Marshal(req)
+	input, err := encodeScriptWorkerRequest(req)
 	if err != nil {
 		t.Fatalf("marshal worker request: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestScriptWorkerRejectsInvalidProtocol(t *testing.T) {
 }
 
 func TestScriptWorkerLimitFailureIsFailClosed(t *testing.T) {
-	input, err := json.Marshal(scriptWorkerRequest{
+	input, err := encodeScriptWorkerRequest(scriptWorkerRequest{
 		Version:   scriptWorkerProtocolVersion,
 		Operation: scriptWorkerOperationParseRequest,
 		Script:    `({request:{url:"https://example.com",method:"GET"}})`,
@@ -204,14 +204,18 @@ func TestScriptWorkerInvocation(t *testing.T) {
 }
 
 func TestScriptWorkerRejectsTrailingInput(t *testing.T) {
-	input := `{
-		"version": 1,
-		"operation": "parse_request",
-		"script": "({request:{url:\"https://example.com\",method:\"GET\"}})"
-	} {}`
+	input, err := encodeScriptWorkerRequest(scriptWorkerRequest{
+		Version:   scriptWorkerProtocolVersion,
+		Operation: scriptWorkerOperationParseRequest,
+		Script:    `({request:{url:"https://example.com",method:"GET"}})`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input = append(input, []byte("{}")...)
 
 	var output bytes.Buffer
-	code := runScriptWorker(strings.NewReader(input), &output, func() (func(), error) {
+	code := runScriptWorker(bytes.NewReader(input), &output, func() (func(), error) {
 		return nil, nil
 	})
 	if code == 0 {
@@ -244,5 +248,60 @@ func TestScriptWorkerRejectsOversizedInput(t *testing.T) {
 	}
 	if resp.OK || resp.Error != "invalid script worker protocol request" {
 		t.Fatalf("worker response = %#v", resp)
+	}
+}
+
+func TestEncodeScriptWorkerRequestKeepsHTMLEscapeHeavyHeaderSmall(t *testing.T) {
+	// Regression: json.Marshal HTML-escapes '<', '>', '&' to \uXXXX (6x),
+	// which inflated a script full of such characters past the 256 KiB header
+	// limit. The header is a trusted in-process frame, so HTML escaping is now
+	// disabled and a 60 KiB '<'-heavy script must encode within the limit and
+	// round-trip through the worker.
+	suffix := `({request:{url:"https://example.com",method:"GET"},extractor:function(r){return r;}})`
+	script := "/*" + strings.Repeat("<", 60*1024) + "*/" + suffix
+	if len(script) > maxScriptSourceSize {
+		t.Fatalf("test script = %d bytes, must fit maxScriptSourceSize %d", len(script), maxScriptSourceSize)
+	}
+
+	req := scriptWorkerRequest{
+		Version:   scriptWorkerProtocolVersion,
+		Operation: scriptWorkerOperationParseRequest,
+		Script:    script,
+	}
+	input, err := encodeScriptWorkerRequest(req)
+	if err != nil {
+		t.Fatalf("encodeScriptWorkerRequest: %v", err)
+	}
+	header, _, found := bytes.Cut(input, []byte{'\n'})
+	if !found {
+		t.Fatal("frame delimiter missing")
+	}
+	if int64(len(header)) > maxScriptWorkerHeaderSize {
+		t.Fatalf("header = %d bytes, exceeds %d (HTML escaping not disabled)",
+			len(header), maxScriptWorkerHeaderSize)
+	}
+
+	code, resp := runScriptWorkerForTest(t, req)
+	if code != 0 || !resp.OK {
+		t.Fatalf("worker rejected HTML-heavy frame: code=%d resp=%#v", code, resp)
+	}
+}
+
+func TestEncodeScriptWorkerRequestMaxBodyFitsInputLimit(t *testing.T) {
+	// Regression for the frame off-by-one: header + '\n' delimiter + a
+	// max-size response body must fit maxScriptWorkerInputSize, which now
+	// accounts for the delimiter byte.
+	input, err := encodeScriptWorkerRequest(scriptWorkerRequest{
+		Version:      scriptWorkerProtocolVersion,
+		Operation:    scriptWorkerOperationRunExtractor,
+		Script:       `({request:{url:"https://example.com",method:"GET"},extractor:function(r){return r;}})`,
+		ResponseBody: strings.Repeat("a", maxResponseBodySize),
+	})
+	if err != nil {
+		t.Fatalf("encodeScriptWorkerRequest: %v", err)
+	}
+	if int64(len(input)) > maxScriptWorkerInputSize {
+		t.Fatalf("encoded frame = %d bytes, exceeds input limit %d",
+			len(input), maxScriptWorkerInputSize)
 	}
 }
