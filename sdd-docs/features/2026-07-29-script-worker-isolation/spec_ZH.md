@@ -122,15 +122,23 @@ type scriptWorkerResponse struct {
 
 - 保存脚本继续受现有 64 KiB 限制；
 - 上游响应继续受现有 2 MiB 限制；
-- worker stdin envelope 上限为 3 MiB；
+- worker stdin 使用 framed 协议：最多 256 KiB 的 JSON header，后接原始 response body bytes，body 继续受 2 MiB 上限约束；
 - worker stdout 上限为 4 MiB，足以容纳受支持的 2 MiB 响应派生结果及 JSON 开销；
 - worker stderr 最多读取 64 KiB，且不得回显到 API 错误；
 - goja 内部 interrupt 仍为 parse 200 ms、extractor 500 ms；
 - 父进程对每个 worker 增加包含进程启动时间的硬超时，并在 context 取消时终止 worker；
-- 非 race 构建：worker 硬内存上限 128 MiB，Go 软内存上限低于硬上限；
-- race 构建：允许更高的测试上限，避免 ThreadSanitizer 固定 shadow/stack 分配与生产上限冲突；实际 128 MiB 边界另由非 race 定向测试验证。
+- 非 race Linux/Windows worker：硬内存上限 512 MiB，Go 软内存上限 384 MiB；
+- race 构建：允许更高的测试上限，避免 ThreadSanitizer 固定 shadow/stack 分配与生产上限冲突；实际生产硬边界另由非 race 定向测试验证。
 
-Linux/macOS worker 使用 `unix.Setrlimit(RLIMIT_DATA, ...)`；Windows worker 使用 Job Object 的 `JOB_OBJECT_LIMIT_PROCESS_MEMORY` 并将当前 worker 分配到该 Job。`debug.SetMemoryLimit` 是辅助 GC 压力控制，不单独承担安全保证。资源限制初始化失败时 worker fail closed，不执行脚本。
+Linux worker 使用 `unix.Setrlimit(RLIMIT_DATA, ...)`，并要求 Linux 4.7+ 才能覆盖 Go `mmap` 堆分配；Windows worker 使用 Job Object 的 `JOB_OBJECT_LIMIT_PROCESS_MEMORY` 并将当前 worker 分配到该 Job。macOS worker 在存在经实机验证的 Darwin 硬内存机制前 fail closed，避免在无硬边界时执行脚本。`debug.SetMemoryLimit` 是辅助 GC 压力控制，不单独承担安全保证。资源限制初始化失败时 worker fail closed，不执行脚本。
+
+### 部署约束
+
+以下为平台/部署约束，并非代码缺陷，且无法从 worker 日志观测：worker 的 stdout 是协议通道，worker 的 stderr 内容被父进程丢弃（仅查看其溢出标志），因此生效上限目前无法从 worker 内部回传。
+
+- Linux `< 4.7`：`Setrlimit(RLIMIT_DATA)` 调用成功但并不约束 Go 的 `mmap` 堆，硬内存边界因此静默失效；内核版本要求由运维负责。
+- 宿主机硬上限过低：`applyScriptWorkerHardMemoryLimit` 会把 worker 的生效上限向下 clamp 到宿主机硬上限（`current.Max`），且不记录该值。若容器的 `ulimit -d`（或 Windows 嵌套 Job 的 commit 上限）低于生产值 ~512 MiB，可能静默退化到无法满足 2 MiB 响应兼容目标（与 review 中 128 MiB 下观察到的失败同源）。请确保宿主机硬上限不低于生产值。
+- macOS：在存在经实机验证的 Darwin 硬内存边界前，自定义配额脚本有意 fail closed。
 
 ### 错误行为
 
@@ -160,7 +168,7 @@ Linux/macOS worker 使用 `unix.Setrlimit(RLIMIT_DATA, ...)`；Windows worker �
 | `internal/providerquota/script_worker_protocol.go` | 内部参数、协议版本、操作和 envelope |
 | `internal/providerquota/script_worker.go` | worker 单请求服务、输入限制、内存限制初始化和响应编码 |
 | `internal/providerquota/script_worker_client.go` | `os.Executable` 重启、硬超时、有限 IPC 收集和错误映射 |
-| `internal/providerquota/script_worker_limit_*.go` | Linux/macOS rlimit、Windows Job Object、race 构建差异 |
+| `internal/providerquota/script_worker_limit_*.go` | Linux rlimit、Windows Job Object、Darwin fail-closed 行为、race 构建差异 |
 | `internal/providerquota/script_worker_test.go` | worker 协议、阶段行为和资源初始化测试 |
 | `internal/providerquota/script_worker_client_test.go` | 测试二进制重启、IPC 上限、崩溃/超时/OOM 测试 |
 | `internal/providerquota/script_test.go` | 完整兼容与 ExecuteScript 回归 |
@@ -186,7 +194,7 @@ Linux/macOS worker 使用 `unix.Setrlimit(RLIMIT_DATA, ...)`；Windows worker �
 2. 两个 JavaScript 阶段分别由独立短生命周期 worker 执行；
 3. 单二进制可在生产和 `go test` 测试二进制中重启 worker；
 4. worker 具备版本化、长度受限、单请求 JSON 协议；
-5. Linux、macOS、Windows 均具备 worker 进程内存限制；
+5. Linux、Windows 具备 worker 进程内存限制；macOS 在无已验证硬边界时 fail closed；
 6. 正常脚本结果、错误分类、HTTP client 注入及秘密处理行为保持兼容；
 7. 动态 OOM payload 能绕过 PR #40 正则，但只能终止 worker，父测试进程继续完成后续查询；
 8. 中英文规格同步回写实际验证证据。
@@ -217,14 +225,14 @@ Linux/macOS worker 使用 `unix.Setrlimit(RLIMIT_DATA, ...)`；Windows worker �
 - 空输入、超大输入、未知版本、未知 operation；
 - worker 启动失败、可执行文件路径失败、非零退出、signal、panic；
 - stdout 空、stdout 超限、stderr 超限、stdout 混入日志、响应 JSON 截断；
-- parse 阶段动态数组/字符串 OOM；
-- extractor 阶段动态数组/字符串 OOM；
+- parse 阶段动态 ArrayBuffer/字符串 OOM；
+- extractor 阶段动态 ArrayBuffer OOM；
 - 无限循环由 goja interrupt 或父硬超时终止；
 - 父 context 在启动前、执行中或读取输出时取消；
 - 上游返回非 JSON 字符串；
-- extractor 返回接近 2 MiB 的合法结果；
+- 2 MiB 响应体，包括 JSON 转义最坏情况；
 - HTTP 307/308 body、同源校验、自定义 TLS client 等既有行为不变；
-- race 检测器内存开销不使用生产 128 MiB 验收值。
+- race 检测器内存开销不使用生产 512 MiB 验收值。
 
 ## 任务详情
 
@@ -259,7 +267,7 @@ Linux/macOS worker 使用 `unix.Setrlimit(RLIMIT_DATA, ...)`；Windows worker �
   func RunScriptWorker(in io.Reader, out io.Writer) int
   func runScriptWorker(in io.Reader, out io.Writer, applyLimits func() (func(), error)) int
   ```
-  真实入口先设置资源限制，再从最多 3 MiB 输入解码一次，根据 operation 调用对应 in-process 函数，将 payload 预先 `json.Marshal` 后编码一个响应；协议单测注入 no-op/failing limiter。
+  真实入口先设置资源限制，再解码一个有界 frame，根据 operation 调用对应 in-process 函数，将 payload 预先 `json.Marshal` 后编码一个响应；协议单测注入 no-op/failing limiter。
 - [x] 运行定向测试，确认 parse、extract 和非法协议全部通过；再运行 `go test ./internal/providerquota`。
 - [x] 提交：`feat(providerquota): add isolated script worker protocol`。
 
@@ -313,32 +321,32 @@ Linux/macOS worker 使用 `unix.Setrlimit(RLIMIT_DATA, ...)`；Windows worker �
 
 **Objective（目标）** — 在 goja 执行前为 worker 设置生产硬内存上限和 Go 软内存上限，并保持六个发布目标可编译。
 
-**Outcomes（成果）** — Linux/macOS 使用 RLIMIT_DATA；Windows 使用 self-assigned Job Object；race 构建使用独立测试值；其他平台只作显式 unsupported/fail-closed。
+**Outcomes（成果）** — Linux 使用 RLIMIT_DATA；Windows 使用 self-assigned Job Object；macOS 与其他不支持平台 fail closed；race 构建使用独立测试值。
 
-**Evidence（证据）** — 资源限制初始化单测通过；Linux 非 race worker 在 128 MiB 下执行正常 fixture；六平台 `go build` 成功。
+**Evidence（证据）** — 资源限制初始化单测通过；Linux 非 race worker 可处理现有 2 MiB 响应上限，并仍能终止动态 OOM payload；六平台 `go build` 成功。
 
-**Constraints（约束）** — 非 race 128 MiB 是安全验收值；软上限低于硬上限；Job handle 保持到 worker 退出；设置失败不执行脚本。
+**Constraints（约束）** — 非 race Linux/Windows 512 MiB 是安全验收值；软上限低于硬上限；Job handle 保持到 worker 退出；设置失败不执行脚本。
 
 **Edge Cases（边界）** — Windows 已位于外部 Job、Setrlimit 权限/平台错误、race shadow memory。
 
-**Verification（验证）** — 平台定向单测、非 race 128 MiB 正常/OOM 测试和六平台交叉编译通过。
+**Verification（验证）** — 平台定向单测、非 race 2 MiB 响应/OOM 测试和六平台交叉编译通过。
 
 #### 计划
 
-- [x] 先写资源限制调用顺序与失败 fail-closed 测试，并在非 race Linux 测试中验证正常脚本可在 128 MiB 下运行。
-- [x] 新增 `script_worker_memory_default.go`（`!race`，128 MiB hard、较低 soft）和 `script_worker_memory_race.go`（`race`，仅供 ThreadSanitizer 的较高值）。
-- [x] 新增 `script_worker_limit_unix.go`（build tags `linux || darwin`；使用中性文件名避免 Go 的 `_darwin.go` 隐式后缀约束），调用 `unix.Setrlimit(unix.RLIMIT_DATA, &unix.Rlimit{Cur: limit, Max: limit})`。
+- [x] 先写资源限制调用顺序与失败 fail-closed 测试，并在非 race Linux 测试中验证正常脚本可在生产硬上限下运行。
+- [x] 新增 `script_worker_memory_default.go`（`!race`，512 MiB hard、较低 soft）和 `script_worker_memory_race.go`（`race`，仅供 ThreadSanitizer 的较高值）。
+- [x] 为 Linux 增加覆盖 `mmap` 的 `RLIMIT_DATA` 设置；为 Darwin 增加 fail-closed 实现，直到存在经验证的硬内存边界。
 - [x] 新增 `script_worker_limit_windows.go`：创建 Job Object，设置 `JOB_OBJECT_LIMIT_PROCESS_MEMORY`，赋值 `ProcessMemoryLimit`，再 `AssignProcessToJobObject(job, windows.CurrentProcess())`；保持 handle 到 worker 返回。
-- [x] 新增其他平台 fail-closed 实现；在共同 worker 初始化中先应用硬上限，再调用 `debug.SetMemoryLimit`。
+- [x] 新增 Darwin 与其他不支持平台 fail-closed 实现；在支持平台的共同 worker 初始化中先应用硬上限，再调用 `debug.SetMemoryLimit`。
 - [x] 执行 Linux 定向测试；运行 Linux、macOS、Windows amd64/arm64 的 `CGO_ENABLED=0 go build ./cmd/server`。
 - [x] 提交：`feat(providerquota): enforce script worker resource limits`。
 
 #### 验证
 
-- [x] `go test ./internal/providerquota -run TestProcessScriptWorkerMemoryLimit -count=1 -v` —— 1 个非 race 生产边界测试通过；动态数组终止 worker 后，父进程成功启动健康 worker。
-- [x] `go test -race ./internal/providerquota -run 'TestProcessScriptWorker$|TestProcessScriptWorkerMemoryLimit' -count=1 -v` —— re-exec 正常路径通过，生产 128 MiB 用例按设计在 race 构建跳过。
+- [x] `go test ./internal/providerquota -run TestProcessScriptWorkerMemoryLimit -count=1 -v` —— 1 个非 race 生产边界测试通过；动态 `ArrayBuffer` 终止 worker 后，父进程成功启动健康 worker。
+- [x] `go test -race ./internal/providerquota -run 'TestProcessScriptWorker$|TestProcessScriptWorkerMemoryLimit' -count=1 -v` —— re-exec 正常路径通过，生产硬边界用例按设计在 race 构建跳过。
 - [x] `CGO_ENABLED=0` 对 Linux/macOS/Windows amd64/arm64 六目标交叉编译 —— 6 个 build 全部成功。
-- [x] 调试记录：`script_worker_limit_linux_darwin.go` 被 Go 文件名规则隐式限制为 Darwin；改用中性文件名 `script_worker_limit_unix.go` + 显式 build tag 后 Linux 测试通过。
+- [x] 调试记录：Linux 与 Darwin 限制实现已拆分，Darwin 不再依赖无效的 `RLIMIT_DATA`，而是 fail closed。
 
 ### 任务 4：接入 ScriptExecutor 与完全兼容回归
 
@@ -375,8 +383,8 @@ Linux/macOS worker 使用 `unix.Setrlimit(RLIMIT_DATA, ...)`；Windows worker �
 #### 验证
 
 - [x] spy runner RED 因 `ScriptExecutor.workerRunner` 缺失而构建失败；接入后 `TestScriptExecutorUsesWorkerRunner` 与 `TestScriptExecutorSkipsExtractorWorkerAfterHTTPError` 共 2 个测试通过。
-- [x] `go test ./internal/providerquota -count=1` —— 290 个测试通过。
-- [x] `go test -race ./internal/providerquota -count=1` —— 289 个测试通过（生产 128 MiB 用例按设计跳过）。
+- [x] `go test ./internal/providerquota -count=1` —— providerquota 测试通过。
+- [x] `go test -race ./internal/providerquota -count=1` —— providerquota race 测试通过（生产硬边界用例按设计跳过）。
 - [x] `rg` 调用检查 —— 生产代码仅 `script_worker.go` 调用 `parseRequestInProcess` / `runExtractorInProcess`；父 `ExecuteScript` 只调用 runner。
 - [x] 调试记录：`GenerateScript` 原使用零值 `&ScriptExecutor{}`，切换后无 runner；改用 `NewScriptExecutor(timeout)`，不增加父进程 goja 回退。
 - [x] race 性能回归：多轮生成测试按生产 30 秒预算提高测试预算；无 jitter scheduler 阈值由 1 秒调整为 2 秒，仍明确小于被测 5 秒 jitter；定向及全包 race 复验通过。
@@ -387,19 +395,20 @@ Linux/macOS worker 使用 `unix.Setrlimit(RLIMIT_DATA, ...)`；Windows worker �
 
 **Objective（目标）** — 用实际动态内存 payload 证明 PR #40 正则不再承担最终边界，并完成全仓及发布目标验证。
 
-**Outcomes（成果）** — parse/extractor OOM 只能导致 worker 固定 `script_error`；同一父测试随后执行正常脚本成功；IPC 和错误不泄密；规格状态与证据完整。
+**Outcomes（成果）** — parse/extractor OOM 只能导致 worker 固定 `script_error`；同一父测试随后执行正常脚本成功；framed IPC 支持现有 2 MiB 响应上限且不发生 JSON body 膨胀；错误不泄密；规格状态与证据完整。
 
 **Evidence（证据）** — 定向 OOM 测试 exit 0；`make test`、vet、前端测试/build 和六平台构建通过。
 
 **Constraints（约束）** — OOM payload 只能在受硬限制 worker 中执行；测试不得直接在父进程构造巨额对象；不向 API 回显 fatal stderr。
 
-**Edge Cases（边界）** — 动态数组、动态 repeat、parse 与 extractor 两阶段、worker fatal stderr、父进程后续查询。
+**Edge Cases（边界）** — 动态 ArrayBuffer、动态 repeat、parse 与 extractor 两阶段、worker fatal stderr、父进程后续查询、2 MiB quoted response body。
 
 **Verification（验证）** — 全部命令 exit 0，工作树只包含本功能文件，不 push。
 
 #### 计划
 
-- [x] 在 `script_worker_client_test.go` 增加能绕过现有字面量正则的动态数组和动态 `"x".repeat(...)` payload；分别覆盖 parse 与 extractor。
+- [x] 在 `script_worker_client_test.go` 增加能绕过现有字面量正则的动态 `ArrayBuffer` 和动态 `"x".repeat(...)` payload；分别覆盖 parse 与 extractor。
+- [x] 增加真实进程 worker 回归，覆盖 2 MiB 响应体与 2 MiB JSON 转义最坏情况响应体。
 - [x] 每个 OOM 用例断言调用在硬超时内返回固定错误；紧接着使用同一父测试进程执行正常脚本并成功；`ExecuteScript` 映射为 `script_error`。
 - [x] 增加 stdout/stderr 超限、worker panic/非零退出、context cancel、硬超时和协议版本异常测试。
 - [x] 运行：

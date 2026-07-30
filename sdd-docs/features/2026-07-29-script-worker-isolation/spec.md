@@ -122,15 +122,23 @@ Only `parse_request` and `run_extractor` are accepted. Invalid versions, operati
 
 - Saved scripts retain the existing 64 KiB limit;
 - upstream responses retain the existing 2 MiB limit;
-- the worker stdin envelope is limited to 3 MiB;
+- worker stdin uses a framed protocol: a JSON header up to 256 KiB, followed by raw response-body bytes up to the existing 2 MiB response limit;
 - worker stdout is limited to 4 MiB, covering a supported result derived from a 2 MiB response plus JSON overhead;
 - worker stderr collection is limited to 64 KiB and never reflected into API errors;
 - goja interrupts remain 200 ms for parse and 500 ms for extraction;
 - the parent adds a hard per-worker deadline including startup time and kills workers on context cancellation;
-- non-race workers have a 128 MiB hard memory limit and a lower Go soft memory limit;
-- race builds use a higher test limit because ThreadSanitizer has fixed shadow/stack allocations; a separate non-race focused test verifies the production 128 MiB boundary.
+- non-race Linux/Windows workers have a 512 MiB hard memory limit and a lower 384 MiB Go soft memory limit;
+- race builds use higher test limits because ThreadSanitizer has fixed shadow/stack allocations; separate non-race focused tests verify the production hard boundary.
 
-Linux/macOS workers use `unix.Setrlimit(RLIMIT_DATA, ...)`. Windows workers use a Job Object with `JOB_OBJECT_LIMIT_PROCESS_MEMORY` and assign the current worker to the Job. `debug.SetMemoryLimit` assists GC pressure control but is not the sole security boundary. A worker fails closed without executing script code if resource-limit initialization fails.
+Linux workers use `unix.Setrlimit(RLIMIT_DATA, ...)` and require Linux 4.7+ for that limit to cover Go `mmap` heap allocations. Windows workers use a Job Object with `JOB_OBJECT_LIMIT_PROCESS_MEMORY` and assign the current worker to the Job. macOS workers fail closed until a verified Darwin hard-memory mechanism exists, because `RLIMIT_DATA` does not bound Go's Darwin `mmap` heap. `debug.SetMemoryLimit` assists GC pressure control but is not the sole security boundary. A worker fails closed without executing script code if resource-limit initialization fails.
+
+### Deployment constraints
+
+These are platform/deployment caveats, not code defects. They are not observable from worker logs: worker stdout is the protocol channel and the parent discards worker stderr content (only its overflow flag is consulted), so the effective limit cannot currently be surfaced from inside the worker.
+
+- Linux `< 4.7`: `Setrlimit(RLIMIT_DATA)` succeeds but does not bound Go's `mmap` heap, so the hard-memory boundary is silently absent; the kernel-version requirement is the operator's responsibility.
+- Low host hard limit: `applyScriptWorkerHardMemoryLimit` clamps the worker's effective limit down to the host hard cap (`current.Max`) and does not log the result. A container whose `ulimit -d` (or a Windows nested-Job commit cap) is below the ~512 MiB production value can silently degrade the worker below the 2 MiB-response compatibility target (the same failure mode observed at 128 MiB during review). Ensure the host hard data/commit limit is at least the production value.
+- macOS: custom quota scripts intentionally fail closed until a verified Darwin hard-memory boundary exists.
 
 ### Error behavior
 
@@ -160,7 +168,7 @@ Linux/macOS workers use `unix.Setrlimit(RLIMIT_DATA, ...)`. Windows workers use 
 | `internal/providerquota/script_worker_protocol.go` | Internal argument, protocol version, operations, envelopes |
 | `internal/providerquota/script_worker.go` | Single-request worker service, input limit, memory-limit initialization, response encoding |
 | `internal/providerquota/script_worker_client.go` | `os.Executable` re-exec, hard deadlines, bounded IPC collection, error mapping |
-| `internal/providerquota/script_worker_limit_*.go` | Linux/macOS rlimit, Windows Job Object, race-build differences |
+| `internal/providerquota/script_worker_limit_*.go` | Linux rlimit, Windows Job Object, Darwin fail-closed behavior, race-build differences |
 | `internal/providerquota/script_worker_test.go` | Protocol, phase behavior, resource-initialization tests |
 | `internal/providerquota/script_worker_client_test.go` | Test-binary re-exec, IPC bounds, crash/timeout/OOM tests |
 | `internal/providerquota/script_test.go` | Full compatibility and ExecuteScript regression |
@@ -186,7 +194,7 @@ Linux/macOS workers use `unix.Setrlimit(RLIMIT_DATA, ...)`. Windows workers use 
 2. the two JavaScript phases run in separate short-lived workers;
 3. the single binary can re-exec workers in production and providerquota test binaries;
 4. workers expose a versioned, bounded, single-request JSON protocol;
-5. Linux, macOS, and Windows all enforce a worker-process memory limit;
+5. Linux and Windows enforce a worker-process memory limit, while macOS fails closed instead of executing without a verified hard boundary;
 6. normal script results, error categories, HTTP-client injection, and secret handling remain compatible;
 7. dynamic OOM payloads bypass PR #40's regex but can only terminate workers, after which the parent test process completes another successful query;
 8. actual verification evidence is written back to both specs.
@@ -217,14 +225,14 @@ Linux/macOS workers use `unix.Setrlimit(RLIMIT_DATA, ...)`. Windows workers use 
 - Empty input, oversized input, unknown version, unknown operation;
 - worker executable lookup/start failure, non-zero exit, signal, panic;
 - empty stdout, stdout overflow, stderr overflow, logs mixed into stdout, truncated response JSON;
-- dynamic array/string OOM in parse;
-- dynamic array/string OOM in extractor;
+- dynamic ArrayBuffer/string OOM in parse;
+- dynamic ArrayBuffer OOM in extractor;
 - infinite loop stopped by goja interrupt or the parent hard timeout;
 - parent context canceled before spawn, during execution, or during output collection;
 - upstream non-JSON string;
-- a valid extractor result near 2 MiB;
+- 2 MiB response bodies, including JSON-escaping worst cases;
 - existing HTTP 307/308 body, same-origin, custom TLS-client behavior;
-- race-detector memory overhead does not use the production 128 MiB acceptance value.
+- race-detector memory overhead does not use the production 512 MiB acceptance value.
 
 ## Task Details
 
@@ -259,7 +267,7 @@ Linux/macOS workers use `unix.Setrlimit(RLIMIT_DATA, ...)`. Windows workers use 
   func RunScriptWorker(in io.Reader, out io.Writer) int
   func runScriptWorker(in io.Reader, out io.Writer, applyLimits func() (func(), error)) int
   ```
-  The real entry applies limits before decoding at most 3 MiB, dispatches one operation, pre-marshals its payload, and encodes one response; protocol unit tests inject no-op/failing limiters.
+  The real entry applies limits before decoding one bounded frame, dispatches one operation, pre-marshals its payload, and encodes one response; protocol unit tests inject no-op/failing limiters.
 - [x] Run focused tests and `go test ./internal/providerquota`.
 - [x] Commit `feat(providerquota): add isolated script worker protocol`.
 
@@ -313,32 +321,32 @@ Linux/macOS workers use `unix.Setrlimit(RLIMIT_DATA, ...)`. Windows workers use 
 
 **Objective** — Apply production hard and Go soft memory limits before goja execution while retaining all six release builds.
 
-**Outcomes** — Linux/macOS use RLIMIT_DATA; Windows uses a self-assigned Job Object; race builds use a dedicated test value; unsupported platforms fail closed.
+**Outcomes** — Linux uses RLIMIT_DATA; Windows uses a self-assigned Job Object; macOS and unsupported platforms fail closed; race builds use a dedicated test value.
 
-**Evidence** — Limit initialization tests pass; a non-race Linux worker runs a normal fixture at 128 MiB; all six cross-builds succeed.
+**Evidence** — Limit initialization tests pass; a non-race Linux worker handles the existing 2 MiB response limit and still terminates dynamic OOM payloads; all six cross-builds succeed.
 
-**Constraints** — 128 MiB is the non-race acceptance value; the soft limit is lower; keep the Job handle until exit; setup failures do not execute scripts.
+**Constraints** — 512 MiB is the non-race Linux/Windows acceptance value; the soft limit is lower; keep the Job handle until exit; setup failures do not execute scripts.
 
 **Edge Cases** — Windows already in an outer Job, Setrlimit platform/permission errors, race shadow memory.
 
-**Verification** — Platform-focused tests, non-race normal/OOM tests, and six cross-builds pass.
+**Verification** — Platform-focused tests, non-race 2 MiB response/OOM tests, and six cross-builds pass.
 
 #### Plan
 
-- [x] First test limit setup order and setup-failure fail-closed behavior; verify a normal non-race Linux fixture under 128 MiB.
-- [x] Add `script_worker_memory_default.go` (`!race`, 128 MiB hard and lower soft) and `script_worker_memory_race.go` (`race`, higher ThreadSanitizer-only values).
-- [x] Add `script_worker_limit_unix.go` (`linux || darwin`; use a neutral filename to avoid Go's implicit `_darwin.go` suffix constraint) calling `unix.Setrlimit(unix.RLIMIT_DATA, &unix.Rlimit{Cur: limit, Max: limit})`.
+- [x] First test limit setup order and setup-failure fail-closed behavior; verify a normal non-race Linux fixture under the production hard limit.
+- [x] Add `script_worker_memory_default.go` (`!race`, 512 MiB hard and lower soft) and `script_worker_memory_race.go` (`race`, higher ThreadSanitizer-only values).
+- [x] Add Linux `RLIMIT_DATA` setup for kernels where that limit covers `mmap`; add Darwin fail-closed setup until a verified hard-memory boundary exists.
 - [x] Add `script_worker_limit_windows.go`: create a Job Object, set `JOB_OBJECT_LIMIT_PROCESS_MEMORY`, set `ProcessMemoryLimit`, and call `AssignProcessToJobObject(job, windows.CurrentProcess())`; retain the handle until return.
-- [x] Add an explicit fail-closed implementation for other platforms; apply the hard limit before `debug.SetMemoryLimit`.
+- [x] Add explicit fail-closed implementations for Darwin and other unsupported platforms; apply the hard limit before `debug.SetMemoryLimit` where supported.
 - [x] Run Linux tests and `CGO_ENABLED=0` builds for Linux/macOS/Windows amd64/arm64.
 - [x] Commit `feat(providerquota): enforce script worker resource limits`.
 
 #### Verification
 
-- [x] `go test ./internal/providerquota -run TestProcessScriptWorkerMemoryLimit -count=1 -v` — one non-race production-boundary test passed; after the dynamic array terminated its worker, the parent started a healthy worker.
-- [x] `go test -race ./internal/providerquota -run 'TestProcessScriptWorker$|TestProcessScriptWorkerMemoryLimit' -count=1 -v` — the re-exec happy path passed and the production 128 MiB case skipped as designed in race builds.
+- [x] `go test ./internal/providerquota -run TestProcessScriptWorkerMemoryLimit -count=1 -v` — one non-race production-boundary test passed; after a dynamic `ArrayBuffer` terminated its worker, the parent started a healthy worker.
+- [x] `go test -race ./internal/providerquota -run 'TestProcessScriptWorker$|TestProcessScriptWorkerMemoryLimit' -count=1 -v` — the re-exec happy path passed and the production hard-boundary case skipped as designed in race builds.
 - [x] `CGO_ENABLED=0` cross-builds for Linux/macOS/Windows amd64/arm64 — all six builds succeeded.
-- [x] Debug record: Go filename rules implicitly constrained `script_worker_limit_linux_darwin.go` to Darwin; a neutral `script_worker_limit_unix.go` filename plus the explicit build tag restored the Linux implementation.
+- [x] Debug record: Linux and Darwin limit implementations are split so Darwin fails closed instead of relying on ineffective `RLIMIT_DATA`.
 
 ### Task 4: ScriptExecutor integration and full compatibility regression
 
@@ -375,8 +383,8 @@ Linux/macOS workers use `unix.Setrlimit(RLIMIT_DATA, ...)`. Windows workers use 
 #### Verification
 
 - [x] Spy-runner RED failed to build because `ScriptExecutor.workerRunner` was absent; after integration, both focused ScriptExecutor worker tests passed.
-- [x] `go test ./internal/providerquota -count=1` — 290 tests passed.
-- [x] `go test -race ./internal/providerquota -count=1` — 289 tests passed (the production 128 MiB case skipped as designed).
+- [x] `go test ./internal/providerquota -count=1` — providerquota tests pass.
+- [x] `go test -race ./internal/providerquota -count=1` — providerquota race tests pass (production hard-boundary cases skip as designed).
 - [x] Source call check — only `script_worker.go` calls `parseRequestInProcess` / `runExtractorInProcess` in production; parent `ExecuteScript` calls only the runner.
 - [x] Debug record: `GenerateScript` constructed a zero-value `&ScriptExecutor{}` and therefore had no runner; it now uses `NewScriptExecutor(timeout)` without an in-process parent fallback.
 - [x] Race performance regression: multi-round generation tests use budgets consistent with the production 30-second budget; the no-jitter scheduler threshold moved from one to two seconds while remaining clearly below the tested five-second jitter; focused and full race reruns passed.
@@ -387,19 +395,20 @@ Linux/macOS workers use `unix.Setrlimit(RLIMIT_DATA, ...)`. Windows workers use 
 
 **Objective** — Use real dynamic-memory payloads to prove PR #40 is no longer the final boundary and complete repository/release validation.
 
-**Outcomes** — Parse/extractor OOM causes a fixed worker `script_error`; the same parent test then executes a normal script; IPC/errors do not leak secrets; both specs contain final evidence.
+**Outcomes** — Parse/extractor OOM causes a fixed worker `script_error`; the same parent test then executes a normal script; framed IPC supports the existing 2 MiB response limit without JSON body expansion; errors do not leak secrets; both specs contain final evidence.
 
 **Evidence** — Focused OOM tests exit 0; `make test`, vet, frontend test/build, and six release builds pass.
 
 **Constraints** — Run OOM payloads only inside hard-limited workers; never construct large objects in the parent; never reflect fatal stderr.
 
-**Edge Cases** — Dynamic arrays, dynamic repeat, both phases, fatal worker stderr, subsequent parent query.
+**Edge Cases** — Dynamic ArrayBuffer, dynamic repeat, both phases, fatal worker stderr, subsequent parent query, 2 MiB quoted response bodies.
 
 **Verification** — Every command exits 0, the worktree contains only feature changes, and nothing is pushed.
 
 #### Plan
 
-- [x] Add dynamic-array and dynamic `"x".repeat(...)` payloads to `script_worker_client_test.go`; cover both parse and extractor.
+- [x] Add dynamic `ArrayBuffer` and dynamic `"x".repeat(...)` payloads to `script_worker_client_test.go`; cover both parse and extractor.
+- [x] Add real process-worker regressions for 2 MiB response bodies and 2 MiB JSON-escaping worst-case response bodies.
 - [x] For every OOM case, assert a fixed bounded error, then run a normal successful script in the same parent process; verify `ExecuteScript` maps it to `script_error`.
 - [x] Add stdout/stderr overflow, panic/non-zero exit, context cancellation, hard-timeout, and protocol-version tests.
 - [x] Run:
