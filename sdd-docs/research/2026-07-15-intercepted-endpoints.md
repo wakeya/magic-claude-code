@@ -1,21 +1,21 @@
 # MCC 代理拦截接口清单
 
-> 梳理时间：2026-07-15（基线 CC 2.1.211）｜ 复审：2026-07-26（CC 2.1.220，见 C 节纪要）｜ 源码位置：`internal/proxy/handler.go`、`hardcoded.go`、`endpoint_policy.go`、`blocked.go`、`frame.go`、`local_catalog.go`、`design_streaming.go`
+> 梳理时间：2026-07-15（基线 CC 2.1.211）｜ 复审：2026-07-26（CC 2.1.220，见 C 节纪要）；2026-07-29 增补 `/api/hello`、`/v1/environment_providers`（见 A8）｜ 源码位置：`internal/proxy/handler.go`、`hardcoded.go`、`endpoint_policy.go`、`blocked.go`、`frame.go`、`local_catalog.go`、`design_streaming.go`
 >
-> **本清单是活文档，面向未来 CC 版本**：mcc 的拦截设计不锁定特定客户端版本——fail-closed 兜底（未知端点 → 404 不泄露）+ 前缀族匹配（新子路径自动归族处理）+ 客户端自身优雅降级，三者共同保证新 CC 版本「默认安全」（详见下文「版本兼容性设计」）。仅在「某新端点的默认 404/405 会劣化体验」时才需显式收录（如 2.1.220 的 frame prepare/upload）。复审新版本的方法见文末「复审新 CC 版本的方法」。
+> **本清单是活文档，面向未来 CC 版本**：mcc 的拦截设计不锁定特定客户端版本——fail-closed 兜底（未知端点 → 404 不泄露）+ 前缀族匹配（新子路径自动归族处理）+ 客户端自身优雅降级，三者共同保证新 CC 版本「默认安全」（详见下文「版本兼容性设计」）。仅在「某新端点的默认 404/405 会劣化体验」时才需显式收录（如 2.1.220 的 frame prepare/upload、`/api/hello`、`/v1/environment_providers`）。复审新版本的方法见文末「复审新 CC 版本的方法」。
 
 ## 数量总览
 
 | 类别 | 处置方式 | 数量 |
 |------|----------|-----:|
-| **本地硬编码拦截** | 本地伪造响应，不转发上游 | **53** |
-| ↳ 精确匹配端点 | 路径完全相等 | 39 |
+| **本地硬编码拦截** | 本地伪造响应，不转发上游 | **55** |
+| ↳ 精确匹配端点 | 路径完全相等 | 41 |
 | ↳ 前缀匹配端点 | `strings.HasPrefix` | 12 |
 | ↳ 模式匹配端点 | 前缀 + 后缀组合 | 2 |
 | **模型推理转发** | 转发到配置的 provider | **2** |
-| **合计顶层端点** | | **55** |
+| **合计顶层端点** | | **57** |
 
-> 另有兜底规则：未命中以上 55 个端点的任意请求 → 本地 `404 mcc_blocked_unknown_endpoint`（模型端点路径的非 POST 方法 → `405`）。
+> 另有兜底规则：未命中以上 57 个端点的任意请求 → 本地 `404 mcc_blocked_unknown_endpoint`（模型端点路径的非 POST 方法 → `405`）。
 
 ---
 
@@ -25,7 +25,7 @@
 
 ```
 请求 → ① 根路径 "/"? ──────────────────────→ 200 "OK"
-     → ② 命中硬编码端点表（53 条）? ────────→ 本地伪造响应
+     → ② 命中硬编码端点表（55 条）? ────────→ 本地伪造响应
      → ③ 模型推理端点（2 条）? ─────────────→ 转发上游 provider
      → ④ 其余一切 ─────────────────────────→ 404 / 405 兜底拦截
 ```
@@ -83,7 +83,7 @@ mcc 的拦截设计**不锁定特定 CC 版本**，三层机制共同保证「�
 
 ## 二、本地硬编码拦截端点（53 个）
 
-### A. 精确匹配端点（39 个，编号 1–37 + 20b/33b 后缀为 CC 2.1.211 新增）
+### A. 精确匹配端点（41 个，编号 1–39 + 20b/33b；20b/33b 为 CC 2.1.211 新增，38–39 为 CC 2.1.220 新增）
 
 #### A1. 模型发现与启动引导（4）
 
@@ -159,7 +159,14 @@ mcc 的拦截设计**不锁定特定 CC 版本**，三层机制共同保证「�
 | 36 | `GET` | `/apple-touch-icon.png` | 404 空 body |
 | 37 | `GET` | `/apple-touch-icon-precomposed.png` | 404 空 body |
 
-> 子节小计：4 + 14 + 3 + 7 + 4 + 3 + 4 = **39** ✓
+#### A8. 连通性探针与云环境（CC 2.1.220 新增，2）
+
+| # | 方法 | 路径 | 作用 |
+|---|------|------|------|
+| 38 | `HEAD`/`GET` | `/api/hello` | 连通性探针：HEAD→200 无 body（启动一次性直连探针 `cgf()`，UA 为裸 `Bun/x.y.z`）；GET→200 `{}`（onboarding 预检 `dvm()` 非 200 则提示退出、隐私/网络分类上报 `pWs()`）。404 会致 onboarding 判定“无法连接 Anthropic” |
+| 39 | `GET` | `/v1/environment_providers` | 云开发环境列表（CC 2.1.220 新功能）：GET→`{"environments":[]}`，CC 据此设 `hasRemoteEnvironment=false`。404 会抛 "Failed to fetch environments"；`POST /v1/environment_providers/cloud/create` 写操作不在此精确匹配内，保持 404 |
+
+> 子节小计：4 + 14 + 3 + 7 + 4 + 3 + 4 + 2 = **41** ✓
 
 ---
 
@@ -240,7 +247,7 @@ mcc 的拦截设计**不锁定特定 CC 版本**，三层机制共同保证「�
 
 | 版本 | 含义 | 涉及端点 |
 |------|------|----------|
-| **v1** | Anthropic 主 API 版本 | `/v1/messages`、`/anthropic/v1/messages`、`/v1/models`、`/v1/me`、`/v1/mcp_servers`、`/v1/messages/count_tokens`、`/v1/metrics`、`/v1/logs`、`/v1/traces`、`/v1/ultrareview/quota`、`/v1/ultrareview/preflight`、`/v1/design/consent`、`/v1/design/mcp`、`/v1/design/grants`、`/v1/session_ingress/session/*`、`/v1/code/sessions/*`、`/v1/code/triggers*` |
+| **v1** | Anthropic 主 API 版本 | `/v1/messages`、`/anthropic/v1/messages`、`/v1/models`、`/v1/me`、`/v1/mcp_servers`、`/v1/messages/count_tokens`、`/v1/metrics`、`/v1/logs`、`/v1/traces`、`/v1/ultrareview/quota`、`/v1/ultrareview/preflight`、`/v1/design/consent`、`/v1/design/mcp`、`/v1/design/grants`、`/v1/session_ingress/session/*`、`/v1/code/sessions/*`、`/v1/code/triggers*`、`/v1/environment_providers` |
 | **v2** | 事件上报新版本 | `/api/event_logging/v2/batch`（同时保留无版本号的 v1 路径 `/api/event_logging/batch`） |
 | **`/anthropic/v1/`** | OAuth base_url 前缀变体 | `/anthropic/v1/messages`（与 `/v1/messages` 等价对待） |
 | **Desktop `1.13576.0`** | Claude Desktop 版本号 | `desktopCurrentRelease` 常量（`hardcoded.go:689`），伪造为最新以阻断自动更新 |
@@ -282,6 +289,8 @@ mcc 的拦截设计**不锁定特定 CC 版本**，三层机制共同保证「�
 6. **归档**：在本清单对应小节补行 + 文末加复审纪要（版本号、新增数、结论）。
 
 > 历次复审：2026-07-26 CC 2.1.220（相对 2.1.211）—— 仅 2 条新增（frame prepare/upload，均族内），无新增未拦截泄露端点；本次把 default-405 收敛为显式 403（feature `2026-07-26-frame-multifile-publish-write-gate`）。
+>
+> 2026-07-29 增补：基于实际 proxy 日志（`docker logs mcc`）与源码路径字面量审计，显式收录 2 个 CC 2.1.220 顶层端点——`/api/hello`（连通性探针，HEAD/GET→200）与 `/v1/environment_providers`（云环境列表，GET→`{"environments":[]}`），均因 404 会劣化体验（onboarding 判定“无法连接”/ 抛 "Failed to fetch environments"）。`/api/oauth/validate`、`/v1/code/github/*`、`/v1/sessions/*` 等其余审计候选项日志 0 命中，暂不收录（见 `sdd-docs/features/2026-07-29-script-worker-isolation/review-notes.md` 五次复审）。
 
 ---
 
@@ -290,7 +299,7 @@ mcc 的拦截设计**不锁定特定 CC 版本**，三层机制共同保证「�
 ```bash
 # 精确匹配端点数（exactMatches 切片内的字面量路径）
 awk '/exactMatches := \[\]string{/,/^	\}/' internal/proxy/hardcoded.go | grep -cE '^\s*"/'
-# → 39
+# → 41
 
 # 前缀匹配端点数（prefixMatches 切片内的字面量路径）
 awk '/prefixMatches := \[\]string{/,/^	\}/' internal/proxy/hardcoded.go | grep -cE '^\s*"/'
@@ -304,5 +313,5 @@ grep -cE '^\s*"/' internal/proxy/endpoint_policy.go
 #   /api/desktop/**/update
 #   /api/organizations/{org}/claude_code/onboarding
 
-# 合计：39 + 12 + 2（本地拦截）+ 2（模型转发）= 55
+# 合计：41 + 12 + 2（本地拦截）+ 2（模型转发）= 57
 ```
