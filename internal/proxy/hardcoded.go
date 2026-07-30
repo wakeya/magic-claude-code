@@ -41,6 +41,8 @@ func isHardcodedEndpoint(path string) bool {
 		"/v1/ultrareview/quota",
 		// CC 2.1.211：preflight 取代 quota，同走 handleEmptyResponse
 		"/v1/ultrareview/preflight",
+		// CC 2.1.220：连通性探针 /api/hello（启动一次性 HEAD + onboarding GET 预检），见 handleHello
+		"/api/hello",
 		"/api/claude_code/team_memory",
 		"/api/auth/trusted_devices",
 		"/api/oauth/file_upload",
@@ -231,6 +233,11 @@ func (h *Handler) handleHardcodedEndpoint(w http.ResponseWriter, r *http.Request
 	// Desktop 更新探测 - HEAD/GET /api/desktop/**/update
 	case strings.HasPrefix(path, "/api/desktop/") && strings.HasSuffix(path, "/update"):
 		h.handleDesktopUpdate(w, r)
+		return true
+
+	// CC 2.1.220 连通性探针 - HEAD/GET /api/hello
+	case path == "/api/hello":
+		h.handleHello(w, r)
 		return true
 
 	// 策略限制 - GET /api/claude_code/policy_limits
@@ -467,6 +474,27 @@ func (h *Handler) handleMe(w http.ResponseWriter) {
 
 // handleEmptyResponse 低优先级端点通用处理，返回空 JSON
 func (h *Handler) handleEmptyResponse(w http.ResponseWriter) {
+	writeJSONResponse(w, http.StatusOK, map[string]any{})
+}
+
+// handleHello 处理 Claude Code 的 /api/hello 连通性探针。
+//
+// CC 2.1.220 有三个调用点，全部只看 HTTP 状态码、从不读响应体：
+//   - 启动一次性直连探针 cgf()：原生 fetch HEAD（UA 为 "Bun/x.y.z"），结果忽略；
+//     仅在未配置代理/cert 且非 Bedrock/Vertex/Foundry/AWS/GCP/Mantle 时发出。
+//   - onboarding 连通性预检 dvm()：axios GET，非 200 则提示并退出。
+//   - 隐私/网络分类上报 pWs()：axios GET，validateStatus 全接受，记录 http_<status>。
+//
+// 因此返回 200 即可：HEAD 不写 body（符合 RFC 7231），GET 写空 JSON 兼容 axios。
+// 其余方法 405，避免成为转发到上游的旁路。
+func (h *Handler) handleHello(w http.ResponseWriter, r *http.Request) {
+	if !methodAllowed(w, r, http.MethodHead, http.MethodGet) {
+		return
+	}
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	writeJSONResponse(w, http.StatusOK, map[string]any{})
 }
 

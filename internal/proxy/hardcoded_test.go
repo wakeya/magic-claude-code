@@ -54,6 +54,8 @@ func TestIsHardcodedEndpoint(t *testing.T) {
 		// CC 2.1.211 新增
 		{"/v1/design/grants", true},
 		{"/v1/ultrareview/preflight", true},
+		// CC 2.1.220 连通性探针
+		{"/api/hello", true},
 		// CC 2.1.211 新增前缀匹配
 		{"/v1/code/triggers", true},
 		{"/v1/code/triggers/t1", true},
@@ -705,7 +707,7 @@ func TestHandleBootstrap_Context1MAppendsBracket1m(t *testing.T) {
 		Providers: []config.Provider{
 			{ID: "a", Name: "GLM", Enabled: true, ExposedModels: []config.ExposedModel{
 				{ID: "GLM-5.2", Label: "GLM-5.2", BackendModel: "glm-5.2", Context1M: true}, // ID=Label
-				{ID: "GLM-4.6", Label: "GLM-4.6", BackendModel: "glm-4.6"},                 // Context1M=false
+				{ID: "GLM-4.6", Label: "GLM-4.6", BackendModel: "glm-4.6"},                  // Context1M=false
 			}},
 		},
 	})
@@ -1115,6 +1117,56 @@ func TestHardcodedDesignGrants(t *testing.T) {
 		}
 		if got := rec.Header().Get("Allow"); got != "GET, POST" {
 			t.Errorf("Allow = %q, want GET, POST", got)
+		}
+	})
+}
+
+// TestHandleHello 验证 CC 2.1.220 连通性探针 /api/hello：
+//   - HEAD 返回 200 且无 body（启动一次性直连探针 cgf() 的请求形态）
+//   - GET  返回 200 空 JSON（onboarding 预检 dvm() / 隐私上报 pWs()）
+//   - POST 返回 405，禁止成为转发旁路
+func TestHandleHello(t *testing.T) {
+	handler := NewHandler(config.NewMockStore(nil), nil)
+
+	t.Run("HEAD returns 200 with empty body", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodHead, "/api/hello", nil)
+		rec := httptest.NewRecorder()
+		if !handler.handleHardcodedEndpoint(rec, req) {
+			t.Fatal("handleHardcodedEndpoint returned false, want handled")
+		}
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		if rec.Body.Len() != 0 {
+			t.Errorf("HEAD body = %q, want empty", rec.Body.String())
+		}
+	})
+
+	t.Run("GET returns 200 with empty JSON", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/hello", nil)
+		rec := httptest.NewRecorder()
+		if !handler.handleHardcodedEndpoint(rec, req) {
+			t.Fatal("handleHardcodedEndpoint returned false, want handled")
+		}
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		if strings.TrimSpace(rec.Body.String()) != "{}" {
+			t.Errorf("GET body = %q, want {}", rec.Body.String())
+		}
+	})
+
+	t.Run("POST returns 405 with Allow HEAD, GET", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/hello", strings.NewReader("{}"))
+		rec := httptest.NewRecorder()
+		if !handler.handleHardcodedEndpoint(rec, req) {
+			t.Fatal("handleHardcodedEndpoint returned false, want handled")
+		}
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("status = %d, want 405", rec.Code)
+		}
+		if got := rec.Header().Get("Allow"); got != "HEAD, GET" {
+			t.Errorf("Allow = %q, want HEAD, GET", got)
 		}
 	})
 }
