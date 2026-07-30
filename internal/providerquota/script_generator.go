@@ -77,7 +77,7 @@ func GenerateScript(ctx context.Context, llm *LLMClient, provider LLMProvider, r
 		return GenerateScriptResult{ErrorCode: "invalid_response", ErrorMessage: "LLM output does not contain a recognizable object literal"}
 	}
 
-	if _, err := executor.parseRequest(ctx, script); err != nil {
+	if _, err := executor.parseRequest(callCtx, script); err != nil {
 		return GenerateScriptResult{
 			ErrorCode:    "script_error",
 			ErrorMessage: "generated script failed to parse request",
@@ -95,7 +95,7 @@ func GenerateScript(ctx context.Context, llm *LLMClient, provider LLMProvider, r
 		if err != nil {
 			break
 		}
-		if _, err := executor.parseRequest(ctx, newScript); err != nil {
+		if _, err := executor.parseRequest(callCtx, newScript); err != nil {
 			break
 		}
 		script = newScript
@@ -125,6 +125,9 @@ func auditScript(requestInfo, script string) []AuditWarning {
 	if strings.Contains(ri, "sec_token") && !strings.Contains(sc, "sec_token") {
 		warnings = append(warnings, AuditWarning{Code: "missing_sec_token", Message: "request info contains sec_token but the script does not include a sec_token field in body/url"})
 	}
+	if containsCookieAndSecToken(ri) && hasSwappedCookieSecTokenPlaceholders(sc) {
+		warnings = append(warnings, AuditWarning{Code: "swapped_cookie_sec_token_placeholders", Message: "Cookie/sec_token placeholders look swapped - Cookie should use {{apiKey}} and sec_token should use {{apiKey2}}"})
+	}
 
 	// 2. response fetch-API misuse (response is already a parsed JSON object)
 	if strings.Contains(sc, "response.body") || strings.Contains(sc, "JSON.parse(response") {
@@ -152,6 +155,24 @@ func auditScript(requestInfo, script string) []AuditWarning {
 	return warnings
 }
 
+func containsCookieAndSecToken(requestInfoLower string) bool {
+	return (strings.Contains(requestInfoLower, "cookie:") || strings.Contains(requestInfoLower, "cookie =")) &&
+		strings.Contains(requestInfoLower, "sec_token")
+}
+
+func hasSwappedCookieSecTokenPlaceholders(script string) bool {
+	compact := strings.ToLower(strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "").Replace(script))
+	cookieUsesAPIKey2 := strings.Contains(compact, `"cookie":"{{apikey2}}"`) ||
+		strings.Contains(compact, `'cookie':'{{apikey2}}'`) ||
+		strings.Contains(compact, `cookie:"{{apikey2}}"`) ||
+		strings.Contains(compact, `cookie:'{{apikey2}}'`)
+	secTokenUsesAPIKey := strings.Contains(compact, `sec_token:"{{apikey}}"`) ||
+		strings.Contains(compact, `sec_token:'{{apikey}}'`) ||
+		strings.Contains(compact, `"sec_token":"{{apikey}}"`) ||
+		strings.Contains(compact, `'sec_token':'{{apikey}}'`)
+	return cookieUsesAPIKey2 && secTokenUsesAPIKey
+}
+
 func systemPromptForFix() string {
 	return systemPromptForScript() + "\n\n" + "You are now in FIX mode. The user previously generated a script, but an automated audit found the issues below. Return a COMPLETE corrected script (same `({request, extractor})` format) that fixes every listed issue. Preserve the working parts of the previous script. Do not regress fields that were correct."
 }
@@ -177,6 +198,7 @@ EXTRACTOR CONTRACT - extractor(response) where response is the upstream response
 SECURITY - the script runs in a sandboxed goja runtime WITHOUT fetch/require/file/env/process. Do not call any global API; only manipulate the response argument and return literals.
 
 PLACEHOLDERS - {{apiKey}} / {{apiKey2}} are the two configured secrets, {{baseUrl}} is the Base URL, {{accessToken}}/{{userId}} for newapi. Use them in headers/body; never hardcode secrets.
+- Dual-secret convention: Cookie -> {{apiKey}}; sec_token -> {{apiKey2}}. For Qianwen/Bailian token-plan requests, put the full Cookie value in request.headers.Cookie as "{{apiKey}}" and the sec_token form field as "{{apiKey2}}". Do not swap them.
 
 Given the user's description and a real response sample, produce the script. The response sample is authoritative for field paths.`
 }

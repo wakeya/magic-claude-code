@@ -28,6 +28,11 @@ var llmLookupIPAddr llmLookupIPAddrFunc = net.DefaultResolver.LookupIPAddr
 
 var errLLMInternalAddress = errors.New("refusing to dial internal address")
 
+var llmCloudMetadataIPs = []net.IP{
+	net.ParseIP("169.254.169.254"),
+	net.ParseIP("100.100.100.200"),
+}
+
 // LLMProvider is the subset of provider card configuration needed for AI
 // script generation. It intentionally lives in providerquota to avoid a
 // package cycle with internal/config.
@@ -39,16 +44,31 @@ type LLMProvider struct {
 
 // LLMClient calls an LLM provider using the card's APIFormat.
 type LLMClient struct {
-	HTTPClient *http.Client
+	HTTPClient                      *http.Client
+	AllowConfiguredInternalEndpoint bool
 }
 
 // NewLLMClient builds an LLMClient with the given timeout.
 func NewLLMClient(timeout time.Duration) *LLMClient {
 	return &LLMClient{HTTPClient: &http.Client{
 		Timeout:       timeout,
-		Transport:     newLLMTransport(llmLookupIPAddr),
+		Transport:     newLLMTransport(llmLookupIPAddr, false),
 		CheckRedirect: disableLLMRedirect,
 	}}
+}
+
+// NewConfiguredLLMClient builds an LLM client for an explicitly saved provider
+// endpoint. Admin-configured provider URLs may legitimately point at loopback
+// or private-network LLM proxies; metadata/link-local targets remain blocked.
+func NewConfiguredLLMClient(timeout time.Duration) *LLMClient {
+	return &LLMClient{
+		HTTPClient: &http.Client{
+			Timeout:       timeout,
+			Transport:     newLLMTransport(llmLookupIPAddr, true),
+			CheckRedirect: disableLLMRedirect,
+		},
+		AllowConfiguredInternalEndpoint: true,
+	}
 }
 
 // LLMCallResult is the text returned by the LLM or a structured error.
@@ -85,7 +105,7 @@ func (c *LLMClient) Call(ctx context.Context, provider LLMProvider, model, syste
 	if err != nil || endpointURL.Hostname() == "" {
 		return LLMCallResult{ErrorCode: "invalid_config", ErrorMessage: "invalid LLM endpoint"}
 	}
-	if isInternalHost(endpointURL.Hostname()) {
+	if isBlockedLLMHost(endpointURL.Hostname(), c.AllowConfiguredInternalEndpoint) {
 		return LLMCallResult{ErrorCode: "invalid_config", ErrorMessage: "LLM endpoint resolves to an internal address"}
 	}
 
@@ -285,7 +305,7 @@ func disableLLMRedirect(_ *http.Request, _ []*http.Request) error {
 	return http.ErrUseLastResponse
 }
 
-func newLLMTransport(lookupIPAddr llmLookupIPAddrFunc) *http.Transport {
+func newLLMTransport(lookupIPAddr llmLookupIPAddrFunc, allowConfiguredInternal bool) *http.Transport {
 	base := http.DefaultTransport.(*http.Transport).Clone()
 	dialer := &net.Dialer{Timeout: llmDialTimeout}
 	base.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -301,7 +321,7 @@ func newLLMTransport(lookupIPAddr llmLookupIPAddrFunc) *http.Transport {
 			return nil, fmt.Errorf("no IP resolved for %s", host)
 		}
 		for _, ip := range ips {
-			if isInternalIP(ip.IP) {
+			if isBlockedLLMIP(ip.IP, allowConfiguredInternal) {
 				return nil, fmt.Errorf("%w: %s", errLLMInternalAddress, ip.IP)
 			}
 		}
@@ -310,28 +330,50 @@ func newLLMTransport(lookupIPAddr llmLookupIPAddrFunc) *http.Transport {
 	return base
 }
 
-func isInternalHost(host string) bool {
+func isBlockedLLMHost(host string, allowConfiguredInternal bool) bool {
 	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
 	if host == "localhost" {
-		return true
+		return !allowConfiguredInternal
 	}
 	if ip := net.ParseIP(host); ip != nil {
-		return isInternalIP(ip)
+		return isBlockedLLMIP(ip, allowConfiguredInternal)
 	}
 	ips, err := llmLookupIPAddr(context.Background(), host)
 	if err != nil {
 		return true
 	}
 	for _, ip := range ips {
-		if isInternalIP(ip.IP) {
+		if isBlockedLLMIP(ip.IP, allowConfiguredInternal) {
 			return true
 		}
 	}
 	return false
 }
 
+func isBlockedLLMIP(ip net.IP, allowConfiguredInternal bool) bool {
+	if isCloudMetadataIP(ip) {
+		return true
+	}
+	if !allowConfiguredInternal {
+		return isInternalIP(ip)
+	}
+	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	return false
+}
+
 func isInternalIP(ip net.IP) bool {
 	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
+}
+
+func isCloudMetadataIP(ip net.IP) bool {
+	for _, metadataIP := range llmCloudMetadataIPs {
+		if ip.Equal(metadataIP) {
+			return true
+		}
+	}
+	return false
 }
 
 func sanitizeLLMError(msg, token string) string {

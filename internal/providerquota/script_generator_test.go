@@ -13,7 +13,7 @@ import (
 
 func TestSystemPromptContainsContract(t *testing.T) {
 	prompt := systemPromptForScript()
-	for _, want := range []string{"extractor", "utilization", "window", "{{apiKey}}", "bodyType", "sandbox", "ALREADY PARSED", "JSON.parse", `DEFAULT to "used"`} {
+	for _, want := range []string{"extractor", "utilization", "window", "{{apiKey}}", "bodyType", "sandbox", "ALREADY PARSED", "JSON.parse", `DEFAULT to "used"`, "Cookie -> {{apiKey}}", "sec_token -> {{apiKey2}}"} {
 		t.Run(want, func(t *testing.T) {
 			if !strings.Contains(prompt, want) {
 				t.Fatalf("system prompt does not contain %q", want)
@@ -219,6 +219,12 @@ func TestAuditScript(t *testing.T) {
 			wantCodes:   []string{"missing_sec_token"},
 		},
 		{
+			name:        "cookie and sec token placeholders swapped",
+			requestInfo: "POST /data/api.json\nCookie: sid=abc\nsec_token=xyz",
+			script:      `({request:{url:"{{baseUrl}}/data/api.json",method:"POST",headers:{"Cookie":"{{apiKey2}}"},body:{sec_token:"{{apiKey}}"}},extractor:function(response){return response;}})`,
+			wantCodes:   []string{"swapped_cookie_sec_token_placeholders"},
+		},
+		{
 			name:        "response body misuse",
 			requestInfo: "",
 			script:      `({request:{url:"{{baseUrl}}/usage",method:"GET",headers:{"Authorization":"Bearer {{apiKey}}"}},extractor:function(response){return response.body.data;}})`,
@@ -313,7 +319,7 @@ func TestScriptGenerator(t *testing.T) {
 			Prompt:         "query balance",
 			ResponseSample: `{"balance":42}`,
 			RequestInfo:    "GET /balance",
-		}, time.Second)
+		}, 5*time.Second)
 		if result.ErrorCode != "" {
 			t.Fatalf("GenerateScript() error = %s: %s", result.ErrorCode, result.ErrorMessage)
 		}
@@ -345,9 +351,41 @@ func TestScriptGenerator(t *testing.T) {
 			Model:          "m",
 			Prompt:         "p",
 			ResponseSample: "{}",
-		}, time.Second)
+		}, 5*time.Second)
 		if result.ErrorCode != "invalid_credentials" {
 			t.Fatalf("ErrorCode = %q, want invalid_credentials", result.ErrorCode)
+		}
+	})
+
+	t.Run("prevalidation uses generation timeout context", func(t *testing.T) {
+		t.Setenv(scriptWorkerTestBehaviorEnv, "sleep")
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"content": []map[string]string{{
+					"type": "text",
+					"text": validScript,
+				}},
+			})
+		}))
+		defer server.Close()
+
+		start := time.Now()
+		result := GenerateScript(context.Background(), newLLMTestClient(server), LLMProvider{
+			APIFormat: "anthropic",
+			APIURL:    testPublicLLMAPIURL,
+			APIToken:  "sk-test",
+		}, GenerateScriptRequest{
+			Model:          "claude-test",
+			Prompt:         "query balance",
+			ResponseSample: `{"balance":42}`,
+			RequestInfo:    "GET /balance",
+		}, 50*time.Millisecond)
+		if elapsed := time.Since(start); elapsed > time.Second {
+			t.Fatalf("GenerateScript() took %v, want validation to honor generation timeout", elapsed)
+		}
+		if result.ErrorCode != "script_error" {
+			t.Fatalf("GenerateScript() ErrorCode = %q, want script_error", result.ErrorCode)
 		}
 	})
 
@@ -365,7 +403,7 @@ func TestScriptGenerator(t *testing.T) {
 			Model:          "m",
 			Prompt:         "p",
 			ResponseSample: "{}",
-		}, time.Second)
+		}, 5*time.Second)
 		if result.ErrorCode != "invalid_response" {
 			t.Fatalf("ErrorCode = %q, want invalid_response", result.ErrorCode)
 		}
@@ -385,7 +423,7 @@ func TestScriptGenerator(t *testing.T) {
 			Model:          "m",
 			Prompt:         "p",
 			ResponseSample: "{}",
-		}, time.Second)
+		}, 5*time.Second)
 		if result.ErrorCode != "script_error" {
 			t.Fatalf("ErrorCode = %q, want script_error; message=%q", result.ErrorCode, result.ErrorMessage)
 		}
@@ -405,7 +443,7 @@ func TestScriptGenerator(t *testing.T) {
 			Model:          "m",
 			Prompt:         "p",
 			ResponseSample: "{}",
-		}, time.Second)
+		}, 5*time.Second)
 		if result.ErrorCode != "script_error" {
 			t.Fatalf("ErrorCode = %q, want script_error; message=%q", result.ErrorCode, result.ErrorMessage)
 		}
@@ -543,7 +581,7 @@ func TestScriptGenerator(t *testing.T) {
 			Prompt:         "p",
 			ResponseSample: `{"balance":42}`,
 			RequestInfo:    "GET /balance\nCookie: sid=abc",
-		}, time.Second)
+		}, 5*time.Second)
 		if result.ErrorCode != "" {
 			t.Fatalf("GenerateScript() error = %s: %s", result.ErrorCode, result.ErrorMessage)
 		}
@@ -576,7 +614,7 @@ func TestScriptGenerator(t *testing.T) {
 			Prompt:         "p",
 			ResponseSample: `{"balance":42}`,
 			RequestInfo:    "GET /balance\nCookie: sid=abc",
-		}, time.Second)
+		}, 5*time.Second)
 		if result.ErrorCode != "" {
 			t.Fatalf("GenerateScript() error = %s: %s", result.ErrorCode, result.ErrorMessage)
 		}
