@@ -43,6 +43,8 @@ func isHardcodedEndpoint(path string) bool {
 		"/v1/ultrareview/preflight",
 		// CC 2.1.220：连通性探针 /api/hello（启动一次性 HEAD + onboarding GET 预检），见 handleHello
 		"/api/hello",
+		// CC 2.1.220：云开发环境列表 GET /v1/environment_providers，见 handleEnvironmentProviders
+		"/v1/environment_providers",
 		"/api/claude_code/team_memory",
 		"/api/auth/trusted_devices",
 		"/api/oauth/file_upload",
@@ -238,6 +240,11 @@ func (h *Handler) handleHardcodedEndpoint(w http.ResponseWriter, r *http.Request
 	// CC 2.1.220 连通性探针 - HEAD/GET /api/hello
 	case path == "/api/hello":
 		h.handleHello(w, r)
+		return true
+
+	// CC 2.1.220 云开发环境列表 - GET /v1/environment_providers
+	case path == "/v1/environment_providers":
+		h.handleEnvironmentProviders(w, r)
 		return true
 
 	// 策略限制 - GET /api/claude_code/policy_limits
@@ -496,6 +503,23 @@ func (h *Handler) handleHello(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSONResponse(w, http.StatusOK, map[string]any{})
+}
+
+// handleEnvironmentProviders 处理 GET /v1/environment_providers。
+//
+// CC 2.1.220 的“云开发环境”列表端点（${BASE_API_URL}/v1/environment_providers）：
+//   - GET 期望 200 且读 o.data.environments（数组），据此设 hasRemoteEnvironment。
+//   - 本地模式无云环境，返回 {"environments": []} 使该功能判定为“无远程环境”，
+//     避免 404 抛 "Failed to fetch environments" 噪音。
+//   - POST /v1/environment_providers/cloud/create 是写操作，不在此精确匹配内，
+//     保持 404（本地模式无法创建云环境）。
+func (h *Handler) handleEnvironmentProviders(w http.ResponseWriter, r *http.Request) {
+	if !methodAllowed(w, r, http.MethodGet) {
+		return
+	}
+	writeJSONResponse(w, http.StatusOK, map[string]any{
+		"environments": []any{},
+	})
 }
 
 // handleCountTokens 处理 token 计数请求，本地估算后直接返回
