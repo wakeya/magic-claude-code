@@ -8,6 +8,7 @@ const here = dirname(fileURLToPath(import.meta.url))
 const dashboardSource = readFileSync(join(here, 'DashboardView.vue'), 'utf8')
 const mainSource = readFileSync(join(here, '..', 'main.ts'), 'utf8')
 const guardSource = readFileSync(join(here, '..', 'router', 'dashboardGuard.ts'), 'utf8')
+const redirectSource = readFileSync(join(here, '..', 'router', 'legacyUsageRedirect.ts'), 'utf8')
 const loginSource = readFileSync(join(here, 'LoginView.vue'), 'utf8')
 
 test('Dashboard lazily loads ProviderUsageModal', () => {
@@ -62,18 +63,35 @@ test('snapshot loads are versioned and direct snapshot refreshes invalidate olde
   assert.match(refresh, /quotaSnapshotLoadVersion \+= 1[\s\S]*?quotaSnapshots\.value = \{ \.\.\.quotaSnapshots\.value, \[providerId\]: data\.snapshot \}/)
 })
 
-test('legacy usage route preserves navigation state and is consumed reactively', () => {
+test('legacy usage route canonicalizes before the status guard and is consumed once on mount', () => {
   assert.doesNotMatch(mainSource, /ProviderUsageView/)
   assert.match(
     mainSource,
-    /path: '\/providers\/:providerId\/usage'[\s\S]*?redirect: \(to\) => \(\{[\s\S]*?path: '\/'[\s\S]*?query: \{ \.\.\.to\.query, tab: 'providers', usage_provider: String\(to\.params\.providerId\) \}[\s\S]*?hash: to\.hash/,
+    /path: '\/providers\/:providerId\/usage'[\s\S]*?name: 'provider-usage'[\s\S]*?redirect: resolveLegacyUsageRedirect/,
   )
+  assert.match(mainSource, /import \{ resolveLegacyUsageRedirect \} from '\.\/router\/legacyUsageRedirect'/)
+  // The resolver stages the provider id and redirects to a clean providers tab
+  // (no usage_provider query) before /api/status is ever requested.
+  assert.match(redirectSource, /stagePendingUsageProvider\(String\(to\.params\.providerId\)\)/)
+  assert.match(
+    redirectSource,
+    /return \{[\s\S]*?path: '\/'[\s\S]*?query: \{ \.\.\.to\.query, tab: 'providers' \}[\s\S]*?hash: to\.hash/,
+  )
+  assert.doesNotMatch(redirectSource, /usage_provider/)
+  // DashboardView consumes the staged provider once and opens the modal without
+  // a query-strip navigation that would re-trigger the status guard.
   assert.match(dashboardSource, /import \{ useRoute, useRouter \} from 'vue-router'/)
-  assert.match(dashboardSource, /watch\([\s\S]*?\(\) => route\.query\.usage_provider[\s\S]*?\{ immediate: true \}/)
-  assert.match(dashboardSource, /Array\.isArray\(value\) \? value\[0\] : value/)
-  assert.match(dashboardSource, /activeTab\.value = 'providers'[\s\S]*?usageTriggerEl\.value = null[\s\S]*?usageProviderId\.value = providerId/)
-  assert.match(dashboardSource, /const \{ usage_provider: _usageProvider, \.\.\.query \} = route\.query/)
-  assert.match(dashboardSource, /router\.replace\(\{ path: route\.path, query, hash: route\.hash \}\)/)
+  assert.match(
+    dashboardSource,
+    /import \{ consumePendingUsageProvider \} from '@\/stores\/pendingUsageProvider'/,
+  )
+  assert.match(
+    dashboardSource,
+    /const legacyUsageProvider = consumePendingUsageProvider\(\)[\s\S]*?activeTab\.value = 'providers'[\s\S]*?usageTriggerEl\.value = null[\s\S]*?usageProviderId\.value = legacyUsageProvider/,
+  )
+  assert.doesNotMatch(dashboardSource, /route\.query\.usage_provider/)
+  assert.doesNotMatch(dashboardSource, /usage_provider: _usageProvider/)
+  assert.doesNotMatch(dashboardSource, /router\.replace\(\{ path: route\.path, query, hash: route\.hash \}\)/)
   const mounted = dashboardSource.match(/onMounted\(async \(\) => \{[\s\S]*?\n}\)/)?.[0] || ''
   assert.doesNotMatch(mounted, /usage_provider/)
 })

@@ -933,6 +933,7 @@ import {
   consumeDashboardInitialStatus,
   dashboardInitialStatusNavigationMetaKey,
 } from '@/stores/dashboardInitialStatus'
+import { consumePendingUsageProvider } from '@/stores/pendingUsageProvider'
 import { useLazySessionData } from '@/composables/useLazySessionData'
 
 const ProviderUsageModal = defineAsyncComponent(() => import('@/components/ProviderUsageModal.vue'))
@@ -1146,19 +1147,16 @@ const showUsageClearModal = ref(false)
 const resetUsageSessionSync = ref(false)
 const usageClearLoading = ref(false)
 
-watch(
-  () => route.query.usage_provider,
-  (value) => {
-    const providerId = Array.isArray(value) ? value[0] : value
-    if (typeof providerId !== 'string' || !providerId) return
-    activeTab.value = 'providers'
-    usageTriggerEl.value = null
-    usageProviderId.value = providerId
-    const { usage_provider: _usageProvider, ...query } = route.query
-    void router.replace({ path: route.path, query, hash: route.hash })
-  },
-  { immediate: true },
-)
+// The legacy /providers/:id/usage route is canonicalized to /?tab=providers by
+// the router BEFORE the status guard runs, so the provider id arrives here via
+// the pending store (consumed once) instead of a usage_provider query that had
+// to be stripped with a second navigation (which re-requested /api/status).
+const legacyUsageProvider = consumePendingUsageProvider()
+if (legacyUsageProvider) {
+  activeTab.value = 'providers'
+  usageTriggerEl.value = null
+  usageProviderId.value = legacyUsageProvider
+}
 
 function openAddModal() {
   editingProvider.value = null
