@@ -235,6 +235,61 @@ ORDER BY bucket ASC`
 	return query, args
 }
 
+// buildAggregateQuery 基于 buildScopedCTE 生成 Providers/Models 的维度分组聚合查询。
+// groupColumn/nameColumn 是内部分组键与名称列（Providers 为 r.provider_id/r.provider_name，
+// Models 为 r.mapped_model/r.mapped_model），非用户输入，直接拼接而非参数化。
+//
+// 内层子查询只投影分组键、“首行”维度字段与聚合所需的 0/1 判定列和 token/duration 列
+// （不物化完整 RequestRow，不读取/解析 URL，R5）；ROW_NUMBER() 按与旧 queryRows 一致的
+// “scoped.started_at DESC, scoped.request_id DESC” 字符串序在组内编号（同整秒内 'Z' 整秒行
+// 排在 '.5Z' 小数秒行之前），外层 GROUP BY 用 MAX(CASE WHEN rn=1 ...) 取编号 1 行的
+// provider_id/provider_name/mapped_model/name，复现旧算法“首个遇到的行（最新行）决定维度
+// 字段”语义。COUNT/SUM 将总请求、失败请求、token 总和、有 usage 计数与 duration 总和下推到
+// SQLite；duration 用 COALESCE(r.duration_ms, 0) 复现旧实现“NULL 不计入”的求和语义。
+// UsageCoverage 与 AverageDurationMS 由调用方用 withUsage/durationTotal 与 total 在 Go 中
+// 相除，保留旧实现的浮点语义与 total 为 0 时两者为 0 的空值行为。
+//
+// 排序为 total_requests DESC, group_key ASC：主排序键与旧算法一致，分组同数由分组键升序
+// 决胜（旧不稳定排序下同数组顺序未定义，R1 明确允许将其确定化）。筛选、去重、口径由
+// buildScopedCTE 统一下推，逐字段兼容由 legacyOracleAggregate 差分测试保证。
+func buildAggregateQuery(filter Filter, groupColumn, nameColumn string) (string, []any) {
+	cte, args := buildScopedCTE(filter)
+	query := cte + `
+SELECT
+	group_key,
+	MAX(CASE WHEN rn = 1 THEN provider_id END),
+	MAX(CASE WHEN rn = 1 THEN provider_name END),
+	MAX(CASE WHEN rn = 1 THEN mapped_model END),
+	MAX(CASE WHEN rn = 1 THEN name_value END),
+	COUNT(*) AS total_requests,
+	COALESCE(SUM(is_failed), 0),
+	COALESCE(SUM(token_total), 0),
+	COALESCE(SUM(has_usage), 0),
+	COALESCE(SUM(duration_ms), 0)
+FROM (
+	SELECT
+		` + groupColumn + ` AS group_key,
+		` + nameColumn + ` AS name_value,
+		r.provider_id AS provider_id,
+		r.provider_name AS provider_name,
+		r.mapped_model AS mapped_model,
+		ROW_NUMBER() OVER (
+			PARTITION BY ` + groupColumn + `
+			ORDER BY scoped.started_at DESC, scoped.request_id DESC
+		) AS rn,
+		CASE WHEN ` + scopedIsFailedPredicate + ` THEN 1 ELSE 0 END AS is_failed,
+		CASE WHEN ` + scopedHasUsagePredicate + ` THEN 1 ELSE 0 END AS has_usage,
+		CASE WHEN ` + scopedHasUsagePredicate + ` THEN ` + scopedTokenSumExpr + ` ELSE 0 END AS token_total,
+		COALESCE(r.duration_ms, 0) AS duration_ms
+	FROM scoped
+	JOIN usage_requests r ON r.id = scoped.request_id
+	JOIN usage_tokens t ON t.request_id = r.id
+)
+GROUP BY group_key
+ORDER BY total_requests DESC, group_key ASC`
+	return query, args
+}
+
 // buildScopedCTE returns the common filtered/candidate/scoped datasets used by
 // SQL-backed usage reads. Callers append their own projection, aggregation,
 // ordering, and pagination and pass the returned arguments unchanged.

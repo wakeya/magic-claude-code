@@ -415,43 +415,61 @@ func (s *Store) Requests(filter Filter) (RequestPage, error) {
 	return RequestPage{Rows: pageRows, Total: total, Page: page, PageSize: pageSize}, nil
 }
 
+// Providers 在 scoped SQL 数据集上用 GROUP BY provider_id 聚合计算供应商维度统计，不再
+// 物化全宽请求行或在 Go 中逐行汇总。分组键、筛选、去重、口径由 buildScopedCTE 统一下推；
+// “首行”维度字段（provider_name/mapped_model）由 ROW_NUMBER 按旧 queryRows 的字符串序
+// （started_at DESC, id DESC）选取，失败分类/token 总和/覆盖率/平均耗时的数值与空值语义、
+// 主排序键（TotalRequests 降序）与旧算法逐字段兼容，分组同数由 provider_id 升序决胜
+// （旧不稳定排序下未定义，R1 允许确定化）；由 legacyOracleAggregate 差分测试保证。
 func (s *Store) Providers(filter Filter) ([]AggregateRow, error) {
-	return s.aggregate(filter, func(row RequestRow) (key, name string) {
-		return row.ProviderID, row.ProviderName
-	})
+	return s.aggregateSQL(filter, "r.provider_id", "r.provider_name")
 }
 
+// Models 在 scoped SQL 数据集上用 GROUP BY mapped_model 聚合计算模型维度统计，语义与
+// Providers 对称：分组键为 mapped_model，“首行”提供 provider_id/provider_name 维度字段。
 func (s *Store) Models(filter Filter) ([]AggregateRow, error) {
-	return s.aggregate(filter, func(row RequestRow) (key, name string) {
-		return row.MappedModel, row.MappedModel
-	})
+	return s.aggregateSQL(filter, "r.mapped_model", "r.mapped_model")
 }
 
-func (s *Store) aggregate(filter Filter, keyFn func(RequestRow) (string, string)) ([]AggregateRow, error) {
-	rows, err := s.queryRows(filter, false)
+// aggregateSQL 执行 buildAggregateQuery 生成的维度分组聚合查询并扫描为 []AggregateRow。
+// UsageCoverage 与 AverageDurationMS 在 Go 中用 withUsage/durationTotal 除以 total 计算，
+// 保留旧实现的浮点语义；total 为 0 时两者保持零值。空数据集返回非 nil 空切片（JSON []）。
+func (s *Store) aggregateSQL(filter Filter, groupColumn, nameColumn string) ([]AggregateRow, error) {
+	query, args := buildAggregateQuery(filter, groupColumn, nameColumn)
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
-	groups := make(map[string]*aggregateAccumulator)
-	for _, row := range rows {
-		key, name := keyFn(row)
-		group := groups[key]
-		if group == nil {
-			group = &aggregateAccumulator{row: AggregateRow{Name: name, ProviderID: row.ProviderID, ProviderName: row.ProviderName, MappedModel: row.MappedModel}}
-			groups[key] = group
+	defer rows.Close()
+
+	out := make([]AggregateRow, 0)
+	for rows.Next() {
+		var row AggregateRow
+		var groupKey string
+		var withUsage, durationTotal int64
+		if err := rows.Scan(
+			&groupKey,
+			&row.ProviderID,
+			&row.ProviderName,
+			&row.MappedModel,
+			&row.Name,
+			&row.TotalRequests,
+			&row.FailedRequests,
+			&row.TokenConsumptionTotal,
+			&withUsage,
+			&durationTotal,
+		); err != nil {
+			return nil, err
 		}
-		group.add(row)
-	}
-	out := make([]AggregateRow, 0, len(groups))
-	for _, group := range groups {
-		row := group.row
 		if row.TotalRequests > 0 {
-			row.UsageCoverage = float64(group.withUsage) / float64(row.TotalRequests)
-			row.AverageDurationMS = float64(group.durationTotal) / float64(row.TotalRequests)
+			row.UsageCoverage = float64(withUsage) / float64(row.TotalRequests)
+			row.AverageDurationMS = float64(durationTotal) / float64(row.TotalRequests)
 		}
 		out = append(out, row)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].TotalRequests > out[j].TotalRequests })
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
@@ -592,7 +610,8 @@ type rowScanner interface {
 
 // requestRowSelectColumns 列出 scanRequestRow 读取的 usage_requests + usage_tokens
 // 字段，顺序与 scanRequestRow 的 Scan 一致。Requests 分页查询复用它，避免投影漂移；
-// 聚合路径（queryRows）保留各自的窄/宽投影，本任务不改。
+// Coverage 仍经 queryRows 使用完整宽投影（本任务不改）。Summary/Trends/Providers/Models
+// 均已改为 scoped SQL 专用窄投影聚合，不再经 queryRows。
 const requestRowSelectColumns = `r.id, r.started_at, r.ended_at, r.duration_ms, r.upstream_response_header_ms, r.time_to_first_byte_ms,
 	r.status_code, r.error_type, r.error_message, r.method, r.request_path, r.backend_url,
 	r.provider_id, r.provider_name, r.provider_api_url, r.source_app, r.source_entrypoint, r.user_agent,
@@ -775,26 +794,6 @@ func isSessionLogRow(row RequestRow) bool {
 type coverageAccumulator struct {
 	row           CoverageRow
 	parseStatuses map[string]int64
-}
-
-type aggregateAccumulator struct {
-	row           AggregateRow
-	withUsage     int64
-	durationTotal int64
-}
-
-func (a *aggregateAccumulator) add(row RequestRow) {
-	a.row.TotalRequests++
-	if isFailed(row.RequestRecord) {
-		a.row.FailedRequests++
-	}
-	if hasUsage(row.TokenRecord) {
-		a.withUsage++
-		a.row.TokenConsumptionTotal += tokenTotal(row.TokenRecord)
-	}
-	if row.DurationMS != nil {
-		a.durationTotal += *row.DurationMS
-	}
 }
 
 func (a *coverageAccumulator) add(row RequestRow) {

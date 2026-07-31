@@ -142,6 +142,75 @@ func legacyOracleTrends(t *testing.T, db *sql.DB, filter Filter) []TrendPoint {
 	return out
 }
 
+// legacyOracleAggregate is intentionally test-only and independent from the SQL
+// GROUP BY path. It reproduces the former "scoped full-row scan, then Go
+// per-row map aggregation" Providers/Models algorithm field-for-field on top of
+// legacyOracleQueryRows: grouping key, first-encountered-row dimension fields
+// (legacyOracleQueryRows preserves the old started_at DESC, id DESC string
+// ordering, so the first row of each group is the same row the old aggregate
+// saw first), hasUsage/isFailed gating, token sums, NULL-duration skipping,
+// usage coverage and average duration. The only deliberate refinement is a
+// deterministic group_key ascending tie-breaker behind the documented primary
+// sort key (TotalRequests descending); the old unstable sort left equal-count
+// groups in undefined map order, which R1 explicitly permits making
+// deterministic. It serves as the differential oracle for the SQL GROUP BY
+// rewrite of the Providers and Models dimensions.
+func legacyOracleAggregate(t *testing.T, db *sql.DB, filter Filter, keyFn func(RequestRow) (string, string)) []AggregateRow {
+	t.Helper()
+	rows := legacyOracleQueryRows(t, db, filter)
+
+	type aggregateGroup struct {
+		row           AggregateRow
+		withUsage     int64
+		durationTotal int64
+	}
+	groups := make(map[string]*aggregateGroup)
+	for _, row := range rows {
+		key, name := keyFn(row)
+		group := groups[key]
+		if group == nil {
+			group = &aggregateGroup{row: AggregateRow{Name: name, ProviderID: row.ProviderID, ProviderName: row.ProviderName, MappedModel: row.MappedModel}}
+			groups[key] = group
+		}
+		group.row.TotalRequests++
+		if isFailed(row.RequestRecord) {
+			group.row.FailedRequests++
+		}
+		if hasUsage(row.TokenRecord) {
+			group.withUsage++
+			group.row.TokenConsumptionTotal += tokenTotal(row.TokenRecord)
+		}
+		if row.DurationMS != nil {
+			group.durationTotal += *row.DurationMS
+		}
+	}
+
+	type keyedRow struct {
+		row AggregateRow
+		key string
+	}
+	keyed := make([]keyedRow, 0, len(groups))
+	for key, group := range groups {
+		row := group.row
+		if row.TotalRequests > 0 {
+			row.UsageCoverage = float64(group.withUsage) / float64(row.TotalRequests)
+			row.AverageDurationMS = float64(group.durationTotal) / float64(row.TotalRequests)
+		}
+		keyed = append(keyed, keyedRow{row: row, key: key})
+	}
+	sort.Slice(keyed, func(i, j int) bool {
+		if keyed[i].row.TotalRequests != keyed[j].row.TotalRequests {
+			return keyed[i].row.TotalRequests > keyed[j].row.TotalRequests
+		}
+		return keyed[i].key < keyed[j].key
+	})
+	out := make([]AggregateRow, 0, len(keyed))
+	for _, kr := range keyed {
+		out = append(out, kr.row)
+	}
+	return out
+}
+
 func legacyOracleFilterWhere(filter Filter) (string, []any) {
 	var parts []string
 	var args []any

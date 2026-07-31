@@ -917,3 +917,504 @@ func seedTrendsDifferentialFixture(t *testing.T, store *Store) {
 		t.Fatalf("make timestamp invalid: %v", err)
 	}
 }
+
+// aggregateProviderKey/aggregateModelKey 复用与 Store.Providers/Store.Models 相同的
+// 分组键/名称选取规则，供 test-only 旧算法判定器 legacyOracleAggregate 使用。
+func aggregateProviderKey(row RequestRow) (string, string) { return row.ProviderID, row.ProviderName }
+func aggregateModelKey(row RequestRow) (string, string)    { return row.MappedModel, row.MappedModel }
+
+// TestBuildAggregateQueryAggregatesScopedDataset 验证 Providers/Models 维度聚合的查询
+// 结构：GROUP BY 下推到 scoped SQL（COUNT/SUM），ROW_NUMBER 按旧 queryRows 的字符串序
+// （started_at DESC, request_id DESC）选取“首行”维度字段，窄字段投影（不读取/解析 URL
+// 等宽行字段），筛选参数化且顺序稳定。该测试在 SQL 聚合实现缺失时因 buildAggregateQuery
+// 未定义而失败。
+func TestBuildAggregateQueryAggregatesScopedDataset(t *testing.T) {
+	from := time.Date(2026, 7, 30, 1, 2, 3, 4, time.UTC)
+	to := from.Add(time.Hour)
+	filter := Filter{
+		From:             from,
+		To:               to,
+		SourceApp:        "source-sentinel",
+		SourceEntrypoint: "entrypoint-sentinel",
+		ProviderID:       "provider-sentinel",
+		Model:            "model-sentinel",
+		Status:           "success",
+		UsageSource:      "usage-source-sentinel",
+		UsageParseStatus: "parse-status-sentinel",
+		RequestPath:      "path-sentinel",
+		Query:            "query-sentinel_%",
+		StatsScope:       StatsScopeRaw,
+	}
+
+	query, args := buildAggregateQuery(filter, "r.provider_id", "r.provider_name")
+
+	wantArgs := []any{
+		formatTime(from),
+		formatTime(to),
+		"source-sentinel",
+		"entrypoint-sentinel",
+		"provider-sentinel",
+		"model-sentinel",
+		"path-sentinel",
+		"usage-source-sentinel",
+		"parse-status-sentinel",
+		"%query-sentinel_%%",
+		"%query-sentinel_%%",
+		"%query-sentinel_%%",
+		"%query-sentinel_%%",
+		"%query-sentinel_%%",
+		StatsScopeRaw,
+	}
+	if !reflect.DeepEqual(args, wantArgs) {
+		t.Fatalf("args = %#v, want %#v", args, wantArgs)
+	}
+	if strings.Count(query, "?") != len(args) {
+		t.Fatalf("placeholder count = %d, args = %d", strings.Count(query, "?"), len(args))
+	}
+
+	for _, want := range []string{
+		"COUNT(*)", "SUM(", "filtered AS", "candidate AS", "scoped AS",
+		"GROUP BY group_key", "ROW_NUMBER()", "PARTITION BY r.provider_id",
+		"ORDER BY scoped.started_at DESC, scoped.request_id DESC",
+		"ORDER BY total_requests DESC, group_key ASC",
+		"r.error_type", "r.status_code", "t.input_tokens", "r.duration_ms",
+		"r.provider_id", "r.provider_name", "r.mapped_model",
+	} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("aggregate query missing %q:\n%s", want, query)
+		}
+	}
+	// 窄字段投影：聚合不读取宽行字段，尤其不读取/解析 URL（R5）。
+	// 注：r.provider_name/r.provider_api_url/r.error_message 由共享搜索筛选 WHERE
+	// 引用（与 Summary/Trends 一致），不属于投影字段，不在禁止列表。
+	for _, banned := range []string{"r.user_agent", "r.backend_url", "r.method", "r.request_bytes", "r.response_bytes", "r.ended_at", "r.stream", "r.original_model"} {
+		if strings.Contains(query, banned) {
+			t.Fatalf("aggregate query must not project wide field %q:\n%s", banned, query)
+		}
+	}
+	for _, value := range []string{
+		"source-sentinel",
+		"entrypoint-sentinel",
+		"provider-sentinel",
+		"model-sentinel",
+		"path-sentinel",
+		"usage-source-sentinel",
+		"parse-status-sentinel",
+		"query-sentinel",
+	} {
+		if strings.Contains(query, value) {
+			t.Fatalf("aggregate query contains unparameterized filter value %q", value)
+		}
+	}
+
+	// Models 维度复用同一 builder，仅分组键/名称列不同。
+	modelsQuery, modelsArgs := buildAggregateQuery(filter, "r.mapped_model", "r.mapped_model")
+	if !reflect.DeepEqual(modelsArgs, wantArgs) {
+		t.Fatalf("models args = %#v, want %#v", modelsArgs, wantArgs)
+	}
+	if !strings.Contains(modelsQuery, "PARTITION BY r.mapped_model") {
+		t.Fatalf("models query missing mapped_model partition:\n%s", modelsQuery)
+	}
+}
+
+// TestProvidersSQLAggregationMatchesLegacyOracle 在覆盖筛选/口径/去重回退/失败分类/
+// 有无 usage/空 duration/分组同数/首行选取的差分数据上，逐字段比较 SQL GROUP BY
+// Providers 与 test-only 旧算法判定器（legacyOracleAggregate），保证下推 SQLite 后
+// 公开结果与旧实现完全一致。
+func TestProvidersSQLAggregationMatchesLegacyOracle(t *testing.T) {
+	store := newTestStore(t)
+	seedAggregateDifferentialFixture(t, store)
+
+	for _, filterCase := range aggregateDifferentialFilters() {
+		for _, scope := range aggregateDifferentialScopes() {
+			filter := filterCase.filter
+			filter.StatsScope = scope
+			t.Run(filterCase.name+"/"+scopeName(scope), func(t *testing.T) {
+				got, err := store.Providers(filter)
+				if err != nil {
+					t.Fatalf("Providers() error = %v", err)
+				}
+				want := legacyOracleAggregate(t, store.db, filter, aggregateProviderKey)
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("Providers() = %#v, want legacy %#v", got, want)
+				}
+			})
+		}
+	}
+}
+
+// TestModelsSQLAggregationMatchesLegacyOracle 在与 Providers 相同的差分矩阵上逐字段
+// 比较 SQL GROUP BY Models 与旧算法判定器，重点覆盖“同模型跨供应商首行选取”与分组同数
+// 的确定性排序。
+func TestModelsSQLAggregationMatchesLegacyOracle(t *testing.T) {
+	store := newTestStore(t)
+	seedAggregateDifferentialFixture(t, store)
+
+	for _, filterCase := range aggregateDifferentialFilters() {
+		for _, scope := range aggregateDifferentialScopes() {
+			filter := filterCase.filter
+			filter.StatsScope = scope
+			t.Run(filterCase.name+"/"+scopeName(scope), func(t *testing.T) {
+				got, err := store.Models(filter)
+				if err != nil {
+					t.Fatalf("Models() error = %v", err)
+				}
+				want := legacyOracleAggregate(t, store.db, filter, aggregateModelKey)
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("Models() = %#v, want legacy %#v", got, want)
+				}
+			})
+		}
+	}
+}
+
+func aggregateDifferentialScopes() []string {
+	return []string{
+		"",
+		StatsScopeEffective,
+		StatsScopeProvider,
+		StatsScopeSessionLog,
+		StatsScopeRaw,
+	}
+}
+
+func aggregateDifferentialFilters() []struct {
+	name   string
+	filter Filter
+} {
+	return []struct {
+		name   string
+		filter Filter
+	}{
+		{name: "all"},
+		{name: "from narrows first row", filter: Filter{From: time.Date(2026, 7, 30, 12, 30, 0, 0, time.UTC)}},
+		{name: "from falls back to next candidate", filter: Filter{From: time.Date(2026, 7, 30, 12, 0, 10, 0, time.UTC)}},
+		{name: "from drops session dup", filter: Filter{From: time.Date(2026, 7, 30, 12, 1, 0, 0, time.UTC)}},
+		{name: "to narrows first row", filter: Filter{To: time.Date(2026, 7, 30, 12, 30, 0, 0, time.UTC)}},
+		{name: "source app claude", filter: Filter{SourceApp: "claude_code"}},
+		{name: "source app other", filter: Filter{SourceApp: "other-app"}},
+		{name: "provider a", filter: Filter{ProviderID: "provider-a"}},
+		{name: "provider b", filter: Filter{ProviderID: "provider-b"}},
+		{name: "model x", filter: Filter{Model: "model-x"}},
+		{name: "model y", filter: Filter{Model: "model-y"}},
+		{name: "path messages", filter: Filter{RequestPath: "/v1/messages"}},
+		{name: "path complete", filter: Filter{RequestPath: "/v1/complete"}},
+		{name: "status success", filter: Filter{Status: "success"}},
+		{name: "status error", filter: Filter{Status: "error"}},
+		{name: "usage provider", filter: Filter{UsageSource: UsageSourceProvider}},
+		{name: "usage session", filter: Filter{UsageSource: UsageSourceSessionLog}},
+		{name: "parse ok", filter: Filter{UsageParseStatus: ParseStatusOK}},
+		{name: "parse missing", filter: Filter{UsageParseStatus: ParseStatusMissing}},
+		{name: "search needle", filter: Filter{Query: "Aggregate Needle"}},
+		{name: "zero results", filter: Filter{Query: "does-not-exist"}},
+	}
+}
+
+// TestAggregateSQLAggregationAnchorsExpectedGroups 固定一组手工推导的期望分组，锚定
+// provider 口径下的绝对正确性（首行维度字段、失败分类、token 总和、覆盖率、平均耗时、
+// 主排序键 + 分组键决胜），防止差分双方（SQL 与判定器）同向偏离旧契约。
+func TestAggregateSQLAggregationAnchorsExpectedGroups(t *testing.T) {
+	store := newTestStore(t)
+	seedAggregateDifferentialFixture(t, store)
+
+	providers, err := store.Providers(Filter{StatsScope: StatsScopeProvider})
+	if err != nil {
+		t.Fatalf("Providers() error = %v", err)
+	}
+	// provider 口径含 R1-R5 与 R8（备选候选，常规 provider 行）；R6/R7 会话行排除。
+	// provider-b={R3,R4,R8}=3 请求，provider-a={R1,R2}=2，provider-c={R5}=1。
+	wantProviders := []AggregateRow{
+		{Name: "Aggregate Needle Provider", ProviderID: "provider-b", ProviderName: "Aggregate Needle Provider", MappedModel: "model-x", TotalRequests: 3, FailedRequests: 1, TokenConsumptionTotal: 27, UsageCoverage: 2.0 / 3.0, AverageDurationMS: 370.0 / 3.0},
+		{Name: "Provider A2", ProviderID: "provider-a", ProviderName: "Provider A2", MappedModel: "model-y", TotalRequests: 2, FailedRequests: 0, TokenConsumptionTotal: 23, UsageCoverage: 1, AverageDurationMS: 50},
+		{Name: "Provider C", ProviderID: "provider-c", ProviderName: "Provider C", MappedModel: "model-z", TotalRequests: 1, FailedRequests: 1, TokenConsumptionTotal: 1, UsageCoverage: 1, AverageDurationMS: 300},
+	}
+	if !reflect.DeepEqual(providers, wantProviders) {
+		t.Fatalf("Providers() = %#v, want %#v", providers, wantProviders)
+	}
+
+	models, err := store.Models(Filter{StatsScope: StatsScopeProvider})
+	if err != nil {
+		t.Fatalf("Models() error = %v", err)
+	}
+	// model-x={R1,R3,R4,R8}=4 请求（首行 R4：provider-b/Aggregate Needle Provider），
+	// model-y={R2}=1，model-z={R5}=1（同数按 mapped_model 升序）。
+	wantModels := []AggregateRow{
+		{Name: "model-x", ProviderID: "provider-b", ProviderName: "Aggregate Needle Provider", MappedModel: "model-x", TotalRequests: 4, FailedRequests: 1, TokenConsumptionTotal: 47, UsageCoverage: 3.0 / 4.0, AverageDurationMS: 470.0 / 4.0},
+		{Name: "model-y", ProviderID: "provider-a", ProviderName: "Provider A2", MappedModel: "model-y", TotalRequests: 1, FailedRequests: 0, TokenConsumptionTotal: 3, UsageCoverage: 1, AverageDurationMS: 0},
+		{Name: "model-z", ProviderID: "provider-c", ProviderName: "Provider C", MappedModel: "model-z", TotalRequests: 1, FailedRequests: 1, TokenConsumptionTotal: 1, UsageCoverage: 1, AverageDurationMS: 300},
+	}
+	if !reflect.DeepEqual(models, wantModels) {
+		t.Fatalf("Models() = %#v, want %#v", models, wantModels)
+	}
+}
+
+// TestAggregateSQLAggregationEmptyDataset 确保零结果时返回非 nil 空切片（JSON [] 而非
+// null），与旧实现 make([]AggregateRow, 0, ...) 的形状一致。
+func TestAggregateSQLAggregationEmptyDataset(t *testing.T) {
+	store := newTestStore(t)
+	seedAggregateDifferentialFixture(t, store)
+
+	filter := Filter{Query: "does-not-exist", StatsScope: StatsScopeEffective}
+	providers, err := store.Providers(filter)
+	if err != nil {
+		t.Fatalf("Providers() error = %v", err)
+	}
+	if providers == nil {
+		t.Fatalf("Providers() = nil, want non-nil empty slice")
+	}
+	if len(providers) != 0 {
+		t.Fatalf("Providers() = %#v, want empty", providers)
+	}
+	models, err := store.Models(filter)
+	if err != nil {
+		t.Fatalf("Models() error = %v", err)
+	}
+	if models == nil {
+		t.Fatalf("Models() = nil, want non-nil empty slice")
+	}
+	if len(models) != 0 {
+		t.Fatalf("Models() = %#v, want empty", models)
+	}
+}
+
+// TestAggregateSQLAggregationFirstRowFractionalStringSort 锚定“首行”选取使用与旧
+// queryRows 一致的字符串序（started_at DESC, id DESC）：同整秒内 'Z' 结尾的整秒行排在
+// '.5Z' 小数秒行之前（字符串 '.' < 'Z'），因此首行是整秒行而非时间上更晚的小数秒行。
+// 该边界在旧实现中即按字符串序定义，SQL 必须逐字段复现。
+func TestAggregateSQLAggregationFirstRowFractionalStringSort(t *testing.T) {
+	store := newTestStore(t)
+	whole := testUsageRequest("agg-frac-whole", time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC))
+	whole.ProviderID = "prov-frac"
+	whole.ProviderName = "Whole Name"
+	whole.MappedModel = "frac-model"
+	if err := store.Record(whole, dedupeToken("agg-frac-whole", UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 1})); err != nil {
+		t.Fatalf("Record(whole) error = %v", err)
+	}
+	frac := testUsageRequest("agg-frac-frac", time.Date(2026, 7, 30, 12, 0, 0, 500000000, time.UTC))
+	frac.ProviderID = "prov-frac"
+	frac.ProviderName = "Fraction Name"
+	frac.MappedModel = "frac-model"
+	if err := store.Record(frac, dedupeToken("agg-frac-frac", UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 2})); err != nil {
+		t.Fatalf("Record(frac) error = %v", err)
+	}
+
+	filter := Filter{StatsScope: StatsScopeRaw}
+	providers, err := store.Providers(filter)
+	if err != nil {
+		t.Fatalf("Providers() error = %v", err)
+	}
+	want := legacyOracleAggregate(t, store.db, filter, aggregateProviderKey)
+	if !reflect.DeepEqual(providers, want) {
+		t.Fatalf("Providers() = %#v, want legacy %#v", providers, want)
+	}
+	if len(providers) != 1 || providers[0].ProviderName != "Whole Name" || providers[0].Name != "Whole Name" {
+		t.Fatalf("Providers() first row = %#v, want whole-second row (string order)", providers)
+	}
+}
+
+// TestAggregateSQLAggregationInvalidHistoricalTimeFirstRow 确保含非法历史时间戳的行
+// 参与“首行”选取时 SQL 与旧算法一致：首行按原始 started_at 字符串序（started_at DESC,
+// id DESC）选取，而非按 parseTime 容错后的时间值。'invalid-history-time' 首字母 'i' 大于
+// 数字，字符串序排在 '2026-...' 之后，因此 DESC 下非法行是“首行”，维度字段取其
+// provider_name；计数与 token 总和仍包含非法行。该边界逐字段由 legacyOracleAggregate 差分。
+func TestAggregateSQLAggregationInvalidHistoricalTimeFirstRow(t *testing.T) {
+	filter := Filter{StatsScope: StatsScopeEffective}
+
+	store := newTestStore(t)
+	valid := dedupeProviderRequest("agg-valid", time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC), "model", "model")
+	valid.ProviderID = "prov-time"
+	valid.ProviderName = "Valid Name"
+	if err := store.Record(valid, dedupeToken(valid.ID, UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 4, OutputTokens: 6})); err != nil {
+		t.Fatalf("Record(valid) error = %v", err)
+	}
+	invalid := dedupeProviderRequest("agg-invalid", time.Date(2026, 7, 30, 13, 0, 0, 0, time.UTC), "model", "model")
+	invalid.ProviderID = "prov-time"
+	invalid.ProviderName = "Invalid Name"
+	if err := store.Record(invalid, dedupeToken(invalid.ID, UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 1, OutputTokens: 2})); err != nil {
+		t.Fatalf("Record(invalid) error = %v", err)
+	}
+	if _, err := store.db.Exec(`UPDATE usage_requests SET started_at = 'invalid-history-time' WHERE id = ?`, invalid.ID); err != nil {
+		t.Fatalf("make timestamp invalid: %v", err)
+	}
+
+	providers, err := store.Providers(filter)
+	if err != nil {
+		t.Fatalf("Providers() error = %v", err)
+	}
+	want := legacyOracleAggregate(t, store.db, filter, aggregateProviderKey)
+	if !reflect.DeepEqual(providers, want) {
+		t.Fatalf("Providers() = %#v, want legacy %#v", providers, want)
+	}
+	if len(providers) != 1 {
+		t.Fatalf("Providers() = %#v, want single group", providers)
+	}
+	if providers[0].TotalRequests != 2 || providers[0].TokenConsumptionTotal != 13 {
+		t.Fatalf("Providers() totals = %#v, want 2 requests / 13 tokens", providers[0])
+	}
+	// 字符串序下 'invalid-history-time' > '2026-...'，DESC 首行为非法时间戳行。
+	if providers[0].ProviderName != "Invalid Name" || providers[0].Name != "Invalid Name" {
+		t.Fatalf("Providers() first row = %#v, want invalid-timestamp row (string order)", providers[0])
+	}
+}
+
+// TestAggregateSQLAggregationEmptyGroupKeysAndDimensionValues 差分验证空分组键与空维度
+// 值的兼容性：空 provider_id 在 Providers 中归为同一组（JSON 因 omitempty 省略 provider_id），
+// 空 mapped_model 在 Models 中归为同一组（name 为空串，无 omitempty 故保留）；“首行”选取、
+// 计数/token/覆盖率/平均耗时与旧算法逐字段一致（含同时间戳按 id DESC 决胜）。
+func TestAggregateSQLAggregationEmptyGroupKeysAndDimensionValues(t *testing.T) {
+	store := newTestStore(t)
+	base := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	record := func(id string, started time.Time, provID, provName, model string, in int64) {
+		t.Helper()
+		req := testUsageRequest(id, started)
+		req.ProviderID = provID
+		req.ProviderName = provName
+		req.MappedModel = model
+		req.OriginalModel = model
+		if err := store.Record(req, dedupeToken(id, UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: in})); err != nil {
+			t.Fatalf("Record(%q) error = %v", id, err)
+		}
+	}
+	// 空 provider_id 两行（同时间戳，按 id DESC 决胜首行）。
+	record("agg-empty-prov-1", base, "", "", "model-a", 1)
+	record("agg-empty-prov-2", base, "", "Empty Prov Name", "model-a", 2)
+	// 空 mapped_model 一行（provider-z）。
+	record("agg-empty-model", base.Add(time.Hour), "prov-z", "Prov Z", "", 3)
+	// 空 provider_name 但非空 provider_id（维度字段为空）。
+	record("agg-empty-name", base.Add(2*time.Hour), "prov-noname", "", "model-b", 4)
+
+	scopes := aggregateDifferentialScopes()
+	for _, scope := range scopes {
+		filter := Filter{StatsScope: scope}
+		t.Run("providers/"+scopeName(scope), func(t *testing.T) {
+			got, err := store.Providers(filter)
+			if err != nil {
+				t.Fatalf("Providers() error = %v", err)
+			}
+			want := legacyOracleAggregate(t, store.db, filter, aggregateProviderKey)
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("Providers() = %#v, want legacy %#v", got, want)
+			}
+		})
+		t.Run("models/"+scopeName(scope), func(t *testing.T) {
+			got, err := store.Models(filter)
+			if err != nil {
+				t.Fatalf("Models() error = %v", err)
+			}
+			want := legacyOracleAggregate(t, store.db, filter, aggregateModelKey)
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("Models() = %#v, want legacy %#v", got, want)
+			}
+		})
+	}
+
+	// 锚定空 provider_id 组的首行与 JSON 形状：provider_id 省略（omitempty），首行取
+	// id DESC 较大的 agg-empty-prov-2（provider_name="Empty Prov Name"）。
+	providers, err := store.Providers(Filter{StatsScope: StatsScopeProvider})
+	if err != nil {
+		t.Fatalf("Providers() error = %v", err)
+	}
+	var emptyGroup *AggregateRow
+	for i := range providers {
+		if providers[i].ProviderID == "" {
+			emptyGroup = &providers[i]
+		}
+	}
+	if emptyGroup == nil {
+		t.Fatalf("Providers() missing empty-provider_id group: %#v", providers)
+	}
+	if emptyGroup.ProviderName != "Empty Prov Name" || emptyGroup.Name != "Empty Prov Name" || emptyGroup.TotalRequests != 2 || emptyGroup.TokenConsumptionTotal != 3 {
+		t.Fatalf("empty provider_id group = %#v, want first-row Empty Prov Name / 2 req / 3 tokens", emptyGroup)
+	}
+}
+
+// seedAggregateDifferentialFixture 构造覆盖首行选取/分组同数/失败分类/有无 usage/
+// 空 duration/去重与候选回退/独立会话行/跨供应商同模型的差分数据。provider 口径共
+// 6 行（agg-session-dup 被去重排除），与 TestAggregateSQLAggregationAnchorsExpectedGroups
+// 的手工期望值绑定。
+func seedAggregateDifferentialFixture(t *testing.T, store *Store) {
+	t.Helper()
+	base := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	record := func(req RequestRecord, tok TokenRecord) {
+		t.Helper()
+		if err := store.Record(req, tok); err != nil {
+			t.Fatalf("Record(%q) error = %v", req.ID, err)
+		}
+	}
+	duration := func(req RequestRecord, ms int64) RequestRecord {
+		req.DurationMS = &ms
+		return req
+	}
+
+	// R1: provider-a / model-x，有 usage，duration 100，成功（基准时间）。
+	r1 := duration(testUsageRequest("agg-a1", base), 100)
+	r1.ProviderID = "provider-a"
+	r1.ProviderName = "Provider A"
+	r1.MappedModel = "model-x"
+	r1.OriginalModel = "model-x"
+	record(r1, dedupeToken("agg-a1", UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 10, OutputTokens: 5, CacheCreationInputTokens: 3, CacheReadInputTokens: 2}))
+
+	// R2: provider-a / model-y，有 usage，duration NULL，成功（晚 1 小时，provider-a 首行）。
+	r2 := testUsageRequest("agg-a2", base.Add(time.Hour))
+	r2.ProviderID = "provider-a"
+	r2.ProviderName = "Provider A2"
+	r2.MappedModel = "model-y"
+	r2.OriginalModel = "model-y"
+	r2.DurationMS = nil
+	record(r2, dedupeToken("agg-a2", UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 3}))
+
+	// R3: provider-b / model-x，无 usage，duration 50，失败（500 + error_type）。
+	r3 := duration(testUsageRequest("agg-b1", base.Add(30*time.Minute)), 50)
+	r3.ProviderID = "provider-b"
+	r3.ProviderName = "Provider B"
+	r3.MappedModel = "model-x"
+	r3.OriginalModel = "model-x"
+	statusFailed := 500
+	r3.StatusCode = &statusFailed
+	r3.ErrorType = ErrorHTTP
+	record(r3, dedupeToken("agg-b1", UsageSourceNone, ParseStatusSkippedNon2xx, UsageValues{}))
+
+	// R4: provider-b / model-x，有 usage，duration 200，成功（晚 2 小时，provider-b 与
+	// model-x 首行；兼作搜索 needle 与 /v1/complete 路径维度）。
+	r4 := duration(testUsageRequest("agg-b2", base.Add(2*time.Hour)), 200)
+	r4.ProviderID = "provider-b"
+	r4.ProviderName = "Aggregate Needle Provider"
+	r4.ProviderAPIURL = "https://provider-b.example.com"
+	r4.MappedModel = "model-x"
+	r4.OriginalModel = "model-x"
+	r4.RequestPath = "/v1/complete"
+	record(r4, dedupeToken("agg-b2", UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 7}))
+
+	// R5: provider-c / model-z，有 usage，duration 300，失败（NULL 状态码），other-app 维度。
+	r5 := duration(testUsageRequest("agg-c1", base.Add(3*time.Hour)), 300)
+	r5.ProviderID = "provider-c"
+	r5.ProviderName = "Provider C"
+	r5.MappedModel = "model-z"
+	r5.OriginalModel = "model-z"
+	r5.StatusCode = nil
+	r5.SourceApp = "other-app"
+	r5.SourceEntrypoint = "other-entry"
+	record(r5, dedupeToken("agg-c1", UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 1}))
+
+	// R6: 与 R1 重复的会话行（effective 排除；筛选掉 R1 后无候选而保留）。
+	record(dedupeSessionRequest("agg-session-dup", base.Add(30*time.Second), "model-x", "model-x"), dedupeToken(
+		"agg-session-dup", UsageSourceSessionLog, ParseStatusOK,
+		UsageValues{InputTokens: 10, OutputTokens: 5, CacheCreationInputTokens: 3, CacheReadInputTokens: 2},
+	))
+
+	// R7: 独立会话行（无候选，_session 维度）。
+	record(dedupeSessionRequest("agg-session-unique", base.Add(4*time.Hour), "session-model", "session-model"), dedupeToken(
+		"agg-session-unique", UsageSourceSessionLog, ParseStatusOK,
+		UsageValues{InputTokens: 9, OutputTokens: 1},
+	))
+
+	// R8: R6 的备选候选（provider-b / model-x，晚 5 分钟，token 与 R1/R6 相同）。
+	// 无筛选时 R1（最早）胜出；筛选掉 R1 后 R8 成为 R6 的候选（R3 验证筛选先于候选选择）。
+	r8 := duration(testUsageRequest("agg-b-fallback", base.Add(5*time.Minute)), 120)
+	r8.ProviderID = "provider-b"
+	r8.ProviderName = "Provider B Fallback"
+	r8.ProviderAPIURL = "https://provider-b.example.com"
+	r8.MappedModel = "model-x"
+	r8.OriginalModel = "model-x"
+	record(r8, dedupeToken("agg-b-fallback", UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 10, OutputTokens: 5, CacheCreationInputTokens: 3, CacheReadInputTokens: 2}))
+}
