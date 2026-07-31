@@ -2,6 +2,7 @@ package usage
 
 import (
 	"database/sql"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -87,6 +88,58 @@ func legacyOracleSummary(t *testing.T, db *sql.DB, filter Filter) Summary {
 		summary.UsageCoverage = float64(withUsage) / float64(summary.ProviderRequestsTotal)
 	}
 	return summary
+}
+
+// legacyOracleTrends is intentionally test-only and independent from the SQL
+// bucket path. It reproduces the former "scoped full-row scan, then Go local
+// date bucket aggregation" Trends algorithm field-for-field (timezone bucket
+// label, hasUsage/isFailed gating, token sums, usage coverage, missing buckets,
+// bucket string ascending order) on top of legacyOracleQueryRows, serving as
+// the differential oracle for the SQL GROUP BY time-bucket rewrite.
+func legacyOracleTrends(t *testing.T, db *sql.DB, filter Filter) []TrendPoint {
+	t.Helper()
+	rows := legacyOracleQueryRows(t, db, filter)
+	loc, err := filterLocation(filter)
+	if err != nil {
+		t.Fatalf("legacy oracle location: %v", err)
+	}
+
+	type trendAccum struct {
+		point     TrendPoint
+		withUsage int64
+	}
+	groups := make(map[string]*trendAccum)
+	for _, row := range rows {
+		bucket := row.StartedAt.In(loc).Format("2006-01-02")
+		group := groups[bucket]
+		if group == nil {
+			group = &trendAccum{}
+			groups[bucket] = group
+		}
+		group.point.ProviderRequestsTotal++
+		if isFailed(row.RequestRecord) {
+			group.point.FailedRequests++
+		}
+		if hasUsage(row.TokenRecord) {
+			group.withUsage++
+			group.point.InputTokens += row.InputTokens
+			group.point.OutputTokens += row.OutputTokens
+			group.point.CacheCreationInputTokens += row.CacheCreationInputTokens
+			group.point.CacheReadInputTokens += row.CacheReadInputTokens
+			group.point.TokenConsumptionTotal += tokenTotal(row.TokenRecord)
+		}
+	}
+	out := make([]TrendPoint, 0, len(groups))
+	for bucket, group := range groups {
+		point := group.point
+		point.Bucket = bucket
+		if point.ProviderRequestsTotal > 0 {
+			point.UsageCoverage = float64(group.withUsage) / float64(point.ProviderRequestsTotal)
+		}
+		out = append(out, point)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Bucket < out[j].Bucket })
+	return out
 }
 
 func legacyOracleFilterWhere(filter Filter) (string, []any) {

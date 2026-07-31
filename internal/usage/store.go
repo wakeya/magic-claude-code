@@ -295,36 +295,74 @@ func (s *Store) Summary(filter Filter) (Summary, error) {
 	return summary, nil
 }
 
+// Trends 在 scoped SQL 数据集上用 GROUP BY 本地日期桶聚合计算每日趋势，不再物化
+// 全宽请求行或在 Go 中逐行分桶。桶边界先查询数据集有效时间戳的最小/最大整秒，再
+// 在 Go 中推导时区偏移区间（含夏令时切换，精确到秒），最后渲染为 SQL CASE：非法
+// 时间戳落入 Go 零值时间的本地日期标签，有效时间戳按偏移区间用
+// strftime('%Y-%m-%d', epoch+offset, 'unixepoch') 换算，与旧算法
+// StartedAt.In(loc).Format("2006-01-02") 逐秒等价。筛选、去重、口径由 buildScopedCTE
+// 统一下推；缺失桶不补零、桶字符串升序、UsageCoverage 由 withUsage/total 在 Go 中
+// 相除、空数据集返回非 nil 空切片（JSON []）的数值与空值语义与旧算法逐字段兼容
+// （由 legacyOracleTrends 差分测试保证）。
 func (s *Store) Trends(filter Filter) ([]TrendPoint, error) {
-	rows, err := s.queryRows(filter, false)
-	if err != nil {
-		return nil, err
-	}
 	loc, err := filterLocation(filter)
 	if err != nil {
 		return nil, err
 	}
-	groups := make(map[string]*trendAccumulator)
-	for _, row := range rows {
-		bucket := row.StartedAt.In(loc).Format("2006-01-02")
-		group := groups[bucket]
-		if group == nil {
-			group = &trendAccumulator{}
-			groups[bucket] = group
-		}
-		group.add(row)
+	rangeQuery, rangeArgs := buildTrendsRangeQuery(filter)
+	var minEpoch, maxEpoch sql.NullInt64
+	if err := s.db.QueryRow(rangeQuery, rangeArgs...).Scan(&minEpoch, &maxEpoch); err != nil {
+		return nil, err
 	}
-	out := make([]TrendPoint, 0, len(groups))
-	for bucket, group := range groups {
-		point := group.point
-		point.Bucket = bucket
+	intervals := trendsZoneIntervals(loc, minEpoch, maxEpoch)
+	query, args := buildTrendsQuery(filter, loc, intervals)
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]TrendPoint, 0)
+	for rows.Next() {
+		var point TrendPoint
+		var withUsage int64
+		if err := rows.Scan(
+			&point.Bucket,
+			&point.ProviderRequestsTotal,
+			&withUsage,
+			&point.InputTokens,
+			&point.OutputTokens,
+			&point.CacheCreationInputTokens,
+			&point.CacheReadInputTokens,
+			&point.TokenConsumptionTotal,
+			&point.FailedRequests,
+		); err != nil {
+			return nil, err
+		}
 		if point.ProviderRequestsTotal > 0 {
-			point.UsageCoverage = float64(group.withUsage) / float64(point.ProviderRequestsTotal)
+			point.UsageCoverage = float64(withUsage) / float64(point.ProviderRequestsTotal)
 		}
 		out = append(out, point)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Bucket < out[j].Bucket })
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// trendsZoneIntervals 由区间查询结果推导时区偏移区间：数据集没有有效时间戳时返回
+// 单一占位区间（桶表达式只会命中非法时间戳分支，偏移仅用于防御两次查询之间新插
+// 入的行）；上界延伸到当前时间，使区间覆盖两次查询之间可能出现的最新行。
+func trendsZoneIntervals(loc *time.Location, minEpoch, maxEpoch sql.NullInt64) []scopedZoneInterval {
+	if !minEpoch.Valid || !maxEpoch.Valid {
+		_, offset := time.Now().In(loc).Zone()
+		return []scopedZoneInterval{{offset: offset}}
+	}
+	upper := maxEpoch.Int64
+	if now := time.Now().Unix(); now > upper {
+		upper = now
+	}
+	return scopedZoneOffsetIntervals(loc, minEpoch.Int64, upper)
 }
 
 func (s *Store) Requests(filter Filter) (RequestPage, error) {
@@ -737,26 +775,6 @@ func isSessionLogRow(row RequestRow) bool {
 type coverageAccumulator struct {
 	row           CoverageRow
 	parseStatuses map[string]int64
-}
-
-type trendAccumulator struct {
-	point     TrendPoint
-	withUsage int64
-}
-
-func (a *trendAccumulator) add(row RequestRow) {
-	a.point.ProviderRequestsTotal++
-	if isFailed(row.RequestRecord) {
-		a.point.FailedRequests++
-	}
-	if hasUsage(row.TokenRecord) {
-		a.withUsage++
-		a.point.InputTokens += row.InputTokens
-		a.point.OutputTokens += row.OutputTokens
-		a.point.CacheCreationInputTokens += row.CacheCreationInputTokens
-		a.point.CacheReadInputTokens += row.CacheReadInputTokens
-		a.point.TokenConsumptionTotal += tokenTotal(row.TokenRecord)
-	}
 }
 
 type aggregateAccumulator struct {
