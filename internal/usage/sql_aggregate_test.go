@@ -1418,3 +1418,351 @@ func seedAggregateDifferentialFixture(t *testing.T, store *Store) {
 	r8.OriginalModel = "model-x"
 	record(r8, dedupeToken("agg-b-fallback", UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 10, OutputTokens: 5, CacheCreationInputTokens: 3, CacheReadInputTokens: 2}))
 }
+
+// TestBuildCoverageQueriesAggregateScopedDataset 验证 Coverage 的查询对结构：分组聚合
+// 下推到 scoped SQL（COUNT/SUM + 每状态计数），窄字段投影（只读取分组键、失败/有无
+// usage 判定与 last_seen 所需字段，不读取 token 计数/duration/UA/URL 等宽行字段），
+// 筛选全部参数化且顺序稳定。该测试在 SQL 聚合实现缺失时因 buildCoverageQueries 未定义
+// 而失败。
+func TestBuildCoverageQueriesAggregateScopedDataset(t *testing.T) {
+	from := time.Date(2026, 7, 30, 1, 2, 3, 4, time.UTC)
+	to := from.Add(time.Hour)
+	filter := Filter{
+		From:             from,
+		To:               to,
+		SourceApp:        "source-sentinel",
+		SourceEntrypoint: "entrypoint-sentinel",
+		ProviderID:       "provider-sentinel",
+		Model:            "model-sentinel",
+		Status:           "success",
+		UsageSource:      "usage-source-sentinel",
+		UsageParseStatus: "parse-status-sentinel",
+		RequestPath:      "path-sentinel",
+		Query:            "query-sentinel_%",
+		StatsScope:       StatsScopeRaw,
+	}
+
+	summarySQL, statusSQL, args := buildCoverageQueries(filter)
+
+	wantArgs := []any{
+		formatTime(from),
+		formatTime(to),
+		"source-sentinel",
+		"entrypoint-sentinel",
+		"provider-sentinel",
+		"model-sentinel",
+		"path-sentinel",
+		"usage-source-sentinel",
+		"parse-status-sentinel",
+		"%query-sentinel_%%",
+		"%query-sentinel_%%",
+		"%query-sentinel_%%",
+		"%query-sentinel_%%",
+		"%query-sentinel_%%",
+		StatsScopeRaw,
+	}
+	if !reflect.DeepEqual(args, wantArgs) {
+		t.Fatalf("args = %#v, want %#v", args, wantArgs)
+	}
+	for name, query := range map[string]string{"summary": summarySQL, "status": statusSQL} {
+		if strings.Count(query, "?") != len(args) {
+			t.Fatalf("%s placeholder count = %d, args = %d", name, strings.Count(query, "?"), len(args))
+		}
+		for _, want := range []string{"filtered AS", "candidate AS", "scoped AS", "COUNT(*)"} {
+			if !strings.Contains(query, want) {
+				t.Fatalf("%s coverage query missing %q:\n%s", name, want, query)
+			}
+		}
+		// 窄字段投影：聚合不读取宽行字段（R4），尤其不读取 backend_url/user_agent/
+		// token 计数/duration。注：r.provider_name/r.provider_api_url/r.error_message/
+		// r.request_path 由共享筛选 WHERE 引用（与其他聚合一致），不属于投影字段。
+		for _, banned := range []string{
+			"r.user_agent", "r.backend_url", "r.method", "r.request_bytes", "r.response_bytes",
+			"r.ended_at", "r.stream", "r.original_model", "r.duration_ms",
+			"r.upstream_response_header_ms", "r.time_to_first_byte_ms",
+			"t.input_tokens", "t.output_tokens", "t.cache_creation_input_tokens", "t.cache_read_input_tokens",
+			"t.usage_parse_error",
+		} {
+			if strings.Contains(query, banned) {
+				t.Fatalf("%s coverage query must not project wide field %q:\n%s", name, banned, query)
+			}
+		}
+		for _, value := range []string{
+			"source-sentinel",
+			"entrypoint-sentinel",
+			"provider-sentinel",
+			"model-sentinel",
+			"path-sentinel",
+			"usage-source-sentinel",
+			"parse-status-sentinel",
+			"query-sentinel",
+		} {
+			if strings.Contains(query, value) {
+				t.Fatalf("%s coverage query contains unparameterized filter value %q", name, value)
+			}
+		}
+	}
+
+	for _, want := range []string{
+		"SUM(",
+		"GROUP BY provider_name, provider_api_url, mapped_model, source_entrypoint",
+		"ROW_NUMBER()",
+		"PARTITION BY r.provider_name, r.provider_api_url, r.mapped_model, r.source_entrypoint",
+		"r.error_type", "r.status_code", "r.started_at",
+		"t.usage_source", "t.usage_parse_status",
+		"MAX(CASE WHEN rn = 1 THEN started_at END)",
+		"MAX(CASE WHEN rn = 1 THEN request_id END)",
+	} {
+		if !strings.Contains(summarySQL, want) {
+			t.Fatalf("coverage summary query missing %q:\n%s", want, summarySQL)
+		}
+	}
+	for _, want := range []string{
+		"GROUP BY r.provider_name, r.provider_api_url, r.mapped_model, r.source_entrypoint, t.usage_parse_status",
+		"NOT (" + scopedHasUsagePredicate + ")",
+	} {
+		if !strings.Contains(statusSQL, want) {
+			t.Fatalf("coverage status query missing %q:\n%s", want, statusSQL)
+		}
+	}
+}
+
+// TestCoverageSQLAggregationMatchesLegacyOracle 在覆盖分组键/脏 URL 脱敏合并/失败分类/
+// 有无 usage/解析状态同数决胜/去重与候选回退/会话行/非法时间戳/小数秒/排序同时间的
+// 差分数据上，逐字段比较 SQL GROUP BY Coverage 与 test-only 旧算法判定器
+// （legacyOracleCoverage），保证下推 SQLite 后公开结果与旧实现完全一致。
+func TestCoverageSQLAggregationMatchesLegacyOracle(t *testing.T) {
+	store := newTestStore(t)
+	seedCoverageDifferentialFixture(t, store)
+
+	for _, filterCase := range coverageDifferentialFilters() {
+		for _, scope := range aggregateDifferentialScopes() {
+			filter := filterCase.filter
+			filter.StatsScope = scope
+			t.Run(filterCase.name+"/"+scopeName(scope), func(t *testing.T) {
+				got, err := store.Coverage(filter)
+				if err != nil {
+					t.Fatalf("Coverage() error = %v", err)
+				}
+				want := legacyOracleCoverage(t, store.db, filter)
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("Coverage() = %#v, want legacy %#v", got, want)
+				}
+			})
+		}
+	}
+}
+
+// TestCoverageSQLAggregationAnchorsExpectedGroups 固定一组手工推导的期望分组，锚定
+// effective 口径下的绝对正确性（分组键、脏 URL 脱敏合并、成功/失败分类、有无 usage
+// 计数、top 解析状态同数决胜、覆盖率、last_seen 小数秒与非法时间戳零值、主排序键
+// LastSeenAt 降序 + 同时间分组键升序决胜），防止差分双方（SQL 与判定器）同向偏离旧契约。
+func TestCoverageSQLAggregationAnchorsExpectedGroups(t *testing.T) {
+	store := newTestStore(t)
+	base := seedCoverageDifferentialFixture(t, store)
+
+	lastSeen := func(offset time.Duration) time.Time {
+		return parseTime(formatTime(base.Add(offset)))
+	}
+	want := []CoverageRow{
+		{ProviderName: "Tie Alpha", MappedModel: "model-tie", SourceEntrypoint: "entry-tie", TotalRequests: 1, SuccessRequests: 1, WithUsageRequests: 1, UsageCoverage: 1, LastSeenAt: lastSeen(8 * time.Hour)},
+		{ProviderName: "Tie Beta", MappedModel: "model-tie", SourceEntrypoint: "entry-tie", TotalRequests: 1, SuccessRequests: 1, WithUsageRequests: 1, UsageCoverage: 1, LastSeenAt: lastSeen(8 * time.Hour)},
+		{ProviderName: "Coverage Needle Frac", ProviderAPIURL: "https://frac.example.com", MappedModel: "model-frac", SourceEntrypoint: "cli", TotalRequests: 2, SuccessRequests: 2, WithUsageRequests: 2, UsageCoverage: 1, LastSeenAt: lastSeen(7*time.Hour + 500*time.Millisecond)},
+		{ProviderName: "Session Log", MappedModel: "model-s", SourceEntrypoint: "session_log", TotalRequests: 1, SuccessRequests: 1, WithUsageRequests: 1, UsageCoverage: 1, LastSeenAt: lastSeen(5 * time.Hour)},
+		{ProviderName: "Coverage Beta", ProviderAPIURL: "https://beta.example.com/v1?token=[REDACTED]", MappedModel: "model-beta", SourceEntrypoint: "cli", TotalRequests: 3, SuccessRequests: 2, ErrorRequests: 1, WithUsageRequests: 1, WithoutUsageRequests: 2, UsageCoverage: 1.0 / 3.0, TopUsageParseStatus: "network_error", LastSeenAt: lastSeen(4 * time.Hour)},
+		{ProviderName: "Coverage Alpha", ProviderAPIURL: "https://alpha.example.com/api", MappedModel: "model-alpha", SourceEntrypoint: "cli", TotalRequests: 5, SuccessRequests: 3, ErrorRequests: 2, WithUsageRequests: 2, WithoutUsageRequests: 3, UsageCoverage: 2.0 / 5.0, TopUsageParseStatus: "missing", LastSeenAt: lastSeen(2 * time.Hour)},
+		{ProviderName: "Coverage Candidate", ProviderAPIURL: "https://cand.example.com", MappedModel: "model-s", SourceEntrypoint: "cli", TotalRequests: 1, SuccessRequests: 1, WithUsageRequests: 1, UsageCoverage: 1, LastSeenAt: lastSeen(9 * time.Minute)},
+		{ProviderName: "Coverage Zero", ProviderAPIURL: "https://zero.example.com", MappedModel: "model-zero", SourceEntrypoint: "entry-zero", TotalRequests: 1, SuccessRequests: 1, WithoutUsageRequests: 1, TopUsageParseStatus: "unsupported_format", LastSeenAt: time.Time{}},
+	}
+
+	got, err := store.Coverage(Filter{StatsScope: StatsScopeEffective})
+	if err != nil {
+		t.Fatalf("Coverage() error = %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Coverage() = %#v, want %#v", got, want)
+	}
+
+	// raw 口径下会话重复行重新出现：Session Log 组合计 2 条。
+	rawRows, err := store.Coverage(Filter{StatsScope: StatsScopeRaw})
+	if err != nil {
+		t.Fatalf("Coverage(raw) error = %v", err)
+	}
+	var sessionGroup *CoverageRow
+	for i := range rawRows {
+		if rawRows[i].ProviderName == "Session Log" {
+			sessionGroup = &rawRows[i]
+		}
+	}
+	if sessionGroup == nil || sessionGroup.TotalRequests != 2 || sessionGroup.WithUsageRequests != 2 {
+		t.Fatalf("raw Session Log group = %#v, want 2 total / 2 with usage", sessionGroup)
+	}
+
+	// provider 口径排除会话行：Session Log 组消失。
+	providerRows, err := store.Coverage(Filter{StatsScope: StatsScopeProvider})
+	if err != nil {
+		t.Fatalf("Coverage(provider) error = %v", err)
+	}
+	for _, row := range providerRows {
+		if row.ProviderName == "Session Log" {
+			t.Fatalf("provider scope must not contain Session Log group: %#v", row)
+		}
+	}
+}
+
+// TestCoverageSQLAggregationEmptyDataset 确保零结果时返回非 nil 空切片（JSON [] 而非
+// null），与旧实现 make([]CoverageRow, 0, ...) 的形状一致。
+func TestCoverageSQLAggregationEmptyDataset(t *testing.T) {
+	store := newTestStore(t)
+	seedCoverageDifferentialFixture(t, store)
+
+	rows, err := store.Coverage(Filter{Query: "does-not-exist", StatsScope: StatsScopeEffective})
+	if err != nil {
+		t.Fatalf("Coverage() error = %v", err)
+	}
+	if rows == nil {
+		t.Fatalf("Coverage() = nil, want non-nil empty slice")
+	}
+	if len(rows) != 0 {
+		t.Fatalf("Coverage() = %#v, want empty", rows)
+	}
+}
+
+func coverageDifferentialFilters() []struct {
+	name   string
+	filter Filter
+} {
+	base := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	return []struct {
+		name   string
+		filter Filter
+	}{
+		{name: "all"},
+		{name: "from drops early rows", filter: Filter{From: base.Add(3 * time.Hour)}},
+		{name: "from drops session candidate", filter: Filter{From: base.Add(9*time.Minute + 30*time.Second)}},
+		{name: "to narrows", filter: Filter{To: base.Add(time.Hour)}},
+		{name: "source app claude", filter: Filter{SourceApp: "claude_code"}},
+		{name: "source app other", filter: Filter{SourceApp: "other-app"}},
+		{name: "entrypoint cli", filter: Filter{SourceEntrypoint: "cli"}},
+		{name: "entrypoint session", filter: Filter{SourceEntrypoint: "session_log"}},
+		{name: "entrypoint zero", filter: Filter{SourceEntrypoint: "entry-zero"}},
+		{name: "provider alpha", filter: Filter{ProviderID: "prov-alpha"}},
+		{name: "provider beta", filter: Filter{ProviderID: "prov-beta"}},
+		{name: "provider session", filter: Filter{ProviderID: "_session"}},
+		{name: "provider tie", filter: Filter{ProviderID: "prov-tie"}},
+		{name: "model alpha", filter: Filter{Model: "model-alpha"}},
+		{name: "model beta", filter: Filter{Model: "model-beta"}},
+		{name: "model s", filter: Filter{Model: "model-s"}},
+		{name: "model tie", filter: Filter{Model: "model-tie"}},
+		{name: "path messages", filter: Filter{RequestPath: "/v1/messages"}},
+		{name: "path complete", filter: Filter{RequestPath: "/v1/complete"}},
+		{name: "path session", filter: Filter{RequestPath: "session_log"}},
+		{name: "status success", filter: Filter{Status: "success"}},
+		{name: "status error", filter: Filter{Status: "error"}},
+		{name: "usage provider", filter: Filter{UsageSource: UsageSourceProvider}},
+		{name: "usage session", filter: Filter{UsageSource: UsageSourceSessionLog}},
+		{name: "usage none", filter: Filter{UsageSource: UsageSourceNone}},
+		{name: "parse ok", filter: Filter{UsageParseStatus: ParseStatusOK}},
+		{name: "parse missing", filter: Filter{UsageParseStatus: ParseStatusMissing}},
+		{name: "parse network error", filter: Filter{UsageParseStatus: ParseStatusNetworkError}},
+		{name: "parse unsupported", filter: Filter{UsageParseStatus: ParseStatusUnsupportedFormat}},
+		{name: "search provider needle", filter: Filter{Query: "Coverage Needle"}},
+		{name: "search error message", filter: Filter{Query: "searchable needle failure"}},
+		{name: "search raw url", filter: Filter{Query: "beta.example"}},
+		{name: "zero results", filter: Filter{Query: "does-not-exist"}},
+	}
+}
+
+// seedCoverageDifferentialFixture 构造覆盖分组键四元组/脏 URL 脱敏合并/失败分类/
+// 有无 usage 与多解析状态同数决胜/去重与候选回退/独立会话行/非法时间戳/小数秒
+// last_seen/跨组同时间排序决胜的差分数据。effective 口径共 8 组，与
+// TestCoverageSQLAggregationAnchorsExpectedGroups 的手工期望值绑定。
+func seedCoverageDifferentialFixture(t *testing.T, store *Store) time.Time {
+	t.Helper()
+	base := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	record := func(req RequestRecord, tok TokenRecord) {
+		t.Helper()
+		if err := store.Record(req, tok); err != nil {
+			t.Fatalf("Record(%q) error = %v", req.ID, err)
+		}
+	}
+	group := func(id string, started time.Time, providerID, providerName, providerURL, model, entrypoint string) RequestRecord {
+		req := testUsageRequest(id, started)
+		req.ProviderID = providerID
+		req.ProviderName = providerName
+		req.ProviderAPIURL = providerURL
+		req.MappedModel = model
+		req.OriginalModel = model
+		req.SourceEntrypoint = entrypoint
+		return req
+	}
+
+	// G1: Coverage Alpha 组。5 行：2 条有 usage，3 条无 usage（missing×2 胜过
+	// skipped_non_2xx×1），2 条失败（500+error_type 与 304 非 2xx），last_seen base+2h。
+	alpha := func(id string, started time.Time) RequestRecord {
+		return group(id, started, "prov-alpha", "Coverage Alpha", "https://alpha.example.com/api", "model-alpha", "cli")
+	}
+	record(alpha("cov-a1", base), dedupeToken("cov-a1", UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 1, OutputTokens: 2, CacheCreationInputTokens: 3, CacheReadInputTokens: 4}))
+	a2 := alpha("cov-a2", base.Add(time.Hour))
+	statusFailed := 500
+	a2.StatusCode = &statusFailed
+	a2.ErrorType = ErrorHTTP
+	a2.ErrorMessage = "searchable needle failure"
+	record(a2, dedupeToken("cov-a2", UsageSourceNone, ParseStatusSkippedNon2xx, UsageValues{}))
+	record(alpha("cov-a3", base.Add(2*time.Hour)), dedupeToken("cov-a3", UsageSourceNone, ParseStatusMissing, UsageValues{}))
+	record(alpha("cov-a4", base.Add(6*time.Minute)), dedupeToken("cov-a4", UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 1}))
+	a5 := alpha("cov-a5", base.Add(time.Minute))
+	statusNon2xx := 304
+	a5.StatusCode = &statusNon2xx
+	record(a5, dedupeToken("cov-a5", UsageSourceNone, ParseStatusMissing, UsageValues{}))
+
+	// G2: Coverage Beta 组。两条不同凭证的脏 URL（userinfo + 敏感 query）脱敏后同为
+	// https://beta.example.com/v1?token=[REDACTED]，旧算法先脱敏再分组故合并为一组：
+	// 3 行，1 条有 usage，无 usage 状态 network_error/parse_error 同数取字典序最小，
+	// NULL 状态码计失败，last_seen base+4h（兼作 /v1/complete 路径维度）。
+	beta := func(id string, started time.Time, rawURL string) RequestRecord {
+		return group(id, started, "prov-beta", "Coverage Beta", rawURL, "model-beta", "cli")
+	}
+	record(beta("cov-b1", base.Add(30*time.Minute), "https://user:pass1@beta.example.com/v1?token=aaa"), dedupeToken("cov-b1", UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 5}))
+	b2 := beta("cov-b2", base.Add(3*time.Hour), "https://user:pass1@beta.example.com/v1?token=aaa")
+	b2.StatusCode = nil
+	record(b2, dedupeToken("cov-b2", UsageSourceNone, ParseStatusNetworkError, UsageValues{}))
+	b3 := beta("cov-b3", base.Add(4*time.Hour), "https://other:secret@beta.example.com/v1?token=bbb")
+	b3.RequestPath = "/v1/complete"
+	record(b3, dedupeToken("cov-b3", UsageSourceNone, ParseStatusParseError, UsageValues{}))
+
+	// G3/G4: 会话维度。cov-cand 是 cov-s1 的供应商候选（token 相同、早 1 分钟），
+	// effective 排除 cov-s1 后 Session Log 组只剩 cov-s2；raw 口径两行都在。
+	cand := group("cov-cand", base.Add(9*time.Minute), "prov-cand", "Coverage Candidate", "https://cand.example.com", "model-s", "cli")
+	record(cand, dedupeToken("cov-cand", UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 10, OutputTokens: 20, CacheCreationInputTokens: 30, CacheReadInputTokens: 40}))
+	record(dedupeSessionRequest("cov-s1", base.Add(10*time.Minute), "model-s", "model-s"), dedupeToken(
+		"cov-s1", UsageSourceSessionLog, ParseStatusOK,
+		UsageValues{InputTokens: 10, OutputTokens: 20, CacheCreationInputTokens: 30, CacheReadInputTokens: 40},
+	))
+	record(dedupeSessionRequest("cov-s2", base.Add(5*time.Hour), "model-s", "model-s"), dedupeToken("cov-s2", UsageSourceSessionLog, ParseStatusOK, UsageValues{InputTokens: 7}))
+
+	// G5: 小数秒 last_seen（base+7h+500ms 晚于整秒 base+7h）与搜索 needle 维度。
+	frac := func(id string, started time.Time) RequestRecord {
+		return group(id, started, "prov-frac", "Coverage Needle Frac", "https://frac.example.com", "model-frac", "cli")
+	}
+	record(frac("cov-f1", base.Add(7*time.Hour+500*time.Millisecond)), dedupeToken("cov-f1", UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 2}))
+	record(frac("cov-f2", base.Add(7*time.Hour)), dedupeToken("cov-f2", UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 3}))
+
+	// G6: 非法历史时间戳行。parseTime 容错为 Go 零值时间，last_seen 零值使该组排序
+	// 垫底；other-app 来源维度。
+	zero := group("cov-z1", base.Add(9*time.Hour), "prov-zero", "Coverage Zero", "https://zero.example.com", "model-zero", "entry-zero")
+	zero.SourceApp = "other-app"
+	record(zero, dedupeToken("cov-z1", UsageSourceNone, ParseStatusUnsupportedFormat, UsageValues{}))
+	if _, err := store.db.Exec(`UPDATE usage_requests SET started_at = 'invalid-history-time' WHERE id = 'cov-z1'`); err != nil {
+		t.Fatalf("make timestamp invalid: %v", err)
+	}
+
+	// G7/G8: 跨组 last_seen 完全同时间（base+8h）。旧不稳定排序下顺序未定义，R1 允许
+	// 确定化为分组键升序：Tie Alpha 先于 Tie Beta。
+	tieBeta := group("cov-tb", base.Add(8*time.Hour), "prov-tie", "Tie Beta", "", "model-tie", "entry-tie")
+	record(tieBeta, dedupeToken("cov-tb", UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 1}))
+	tieAlpha := group("cov-ta", base.Add(8*time.Hour), "prov-tie", "Tie Alpha", "", "model-tie", "entry-tie")
+	record(tieAlpha, dedupeToken("cov-ta", UsageSourceProvider, ParseStatusOK, UsageValues{InputTokens: 1}))
+
+	return base
+}

@@ -290,6 +290,70 @@ ORDER BY total_requests DESC, group_key ASC`
 	return query, args
 }
 
+// buildCoverageQueries 基于 buildScopedCTE 生成 Coverage 的分组聚合查询对。两条查询
+// 共享同一份筛选+口径参数：summarySQL 按原始 (provider_name, provider_api_url,
+// mapped_model, source_entrypoint) GROUP BY，返回每组总数/失败数/有 usage 数与
+// last_seen 代表行的 started_at 原值及 request_id；statusSQL 只在无 usage 行上按
+// 分组键 + usage_parse_status GROUP BY，返回每状态计数（top_usage_parse_status 的
+// 同数决胜由调用方用 topStatus 在 Go 中完成）。
+//
+// 内层子查询只投影分组键、last_seen 选取与 0/1 判定所需字段（不物化完整 RequestRow，
+// 不读取 user_agent/backend_url/token 计数/duration 等宽字段，R4）；ROW_NUMBER() 按
+// “整秒 epoch DESC + 9 位小数秒 DESC + started_at 字符串 DESC + request_id DESC”在组内
+// 编号，rn=1 即旧算法按 started_at DESC, id DESC 迭代且严格 After 保留的 last_seen 行
+// （非法时间戳落入 Go 零值时间，与 parseTime 容错一致）。输出边界 URL 脱敏与脱敏后
+// 键相同的分组合并在调用方 Go 中完成（R5）：历史脏数据中仅 userinfo/敏感 query 不同
+// 的 URL 脱敏后同组，与旧算法先脱敏再分组的语义逐字段一致。筛选、去重、口径由
+// buildScopedCTE 统一下推，逐字段兼容由 legacyOracleCoverage 差分测试保证。
+func buildCoverageQueries(filter Filter) (summarySQL, statusSQL string, args []any) {
+	cte, args := buildScopedCTE(filter)
+	summarySQL = cte + `
+SELECT
+	provider_name,
+	provider_api_url,
+	mapped_model,
+	source_entrypoint,
+	COUNT(*),
+	COALESCE(SUM(is_failed), 0),
+	COALESCE(SUM(has_usage), 0),
+	MAX(CASE WHEN rn = 1 THEN started_at END),
+	MAX(CASE WHEN rn = 1 THEN request_id END)
+FROM (
+	SELECT
+		r.provider_name AS provider_name,
+		r.provider_api_url AS provider_api_url,
+		r.mapped_model AS mapped_model,
+		r.source_entrypoint AS source_entrypoint,
+		r.started_at AS started_at,
+		scoped.request_id AS request_id,
+		ROW_NUMBER() OVER (
+			PARTITION BY r.provider_name, r.provider_api_url, r.mapped_model, r.source_entrypoint
+			ORDER BY ` + scopedEpochSecondsExpr("r.started_at") + ` DESC, ` + scopedStartedAtFractionExpr("r.started_at") + ` DESC, r.started_at DESC, scoped.request_id DESC
+		) AS rn,
+		CASE WHEN ` + scopedIsFailedPredicate + ` THEN 1 ELSE 0 END AS is_failed,
+		CASE WHEN ` + scopedHasUsagePredicate + ` THEN 1 ELSE 0 END AS has_usage
+	FROM scoped
+	JOIN usage_requests r ON r.id = scoped.request_id
+	JOIN usage_tokens t ON t.request_id = r.id
+)
+GROUP BY provider_name, provider_api_url, mapped_model, source_entrypoint`
+
+	statusSQL = cte + `
+SELECT
+	r.provider_name,
+	r.provider_api_url,
+	r.mapped_model,
+	r.source_entrypoint,
+	t.usage_parse_status,
+	COUNT(*)
+FROM scoped
+JOIN usage_requests r ON r.id = scoped.request_id
+JOIN usage_tokens t ON t.request_id = r.id
+WHERE NOT (` + scopedHasUsagePredicate + `)
+GROUP BY r.provider_name, r.provider_api_url, r.mapped_model, r.source_entrypoint, t.usage_parse_status`
+	return summarySQL, statusSQL, args
+}
+
 // buildScopedCTE returns the common filtered/candidate/scoped datasets used by
 // SQL-backed usage reads. Callers append their own projection, aggregation,
 // ordering, and pagination and pass the returned arguments unchanged.

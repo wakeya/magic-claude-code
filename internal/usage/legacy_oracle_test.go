@@ -211,6 +211,79 @@ func legacyOracleAggregate(t *testing.T, db *sql.DB, filter Filter, keyFn func(R
 	return out
 }
 
+// legacyOracleCoverage is intentionally test-only and independent from the SQL
+// GROUP BY path. It reproduces the former "scoped full-row scan, then Go
+// per-row map aggregation" Coverage algorithm field-for-field on top of
+// legacyOracleQueryRows: grouping by the redacted (provider_name,
+// provider_api_url, mapped_model, source_entrypoint) key (legacyOracleQueryRows
+// redacts URLs exactly like the old scanRequestRow did before the old Coverage
+// grouped, so rows whose dirty URLs redact to the same string merge into one
+// group), isFailed/hasUsage gating, success/error split, parse-status tallies
+// for rows without usage, top-status tie-breaking, usage coverage and last seen
+// time. The only deliberate refinement is a deterministic group key ascending
+// tie-breaker behind the documented primary sort key (LastSeenAt descending);
+// the old unstable sort left equal-time groups in undefined map order, which R1
+// explicitly permits making deterministic. It serves as the differential oracle
+// for the SQL GROUP BY rewrite of the Coverage endpoint.
+func legacyOracleCoverage(t *testing.T, db *sql.DB, filter Filter) []CoverageRow {
+	t.Helper()
+	rows := legacyOracleQueryRows(t, db, filter)
+
+	type coverageGroup struct {
+		row           CoverageRow
+		parseStatuses map[string]int64
+	}
+	groups := make(map[string]*coverageGroup)
+	for _, row := range rows {
+		key := strings.Join([]string{row.ProviderName, row.ProviderAPIURL, row.MappedModel, row.SourceEntrypoint}, "\x00")
+		group := groups[key]
+		if group == nil {
+			group = &coverageGroup{
+				row: CoverageRow{
+					ProviderName:     row.ProviderName,
+					ProviderAPIURL:   row.ProviderAPIURL,
+					MappedModel:      row.MappedModel,
+					SourceEntrypoint: row.SourceEntrypoint,
+				},
+				parseStatuses: make(map[string]int64),
+			}
+			groups[key] = group
+		}
+		group.row.TotalRequests++
+		if isFailed(row.RequestRecord) {
+			group.row.ErrorRequests++
+		} else {
+			group.row.SuccessRequests++
+		}
+		if hasUsage(row.TokenRecord) {
+			group.row.WithUsageRequests++
+		} else {
+			group.row.WithoutUsageRequests++
+			group.parseStatuses[row.UsageParseStatus]++
+		}
+		if row.StartedAt.After(group.row.LastSeenAt) {
+			group.row.LastSeenAt = row.StartedAt
+		}
+	}
+
+	out := make([]CoverageRow, 0, len(groups))
+	for _, group := range groups {
+		row := group.row
+		if row.TotalRequests > 0 {
+			row.UsageCoverage = float64(row.WithUsageRequests) / float64(row.TotalRequests)
+		}
+		row.TopUsageParseStatus = topStatus(group.parseStatuses)
+		out = append(out, row)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].LastSeenAt.Equal(out[j].LastSeenAt) {
+			return out[i].LastSeenAt.After(out[j].LastSeenAt)
+		}
+		return coverageSortKey(out[i]) < coverageSortKey(out[j])
+	})
+	return out
+}
+
 func legacyOracleFilterWhere(filter Filter) (string, []any) {
 	var parts []string
 	var args []any

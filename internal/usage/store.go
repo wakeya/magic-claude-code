@@ -2,7 +2,6 @@ package usage
 
 import (
 	"database/sql"
-	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -473,28 +472,97 @@ func (s *Store) aggregateSQL(filter Filter, groupColumn, nameColumn string) ([]A
 	return out, nil
 }
 
+// Coverage 在 scoped SQL 数据集上用 GROUP BY (provider_name, provider_api_url,
+// mapped_model, source_entrypoint) 聚合计算覆盖率分组统计，不再物化全宽请求行或在 Go
+// 中逐行汇总。分组键、筛选、去重、口径由 buildScopedCTE 统一下推；聚合只投影分组键与
+// 0/1 判定所需字段（不读取 user_agent/backend_url/token 计数/duration 等宽字段，R4）。
+// 输出边界 URL 脱敏（R5）在 Go 中完成：SQL 按原始 provider_api_url 分组后，Go 将脱敏
+// 后键相同的分组合并（历史脏数据中仅 userinfo/敏感 query 不同的 URL 脱敏后同组，与
+// 旧算法先脱敏再分组的语义逐字段一致），再汇总计数、解析状态分布与 last_seen 代表行。
+// last_seen 由 ROW_NUMBER 按“整秒 epoch + 9 位小数秒 + 原始 started_at 字符串 +
+// request_id”四级降序选取，复现旧算法按 started_at DESC, id DESC 迭代且严格 After 保留
+// 首个最大值的语义（含非法时间戳落入 Go 零值时间）。top_usage_parse_status 由 SQL 返回
+// 每组每状态计数、Go 用 topStatus 决胜（同数取字典序最小）。排序主键 LastSeenAt 降序
+// 与旧算法一致，同时间分组由分组键升序决胜（旧不稳定排序下未定义，R1 允许确定化）。
+// 空数据集返回非 nil 空切片（JSON []）。逐字段兼容由 legacyOracleCoverage 差分测试保证。
 func (s *Store) Coverage(filter Filter) ([]CoverageRow, error) {
-	rows, err := s.queryRows(filter, false)
+	summarySQL, statusSQL, args := buildCoverageQueries(filter)
+
+	summaryRows, err := s.db.Query(summarySQL, args...)
 	if err != nil {
 		return nil, err
 	}
-	groups := make(map[string]*coverageAccumulator)
-	for _, row := range rows {
-		key := strings.Join([]string{row.ProviderName, row.ProviderAPIURL, row.MappedModel, row.SourceEntrypoint}, "\x00")
+	defer summaryRows.Close()
+
+	groups := make(map[string]*coverageMergeGroup)
+	for summaryRows.Next() {
+		var providerName, providerAPIURL, mappedModel, sourceEntrypoint string
+		var total, failed, withUsage int64
+		var lastSeenRaw, lastSeenID string
+		if err := summaryRows.Scan(
+			&providerName, &providerAPIURL, &mappedModel, &sourceEntrypoint,
+			&total, &failed, &withUsage, &lastSeenRaw, &lastSeenID,
+		); err != nil {
+			return nil, err
+		}
+		key := coverageSortKey(CoverageRow{
+			ProviderName:     providerName,
+			ProviderAPIURL:   RedactURL(providerAPIURL),
+			MappedModel:      mappedModel,
+			SourceEntrypoint: sourceEntrypoint,
+		})
 		group := groups[key]
 		if group == nil {
-			group = &coverageAccumulator{
+			group = &coverageMergeGroup{
 				row: CoverageRow{
-					ProviderName:     row.ProviderName,
-					ProviderAPIURL:   row.ProviderAPIURL,
-					MappedModel:      row.MappedModel,
-					SourceEntrypoint: row.SourceEntrypoint,
+					ProviderName:     providerName,
+					ProviderAPIURL:   RedactURL(providerAPIURL),
+					MappedModel:      mappedModel,
+					SourceEntrypoint: sourceEntrypoint,
 				},
 				parseStatuses: make(map[string]int64),
 			}
 			groups[key] = group
 		}
-		group.add(row)
+		group.row.TotalRequests += total
+		group.row.ErrorRequests += failed
+		group.row.SuccessRequests += total - failed
+		group.row.WithUsageRequests += withUsage
+		group.row.WithoutUsageRequests += total - withUsage
+		lastSeen := parseTime(lastSeenRaw)
+		if group.lastSeenID == "" || coverageLastSeenAfter(lastSeen, lastSeenRaw, lastSeenID, group.row.LastSeenAt, group.lastSeenRaw, group.lastSeenID) {
+			group.row.LastSeenAt = lastSeen
+			group.lastSeenRaw = lastSeenRaw
+			group.lastSeenID = lastSeenID
+		}
+	}
+	if err := summaryRows.Err(); err != nil {
+		return nil, err
+	}
+
+	statusRows, err := s.db.Query(statusSQL, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer statusRows.Close()
+	for statusRows.Next() {
+		var providerName, providerAPIURL, mappedModel, sourceEntrypoint, status string
+		var count int64
+		if err := statusRows.Scan(&providerName, &providerAPIURL, &mappedModel, &sourceEntrypoint, &status, &count); err != nil {
+			return nil, err
+		}
+		key := coverageSortKey(CoverageRow{
+			ProviderName:     providerName,
+			ProviderAPIURL:   RedactURL(providerAPIURL),
+			MappedModel:      mappedModel,
+			SourceEntrypoint: sourceEntrypoint,
+		})
+		if group, ok := groups[key]; ok {
+			group.parseStatuses[status] += count
+		}
+	}
+	if err := statusRows.Err(); err != nil {
+		return nil, err
 	}
 
 	out := make([]CoverageRow, 0, len(groups))
@@ -507,51 +575,12 @@ func (s *Store) Coverage(filter Filter) ([]CoverageRow, error) {
 		out = append(out, row)
 	}
 	sort.Slice(out, func(i, j int) bool {
-		return out[i].LastSeenAt.After(out[j].LastSeenAt)
+		if !out[i].LastSeenAt.Equal(out[j].LastSeenAt) {
+			return out[i].LastSeenAt.After(out[j].LastSeenAt)
+		}
+		return coverageSortKey(out[i]) < coverageSortKey(out[j])
 	})
 	return out, nil
-}
-
-func (s *Store) queryRows(filter Filter, includePagination bool) ([]RequestRow, error) {
-	query := `SELECT
-		r.id, r.started_at, r.ended_at, r.duration_ms, r.upstream_response_header_ms, r.time_to_first_byte_ms,
-		r.status_code, r.error_type, r.error_message, r.method, r.request_path, r.backend_url,
-		r.provider_id, r.provider_name, r.provider_api_url, r.source_app, r.source_entrypoint, r.user_agent,
-		r.original_model, r.mapped_model, r.stream, r.request_bytes, r.response_bytes,
-		t.input_tokens, t.output_tokens, t.cache_creation_input_tokens, t.cache_read_input_tokens,
-		t.usage_source, t.usage_parse_status, t.usage_parse_error
-		FROM usage_requests r JOIN usage_tokens t ON t.request_id = r.id`
-	where, args := filterWhere(filter)
-	if where != "" {
-		query += " WHERE " + where
-	}
-	query += " ORDER BY r.started_at DESC, r.id DESC"
-	if includePagination && filter.PageSize > 0 {
-		page := filter.Page
-		if page <= 0 {
-			page = 1
-		}
-		query += fmt.Sprintf(" LIMIT %d OFFSET %d", filter.PageSize, (page-1)*filter.PageSize)
-	}
-
-	sqlRows, err := s.db.Query(query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer sqlRows.Close()
-
-	var rows []RequestRow
-	for sqlRows.Next() {
-		row, err := scanRequestRow(sqlRows)
-		if err != nil {
-			return nil, err
-		}
-		rows = append(rows, row)
-	}
-	if err := sqlRows.Err(); err != nil {
-		return nil, err
-	}
-	return applyStatsScope(rows, filter.StatsScope), nil
 }
 
 func filterWhere(filter Filter) (string, []any) {
@@ -609,9 +638,10 @@ type rowScanner interface {
 }
 
 // requestRowSelectColumns 列出 scanRequestRow 读取的 usage_requests + usage_tokens
-// 字段，顺序与 scanRequestRow 的 Scan 一致。Requests 分页查询复用它，避免投影漂移；
-// Coverage 仍经 queryRows 使用完整宽投影（本任务不改）。Summary/Trends/Providers/Models
-// 均已改为 scoped SQL 专用窄投影聚合，不再经 queryRows。
+// 字段，顺序与 scanRequestRow 的 Scan 一致。Requests 分页查询复用它，避免投影漂移。
+// Summary/Trends/Providers/Models/Coverage 均已改为 scoped SQL 专用窄投影聚合：
+// Coverage 只投影分组键与失败/有无 usage 判定字段（buildCoverageQueries），其余接口
+// 不读取宽行字段。
 const requestRowSelectColumns = `r.id, r.started_at, r.ended_at, r.duration_ms, r.upstream_response_header_ms, r.time_to_first_byte_ms,
 	r.status_code, r.error_type, r.error_message, r.method, r.request_path, r.backend_url,
 	r.provider_id, r.provider_name, r.provider_api_url, r.source_app, r.source_entrypoint, r.user_agent,
@@ -658,95 +688,12 @@ func scanRequestRow(scanner rowScanner, extras ...any) (RequestRow, error) {
 	return row, nil
 }
 
-func applyStatsScope(rows []RequestRow, scope string) []RequestRow {
-	if scope == "" {
-		scope = StatsScopeEffective
-	}
-	markDuplicateSessionRows(rows)
-	out := rows[:0]
-	for _, row := range rows {
-		switch scope {
-		case StatsScopeRaw:
-			out = append(out, row)
-		case StatsScopeProvider:
-			if !isSessionLogRow(row) {
-				out = append(out, row)
-			}
-		case StatsScopeSessionLog:
-			if isSessionLogRow(row) {
-				out = append(out, row)
-			}
-		default:
-			if !isSessionLogRow(row) || row.DedupeStatus != DedupeStatusDuplicate {
-				out = append(out, row)
-			}
-		}
-	}
-	return out
-}
-
-func markDuplicateSessionRows(rows []RequestRow) {
-	providerIndex := buildProviderDuplicateIndex(rows)
-	for i := range rows {
-		if !isSessionLogRow(rows[i]) || rows[i].UsageParseStatus != ParseStatusOK {
-			continue
-		}
-		if candidateIndex, ok := duplicateProviderCandidate(rows[i], providerIndex); ok {
-			candidate := rows[candidateIndex]
-			rows[i].DedupeStatus = DedupeStatusDuplicate
-			rows[i].DedupeRequestID = candidate.ID
-		}
-	}
-}
-
-type duplicateCandidate struct {
-	rowIndex  int
-	startedAt time.Time
-}
-
 type duplicateIndexKey struct {
 	model                    string
 	inputTokens              int64
 	outputTokens             int64
 	cacheCreationInputTokens int64
 	cacheReadInputTokens     int64
-}
-
-func buildProviderDuplicateIndex(rows []RequestRow) map[duplicateIndexKey][]duplicateCandidate {
-	index := make(map[duplicateIndexKey][]duplicateCandidate)
-	for i, row := range rows {
-		if !isProviderUsageRow(row) {
-			continue
-		}
-		for _, key := range duplicateKeys(row) {
-			index[key] = append(index[key], duplicateCandidate{rowIndex: i, startedAt: row.StartedAt})
-		}
-	}
-	for key := range index {
-		sort.Slice(index[key], func(i, j int) bool {
-			return index[key][i].startedAt.Before(index[key][j].startedAt)
-		})
-	}
-	return index
-}
-
-func duplicateProviderCandidate(row RequestRow, index map[duplicateIndexKey][]duplicateCandidate) (int, bool) {
-	for _, key := range duplicateKeys(row) {
-		candidates := index[key]
-		if len(candidates) == 0 {
-			continue
-		}
-		start := row.StartedAt.Add(-10 * time.Minute)
-		end := row.StartedAt.Add(10 * time.Minute)
-		first := sort.Search(len(candidates), func(i int) bool {
-			return !candidates[i].startedAt.Before(start)
-		})
-		if first == len(candidates) || candidates[first].startedAt.After(end) {
-			continue
-		}
-		return candidates[first].rowIndex, true
-	}
-	return 0, false
 }
 
 func duplicateKeys(row RequestRow) []duplicateIndexKey {
@@ -791,27 +738,34 @@ func isSessionLogRow(row RequestRow) bool {
 	return row.UsageSource == UsageSourceSessionLog || row.SourceEntrypoint == "session_log" || row.ProviderID == "_session"
 }
 
-type coverageAccumulator struct {
+// coverageMergeGroup 是 Coverage 在 Go 中合并脱敏后分组键的中间状态：SQL 按原始
+// provider_api_url 分组，脱敏后键相同的原始分组（历史脏数据）在此汇总计数、解析状态
+// 分布与 last_seen 代表行。
+type coverageMergeGroup struct {
 	row           CoverageRow
 	parseStatuses map[string]int64
+	lastSeenRaw   string
+	lastSeenID    string
 }
 
-func (a *coverageAccumulator) add(row RequestRow) {
-	a.row.TotalRequests++
-	if isFailed(row.RequestRecord) {
-		a.row.ErrorRequests++
-	} else {
-		a.row.SuccessRequests++
+// coverageSortKey 返回 Coverage 分组键（脱敏后的 provider_api_url 参与），与旧算法
+// \x00 连接分组键的语义一致，同时用作同 LastSeenAt 分组的确定性排序决胜键。
+func coverageSortKey(row CoverageRow) string {
+	return strings.Join([]string{row.ProviderName, row.ProviderAPIURL, row.MappedModel, row.SourceEntrypoint}, "\x00")
+}
+
+// coverageLastSeenAfter 返回候选代表行 (candTime, candRaw, candID) 是否应替换当前代表行
+// (curTime, curRaw, curID)：时间更晚者胜出；同一瞬时按原始 started_at 字符串降序、再按
+// request_id 降序决胜，复现旧算法在 started_at DESC, id DESC 迭代中以严格 After 保留
+// 首个最大值的行为。
+func coverageLastSeenAfter(candTime time.Time, candRaw, candID string, curTime time.Time, curRaw, curID string) bool {
+	if !candTime.Equal(curTime) {
+		return candTime.After(curTime)
 	}
-	if hasUsage(row.TokenRecord) {
-		a.row.WithUsageRequests++
-	} else {
-		a.row.WithoutUsageRequests++
-		a.parseStatuses[row.UsageParseStatus]++
+	if candRaw != curRaw {
+		return candRaw > curRaw
 	}
-	if row.StartedAt.After(a.row.LastSeenAt) {
-		a.row.LastSeenAt = row.StartedAt
-	}
+	return candID > curID
 }
 
 func todayRange(filter Filter) (time.Time, time.Time, error) {
