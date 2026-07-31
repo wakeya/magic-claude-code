@@ -7,6 +7,31 @@
 
 ---
 
+## v0.19.0 (2026-07-30)
+
+### Added
+- **AI 自动生成自定义额度脚本**（#37）：管理面板可根据目标 URL、DevTools 请求信息和响应样例生成 `({request, extractor})` 脚本；支持从现有 Provider 选择模型，兼容 Anthropic、OpenAI Chat Completions 和 OpenAI Responses 三种协议，并提供脚本样例、多轮修正与保存前自检警告。
+- **自定义脚本支持 form body 与第二密钥槽**（#37）：`ScriptRequest.BodyType: "form"` 使用 `application/x-www-form-urlencoded` 编码，嵌套对象自动 JSON 序列化；`{{apiKey}}`、`{{apiKey2}}` 等占位符可用于 JSON/form body 的任意字符串值。新增 `ScriptAPIKey2` 三态更新与前端密码输入，公开配置仅返回是否已配置。
+
+### Changed
+- **JavaScript 执行迁移到短生命周期 worker 子进程**（#42）：request 解析与 extractor 分别通过当前 `mcc` 二进制 re-exec 执行，父服务不再创建 goja runtime；HTTP 请求、占位符替换、秘密脱敏、同源校验和结果标准化继续留在父进程，现有脚本合同与配置格式不变。Linux/Windows worker 具备硬内存边界，macOS 在缺少已验证硬边界时 fail closed。
+
+### Fixed
+- **脚本请求重定向保持 body 与 headers**（#40）：同源 307/308 重定向会重新发送原始 POST body，并恢复脚本 headers 与 form `Content-Type`，避免额度接口重定向后收到空请求。
+- **千问 Token Plan 百分比按已用比例换算**（#37）：`perXxxPercentage` 按 `0..1` 的已用比例乘以 100，修正五小时/七天利用率被误判的问题。
+- **前端静态资源缓存策略**（#37）：`index.html` 与 SPA fallback 使用 `no-cache`，带内容 hash 的 assets 使用一年 immutable 缓存，避免容器重建后仍加载旧前端。
+- **CC 2.1.220 Proxy 兼容端点**（#42）：本地处理 `GET/HEAD /api/hello` 连通性探针，以及 `GET /v1/environment_providers` 云环境列表（返回空列表）；写端点和未知端点继续由 fail-closed 守卫拦截。
+
+### Security
+- **隔离脚本 OOM/崩溃影响面**（#40、#42）：保留超大 Array、无限循环和超长字符串的快速预检，同时以子进程作为真正的内存安全边界；worker 输入、stdout、stderr、执行时间和内存全部有界，资源限制初始化失败即拒绝执行，超时或取消会终止子进程。
+- **配置密钥不进入 JavaScript worker**（#42）：worker 请求不包含实际 placeholder values，密钥替换只在父进程 Go 层完成；extractor worker 仅额外接收有界的上游响应体。worker stderr、协议错误和异常 payload 不回显脚本、响应体或配置密钥。
+- **AI 生成 LLM 客户端 SSRF 加固**（#37、#42）：配置预检与实际拨号阶段双重校验目标 IP，阻断内置云元数据 IP 与 DNS rebinding，禁用 LLM HTTP 重定向；管理员配置的 loopback/私网 LLM 代理仍可使用。
+
+### Docs
+- 新增 custom script form body、AI 生成、样例库、自检、多轮修正、安全加固和 worker 隔离规格；同步更新 CC 2.1.220 拦截端点活文档。
+
+---
+
 ## v0.18.1 (2026-07-26)
 
 ### Fixed
