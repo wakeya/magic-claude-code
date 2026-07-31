@@ -329,10 +329,6 @@ func (s *Store) Trends(filter Filter) ([]TrendPoint, error) {
 }
 
 func (s *Store) Requests(filter Filter) (RequestPage, error) {
-	all, err := s.queryRows(filter, false)
-	if err != nil {
-		return RequestPage{}, err
-	}
 	page := filter.Page
 	if page <= 0 {
 		page = 1
@@ -341,15 +337,45 @@ func (s *Store) Requests(filter Filter) (RequestPage, error) {
 	if pageSize <= 0 {
 		pageSize = 50
 	}
-	start := (page - 1) * pageSize
-	if start > len(all) {
-		start = len(all)
+
+	// 总数与分页都下推到 scoped SQL 数据集：COUNT(*) 计算去重+口径后的总数，
+	// LIMIT/OFFSET 只取当前页。禁止全量加载后在 Go 中切片。
+	countSQL, pageSQL, baseArgs := buildRequestsQueries(filter)
+
+	var total int64
+	if err := s.db.QueryRow(countSQL, baseArgs...).Scan(&total); err != nil {
+		return RequestPage{}, err
 	}
-	end := start + pageSize
-	if end > len(all) {
-		end = len(all)
+
+	args := make([]any, 0, len(baseArgs)+2)
+	args = append(args, baseArgs...)
+	args = append(args, pageSize, (page-1)*pageSize)
+	rows, err := s.db.Query(pageSQL, args...)
+	if err != nil {
+		return RequestPage{}, err
 	}
-	return RequestPage{Rows: all[start:end], Total: int64(len(all)), Page: page, PageSize: pageSize}, nil
+	defer rows.Close()
+
+	var pageRows []RequestRow
+	for rows.Next() {
+		var dedupeStatus, dedupeRequestID string
+		row, err := scanRequestRow(rows, &dedupeStatus, &dedupeRequestID)
+		if err != nil {
+			return RequestPage{}, err
+		}
+		row.DedupeStatus = dedupeStatus
+		row.DedupeRequestID = dedupeRequestID
+		pageRows = append(pageRows, row)
+	}
+	if err := rows.Err(); err != nil {
+		return RequestPage{}, err
+	}
+	// 与旧“全量加载后切片”路径保持 JSON 形状一致：scoped 数据集非空时，越界空页
+	// 仍返回 []（而非 null），只有真正零结果才返回 nil。
+	if total > 0 && pageRows == nil {
+		pageRows = []RequestRow{}
+	}
+	return RequestPage{Rows: pageRows, Total: total, Page: page, PageSize: pageSize}, nil
 }
 
 func (s *Store) Providers(filter Filter) ([]AggregateRow, error) {
@@ -521,21 +547,41 @@ func filterWhere(filter Filter) (string, []any) {
 	return strings.Join(parts, " AND "), args
 }
 
-func scanRequestRow(rows *sql.Rows) (RequestRow, error) {
+// rowScanner 是 *sql.Rows 与 *sql.Row 共同满足的最小扫描接口，便于 scanRequestRow
+// 在分页（多行）与单行查询间复用。
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+// requestRowSelectColumns 列出 scanRequestRow 读取的 usage_requests + usage_tokens
+// 字段，顺序与 scanRequestRow 的 Scan 一致。Requests 分页查询复用它，避免投影漂移；
+// 聚合路径（queryRows）保留各自的窄/宽投影，本任务不改。
+const requestRowSelectColumns = `r.id, r.started_at, r.ended_at, r.duration_ms, r.upstream_response_header_ms, r.time_to_first_byte_ms,
+	r.status_code, r.error_type, r.error_message, r.method, r.request_path, r.backend_url,
+	r.provider_id, r.provider_name, r.provider_api_url, r.source_app, r.source_entrypoint, r.user_agent,
+	r.original_model, r.mapped_model, r.stream, r.request_bytes, r.response_bytes,
+	t.input_tokens, t.output_tokens, t.cache_creation_input_tokens, t.cache_read_input_tokens,
+	t.usage_source, t.usage_parse_status, t.usage_parse_error`
+
+// scanRequestRow 读取 requestRowSelectColumns 对应的核心字段并完成时间/状态/脱敏转换。
+// extras 追加在核心字段之后，用于在同一次 Scan 中读取调用方附加的列（如 scoped 重复标记）；
+// 不传 extras 时行为与历史聚合路径完全一致。
+func scanRequestRow(scanner rowScanner, extras ...any) (RequestRow, error) {
 	var row RequestRow
 	var startedAt string
 	var endedAt sql.NullString
 	var duration, header, firstByte, status sql.NullInt64
 	var stream int
-	err := rows.Scan(
+	dest := []any{
 		&row.ID, &startedAt, &endedAt, &duration, &header, &firstByte,
 		&status, &row.ErrorType, &row.ErrorMessage, &row.Method, &row.RequestPath, &row.BackendURL,
 		&row.ProviderID, &row.ProviderName, &row.ProviderAPIURL, &row.SourceApp, &row.SourceEntrypoint, &row.UserAgent,
 		&row.OriginalModel, &row.MappedModel, &stream, &row.RequestBytes, &row.ResponseBytes,
 		&row.InputTokens, &row.OutputTokens, &row.CacheCreationInputTokens, &row.CacheReadInputTokens,
 		&row.UsageSource, &row.UsageParseStatus, &row.UsageParseError,
-	)
-	if err != nil {
+	}
+	dest = append(dest, extras...)
+	if err := scanner.Scan(dest...); err != nil {
 		return RequestRow{}, err
 	}
 	row.StartedAt = parseTime(startedAt)

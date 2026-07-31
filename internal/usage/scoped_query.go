@@ -36,6 +36,24 @@ const scopedCandidateStartedAtFraction = `CASE
 		)
 END`
 
+// buildRequestsQueries 基于 buildScopedCTE 生成 Requests 的总数与分页查询。
+// 返回的 args 只含筛选+口径参数；调用方在执行 pageSQL 前追加 LIMIT/OFFSET 两个
+// 参数。countSQL 对 scoped 数据集 COUNT(*)，pageSQL 回连 usage_requests/usage_tokens
+// 投影完整 RequestRow（含 scoped.dedupe_status/dedupe_request_id），保证总数、排序、
+// 筛选、口径与重复标记与旧算法逐字段兼容。
+func buildRequestsQueries(filter Filter) (countSQL, pageSQL string, args []any) {
+	cte, args := buildScopedCTE(filter)
+	countSQL = cte + "\n\tSELECT COUNT(*) FROM scoped"
+	pageSQL = cte + `
+	SELECT ` + requestRowSelectColumns + `, scoped.dedupe_status, scoped.dedupe_request_id
+	FROM scoped
+	JOIN usage_requests r ON r.id = scoped.request_id
+	JOIN usage_tokens t ON t.request_id = r.id
+	ORDER BY scoped.started_at DESC, scoped.request_id DESC
+	LIMIT ? OFFSET ?`
+	return countSQL, pageSQL, args
+}
+
 // buildScopedCTE returns the common filtered/candidate/scoped datasets used by
 // SQL-backed usage reads. Callers append their own projection, aggregation,
 // ordering, and pagination and pass the returned arguments unchanged.
