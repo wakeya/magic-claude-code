@@ -48,6 +48,47 @@ func legacyOracleQueryRows(t *testing.T, db *sql.DB, filter Filter) []RequestRow
 	return legacyOracleApplyScope(rows, filter.StatsScope)
 }
 
+// legacyOracleSummary is intentionally test-only and independent from the SQL
+// aggregate path. It reproduces the former "scoped full-row scan, then Go
+// aggregation" Summary algorithm field-for-field (hasUsage/isFailed/today
+// range/usage coverage/last provider request) on top of legacyOracleQueryRows,
+// serving as the differential oracle for the SQL COUNT/SUM rewrite.
+func legacyOracleSummary(t *testing.T, db *sql.DB, filter Filter) Summary {
+	t.Helper()
+	rows := legacyOracleQueryRows(t, db, filter)
+	startOfToday, endOfToday, err := todayRange(filter)
+	if err != nil {
+		t.Fatalf("legacy oracle today range: %v", err)
+	}
+
+	var summary Summary
+	var withUsage int64
+	for _, row := range rows {
+		summary.ProviderRequestsTotal++
+		if hasUsage(row.TokenRecord) {
+			withUsage++
+			summary.TokenConsumptionTotal += tokenTotal(row.TokenRecord)
+		}
+		if isFailed(row.RequestRecord) {
+			summary.FailedRequests++
+		}
+		if summary.LastProviderRequest == nil || row.StartedAt.After(*summary.LastProviderRequest) {
+			started := row.StartedAt
+			summary.LastProviderRequest = &started
+		}
+		if !row.StartedAt.Before(startOfToday) && row.StartedAt.Before(endOfToday) {
+			summary.TodayProviderRequests++
+			if hasUsage(row.TokenRecord) {
+				summary.TodayTokenConsumption += tokenTotal(row.TokenRecord)
+			}
+		}
+	}
+	if summary.ProviderRequestsTotal > 0 {
+		summary.UsageCoverage = float64(withUsage) / float64(summary.ProviderRequestsTotal)
+	}
+	return summary
+}
+
 func legacyOracleFilterWhere(filter Filter) (string, []any) {
 	var parts []string
 	var args []any

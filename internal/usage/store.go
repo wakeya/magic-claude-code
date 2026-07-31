@@ -258,37 +258,36 @@ func (s *Store) ClearUsageData(resetSessionSync bool) (ClearResult, error) {
 	return result, nil
 }
 
+// Summary 在 scoped SQL 数据集上用 COUNT/SUM/MAX 聚合计算状态页/摘要所需统计，
+// 不再物化全宽请求行或在 Go 中逐行汇总。筛选、去重、口径由 buildScopedCTE 统一
+// 下推；hasUsage/isFailed/今日区间/覆盖率与最新请求时间的数值与空值语义与旧算法
+// 逐字段兼容（由 legacyOracleSummary 差分测试保证）。
 func (s *Store) Summary(filter Filter) (Summary, error) {
-	rows, err := s.queryRows(filter, false)
-	if err != nil {
-		return Summary{}, err
-	}
 	startOfToday, endOfToday, err := todayRange(filter)
 	if err != nil {
 		return Summary{}, err
 	}
+	query, args := buildSummaryQuery(filter, startOfToday, endOfToday)
 
 	var summary Summary
 	var withUsage int64
-	for _, row := range rows {
-		summary.ProviderRequestsTotal++
-		if hasUsage(row.TokenRecord) {
-			withUsage++
-			summary.TokenConsumptionTotal += tokenTotal(row.TokenRecord)
-		}
-		if isFailed(row.RequestRecord) {
-			summary.FailedRequests++
-		}
-		if summary.LastProviderRequest == nil || row.StartedAt.After(*summary.LastProviderRequest) {
-			started := row.StartedAt
-			summary.LastProviderRequest = &started
-		}
-		if !row.StartedAt.Before(startOfToday) && row.StartedAt.Before(endOfToday) {
-			summary.TodayProviderRequests++
-			if hasUsage(row.TokenRecord) {
-				summary.TodayTokenConsumption += tokenTotal(row.TokenRecord)
-			}
-		}
+	var lastStarted sql.NullString
+	if err := s.db.QueryRow(query, args...).Scan(
+		&summary.ProviderRequestsTotal,
+		&withUsage,
+		&summary.TokenConsumptionTotal,
+		&summary.FailedRequests,
+		&summary.TodayProviderRequests,
+		&summary.TodayTokenConsumption,
+		&lastStarted,
+	); err != nil {
+		return Summary{}, err
+	}
+	// scoped 数据集非空时子查询必返回一个 started_at（可能为非法历史值，parseTime
+	// 容错为 Go 零值时间），对应旧实现“有行即非 nil”；空数据集 NULL 对应 nil。
+	if lastStarted.Valid {
+		started := parseTime(lastStarted.String)
+		summary.LastProviderRequest = &started
 	}
 	if summary.ProviderRequestsTotal > 0 {
 		summary.UsageCoverage = float64(withUsage) / float64(summary.ProviderRequestsTotal)
