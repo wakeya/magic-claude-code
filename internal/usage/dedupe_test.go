@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -356,6 +357,411 @@ func TestDedupeMigrationRollsBackBackfillAndMarkerTogether(t *testing.T) {
 	assertDedupeBackfillMarker(t, store.db)
 }
 
+func TestDedupeIncrementalMaintainsAllCandidatesInEitherOrder(t *testing.T) {
+	for _, providerFirst := range []bool{true, false} {
+		name := "session first"
+		if providerFirst {
+			name = "provider first"
+		}
+		t.Run(name, func(t *testing.T) {
+			store := newTestStore(t)
+			started := time.Date(2026, 7, 30, 12, 0, 0, 500_000_000, time.UTC)
+			values := UsageValues{
+				InputTokens:              100,
+				OutputTokens:             20,
+				CacheCreationInputTokens: 30,
+				CacheReadInputTokens:     400,
+			}
+			sessionReq := dedupeSessionRequest("session", started, "mapped-model", "original-model")
+			sessionTok := dedupeToken("session", UsageSourceSessionLog, ParseStatusOK, values)
+			providers := []struct {
+				req RequestRecord
+				tok TokenRecord
+			}{
+				{
+					req: dedupeProviderRequest("mapped-direct", started.Add(2*time.Minute), "mapped-model", "provider-original"),
+					tok: dedupeToken("mapped-direct", UsageSourceProvider, ParseStatusOK, values),
+				},
+				{
+					req: dedupeProviderRequest("mapped-via-original", started.Add(-2*time.Minute), "other-model", "mapped-model"),
+					tok: dedupeToken("mapped-via-original", UsageSourceProvider, ParseStatusOK, values),
+				},
+				{
+					req: dedupeProviderRequest("original-only", started.Add(-5*time.Minute), "original-model", "original-model"),
+					tok: dedupeToken("original-only", UsageSourceProvider, ParseStatusOK, values),
+				},
+				{
+					req: dedupeProviderRequest("boundary-before", started.Add(-10*time.Minute), "mapped-model", ""),
+					tok: dedupeToken("boundary-before", UsageSourceProvider, ParseStatusOK, values),
+				},
+				{
+					req: dedupeProviderRequest("boundary-after", started.Add(10*time.Minute), "mapped-model", ""),
+					tok: dedupeToken("boundary-after", UsageSourceProvider, ParseStatusOK, values),
+				},
+			}
+
+			writeSession := func() {
+				t.Helper()
+				if err := store.Record(sessionReq, sessionTok); err != nil {
+					t.Fatalf("Record(session) error = %v", err)
+				}
+			}
+			writeProviders := func() {
+				t.Helper()
+				for _, provider := range providers {
+					if err := store.Record(provider.req, provider.tok); err != nil {
+						t.Fatalf("Record(%q) error = %v", provider.req.ID, err)
+					}
+				}
+			}
+			if providerFirst {
+				writeProviders()
+				writeSession()
+			} else {
+				writeSession()
+				writeProviders()
+			}
+
+			got := dedupeCandidates(t, store.db, "session")
+			want := map[string]int{
+				"boundary-after":      0,
+				"boundary-before":     0,
+				"mapped-direct":       0,
+				"mapped-via-original": 0,
+				"original-only":       1,
+			}
+			if fmt.Sprint(got) != fmt.Sprint(want) {
+				t.Fatalf("candidates = %v, want %v", got, want)
+			}
+
+			page, err := store.Requests(Filter{StatsScope: StatsScopeRaw, Page: 1, PageSize: 10})
+			if err != nil {
+				t.Fatalf("Requests() error = %v", err)
+			}
+			for _, row := range page.Rows {
+				if row.ID == "session" {
+					if row.DedupeStatus != DedupeStatusDuplicate || row.DedupeRequestID != "boundary-before" {
+						t.Fatalf("session dedupe fields = %q/%q", row.DedupeStatus, row.DedupeRequestID)
+					}
+					return
+				}
+			}
+			t.Fatal("session row is missing from raw requests")
+		})
+	}
+}
+
+func TestDedupeIncrementalIgnoresIncompatibleRows(t *testing.T) {
+	tests := []struct {
+		name           string
+		changeSession  func(*RequestRecord, *TokenRecord)
+		changeProvider func(*RequestRecord, *TokenRecord)
+	}{
+		{
+			name: "provider usage missing",
+			changeProvider: func(_ *RequestRecord, tok *TokenRecord) {
+				tok.UsageSource = UsageSourceNone
+				tok.UsageParseStatus = ParseStatusMissing
+			},
+		},
+		{
+			name: "session usage missing",
+			changeSession: func(_ *RequestRecord, tok *TokenRecord) {
+				tok.UsageSource = UsageSourceNone
+				tok.UsageParseStatus = ParseStatusMissing
+			},
+		},
+		{
+			name: "non claude provider",
+			changeProvider: func(req *RequestRecord, _ *TokenRecord) {
+				req.SourceApp = "other"
+			},
+		},
+		{
+			name: "provider parse failed",
+			changeProvider: func(_ *RequestRecord, tok *TokenRecord) {
+				tok.UsageParseStatus = ParseStatusParseError
+			},
+		},
+		{
+			name: "session parse failed",
+			changeSession: func(_ *RequestRecord, tok *TokenRecord) {
+				tok.UsageParseStatus = ParseStatusParseError
+			},
+		},
+		{
+			name: "provider outside time window",
+			changeProvider: func(req *RequestRecord, _ *TokenRecord) {
+				req.StartedAt = req.StartedAt.Add(10*time.Minute + time.Nanosecond)
+			},
+		},
+		{
+			name: "models differ",
+			changeProvider: func(req *RequestRecord, _ *TokenRecord) {
+				req.MappedModel = "different"
+				req.OriginalModel = "different"
+			},
+		},
+	}
+	tokenChanges := []struct {
+		name   string
+		change func(*TokenRecord)
+	}{
+		{"input tokens differ", func(tok *TokenRecord) { tok.InputTokens++ }},
+		{"output tokens differ", func(tok *TokenRecord) { tok.OutputTokens++ }},
+		{"cache creation tokens differ", func(tok *TokenRecord) { tok.CacheCreationInputTokens++ }},
+		{"cache read tokens differ", func(tok *TokenRecord) { tok.CacheReadInputTokens++ }},
+	}
+	for _, tokenChange := range tokenChanges {
+		change := tokenChange.change
+		tests = append(tests, struct {
+			name           string
+			changeSession  func(*RequestRecord, *TokenRecord)
+			changeProvider func(*RequestRecord, *TokenRecord)
+		}{
+			name: tokenChange.name,
+			changeProvider: func(_ *RequestRecord, tok *TokenRecord) {
+				change(tok)
+			},
+		})
+	}
+
+	for _, providerFirst := range []bool{true, false} {
+		for _, tt := range tests {
+			name := "session first/" + tt.name
+			if providerFirst {
+				name = "provider first/" + tt.name
+			}
+			t.Run(name, func(t *testing.T) {
+				store := newTestStore(t)
+				started := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+				values := UsageValues{
+					InputTokens:              1,
+					OutputTokens:             2,
+					CacheCreationInputTokens: 3,
+					CacheReadInputTokens:     4,
+				}
+				sessionReq := dedupeSessionRequest("session", started, "model", "model")
+				sessionTok := dedupeToken("session", UsageSourceSessionLog, ParseStatusOK, values)
+				providerReq := dedupeProviderRequest("provider", started, "model", "model")
+				providerTok := dedupeToken("provider", UsageSourceProvider, ParseStatusOK, values)
+				if tt.changeSession != nil {
+					tt.changeSession(&sessionReq, &sessionTok)
+				}
+				if tt.changeProvider != nil {
+					tt.changeProvider(&providerReq, &providerTok)
+				}
+
+				if providerFirst {
+					if err := store.Record(providerReq, providerTok); err != nil {
+						t.Fatalf("Record(provider) error = %v", err)
+					}
+					if err := store.Record(sessionReq, sessionTok); err != nil {
+						t.Fatalf("Record(session) error = %v", err)
+					}
+				} else {
+					if err := store.Record(sessionReq, sessionTok); err != nil {
+						t.Fatalf("Record(session) error = %v", err)
+					}
+					if err := store.Record(providerReq, providerTok); err != nil {
+						t.Fatalf("Record(provider) error = %v", err)
+					}
+				}
+				if got := sqliteCount(t, store.db, "usage_dedupe_candidates"); got != 0 {
+					t.Fatalf("candidate count = %d, want 0", got)
+				}
+			})
+		}
+	}
+}
+
+func TestDedupeIncrementalRecordIfAbsentIsIdempotent(t *testing.T) {
+	store := newTestStore(t)
+	started := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	values := UsageValues{InputTokens: 10, OutputTokens: 2}
+	providerReq := dedupeProviderRequest("provider", started, "model", "model")
+	providerTok := dedupeToken("provider", UsageSourceProvider, ParseStatusOK, values)
+	sessionReq := dedupeSessionRequest("session", started, "model", "model")
+	sessionTok := dedupeToken("session", UsageSourceSessionLog, ParseStatusOK, values)
+
+	if err := store.Record(providerReq, providerTok); err != nil {
+		t.Fatalf("Record(provider) error = %v", err)
+	}
+	inserted, err := store.recordIfAbsent(sessionReq, sessionTok)
+	if err != nil || !inserted {
+		t.Fatalf("first recordIfAbsent() = %v, %v, want true, nil", inserted, err)
+	}
+	inserted, err = store.recordIfAbsent(sessionReq, sessionTok)
+	if err != nil || inserted {
+		t.Fatalf("second recordIfAbsent() = %v, %v, want false, nil", inserted, err)
+	}
+	if got := dedupeCandidates(t, store.db, "session"); fmt.Sprint(got) != "map[provider:0]" {
+		t.Fatalf("candidates after repeated recordIfAbsent = %v", got)
+	}
+
+	if err := store.Record(sessionReq, sessionTok); err == nil {
+		t.Fatal("Record() conflict error = nil")
+	}
+	if got := dedupeCandidates(t, store.db, "session"); fmt.Sprint(got) != "map[provider:0]" {
+		t.Fatalf("candidates after Record conflict = %v", got)
+	}
+}
+
+func TestDedupeIncrementalRollsBackUsageWhenCandidateWriteFails(t *testing.T) {
+	tests := []struct {
+		name   string
+		insert func(*Store, RequestRecord, TokenRecord) error
+	}{
+		{
+			name: "Record",
+			insert: func(store *Store, req RequestRecord, tok TokenRecord) error {
+				return store.Record(req, tok)
+			},
+		},
+		{
+			name: "recordIfAbsent",
+			insert: func(store *Store, req RequestRecord, tok TokenRecord) error {
+				inserted, err := store.recordIfAbsent(req, tok)
+				if err == nil && !inserted {
+					return fmt.Errorf("recordIfAbsent did not insert")
+				}
+				return err
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newTestStore(t)
+			started := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+			values := UsageValues{InputTokens: 10, OutputTokens: 2}
+			providerReq := dedupeProviderRequest("provider", started, "model", "model")
+			providerTok := dedupeToken("provider", UsageSourceProvider, ParseStatusOK, values)
+			if err := store.Record(providerReq, providerTok); err != nil {
+				t.Fatalf("Record(provider) error = %v", err)
+			}
+			if _, err := store.db.Exec(`
+				CREATE TRIGGER fail_incremental_candidate
+				BEFORE INSERT ON usage_dedupe_candidates
+				WHEN NEW.session_request_id = 'session-fail'
+				BEGIN
+					SELECT RAISE(ABORT, 'forced incremental candidate failure');
+				END;
+			`); err != nil {
+				t.Fatalf("create candidate failure trigger: %v", err)
+			}
+
+			sessionReq := dedupeSessionRequest("session-fail", started, "model", "model")
+			sessionTok := dedupeToken("session-fail", UsageSourceSessionLog, ParseStatusOK, values)
+			err := tt.insert(store, sessionReq, sessionTok)
+			if err == nil || !strings.Contains(err.Error(), "forced incremental candidate failure") {
+				t.Fatalf("insert error = %v, want forced candidate failure", err)
+			}
+			assertUsageRecordCounts(t, store.db, "session-fail", 0, 0)
+			if got := sqliteCount(t, store.db, "usage_dedupe_candidates"); got != 0 {
+				t.Fatalf("candidate count after rollback = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestDedupeIncrementalConcurrentWALWrites(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "wal-usage.db")
+	dsn := "file:" + dbPath + "?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	db.SetMaxOpenConns(8)
+	t.Cleanup(func() { db.Close() })
+	store := NewStore(db)
+	if err := store.Migrate(); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+
+	started := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	values := UsageValues{InputTokens: 10, OutputTokens: 2}
+	if err := store.Record(
+		dedupeSessionRequest("session", started, "model", "model"),
+		dedupeToken("session", UsageSourceSessionLog, ParseStatusOK, values),
+	); err != nil {
+		t.Fatalf("Record(session) error = %v", err)
+	}
+
+	const writers = 8
+	errs := make(chan error, writers)
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			id := fmt.Sprintf("provider-%02d", i)
+			errs <- store.Record(
+				dedupeProviderRequest(id, started.Add(time.Duration(i)*time.Second), "model", "model"),
+				dedupeToken(id, UsageSourceProvider, ParseStatusOK, values),
+			)
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent Record() error = %v", err)
+		}
+	}
+	if got := len(dedupeCandidates(t, store.db, "session")); got != writers {
+		t.Fatalf("candidate count = %d, want %d", got, writers)
+	}
+}
+
+func TestDedupeIncrementalCandidateQueryUsesStartedAtIndex(t *testing.T) {
+	store := newTestStore(t)
+	started := time.Date(2026, 7, 30, 12, 0, 0, 500_000_000, time.UTC)
+	values := UsageValues{InputTokens: 10, OutputTokens: 2}
+	current := RequestRow{
+		RequestRecord: dedupeSessionRequest("session", started, "model", "model"),
+		TokenRecord:   dedupeToken("session", UsageSourceSessionLog, ParseStatusOK, values),
+	}
+	query, args := incrementalDedupeCandidateQuery(current, incrementalDedupeProviderWhere)
+	rows, err := store.db.Query("EXPLAIN QUERY PLAN "+query, args...)
+	if err != nil {
+		t.Fatalf("explain incremental candidate query: %v", err)
+	}
+	defer rows.Close()
+
+	var details []string
+	for rows.Next() {
+		var id, parent, notUsed int
+		var detail string
+		if err := rows.Scan(&id, &parent, &notUsed, &detail); err != nil {
+			t.Fatalf("scan incremental candidate query plan: %v", err)
+		}
+		details = append(details, detail)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("incremental candidate query plan rows: %v", err)
+	}
+	plan := strings.Join(details, "\n")
+	if !strings.Contains(plan, "SEARCH r USING INDEX idx_usage_requests_started_id") ||
+		!strings.Contains(plan, "(started_at>? AND started_at<?)") {
+		t.Fatalf("query plan does not use started_at index:\n%s", plan)
+	}
+}
+
+func assertUsageRecordCounts(t *testing.T, db *sql.DB, id string, wantRequests, wantTokens int) {
+	t.Helper()
+	var requests, tokens int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM usage_requests WHERE id = ?`, id).Scan(&requests); err != nil {
+		t.Fatalf("count usage request %q: %v", id, err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM usage_tokens WHERE request_id = ?`, id).Scan(&tokens); err != nil {
+		t.Fatalf("count usage token %q: %v", id, err)
+	}
+	if requests != wantRequests || tokens != wantTokens {
+		t.Fatalf("usage record counts for %q = requests:%d tokens:%d, want requests:%d tokens:%d",
+			id, requests, tokens, wantRequests, wantTokens)
+	}
+}
+
 func newLegacyUsageStore(t *testing.T) *Store {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "legacy-usage.db")
@@ -445,8 +851,65 @@ func dedupeToken(id, source, status string, values UsageValues) TokenRecord {
 
 func recordDedupeHistory(t *testing.T, store *Store, req RequestRecord, tok TokenRecord) {
 	t.Helper()
-	if err := store.Record(req, tok); err != nil {
-		t.Fatalf("Record(%q) error = %v", req.ID, err)
+	tx, err := store.db.Begin()
+	if err != nil {
+		t.Fatalf("begin legacy history insert: %v", err)
+	}
+	defer tx.Rollback()
+	if tok.RequestID == "" {
+		tok.RequestID = req.ID
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO usage_requests(
+			id, started_at, ended_at, duration_ms, upstream_response_header_ms, time_to_first_byte_ms,
+			status_code, error_type, error_message, method, request_path, backend_url,
+			provider_id, provider_name, provider_api_url, source_app, source_entrypoint, user_agent,
+			original_model, mapped_model, stream, request_bytes, response_bytes
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		req.ID,
+		formatTime(req.StartedAt),
+		formatOptionalTime(req.EndedAt),
+		req.DurationMS,
+		req.UpstreamResponseHeaderMS,
+		req.TimeToFirstByteMS,
+		req.StatusCode,
+		req.ErrorType,
+		req.ErrorMessage,
+		req.Method,
+		req.RequestPath,
+		req.BackendURL,
+		req.ProviderID,
+		req.ProviderName,
+		req.ProviderAPIURL,
+		defaultString(req.SourceApp, "unknown"),
+		req.SourceEntrypoint,
+		req.UserAgent,
+		req.OriginalModel,
+		req.MappedModel,
+		boolToInt(req.Stream),
+		req.RequestBytes,
+		req.ResponseBytes,
+	); err != nil {
+		t.Fatalf("insert legacy usage request %q: %v", req.ID, err)
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO usage_tokens(
+			request_id, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+			usage_source, usage_parse_status, usage_parse_error
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		tok.RequestID,
+		tok.InputTokens,
+		tok.OutputTokens,
+		tok.CacheCreationInputTokens,
+		tok.CacheReadInputTokens,
+		defaultString(tok.UsageSource, UsageSourceNone),
+		defaultString(tok.UsageParseStatus, ParseStatusMissing),
+		tok.UsageParseError,
+	); err != nil {
+		t.Fatalf("insert legacy usage token %q: %v", tok.RequestID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit legacy history insert %q: %v", req.ID, err)
 	}
 }
 

@@ -9,6 +9,22 @@ import (
 
 const dedupeCandidatesBackfillMarker = "usage_dedupe_candidates_backfill_v1"
 
+const (
+	incrementalDedupeProviderWhere = `
+		r.source_app = 'claude_code'
+		AND t.usage_source = 'provider'
+		AND t.usage_parse_status = 'ok'
+		AND r.source_entrypoint <> 'session_log'
+		AND r.provider_id <> '_session'`
+	incrementalDedupeSessionWhere = `
+		t.usage_parse_status = 'ok'
+		AND (
+			t.usage_source = 'session_log'
+			OR r.source_entrypoint = 'session_log'
+			OR r.provider_id = '_session'
+		)`
+)
+
 var dedupeMigrationStatements = []string{
 	`CREATE TABLE IF NOT EXISTS usage_dedupe_candidates (
 		session_request_id TEXT NOT NULL,
@@ -215,4 +231,145 @@ func dedupeBackfillModelKeys(row RequestRow) []dedupeBackfillModelKey {
 		})
 	}
 	return keys
+}
+
+func maintainDedupeCandidatesTx(tx *sql.Tx, req RequestRecord, tok TokenRecord) error {
+	current := RequestRow{RequestRecord: req, TokenRecord: tok}
+	current.SourceApp = defaultString(current.SourceApp, "unknown")
+	current.UsageSource = defaultString(current.UsageSource, UsageSourceNone)
+	current.UsageParseStatus = defaultString(current.UsageParseStatus, ParseStatusMissing)
+
+	var oppositeWhere string
+	switch {
+	case isSessionLogRow(current) && current.UsageParseStatus == ParseStatusOK:
+		oppositeWhere = incrementalDedupeProviderWhere
+	case isProviderUsageRow(current):
+		oppositeWhere = incrementalDedupeSessionWhere
+	default:
+		return nil
+	}
+
+	opposite, err := queryDedupeOppositeRowsTx(tx, current, oppositeWhere)
+	if err != nil {
+		return err
+	}
+	insert, err := tx.Prepare(
+		`INSERT INTO usage_dedupe_candidates(
+			session_request_id, provider_request_id, model_priority
+		 ) VALUES (?, ?, ?)
+		 ON CONFLICT(session_request_id, provider_request_id) DO UPDATE SET
+			model_priority = MIN(model_priority, excluded.model_priority)`,
+	)
+	if err != nil {
+		return fmt.Errorf("prepare incremental usage dedupe candidate insert: %w", err)
+	}
+	defer insert.Close()
+
+	for _, candidate := range opposite {
+		session, provider := current, candidate
+		if isProviderUsageRow(current) {
+			session, provider = candidate, current
+		}
+		if provider.StartedAt.Before(session.StartedAt.Add(-10*time.Minute)) ||
+			provider.StartedAt.After(session.StartedAt.Add(10*time.Minute)) {
+			continue
+		}
+		priority, ok := dedupeCandidateModelPriority(session, provider)
+		if !ok {
+			continue
+		}
+		if _, err := insert.Exec(session.ID, provider.ID, priority); err != nil {
+			return fmt.Errorf("insert incremental usage dedupe candidate: %w", err)
+		}
+	}
+	return nil
+}
+
+func queryDedupeOppositeRowsTx(tx *sql.Tx, current RequestRow, oppositeWhere string) ([]RequestRow, error) {
+	query, args := incrementalDedupeCandidateQuery(current, oppositeWhere)
+	rows, err := tx.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query incremental usage dedupe candidates: %w", err)
+	}
+
+	var candidates []RequestRow
+	for rows.Next() {
+		var candidate RequestRow
+		var startedAt string
+		if err := rows.Scan(
+			&candidate.ID,
+			&startedAt,
+			&candidate.OriginalModel,
+			&candidate.MappedModel,
+		); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan incremental usage dedupe candidate: %w", err)
+		}
+		candidate.StartedAt = parseTime(startedAt)
+		candidate.InputTokens = current.InputTokens
+		candidate.OutputTokens = current.OutputTokens
+		candidate.CacheCreationInputTokens = current.CacheCreationInputTokens
+		candidate.CacheReadInputTokens = current.CacheReadInputTokens
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("read incremental usage dedupe candidates: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close incremental usage dedupe candidates: %w", err)
+	}
+	return candidates, nil
+}
+
+func incrementalDedupeCandidateQuery(current RequestRow, oppositeWhere string) (string, []any) {
+	query := `SELECT
+			r.id, r.started_at, r.original_model, r.mapped_model
+		 FROM usage_requests r INDEXED BY idx_usage_requests_started_id
+		 JOIN usage_tokens t ON t.request_id = r.id
+		 WHERE ` + oppositeWhere + `
+		   AND r.started_at >= ?
+		   AND r.started_at < ?
+		   AND t.input_tokens = ?
+		   AND t.output_tokens = ?
+		   AND t.cache_creation_input_tokens = ?
+		   AND t.cache_read_input_tokens = ?
+		   AND (
+				(r.mapped_model <> '' AND (r.mapped_model = ? OR r.mapped_model = ?))
+				OR
+				(r.original_model <> '' AND (r.original_model = ? OR r.original_model = ?))
+		   )`
+	lowerBound, upperBound := incrementalDedupeSQLBounds(current.StartedAt)
+	args := []any{
+		lowerBound,
+		upperBound,
+		current.InputTokens,
+		current.OutputTokens,
+		current.CacheCreationInputTokens,
+		current.CacheReadInputTokens,
+		current.MappedModel,
+		current.OriginalModel,
+		current.MappedModel,
+		current.OriginalModel,
+	}
+	return query, args
+}
+
+func incrementalDedupeSQLBounds(startedAt time.Time) (string, string) {
+	lower := startedAt.Add(-10 * time.Minute).Truncate(time.Second).Add(-time.Second)
+	upper := startedAt.Add(10 * time.Minute).Truncate(time.Second).Add(time.Second)
+	return formatTime(lower), formatTime(upper)
+}
+
+func dedupeCandidateModelPriority(session, provider RequestRow) (int, bool) {
+	providerKeys := make(map[duplicateIndexKey]struct{})
+	for _, key := range duplicateKeys(provider) {
+		providerKeys[key] = struct{}{}
+	}
+	for _, modelKey := range dedupeBackfillModelKeys(session) {
+		if _, ok := providerKeys[modelKey.key]; ok {
+			return modelKey.priority, true
+		}
+	}
+	return 0, false
 }

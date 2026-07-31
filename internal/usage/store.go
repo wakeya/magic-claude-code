@@ -146,6 +146,9 @@ func (s *Store) Record(req RequestRecord, tok TokenRecord) error {
 	if err != nil {
 		return err
 	}
+	if err := maintainDedupeCandidatesTx(tx, req, tok); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -212,6 +215,9 @@ func (s *Store) recordIfAbsent(req RequestRecord, tok TokenRecord) (bool, error)
 		tok.UsageParseError,
 	)
 	if err != nil {
+		return false, err
+	}
+	if err := maintainDedupeCandidatesTx(tx, req, tok); err != nil {
 		return false, err
 	}
 	return true, tx.Commit()
