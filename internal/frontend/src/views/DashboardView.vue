@@ -915,8 +915,6 @@ import {
   type UsageRequestRow,
   type UsageAggregateRow,
   type UsageCoverageRow,
-  type SessionItem,
-  type SessionProject,
   type QuotaSnapshot,
 } from '@/composables/useApi'
 import { useI18n } from '@/composables/useI18n'
@@ -934,6 +932,7 @@ import {
   clearDashboardInitialStatus,
   consumeDashboardInitialStatus,
 } from '@/stores/dashboardInitialStatus'
+import { useLazySessionData } from '@/composables/useLazySessionData'
 
 const ProviderUsageModal = defineAsyncComponent(() => import('@/components/ProviderUsageModal.vue'))
 // FailoverEventsView 只在 activeTab === 'failover' 时渲染；事件不传入 SessionBrowser/SessionDetail/export。
@@ -950,6 +949,15 @@ const route = useRoute()
 const api = useApi()
 const { t, locale } = useI18n()
 const { syncTheme, themeMode } = useTheme()
+const {
+  projects: sessionProjects,
+  sessions: sessionList,
+  loading: sessionsLoading,
+  error: sessionsError,
+  loadOnce: loadSessionsList,
+  applyRefreshed: handleSessionsRefreshed,
+  invalidate: invalidateSessionsLoad,
+} = useLazySessionData(api, () => t('sessions.load_failed'))
 
 type MainTab = 'status' | 'providers' | 'connection' | 'certs' | 'usage' | 'sessions' | 'failover'
 type UsageTab = 'overview' | 'requests' | 'providers' | 'models' | 'coverage'
@@ -1025,10 +1033,6 @@ const usageProviders = ref<UsageAggregateRow[]>([])
 const usageModels = ref<UsageAggregateRow[]>([])
 const usageCoverage = ref<UsageCoverageRow[]>([])
 const usageLoading = ref(false)
-const sessionProjects = ref<SessionProject[]>([])
-const sessionList = ref<SessionItem[]>([])
-const sessionsLoading = ref(false)
-const sessionsError = ref('')
 const scrolled = ref(false)
 function onScroll() { scrolled.value = window.scrollY > 100 }
 function scrollToTop() { window.scrollTo({ top: 0, behavior: 'smooth' }) }
@@ -1634,29 +1638,6 @@ function handleModeUpdated() {
   void loadConnectionMode()
 }
 
-async function loadSessionsList() {
-  sessionsLoading.value = true
-  sessionsError.value = ''
-  try {
-    const [projects, page] = await Promise.all([
-      api.getSessionProjects(),
-      api.getSessionList({ project: '', page: 1, page_size: 100 }),
-    ])
-    sessionProjects.value = projects
-    sessionList.value = page.sessions
-  } catch {
-    sessionsError.value = t('sessions.load_failed')
-  } finally {
-    sessionsLoading.value = false
-  }
-}
-
-function handleSessionsRefreshed(payload: { projects: SessionProject[]; sessions: SessionItem[] }) {
-  sessionProjects.value = payload.projects
-  sessionList.value = payload.sessions
-  sessionsError.value = ''
-}
-
 function copySettings() {
   const json = viewMode.value === 'gateway' ? gatewaySettingsJson.value : t(`mode.${viewMode.value}.settings_json`)
   navigator.clipboard.writeText(json)
@@ -1828,6 +1809,7 @@ async function loadUsageData() {
 }
 
 async function handleLogout() {
+  invalidateSessionsLoad()
   clearDashboardInitialStatus()
   await api.logout()
   router.push('/login')
@@ -2112,6 +2094,13 @@ watch(
 )
 
 watch(
+  () => activeTab.value,
+  (tab) => {
+    if (tab === 'sessions') void loadSessionsList()
+  }
+)
+
+watch(
   () => activeUsageTab.value,
   async () => {
     await nextTick()
@@ -2143,6 +2132,7 @@ onMounted(async () => {
   if (!usageProviderId.value && urlTab && ['status', 'providers', 'connection', 'certs', 'usage', 'sessions', 'failover'].includes(urlTab)) {
     activeTab.value = urlTab as MainTab
   }
+  if (activeTab.value === 'sessions') void loadSessionsList()
 
   await syncTheme(api.getPreferences)
   const stagedStatus = consumeDashboardInitialStatus()
@@ -2156,7 +2146,6 @@ onMounted(async () => {
     loadProviders(),
     loadCerts(),
     loadConnectionMode(initialStatusLoad, initialConfigRequest),
-    loadSessionsList(),
   ])
   void loadUsageData()
   void loadQuotaSnapshots()
@@ -2175,6 +2164,7 @@ onMounted(async () => {
 watch(activeTab, () => ensureProvidersRefresh())
 
 onBeforeUnmount(() => {
+  invalidateSessionsLoad()
   if (statusRefreshTimer) window.clearInterval(statusRefreshTimer)
   if (providersRefreshTimer) window.clearInterval(providersRefreshTimer)
   if (filterTimer) window.clearTimeout(filterTimer)
