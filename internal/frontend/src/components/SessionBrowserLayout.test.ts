@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path'
 const here = dirname(fileURLToPath(import.meta.url))
 const source = readFileSync(join(here, 'SessionBrowser.vue'), 'utf8')
 const i18nSource = readFileSync(join(here, '..', 'composables', 'useI18n.ts'), 'utf8')
+const browserDataSource = readFileSync(join(here, '..', 'composables', 'useSessionBrowserData.ts'), 'utf8')
 
 test('desktop session outline panel scrolls independently when many user messages exist', () => {
   assert.match(source, /sticky top-4[^"]*max-h-\[calc\(100vh-2rem\)\][^"]*overflow-y-auto/)
@@ -66,6 +67,32 @@ test('session list loading state reserves space with a skeleton', () => {
 
 test('session list shows load errors before empty states', () => {
   assert.match(source, /v-if="loading"[\s\S]*v-else-if="error"[\s\S]*\{\{\s*error\s*\}\}[\s\S]*v-else-if="sessions\.length === 0"/)
+})
+
+test('session browser list state is owned by a generation-guarded composable', () => {
+  assert.match(source, /import \{ useSessionBrowserData \} from '@\/composables\/useSessionBrowserData'/)
+  assert.match(source, /useSessionBrowserData\(api, \(\) => t\('sessions\.load_failed'\)/)
+  // The component no longer fetches the session list inline; the composable owns it.
+  assert.doesNotMatch(source, /async function loadSessions\(\)/)
+  assert.doesNotMatch(source, /projects\.value = await api\.getSessionProjects\(\)/)
+  assert.doesNotMatch(source, /api\.getSessionList\(/)
+})
+
+test('stale session responses cannot overwrite current state or write back to the parent cache', () => {
+  // Both reload and project switch emit refreshed only when the response is current.
+  const reload = source.match(/async function reload\(\)[\s\S]*?\n}/)?.[0] || ''
+  assert.match(reload, /await reloadSessions\(\)/)
+  assert.match(reload, /if \(result\.applied\)[\s\S]*?emit\('refreshed'/)
+
+  const select = source.match(/async function selectProject\(path: string\)[\s\S]*?\n}/)?.[0] || ''
+  assert.match(select, /await loadProjectSessions\(path\)/)
+  assert.match(select, /if \(result\.applied\)[\s\S]*?emit\('refreshed'/)
+
+  // The composable advances a generation token and discards stale success/error.
+  assert.match(browserDataSource, /let generation = 0/)
+  assert.match(browserDataSource, /const token = \+\+generation/)
+  assert.match(browserDataSource, /if \(token !== generation\) return snapshot\(false\)/)
+  assert.match(browserDataSource, /if \(token === generation\) loading\.value = false/)
 })
 
 test('session browser no longer has its own fixed back-to-top button', () => {
