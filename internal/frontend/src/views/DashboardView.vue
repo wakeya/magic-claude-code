@@ -1,6 +1,12 @@
 <template>
   <div class="app-shell min-h-screen">
-    <AppHeader @logout="handleLogout" @show-connection-mode="activeTab = 'connection'" />
+    <AppHeader
+      :version="status?.version"
+      :configured-mode="configuredMode"
+      :effective-mode="effectiveMode"
+      @logout="handleLogout"
+      @show-connection-mode="activeTab = 'connection'"
+    />
 
     <div :class="['mx-auto px-4 py-6 sm:px-6 sm:py-8', containerClass]">
       <div class="app-panel flex flex-wrap gap-1 mb-8 p-1 rounded-lg w-fit">
@@ -901,6 +907,7 @@ import {
   useApi,
   type Provider,
   type StatusInfo,
+  type ConfigResponse,
   type CertificateInfo,
   type UsageSummary,
   type UsageTrendPoint,
@@ -923,6 +930,10 @@ import UsageStatsScopeHelp from '@/components/UsageStatsScopeHelp.vue'
 import SessionBrowser from '@/components/SessionBrowser.vue'
 import { formatPercent } from '@/utils/formatters'
 import { runProviderImportFlow } from '@/utils/providerImportFlow'
+import {
+  clearDashboardInitialStatus,
+  consumeDashboardInitialStatus,
+} from '@/stores/dashboardInitialStatus'
 
 const ProviderUsageModal = defineAsyncComponent(() => import('@/components/ProviderUsageModal.vue'))
 // FailoverEventsView 只在 activeTab === 'failover' 时渲染；事件不传入 SessionBrowser/SessionDetail/export。
@@ -1025,6 +1036,9 @@ const usageChartEl = ref<HTMLDivElement | null>(null)
 let echartsModule: { init: (dom: HTMLDivElement) => EChartsType } | null = null
 let usageChart: EChartsType | null = null
 let statusRefreshTimer: number | null = null
+let statusLoadVersion = 0
+let connectionModeLoadVersion = 0
+let connectionConfig: ConfigResponse | null = null
 let quotaSnapshotLoadVersion = 0
 const defaultUsageDateRange = usageDateRangeForPreset('last_7_days')
 
@@ -1348,11 +1362,26 @@ async function handleDuplicate(id: string) {
   await loadProviders()
 }
 
-async function loadStatus() {
+function applyConnectionModeState(nextStatus: StatusInfo, config: ConfigResponse) {
+  configuredMode.value = normalizeMode(config.connection_mode || nextStatus.configured_mode || 'transparent')
+  effectiveMode.value = normalizeMode(nextStatus.effective_mode || nextStatus.configured_mode || config.connection_mode || 'transparent')
+  modeRationale.value = nextStatus.mode_rationale || ''
+  viewMode.value = configuredMode.value
+}
+
+async function loadStatus(
+  request: Promise<StatusInfo> = api.getStatus(browserTimeZone()),
+): Promise<StatusInfo | null> {
+  const loadVersion = ++statusLoadVersion
   try {
-    status.value = await api.getStatus(browserTimeZone())
+    const nextStatus = await request
+    if (loadVersion !== statusLoadVersion) return null
+    status.value = nextStatus
+    if (connectionConfig) applyConnectionModeState(nextStatus, connectionConfig)
+    return nextStatus
   } catch {
     // keep last value
+    return null
   }
 }
 
@@ -1582,13 +1611,16 @@ async function saveMode(mode: 'transparent' | 'tunnel' | 'gateway') {
   }
 }
 
-async function loadConnectionMode() {
+async function loadConnectionMode(
+  statusRequest: Promise<StatusInfo | null> = loadStatus(),
+  configRequest: Promise<ConfigResponse> = api.getConfig(),
+) {
+  const loadVersion = ++connectionModeLoadVersion
   try {
-    const [status, config] = await Promise.all([api.getStatus(), api.getConfig()])
-    configuredMode.value = normalizeMode(config.connection_mode || status.configured_mode || 'transparent')
-    effectiveMode.value = normalizeMode(status.effective_mode || status.configured_mode || config.connection_mode || 'transparent')
-    modeRationale.value = status.mode_rationale || ''
-    viewMode.value = configuredMode.value
+    const [nextStatus, config] = await Promise.all([statusRequest, configRequest])
+    if (loadVersion !== connectionModeLoadVersion) return
+    connectionConfig = config
+    if (nextStatus) applyConnectionModeState(nextStatus, config)
     if (config.gateway_listen_addr) gatewayAddr.value = config.gateway_listen_addr
     if (config.gateway_listen_port) gatewayPort.value = config.gateway_listen_port
     gatewayAddrInput.value = gatewayAddr.value
@@ -1596,6 +1628,10 @@ async function loadConnectionMode() {
   } catch {
     // best-effort
   }
+}
+
+function handleModeUpdated() {
+  void loadConnectionMode()
 }
 
 async function loadSessionsList() {
@@ -1792,6 +1828,7 @@ async function loadUsageData() {
 }
 
 async function handleLogout() {
+  clearDashboardInitialStatus()
   await api.logout()
   router.push('/login')
 }
@@ -2108,7 +2145,19 @@ onMounted(async () => {
   }
 
   await syncTheme(api.getPreferences)
-  await Promise.all([loadStatus(), loadProviders(), loadCerts(), loadConnectionMode(), loadSessionsList()])
+  const stagedStatus = consumeDashboardInitialStatus()
+  const initialStatusRequest = stagedStatus
+    ? Promise.resolve(stagedStatus)
+    : api.getStatus(browserTimeZone())
+  const initialStatusLoad = loadStatus(initialStatusRequest)
+  const initialConfigRequest = api.getConfig()
+  await Promise.all([
+    initialStatusLoad,
+    loadProviders(),
+    loadCerts(),
+    loadConnectionMode(initialStatusLoad, initialConfigRequest),
+    loadSessionsList(),
+  ])
   void loadUsageData()
   void loadQuotaSnapshots()
   void loadFailoverSettings()
@@ -2117,6 +2166,7 @@ onMounted(async () => {
     void loadStatus()
     void loadQuotaSnapshots()
   }, 30000)
+  window.addEventListener('mcc:mode-updated', handleModeUpdated)
   window.addEventListener('resize', handleUsageChartResize)
   window.addEventListener('scroll', onScroll, { passive: true })
 })
@@ -2128,6 +2178,7 @@ onBeforeUnmount(() => {
   if (statusRefreshTimer) window.clearInterval(statusRefreshTimer)
   if (providersRefreshTimer) window.clearInterval(providersRefreshTimer)
   if (filterTimer) window.clearTimeout(filterTimer)
+  window.removeEventListener('mcc:mode-updated', handleModeUpdated)
   window.removeEventListener('resize', handleUsageChartResize)
   window.removeEventListener('scroll', onScroll)
   disposeUsageChart()

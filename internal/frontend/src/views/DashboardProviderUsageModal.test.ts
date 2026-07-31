@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path'
 const here = dirname(fileURLToPath(import.meta.url))
 const dashboardSource = readFileSync(join(here, 'DashboardView.vue'), 'utf8')
 const mainSource = readFileSync(join(here, '..', 'main.ts'), 'utf8')
+const guardSource = readFileSync(join(here, '..', 'router', 'dashboardGuard.ts'), 'utf8')
 const loginSource = readFileSync(join(here, 'LoginView.vue'), 'utf8')
 
 test('Dashboard lazily loads ProviderUsageModal', () => {
@@ -78,8 +79,9 @@ test('legacy usage route preserves navigation state and is consumed reactively',
 })
 
 test('authentication carries and safely restores the intended legacy destination', () => {
-  assert.match(mainSource, /to\.fullPath\.startsWith\('\/'\) && !to\.fullPath\.startsWith\('\/\/'\)/)
-  assert.match(mainSource, /\{ name: 'login', query: \{ redirect \} \}/)
+  assert.match(mainSource, /router\.beforeEach\(\(to\) => guardDashboardRoute\(to\)\)/)
+  assert.match(guardSource, /to\.fullPath\.startsWith\('\/'\) && !to\.fullPath\.startsWith\('\/\/'\)/)
+  assert.match(guardSource, /\{ name: 'login', query: \{ redirect \} \}/)
   assert.match(loginSource, /import \{ useRoute, useRouter \} from 'vue-router'/)
   assert.match(loginSource, /Array\.isArray\(route\.query\.redirect\) \? route\.query\.redirect\[0\] : route\.query\.redirect/)
   assert.match(loginSource, /redirect\.startsWith\('\/'\) && !redirect\.startsWith\('\/\/'\)/)

@@ -21,7 +21,7 @@ test('dashboard preloads sessions list with other mount-time data', () => {
   assert.match(dashboardSource, /const sessionList = ref<SessionItem\[\]>\(\[\]\)/)
   assert.match(dashboardSource, /const sessionsLoading = ref\(false\)/)
   assert.match(dashboardSource, /async function loadSessionsList\(\)[\s\S]*api\.getSessionProjects\(\)[\s\S]*api\.getSessionList\(\{\s*project: '',\s*page: 1,\s*page_size: 100\s*\}\)/)
-  assert.match(dashboardSource, /Promise\.all\(\[[\s\S]*loadStatus\(\)[\s\S]*loadProviders\(\)[\s\S]*loadCerts\(\)[\s\S]*loadConnectionMode\(\)[\s\S]*loadSessionsList\(\)[\s\S]*\]\)/)
+  assert.match(dashboardSource, /Promise\.all\(\[[\s\S]*initialStatusLoad[\s\S]*loadProviders\(\)[\s\S]*loadCerts\(\)[\s\S]*loadConnectionMode\(initialStatusLoad,\s*initialConfigRequest\)[\s\S]*loadSessionsList\(\)[\s\S]*\]\)/)
 })
 
 test('dashboard passes preloaded sessions data into SessionBrowser', () => {

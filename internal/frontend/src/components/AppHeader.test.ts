@@ -46,18 +46,24 @@ test('update check is throttled to once every 24 hours per browser', () => {
   assert.match(source, /markUpdateChecked\(\)\s+try \{\s+const result = await api\.checkForUpdate\(\)/)
 })
 
-test('header version comes from status endpoint, not from update check', () => {
-  assert.match(source, /const statusVersion = ref\('dev'\)/)
-  assert.match(source, /const currentVersion = computed\(\(\) => statusVersion\.value\)/)
-  assert.match(source, /async function fetchStatusVersion\(\)/)
-  assert.match(source, /Promise\.all\(\[api\.getStatus\(\), api\.getConfig\(\)\]\)/)
-  assert.match(source, /configuredMode\.value = normalizeMode\(config\.connection_mode \|\| status\.configured_mode \|\| 'transparent'\)/)
-  assert.match(source, /effectiveMode\.value = normalizeMode\(status\.effective_mode \|\| status\.configured_mode \|\| config\.connection_mode \|\| 'transparent'\)/)
-  assert.match(source, /if \(status\.version\) statusVersion\.value = status\.version/)
+test('header version and mode come from dashboard state, not duplicate status requests', () => {
+  assert.match(source, /defineProps/)
+  assert.match(source, /version\?: string/)
+  assert.match(source, /configuredMode\?: ConnectionMode/)
+  assert.match(source, /effectiveMode\?: ConnectionMode/)
+  assert.match(source, /const currentVersion = computed\(\(\) => version \|\| 'dev'\)/)
+  assert.doesNotMatch(source, /fetchStatusVersion/)
+  assert.doesNotMatch(source, /api\.getStatus\(/)
+  assert.doesNotMatch(source, /api\.getConfig\(/)
   assert.doesNotMatch(
     source,
     /const currentVersion = computed\(\(\) => updateInfo\.value\?\.current_version \|\| 'dev'\)/
   )
+})
+
+test('header keeps destructured dashboard props reactive across refreshes', () => {
+  assert.match(source, /version = 'dev'[\s\S]*configuredMode = 'transparent'[\s\S]*effectiveMode = 'transparent'[\s\S]*} = defineProps/)
+  assert.doesNotMatch(source, /withDefaults\(defineProps/)
 })
 
 test('header mode entry is compact and emits showConnectionMode instead of inline switching', () => {
@@ -81,7 +87,7 @@ test('header no longer contains mode modal', () => {
   assert.doesNotMatch(source, /mode\.close/)
 })
 
-test('header refreshes mode badge when mode is saved elsewhere', () => {
-  assert.match(source, /addEventListener\('mcc:mode-updated', fetchStatusVersion\)/)
-  assert.match(source, /removeEventListener\('mcc:mode-updated', fetchStatusVersion\)/)
+test('header leaves mode-updated refresh ownership to dashboard', () => {
+  assert.doesNotMatch(source, /addEventListener\('mcc:mode-updated'/)
+  assert.doesNotMatch(source, /removeEventListener\('mcc:mode-updated'/)
 })

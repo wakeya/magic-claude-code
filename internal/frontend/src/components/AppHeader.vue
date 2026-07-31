@@ -139,14 +139,23 @@ import { useTheme } from '@/composables/useTheme'
 
 defineEmits<{ logout: []; showConnectionMode: [] }>()
 
+type ConnectionMode = 'transparent' | 'tunnel' | 'gateway'
+
+const {
+  version = 'dev',
+  configuredMode = 'transparent',
+  effectiveMode = 'transparent',
+} = defineProps<{
+  version?: string
+  configuredMode?: ConnectionMode
+  effectiveMode?: ConnectionMode
+}>()
+
 const api = useApi()
 const { locale, t, setLocale } = useI18n()
 const { themeMode, persistTheme, syncError } = useTheme()
 const langOpen = ref(false)
 const langMenuRef = ref<HTMLElement | null>(null)
-const configuredMode = ref<'transparent' | 'tunnel' | 'gateway'>('transparent')
-const effectiveMode = ref<'transparent' | 'tunnel' | 'gateway'>('transparent')
-const modeRationale = ref('')
 const langOptions = [
   { value: 'zh' as const, label: '中文' },
   { value: 'en' as const, label: 'English' },
@@ -160,9 +169,8 @@ const updateMessage = ref('')
 const updateError = ref('')
 const updateCheckStorageKey = 'magic-claude-code:last-update-check-at'
 const updateCheckIntervalMs = 24 * 60 * 60 * 1000
-const statusVersion = ref('dev')
 
-const currentVersion = computed(() => statusVersion.value)
+const currentVersion = computed(() => version || 'dev')
 
 function shouldCheckForUpdate(now = Date.now()) {
   try {
@@ -178,18 +186,6 @@ function markUpdateChecked(now = Date.now()) {
     window.localStorage.setItem(updateCheckStorageKey, String(now))
   } catch {
     // Ignore storage failures; update checks remain best-effort.
-  }
-}
-
-async function fetchStatusVersion() {
-  try {
-    const [status, config] = await Promise.all([api.getStatus(), api.getConfig()])
-    if (status.version) statusVersion.value = status.version
-    configuredMode.value = normalizeMode(config.connection_mode || status.configured_mode || 'transparent')
-    effectiveMode.value = normalizeMode(status.effective_mode || status.configured_mode || config.connection_mode || 'transparent')
-    modeRationale.value = status.mode_rationale || ''
-  } catch {
-    // silently ignore — version display is best-effort
   }
 }
 
@@ -244,9 +240,7 @@ async function doApplyUpdate() {
 }
 
 onMounted(() => {
-  fetchStatusVersion()
   checkUpdate()
-  window.addEventListener('mcc:mode-updated', fetchStatusVersion)
 })
 
 function closeLanguageMenuOnOutsideClick(e: MouseEvent) {
@@ -258,7 +252,6 @@ if (typeof window !== 'undefined') {
   window.addEventListener('click', closeLanguageMenuOnOutsideClick)
   onBeforeUnmount(() => {
     window.removeEventListener('click', closeLanguageMenuOnOutsideClick)
-    window.removeEventListener('mcc:mode-updated', fetchStatusVersion)
   })
 }
 </script>

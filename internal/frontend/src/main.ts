@@ -3,6 +3,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import App from './App.vue'
 import LoginView from './views/LoginView.vue'
 import DashboardView from './views/DashboardView.vue'
+import { guardDashboardRoute } from './router/dashboardGuard'
 import './styles/main.css'
 
 const router = createRouter({
@@ -23,17 +24,7 @@ const router = createRouter({
   ],
 })
 
-router.beforeEach(async (to) => {
-  if (to.path === '/login') return true
-  const redirect = to.fullPath.startsWith('/') && !to.fullPath.startsWith('//') ? to.fullPath : '/'
-  try {
-    const res = await fetch('/api/status')
-    if (res.status === 401) return { name: 'login', query: { redirect } }
-    return true
-  } catch {
-    return { name: 'login', query: { redirect } }
-  }
-})
+router.beforeEach((to) => guardDashboardRoute(to))
 
 const app = createApp(App)
 app.use(router)
