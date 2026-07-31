@@ -5,7 +5,106 @@ Admin entry points: `GET /api/status`, `GET /api/usage/*`, `GET /api/sessions`, 
 Reference features: `2026-05-15-usage-statistics`, `2026-05-21-sqlite-wal-optimization`, `2026-06-12-windows-usage-statistics-fixes`, `2026-07-17-kimi-quota-usage-parsing-fixes`  
 Stack: Go 1.26, SQLite/WAL, Vue 3, TypeScript  
 Last updated: 2026-07-30  
-Progress: design approved; written spec awaiting review; implementation 0 / 6 tasks
+Progress: design approved; implementation 6 / 6 tasks (code complete, compatibility confirmed by independent review); Task 6 performance verification executed — **R7 absolute performance targets NOT met**, see the “Implementation Status / Deviations” sections below
+
+## Implementation Status
+
+Last verified: 2026-07-31 (branch `perf/usage-query-optimization`, HEAD `dcf1dbb`)
+
+### Completion
+
+All six tasks are code-complete and passed compatibility review (14 implementation commits:
+`956f2ec`→`dcf1dbb`):
+
+- Backend independent review (Task 6A, `review-6A-backend.md`): **no high/medium findings**;
+  field-for-field compatible with the legacy algorithm. Independent-oracle differential tests,
+  migration idempotency/atomic rollback, 8-writer concurrent WAL, pagination pushdown, URL
+  redaction, and DST/fractional-second/malformed-timestamp tests all pass. Only two low-risk
+  transients (see “Residual risks”).
+- Frontend re-review (Task 6B2): all four findings are no longer triggerable; no medium/high
+  regression.
+
+### Test evidence (Task 6 full verification, measured 2026-07-31)
+
+| Command | Result |
+|---|---|
+| `go build ./...` | pass (exit 0) |
+| `go vet ./...` | pass (exit 0) |
+| `go test ./... -count=1` | all ok |
+| `CGO_ENABLED=0 go test ./... -count=1` | all ok |
+| Cross builds linux/darwin/windows × amd64/arm64 (`CGO_ENABLED=0`) | 6/6 pass |
+| `npm --prefix internal/frontend test` | 269 pass / 0 fail |
+| `npm --prefix internal/frontend run build` | pass (no unexpected `dist` changes) |
+| `git diff --check` | clean |
+
+Performance benchmark script: `internal/usage/performance_test.go` (added in Task 6). Gated by the
+`MCC_USAGE_BENCH_ROWS` environment variable (skipped when unset, so CI never runs it by default and
+there are **no wall-clock hard assertions**). A fixed random seed (seed=1) generates a reproducible
+dataset mixing roughly 82% provider rows / 18% session rows, with about half of session rows mirroring
+a nearby provider row (same model + same four token counters + ±5-minute window) to deterministically
+produce candidate relationships. Reproduce with:
+
+```bash
+MCC_USAGE_BENCH_ROWS=60332 go test ./internal/usage/ -run TestUsagePerformanceProfile -count=1 -v
+```
+
+### Performance measurements (60,332-row deterministic dataset, seed=1)
+
+Environment: 8 cores / 30GB, `modernc.org/sqlite` (pure Go, same driver as production), WAL +
+`synchronous=NORMAL`, median of several warmed runs. The pre-optimization implementation `032aa80`
+was measured on the same hardware and dataset as a control (new/old values are same-machine relative).
+
+| Metric | Before (032aa80) | After (dcf1dbb) | Relative | R7 target | Met |
+|---|---:|---:|---:|---:|:--:|
+| Migration incl. backfill (5,609 candidates) | — | 367 ms | — | ≤ 2 s | ✅ |
+| `GET /api/status` (Summary, single) | 807 ms | 604 ms | 1.34× faster | ≤ 100 ms | ❌ ~6× over |
+| Requests page 50 (LIMIT/OFFSET) | 868 ms | 361 ms | 2.4× faster | ≤ 100 ms | ❌ ~3.6× over |
+| Trends single | 1,226 ms | 705 ms | 1.74× faster | — | — |
+| Providers single | 990 ms | 942 ms | 1.05× faster | — | — |
+| Models single | 1,019 ms | 687 ms | 1.48× faster | — | — |
+| Coverage single | 989 ms | 1,534 ms | **0.65× slower (regression)** | — | — |
+| Six endpoints parallel wall | 4,817 ms | 5,885 ms | **0.82× slower (regression)** | ≤ 300 ms | ❌ ~19× over |
+
+Hardware aggregation-floor calibration: a plain `COUNT/SUM/MAX` on this machine (joined to
+`usage_tokens`, no scoped CTE) is best≈145 ms, whereas the production table records 40-50 ms — i.e.
+this box is about 3× slower than production hardware. The pre-optimization single status latency here
+(807 ms) closely matches the production baseline (760-780 ms), indicating the single-threaded status
+path runs near production speed on this box. Even applying a generous 3× production scaling, the
+optimized status would be ~215 ms (still ~2× over the 100 ms target) and six-endpoint parallel ~1.96 s
+(still ~6× over the 300 ms target, and roughly equal to the pre-optimization production baseline of
+1.90 s — i.e. no improvement under concurrency versus the old implementation).
+
+### Deviations (root cause of missing R7, located via EXPLAIN QUERY PLAN)
+
+The scoped CTE (`buildScopedCTE`) pushes aggregation into SQL, but a single query is far more expensive
+than a naive aggregation:
+
+- multiple full-table `SCAN r` passes over `usage_requests` (three or more in the Summary plan);
+- `candidate` CTE materialization + `ROW_NUMBER() OVER (...)` window function + `USE TEMP B-TREE FOR
+  ORDER BY`;
+- the `candidate` join uses an `AUTOMATIC PARTIAL COVERING INDEX` (index built at runtime);
+- a single Summary measures ~4.4× the raw aggregation floor (145 ms) on this machine.
+
+The optimization therefore delivers a real 1.3-2.4× per-endpoint improvement, but absolute latency
+remains far above the R7 targets; and the heavier scoped queries contend for CPU under concurrency,
+causing Coverage (single) and the six-endpoint parallel wall clock to regress relative to the old
+implementation. Meeting R7 requires further query-structure work (e.g. trimming candidate computation
+by scope, removing repeated full scans, materialization/index tuning) and is **explicitly out of scope
+for this task**; whether to rework is decided separately by the coordinator and user.
+
+### Residual risks
+
+- **L1 (low-risk transient)**: Trends issues two queries (min/max epoch, then aggregation). Under WAL
+  concurrent writes near a DST boundary, a new row may momentarily land in the last offset bucket; it
+  self-heals on the next call. No security/persistence impact.
+- **L2 (low-risk transient)**: Requests total and page are two queries; under WAL concurrent writes the
+  total and the current page rows may be momentarily inconsistent. Affects only page boundaries,
+  transient, self-healing.
+- **R7 performance targets not met (new high/medium finding from this verification)**: see
+  “Performance measurements / Deviations” above. The implementation is correct and compatible, but
+  status / requests / six-parallel absolute latencies miss R7, and six-parallel regresses versus the
+  old implementation. Recorded honestly and escalated; per the coordinator's decision, not reworked in
+  this task.
 
 ## Overall Analysis (Source Analysis)
 
@@ -140,12 +239,12 @@ contract.
 
 | # | Status | Item | Evidence |
 |---|---|---|---|
-| 1 | Pending | Candidate schema, atomic backfill, and idempotent migration | Migration and compatibility tests |
-| 2 | Pending | Atomic incremental candidate maintenance for either insertion order | Dedupe write-path tests |
-| 3 | Pending | Filtered/scoped SQL dataset and real request pagination | Differential and pagination tests |
-| 4 | Pending | Dedicated SQL aggregation for all statistics endpoints | Differential tests and query plans |
-| 5 | Pending | One initial status request and lazy session loading | Frontend source/behavior tests |
-| 6 | Pending | Full regression, cross-build, production-data, and synthetic benchmarks | Recorded verification evidence |
+| 1 | Done | Candidate schema, atomic backfill, and idempotent migration | Migration and compatibility tests (6A pass) |
+| 2 | Done | Atomic incremental candidate maintenance for either insertion order | Dedupe write-path tests (6A pass) |
+| 3 | Done | Filtered/scoped SQL dataset and real request pagination | Differential and pagination tests (6A pass) |
+| 4 | Done | Dedicated SQL aggregation for all statistics endpoints | Differential tests and query plans (6A pass) |
+| 5 | Done | One initial status request and lazy session loading | Frontend source/behavior tests (6B2 pass) |
+| 6 | Done (R7 not met) | Full regression, cross-build, production-data, and synthetic benchmarks | See “Implementation Status”: all verification passed, but R7 absolute targets not met |
 
 ## Requirements
 
@@ -416,21 +515,26 @@ runs, and a concurrently active WAL database.
 
 #### Plan
 
-- [ ] Add non-flaky benchmarks to `internal/usage/performance_test.go`, with
+- [x] Add non-flaky benchmarks to `internal/usage/performance_test.go`, with
   `MCC_USAGE_BENCH_ROWS` selecting dataset size.
-- [ ] Run focused benchmarks at 60 thousand rows and the opt-in one-million-row profile.
-- [ ] Run `go test ./...`, `go vet ./...`, `npm --prefix internal/frontend test`,
+- [x] Run focused benchmarks at 60 thousand rows (60,332); the opt-in one-million-row profile
+  was not run this round.
+- [x] Run `go test ./...`, `go vet ./...`, `npm --prefix internal/frontend test`,
   `npm --prefix internal/frontend run build`, and `git diff --check`.
-- [ ] Run `CGO_ENABLED=0 go test ./...` and compile `./cmd/server` for linux, darwin, and
-  windows on amd64 and arm64.
-- [ ] Probe a read-only copy/snapshot of the production database and record status,
-  request-page, six-operation parallel, and migration timings.
-- [ ] Update both specs with actual evidence and commit validation documentation.
+- [x] Run `CGO_ENABLED=0 go test ./...` and compile `./cmd/server` for linux, darwin, and
+  windows on amd64 and arm64 (6/6 pass).
+- [ ] Probe a read-only copy/snapshot of the production database: no production snapshot was
+  available, so a 60,332-row production-representative synthetic dataset (seed=1) was used
+  instead, with the pre-optimization implementation `032aa80` measured on the same machine as a
+  control.
+- [x] Update both specs with actual evidence and commit validation documentation.
 
 #### Verification
 
-- [ ] Go and frontend regression
-- [ ] Vet/build/diff checks
-- [ ] Six cross-platform builds
-- [ ] Synthetic 60-thousand/one-million evidence
-- [ ] Production-data evidence
+- [x] Go and frontend regression (`go test ./...` all pass; frontend 269/269)
+- [x] Vet/build/diff checks (all pass)
+- [x] Six cross-platform builds (6/6)
+- [x] Synthetic 60-thousand evidence (see “Implementation Status / Performance measurements”;
+  R7 absolute targets not met)
+- [ ] Production-data evidence (no production snapshot; synthetic representative dataset used;
+  opt-in one-million-row run not executed)

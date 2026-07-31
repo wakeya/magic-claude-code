@@ -5,7 +5,88 @@
 参考功能：`2026-05-15-usage-statistics`、`2026-05-21-sqlite-wal-optimization`、`2026-06-12-windows-usage-statistics-fixes`、`2026-07-17-kimi-quota-usage-parsing-fixes`  
 技术栈：Go 1.26、SQLite/WAL、Vue 3、TypeScript  
 最后更新：2026-07-30  
-进度：设计已确认；书面规格待审核；实现 0 / 6 个任务
+进度：设计已确认；实现 6 / 6 个任务（代码完成，兼容性经独立审查确认）；任务 6 性能验证已执行——**R7 绝对性能目标未达成**，详见下方“实现状态 / 偏差”段落
+
+## 实现状态（Implementation Status）
+
+最后验证：2026-07-31（分支 `perf/usage-query-optimization`，HEAD `dcf1dbb`）
+
+### 完成情况
+
+6 个任务的代码实现均已完成并通过兼容性审查（实现 commit 14 个：`956f2ec`→`dcf1dbb`）：
+
+- 后端独立审查（任务 6A，`review-6A-backend.md`）：**未发现高/中危问题**；实现与旧算法逐字段兼容，
+  独立 oracle 差分测试、迁移幂等/原子回滚、8 writer 并发 WAL、分页下推、URL 脱敏、
+  DST/小数秒/非法时戳等专项测试全部通过。仅 2 项低危瞬态（见“剩余风险”）。
+- 前端复审（任务 6B2）：四项 finding 均不可再触发，无中/高回归。
+
+### 测试证据（任务 6 全量验证，2026-07-31 实测）
+
+| 命令 | 结果 |
+|---|---|
+| `go build ./...` | 通过（exit 0） |
+| `go vet ./...` | 通过（exit 0） |
+| `go test ./... -count=1` | 全部 ok |
+| `CGO_ENABLED=0 go test ./... -count=1` | 全部 ok |
+| 跨平台构建 linux/darwin/windows × amd64/arm64（`CGO_ENABLED=0`） | 6/6 通过 |
+| `npm --prefix internal/frontend test` | 269 通过 / 0 失败 |
+| `npm --prefix internal/frontend run build` | 通过（`dist` 无意外变更） |
+| `git diff --check` | 干净 |
+
+性能基准脚本：`internal/usage/performance_test.go`（任务 6 新增）。由环境变量
+`MCC_USAGE_BENCH_ROWS` 门控（未设置则跳过，CI 默认不执行，**无墙钟硬断言**）；固定随机种子
+（seed=1）生成可重复数据集，混合约 82% 供应商行 / 18% 会话行，并让约半数会话行镜像邻近供应商行
+（相同模型 + 相同四类 token 计数 + ±5 分钟窗口）以确定性产生候选关系。复现命令：
+
+```bash
+MCC_USAGE_BENCH_ROWS=60332 go test ./internal/usage/ -run TestUsagePerformanceProfile -count=1 -v
+```
+
+### 性能测量（60,332 行确定性数据集，seed=1）
+
+环境：8 核 / 30GB，`modernc.org/sqlite`（纯 Go，与生产同驱动），WAL + `synchronous=NORMAL`，
+预热后多次取中位。同硬件同数据下另取优化前实现 `032aa80` 作对照（新旧对比为同机同库相对值）。
+
+| 指标 | 优化前 (032aa80) | 优化后 (dcf1dbb) | 相对变化 | R7 目标 | 达标 |
+|---|---:|---:|---:|---:|:--:|
+| 迁移（含候选回填，建立 5,609 候选） | — | 367 ms | — | ≤ 2 s | ✅ |
+| `GET /api/status`（Summary 单次） | 807 ms | 604 ms | 1.34× 快 | ≤ 100 ms | ❌ 超约 6 倍 |
+| Requests 第 50 页（LIMIT/OFFSET） | 868 ms | 361 ms | 2.4× 快 | ≤ 100 ms | ❌ 超约 3.6 倍 |
+| Trends 单次 | 1,226 ms | 705 ms | 1.74× 快 | — | — |
+| Providers 单次 | 990 ms | 942 ms | 1.05× 快 | — | — |
+| Models 单次 | 1,019 ms | 687 ms | 1.48× 快 | — | — |
+| Coverage 单次 | 989 ms | 1,534 ms | **0.65× 慢（回归）** | — | — |
+| 六接口并发墙钟 | 4,817 ms | 5,885 ms | **0.82× 慢（回归）** | ≤ 300 ms | ❌ 超约 19 倍 |
+
+硬件聚合下限校准：本机原始 `COUNT/SUM/MAX`（联 `usage_tokens`、无 scoped CTE）best≈145 ms，
+而生产规格表记录为 40-50 ms，即本机约比生产硬件慢 3 倍。本机优化前 status 单次 807 ms 与生产
+基线 760-780 ms 基本吻合，说明单线程 status 路径本机接近生产速度。即便按生产 3 倍速折算，优化后
+status 约 215 ms（仍超 100 ms 目标约 2 倍）、六接口并发约 1.96 s（仍超 300 ms 目标约 6 倍，且约等于
+优化前生产基线 1.90 s，即并发场景相对旧实现无改善）。
+
+### 偏差（R7 未达成根因，EXPLAIN QUERY PLAN 定位）
+
+scoped CTE（`buildScopedCTE`）虽将聚合下推至 SQL，但单条查询开销显著高于朴素聚合：
+
+- 对 `usage_requests` 多次全表 `SCAN r`（Summary 查询计划中出现 3 次以上）；
+- `candidate` CTE 物化 + `ROW_NUMBER() OVER (...)` 窗口函数 + `USE TEMP B-TREE FOR ORDER BY`；
+- 对 `candidate` 连接使用 `AUTOMATIC PARTIAL COVERING INDEX`（运行时自建索引）；
+- 单条 Summary 实测为本机原始聚合下限（145 ms）的约 4.4 倍。
+
+因此优化对单接口取得 1.3-2.4× 的真实提升，但绝对延迟仍远高于 R7 目标；且更重的 scoped 查询在并发下
+相互争用 CPU，导致 Coverage 单接口与六接口并发墙钟相对优化前回归。达成 R7 需进一步的查询结构优化
+（如按 scope 裁剪 candidate 计算、减少重复全表扫描、物化/索引优化），**明确不在本任务范围**；是否
+返工由协调者与用户另行决定。
+
+### 剩余风险
+
+- **L1（低危瞬态）**：Trends 先查 min/max epoch 再聚合（两次查询），WAL 并发写 + DST 边界下新行可能
+  瞬时落入末区间偏移桶，下次调用自愈；无安全/持久化影响。
+- **L2（低危瞬态）**：Requests 总数与分页为两次查询，WAL 并发写下 total 与当页行集可能瞬时不一致，
+  仅影响翻页边界、瞬时、自愈。
+- **R7 性能目标未达成（本次验证新增的高/中危发现）**：见上“性能测量 / 偏差”。实现正确兼容，但
+  status / requests / 六并发绝对延迟未达 R7，且六并发相对旧实现回归。已如实记录并 escalation；按
+  协调者决定不在本任务返工。
 
 ## 整体分析（源站分析）
 
@@ -120,12 +201,12 @@ ON usage_requests(started_at DESC, id DESC);
 
 | # | 状态 | 项目 | 证据 |
 |---|---|---|---|
-| 1 | 待处理 | 候选表结构、原子回填和幂等迁移 | 迁移与兼容测试 |
-| 2 | 待处理 | 任意写入顺序下的原子增量候选维护 | 去重写路径测试 |
-| 3 | 待处理 | 筛选/scoped SQL 数据集和真实请求分页 | 差分与分页测试 |
-| 4 | 待处理 | 全部统计接口使用专用 SQL 聚合 | 差分测试和查询计划 |
-| 5 | 待处理 | 首屏一次状态请求和会话按需加载 | 前端源码/行为测试 |
-| 6 | 待处理 | 全量回归、跨平台构建、生产与合成基准 | 实际验证证据 |
+| 1 | 完成 | 候选表结构、原子回填和幂等迁移 | 迁移与兼容测试（6A 通过） |
+| 2 | 完成 | 任意写入顺序下的原子增量候选维护 | 去重写路径测试（6A 通过） |
+| 3 | 完成 | 筛选/scoped SQL 数据集和真实请求分页 | 差分与分页测试（6A 通过） |
+| 4 | 完成 | 全部统计接口使用专用 SQL 聚合 | 差分测试和查询计划（6A 通过） |
+| 5 | 完成 | 首屏一次状态请求和会话按需加载 | 前端源码/行为测试（6B2 通过） |
+| 6 | 完成（R7 未达标） | 全量回归、跨平台构建、生产与合成基准 | 见“实现状态”：验证全通过，但 R7 绝对性能目标未达成 |
 
 ## 需求
 
@@ -373,20 +454,21 @@ O(n log n) 或更好的索引/扫描算法，不执行二次方交叉连接。
 
 #### 计划
 
-- [ ] 在 `internal/usage/performance_test.go` 添加无易波动断言的基准，通过
+- [x] 在 `internal/usage/performance_test.go` 添加无易波动断言的基准，通过
   `MCC_USAGE_BENCH_ROWS` 选择数据量。
-- [ ] 运行 6 万行专项基准和可选 100 万行 profile。
-- [ ] 运行 `go test ./...`、`go vet ./...`、`npm --prefix internal/frontend test`、
+- [x] 运行 6 万行（60,332）专项基准；100 万行 profile 为可选项，本次未执行。
+- [x] 运行 `go test ./...`、`go vet ./...`、`npm --prefix internal/frontend test`、
   `npm --prefix internal/frontend run build`、`git diff --check`。
-- [ ] 运行 `CGO_ENABLED=0 go test ./...`，并为 linux、darwin、windows 的 amd64/arm64
-  编译 `./cmd/server`。
-- [ ] 对生产数据库的只读副本/快照执行探针，记录 status、请求分页、六操作并发和迁移耗时。
-- [ ] 将实际证据回写两份规格并提交验证文档。
+- [x] 运行 `CGO_ENABLED=0 go test ./...`，并为 linux、darwin、windows 的 amd64/arm64
+  编译 `./cmd/server`（6/6 通过）。
+- [ ] 对生产数据库的只读副本/快照执行探针：本次无生产库只读副本，改以 60,332 行生产代表性
+  合成数据集（seed=1）替代，并额外取优化前实现 `032aa80` 同机同库对照。
+- [x] 将实际证据回写两份规格并提交验证文档。
 
 #### 验证
 
-- [ ] Go 与前端回归
-- [ ] Vet/build/diff 检查
-- [ ] 六个跨平台构建
-- [ ] 合成 6 万/100 万行证据
-- [ ] 生产数据证据
+- [x] Go 与前端回归（`go test ./...` 全过；前端 269/269）
+- [x] Vet/build/diff 检查（均通过）
+- [x] 六个跨平台构建（6/6）
+- [x] 合成 6 万行证据（见“实现状态 / 性能测量”；R7 绝对目标未达成）
+- [ ] 生产数据证据（无生产库只读副本，以合成代表性数据集替代；100 万行可选未执行）
