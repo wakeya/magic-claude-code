@@ -82,7 +82,7 @@ func (s *Store) Migrate() error {
 			return err
 		}
 	}
-	return nil
+	return s.migrateDedupeCandidates()
 }
 
 func (s *Store) Record(req RequestRecord, tok TokenRecord) error {
