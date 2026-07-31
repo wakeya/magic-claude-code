@@ -1044,6 +1044,11 @@ let usageChart: EChartsType | null = null
 let statusRefreshTimer: number | null = null
 let statusLoadVersion = 0
 let connectionModeLoadVersion = 0
+// 挂载/卸载代际（mounted/disposed ownership）：onBeforeUnmount 时自增。
+// onMounted 的 await 完成后据此判断是否仍持有「注册 interval/listener」的所有权；
+// loadStatus / loadConnectionMode 在 await 后据此判断是否仍持有「更新状态」的所有权，
+// 防止 onMounted await 期间组件被卸载后仍注册定时器/监听器或用旧响应更新已卸载组件。
+let mountGeneration = 0
 let connectionConfig: ConfigResponse | null = null
 let quotaSnapshotLoadVersion = 0
 const defaultUsageDateRange = usageDateRangeForPreset('last_7_days')
@@ -1376,9 +1381,11 @@ async function loadStatus(
   request: Promise<StatusInfo> = api.getStatus(browserTimeZone()),
 ): Promise<StatusInfo | null> {
   const loadVersion = ++statusLoadVersion
+  const generation = mountGeneration
   try {
     const nextStatus = await request
     if (loadVersion !== statusLoadVersion) return null
+    if (generation !== mountGeneration) return null
     status.value = nextStatus
     if (connectionConfig) applyConnectionModeState(nextStatus, connectionConfig)
     return nextStatus
@@ -1619,9 +1626,11 @@ async function loadConnectionMode(
   configRequest: Promise<ConfigResponse> = api.getConfig(),
 ) {
   const loadVersion = ++connectionModeLoadVersion
+  const generation = mountGeneration
   try {
     const [nextStatus, config] = await Promise.all([statusRequest, configRequest])
     if (loadVersion !== connectionModeLoadVersion) return
+    if (generation !== mountGeneration) return
     connectionConfig = config
     if (nextStatus) applyConnectionModeState(nextStatus, config)
     if (config.gateway_listen_addr) gatewayAddr.value = config.gateway_listen_addr
@@ -2126,6 +2135,7 @@ watch(themeMode, () => {
 })
 
 onMounted(async () => {
+  const generation = mountGeneration
   // Initialize tab from query parameter.
   const urlTab = Array.isArray(route.query.tab) ? route.query.tab[0] : route.query.tab
   if (!usageProviderId.value && urlTab && ['status', 'providers', 'connection', 'certs', 'usage', 'sessions', 'failover'].includes(urlTab)) {
@@ -2148,6 +2158,8 @@ onMounted(async () => {
     loadCerts(),
     loadConnectionMode(initialStatusLoad, initialConfigRequest),
   ])
+  // 若 await 期间组件已卸载（如路由跳走），放弃后续 interval/listener 注册与状态更新。
+  if (generation !== mountGeneration) return
   void loadUsageData()
   void loadQuotaSnapshots()
   void loadFailoverSettings()
@@ -2165,6 +2177,7 @@ onMounted(async () => {
 watch(activeTab, () => ensureProvidersRefresh())
 
 onBeforeUnmount(() => {
+  mountGeneration += 1
   invalidateSessionsLoad()
   if (statusRefreshTimer) window.clearInterval(statusRefreshTimer)
   if (providersRefreshTimer) window.clearInterval(providersRefreshTimer)
