@@ -1,12 +1,14 @@
 import type { StatusInfo } from '../composables/useApi'
 import {
-  clearDashboardInitialStatus,
+  beginDashboardInitialStatusNavigation,
+  dashboardInitialStatusNavigationMetaKey,
   stageDashboardInitialStatus,
 } from '../stores/dashboardInitialStatus.ts'
 
 type GuardRoute = {
   path: string
   fullPath: string
+  meta: Record<PropertyKey, unknown>
 }
 
 type StatusRequest = (input: string) => Promise<Response>
@@ -29,7 +31,8 @@ export async function guardDashboardRoute(
   request: StatusRequest = fetch,
   timeZone = browserTimeZone(),
 ): Promise<true | LoginRedirect> {
-  clearDashboardInitialStatus()
+  const navigation = beginDashboardInitialStatusNavigation()
+  to.meta[dashboardInitialStatusNavigationMetaKey] = navigation
   if (to.path === '/login') return true
 
   const redirect = to.fullPath.startsWith('/') && !to.fullPath.startsWith('//') ? to.fullPath : '/'
@@ -39,7 +42,7 @@ export async function guardDashboardRoute(
     if (res.status === 401) return { name: 'login', query: { redirect } }
     if (res.ok) {
       try {
-        stageDashboardInitialStatus(await res.json() as StatusInfo)
+        stageDashboardInitialStatus(navigation, await res.json() as StatusInfo)
       } catch {
         // Dashboard falls back to its existing status request.
       }

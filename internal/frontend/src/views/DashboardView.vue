@@ -931,6 +931,7 @@ import { runProviderImportFlow } from '@/utils/providerImportFlow'
 import {
   clearDashboardInitialStatus,
   consumeDashboardInitialStatus,
+  dashboardInitialStatusNavigationMetaKey,
 } from '@/stores/dashboardInitialStatus'
 import { useLazySessionData } from '@/composables/useLazySessionData'
 
@@ -2135,7 +2136,9 @@ onMounted(async () => {
   if (activeTab.value === 'sessions') void loadSessionsList()
 
   await syncTheme(api.getPreferences)
-  const stagedStatus = consumeDashboardInitialStatus()
+  const stagedStatus = consumeDashboardInitialStatus(
+    route.meta[dashboardInitialStatusNavigationMetaKey],
+  )
   const initialStatusRequest = stagedStatus
     ? Promise.resolve(stagedStatus)
     : api.getStatus(browserTimeZone())
