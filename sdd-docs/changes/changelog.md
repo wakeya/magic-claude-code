@@ -26,6 +26,7 @@
 - **隔离脚本 OOM/崩溃影响面**（#40、#42）：保留超大 Array、无限循环和超长字符串的快速预检，同时以子进程作为真正的内存安全边界；worker 输入、stdout、stderr、执行时间和内存全部有界，资源限制初始化失败即拒绝执行，超时或取消会终止子进程。
 - **配置密钥不进入 JavaScript worker**（#42）：worker 请求不包含实际 placeholder values，密钥替换只在父进程 Go 层完成；extractor worker 仅额外接收有界的上游响应体。worker stderr、协议错误和异常 payload 不回显脚本、响应体或配置密钥。
 - **AI 生成 LLM 客户端 SSRF 加固**（#37、#42）：配置预检与实际拨号阶段双重校验目标 IP，阻断内置云元数据 IP 与 DNS rebinding，禁用 LLM HTTP 重定向；管理员配置的 loopback/私网 LLM 代理仍可使用。
+- **升级 PostCSS 修复 source map 路径遍历**：前端 lockfile 将 PostCSS `8.5.16` 升级到 `8.5.25`，修复 GHSA-r28c-9q8g-f849（恶意 `sourceMappingURL` 可导致任意 `.map` 文件泄露）；`npm audit` 从 1 个 high 降为 0。
 
 ### Docs
 - 新增 custom script form body、AI 生成、样例库、自检、多轮修正、安全加固和 worker 隔离规格；同步更新 CC 2.1.220 拦截端点活文档。
