@@ -316,6 +316,43 @@ contract.
 - Foreign-key cascades remove candidates during usage clearing. The session-sync reset
   option keeps its current behavior.
 
+### Supported data range (int64 aggregation boundary, M-3 conclusion)
+
+Aggregation (the in-row four-token sum and `SUM()`; see `scopedTokenSumExpr` and the
+Summary/Trends/Providers/Models queries in `scoped_query.go`) pushes the former Go
+per-row int64 addition down into SQLite. The supported data range is defined by the
+following invariants, and this optimization promises field-for-field parity with the
+old algorithm only within that range:
+
+- **I1 Single values**: the four `usage_tokens` counters and `duration_ms` are valid
+  int64s. The API parser (`usageFieldInt64` in `parse.go`) rejects integers `> MaxInt64`
+  and floats `≥ 2^63` (ignored as junk fields), but integers exactly `MaxInt64`/`MinInt64`
+  are accepted; session-sync int64 fields reject out-of-range values via `encoding/json`;
+  `duration_ms` derives from Go `time.Since` (≤ ~9.2e12 ms per value).
+- **I2 In-row sum**: the sum of the four token counters per row stays within int64.
+- **I3 Cross-row sums**: token totals and duration totals of any aggregation group
+  (Summary global, each Providers/Models group, each Trends bucket) stay within int64.
+
+Real product data always satisfies I2/I3: single counters are real token counts
+(≤ ~1e9), row counts are ≤ a few hundred thousand, and `duration_ms` ≤ 9.2e12 ms/row
+(provably safe up to 10^6 rows) — five or more orders of magnitude below the int64
+limit (≈9.2e18). Within the range, SQL aggregates are always INTEGER and match the old
+Go int64 accumulation bit-for-bit.
+
+**Overflow-point behavior (documented; only for database contents violating I2/I3,
+e.g. hand-edited values near 2^63)** : the SQL aggregation path fails with an explicit
+error and never silently returns a distorted number. An in-row sum overflow promotes
+the SQLite integer expression to REAL, and database/sql cannot scan the scientific-
+notation REAL into int64 (`Scan error`); a cross-row `SUM()` integer overflow fails at
+query time with SQLite `integer overflow`. The old Go implementation silently wrapped at
+these points (garbage negative values); the new path fails explicitly instead. This
+difference affects only unsupported data and never changes behavior within the
+supported range. The boundary is locked by `internal/usage/int64_boundary_test.go` on
+the target driver (modernc.org/sqlite): single values near MaxInt64, in-row sums
+exactly at MaxInt64, and cross-row totals near MaxInt64 (including duration) all match
+the legacyOracle field-for-field; overflow points assert the explicit error plus a
+documented comparison against the old wrapped values.
+
 ## Development Checklist
 
 | # | Status | Item | Evidence |
