@@ -60,10 +60,15 @@ func TestBuildSummaryQueryAggregatesScopedDataset(t *testing.T) {
 		t.Fatalf("placeholder count = %d, args = %d", strings.Count(query, "?"), len(args))
 	}
 
-	for _, want := range []string{"COUNT(*)", "SUM(", "filtered AS", "usage_dedupe_candidates d", "MIN(d2.candidate_rank)", "scoped AS", "r.error_type", "r.status_code", "t.input_tokens"} {
+	// R4（P2）：raw 口径的聚合跳过 candidate 计算（scoped 恒输出空标记列），candidate
+	// 结构仅在 effective 口径断言（见 TestBuildScopedCTEParameterizesFiltersInStableOrder）。
+	for _, want := range []string{"COUNT(*)", "SUM(", "filtered AS", "'' AS dedupe_status", "'' AS dedupe_request_id", "scoped AS", "r.error_type", "r.status_code", "t.input_tokens"} {
 		if !strings.Contains(query, want) {
 			t.Fatalf("summary query missing %q:\n%s", want, query)
 		}
+	}
+	if strings.Contains(query, "usage_dedupe_candidates") {
+		t.Fatalf("raw-scope summary query must skip candidate computation:\n%s", query)
 	}
 	// 窄字段投影：聚合不读取宽行字段，尤其不读取/解析 URL（R5）。
 	for _, banned := range []string{"r.user_agent", "r.backend_url", "r.method", "r.duration_ms", "r.request_bytes", "r.response_bytes"} {
@@ -503,10 +508,13 @@ func TestBuildTrendsQueryAggregatesScopedDataset(t *testing.T) {
 		t.Fatalf("placeholder count = %d, args = %d", strings.Count(query, "?"), len(args))
 	}
 
-	for _, want := range []string{"COUNT(*)", "SUM(", "filtered AS", "usage_dedupe_candidates d", "MIN(d2.candidate_rank)", "scoped AS", "GROUP BY bucket", "ORDER BY bucket ASC", "'unixepoch'", "r.error_type", "r.status_code", "t.input_tokens"} {
+	for _, want := range []string{"COUNT(*)", "SUM(", "filtered AS", "'' AS dedupe_status", "'' AS dedupe_request_id", "scoped AS", "GROUP BY bucket", "ORDER BY bucket ASC", "'unixepoch'", "r.error_type", "r.status_code", "t.input_tokens"} {
 		if !strings.Contains(query, want) {
 			t.Fatalf("trends query missing %q:\n%s", want, query)
 		}
+	}
+	if strings.Contains(query, "usage_dedupe_candidates") {
+		t.Fatalf("raw-scope trends query must skip candidate computation:\n%s", query)
 	}
 	// 窄字段投影：聚合不读取宽行字段，尤其不读取/解析 URL（R5）。
 	// 注：r.provider_name/r.provider_api_url/r.error_message 由共享搜索筛选 WHERE
@@ -1042,7 +1050,7 @@ func TestBuildAggregateQueryAggregatesScopedDataset(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"COUNT(*)", "SUM(", "filtered AS", "usage_dedupe_candidates d", "MIN(d2.candidate_rank)", "scoped AS",
+		"COUNT(*)", "SUM(", "filtered AS", "'' AS dedupe_status", "'' AS dedupe_request_id", "scoped AS",
 		"GROUP BY group_key", "ROW_NUMBER()", "PARTITION BY r.provider_id",
 		"ORDER BY scoped.started_at DESC, scoped.request_id DESC",
 		"ORDER BY total_requests DESC, group_key ASC",
@@ -1052,6 +1060,9 @@ func TestBuildAggregateQueryAggregatesScopedDataset(t *testing.T) {
 		if !strings.Contains(query, want) {
 			t.Fatalf("aggregate query missing %q:\n%s", want, query)
 		}
+	}
+	if strings.Contains(query, "usage_dedupe_candidates") {
+		t.Fatalf("raw-scope aggregate query must skip candidate computation:\n%s", query)
 	}
 	// 窄字段投影：聚合不读取宽行字段，尤其不读取/解析 URL（R5）。
 	// 注：r.provider_name/r.provider_api_url/r.error_message 由共享搜索筛选 WHERE
@@ -1537,10 +1548,13 @@ func TestBuildCoverageQueriesAggregateScopedDataset(t *testing.T) {
 		if strings.Count(query, "?") != len(args) {
 			t.Fatalf("%s placeholder count = %d, args = %d", name, strings.Count(query, "?"), len(args))
 		}
-		for _, want := range []string{"filtered AS", "usage_dedupe_candidates d", "MIN(d2.candidate_rank)", "scoped AS", "COUNT(*)"} {
+		for _, want := range []string{"filtered AS", "'' AS dedupe_status", "'' AS dedupe_request_id", "scoped AS", "COUNT(*)"} {
 			if !strings.Contains(query, want) {
 				t.Fatalf("%s coverage query missing %q:\n%s", name, want, query)
 			}
+		}
+		if strings.Contains(query, "usage_dedupe_candidates") {
+			t.Fatalf("%s raw-scope coverage query must skip candidate computation:\n%s", name, query)
 		}
 		// 窄字段投影：聚合不读取宽行字段（R4），尤其不读取 backend_url/user_agent/
 		// token 计数/duration。注：r.provider_name/r.provider_api_url/r.error_message/

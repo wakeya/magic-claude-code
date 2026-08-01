@@ -69,8 +69,16 @@ const scopedTokenSumExpr = `t.input_tokens + t.output_tokens + t.cache_creation_
 // 参数。countSQL 对 scoped 数据集 COUNT(*)，pageSQL 回连 usage_requests/usage_tokens
 // 投影完整 RequestRow（含 scoped.dedupe_status/dedupe_request_id），保证总数、排序、
 // 筛选、口径与重复标记与旧算法逐字段兼容。
+//
+// R4（P2）：Requests 需要 dedupe 标记列（前端徽章与 6A 兼容性要求），但 provider 口径
+// 只输出非会话行、标记恒为空串，因此该口径跳过 candidate JOIN；其余口径（effective/
+// raw/session_log）完整计算标记。
 func buildRequestsQueries(filter Filter) (countSQL, pageSQL string, args []any) {
-	cte, args := buildScopedCTE(filter)
+	needDedupe := true
+	if filter.StatsScope == StatsScopeProvider {
+		needDedupe = false
+	}
+	cte, args := buildScopedCTE(filter, needDedupe)
 	countSQL = cte + "\n\tSELECT COUNT(*) FROM scoped"
 	pageSQL = cte + `
 	SELECT ` + requestRowSelectColumns + `, scoped.dedupe_status, scoped.dedupe_request_id
@@ -110,26 +118,49 @@ func scopedTimeOrderKeyExpr(column string) string {
 // 排序树各 1 份），由 TestSummaryQueryPlanScansScopedOnce 锁定。
 // startOfToday/endOfToday 为本地今日区间转 UTC 后的整秒边界，以 Unix 秒参数传入；
 // 今日判定在整秒边界上与 Go 的 start <= t < end 完全等价（含小数秒行与非法时戳行）。
+//
+// R4（任务 3 谨慎实现）：epoch 表达式（每行 1 次 strftime）提升为内层子查询列
+// started_epoch_s 只求值一次，今日判定与 MAX 时间键编码都引用该列，使每行 strftime
+// 调用从 3 次降为 2 次（epoch 1 次 + 小数秒 1 次）；聚合结构、参数顺序与逐字段结果
+// 不变（legacyOracleSummary 差分 + R2 A/B 逐字段断言锁定）。非 effective 口径由
+// buildScopedCTE 跳过 candidate 计算（P2）。
 func buildSummaryQuery(filter Filter, startOfToday, endOfToday time.Time) (string, []any) {
-	cte, args := buildScopedCTE(filter)
+	cte, args := buildScopedCTE(filter, false)
 	epoch := scopedEpochSecondsExpr("r.started_at")
-	// todayPredicate 在主 SELECT 中出现两次（今日计数与今日 token），各消耗 start/end 两个参数。
-	todayPredicate := epoch + ` >= ? AND ` + epoch + ` < ?`
+	todayPredicate := `started_epoch_s >= ? AND started_epoch_s < ?`
+	// 内层子查询已投影去前缀列名（R4 epoch 单次求值），外层聚合引用同名列。
+	hasUsage := `usage_source <> '' AND usage_source <> 'none' AND usage_parse_status = 'ok'`
+	isFailed := `error_type <> '' OR status_code IS NULL OR status_code < 200 OR status_code >= 300`
+	tokenSum := `input_tokens + output_tokens + cache_creation_input_tokens + cache_read_input_tokens`
 	// 定长前缀（29 字符）保证 MAX 的字典序等价于时间序；substr 第 30 位起即 started_at 原值。
-	lastStarted := `substr(MAX(` + scopedTimeOrderKeyExpr("r.started_at") + ` || r.started_at), ` +
+	lastStarted := `substr(MAX(printf('%020d', started_epoch_s + 62135596800) || ` +
+		scopedStartedAtFractionExpr("started_at") + ` || started_at), ` +
 		strconv.Itoa(scopedTimeOrderKeyLength+1) + `)`
 	query := cte + `
 	SELECT
 		COUNT(*),
-		COALESCE(SUM(CASE WHEN ` + scopedHasUsagePredicate + ` THEN 1 ELSE 0 END), 0),
-		COALESCE(SUM(CASE WHEN ` + scopedHasUsagePredicate + ` THEN ` + scopedTokenSumExpr + ` ELSE 0 END), 0),
-		COALESCE(SUM(CASE WHEN ` + scopedIsFailedPredicate + ` THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN ` + hasUsage + ` THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN ` + hasUsage + ` THEN ` + tokenSum + ` ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN ` + isFailed + ` THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN ` + todayPredicate + ` THEN 1 ELSE 0 END), 0),
-		COALESCE(SUM(CASE WHEN ` + todayPredicate + ` AND ` + scopedHasUsagePredicate + ` THEN ` + scopedTokenSumExpr + ` ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN ` + todayPredicate + ` AND ` + hasUsage + ` THEN ` + tokenSum + ` ELSE 0 END), 0),
 		` + lastStarted + `
-	FROM scoped
-	JOIN usage_requests r ON r.id = scoped.request_id
-	JOIN usage_tokens t ON t.request_id = r.id`
+	FROM (
+		SELECT
+			` + epoch + ` AS started_epoch_s,
+			r.started_at AS started_at,
+			t.input_tokens AS input_tokens,
+			t.output_tokens AS output_tokens,
+			t.cache_creation_input_tokens AS cache_creation_input_tokens,
+			t.cache_read_input_tokens AS cache_read_input_tokens,
+			t.usage_source AS usage_source,
+			t.usage_parse_status AS usage_parse_status,
+			r.error_type AS error_type,
+			r.status_code AS status_code
+		FROM scoped
+		JOIN usage_requests r ON r.id = scoped.request_id
+		JOIN usage_tokens t ON t.request_id = r.id
+	)`
 	args = append(args, startOfToday.Unix(), endOfToday.Unix(), startOfToday.Unix(), endOfToday.Unix())
 	return query, args
 }
@@ -203,7 +234,7 @@ func scopedTrendsBucketExpr(column string, loc *time.Location, intervals []scope
 // 时区偏移区间。MIN/MAX 忽略 NULL，因此全部时间戳非法时返回 NULL/NULL；数据集为空时
 // 同样返回 NULL/NULL，调用方据此退化为单一占位区间。
 func buildTrendsRangeQuery(filter Filter) (string, []any) {
-	cte, args := buildScopedCTE(filter)
+	cte, args := buildScopedCTE(filter, false)
 	query := cte + `
 	SELECT
 		MIN(CAST(strftime('%s', r.started_at) AS INTEGER)),
@@ -220,7 +251,7 @@ func buildTrendsRangeQuery(filter Filter) (string, []any) {
 // withUsage/total 在 Go 中相除，保留旧实现的浮点语义。两次查询（区间+聚合）之间若有
 // 并发写入，新行落入 ELSE 末区间偏移桶，属可忽略的瞬时偏差。
 func buildTrendsQuery(filter Filter, loc *time.Location, intervals []scopedZoneInterval) (string, []any) {
-	cte, args := buildScopedCTE(filter)
+	cte, args := buildScopedCTE(filter, false)
 	bucketExpr, bucketArgs := scopedTrendsBucketExpr("r.started_at", loc, intervals)
 	args = append(args, bucketArgs...)
 	query := cte + `
@@ -271,7 +302,7 @@ ORDER BY bucket ASC`
 // 决胜（旧不稳定排序下同数组顺序未定义，R1 明确允许将其确定化）。筛选、去重、口径由
 // buildScopedCTE 统一下推，逐字段兼容由 legacyOracleAggregate 差分测试保证。
 func buildAggregateQuery(filter Filter, groupColumn, nameColumn string) (string, []any) {
-	cte, args := buildScopedCTE(filter)
+	cte, args := buildScopedCTE(filter, false)
 	query := cte + `
 SELECT
 	group_key,
@@ -324,7 +355,7 @@ ORDER BY total_requests DESC, group_key ASC`
 // 的 URL 脱敏后同组，与旧算法先脱敏再分组的语义逐字段一致。筛选、去重、口径由
 // buildScopedCTE 统一下推，逐字段兼容由 legacyOracleCoverage 差分测试保证。
 func buildCoverageQueries(filter Filter) (summarySQL, statusSQL string, args []any) {
-	cte, args := buildScopedCTE(filter)
+	cte, args := buildScopedCTE(filter, false)
 	summarySQL = cte + `
 SELECT
 	provider_name,
@@ -380,11 +411,27 @@ GROUP BY r.provider_name, r.provider_api_url, r.mapped_model, r.source_entrypoin
 // AUTOMATIC PARTIAL COVERING INDEX + 窗口 TEMP B-TREE，见 R1 诊断）。改为：候选排名持久化于
 // usage_dedupe_candidates.candidate_rank（写入/回填维护，稠密 1..N，排序与旧 ROW_NUMBER 逐字一致：
 // model_priority 升序 → provider 整秒 epoch 升序 → 9 位小数秒升序 → provider_request_id 升序），
-// scoped 直接 LEFT JOIN 基表 usage_dedupe_candidates 走持久索引 (session_request_id, candidate_rank)，
-// 并用相关子查询 MIN(candidate_rank) 在“过滤后候选集”中取最优（保留旧“普通过滤后 fallback”语义：
-// 最优候选被筛选排除时回退到下一个过滤后候选）。由 TestUsageQueryPlansEliminateCandidateWindowAndAutoIndex
-// 锁定六端点计划无自动索引/无 candidate 窗口、且走持久索引。
-func buildScopedCTE(filter Filter) (string, []any) {
+// scoped 直接以相关子查询在“过滤后候选集”中取最优（保留旧“普通过滤后 fallback”语义：
+// 最优候选被筛选排除时回退到下一个过滤后候选）。
+//
+// R4（P2 + 任务 3）：
+//   - needDedupe 参数：调用方是否需要 scoped 行上的 dedupe 标记列。聚合端点（Summary/Trends/
+//     Providers/Models/Coverage）在 raw/provider/session_log 口径下不输出标记、过滤也不依赖
+//     候选判定，完全跳过 candidate JOIN 与相关子查询（实测该口径 Summary 约 3× 加速，见 R4
+//     报告）；effective 口径的 WHERE 依赖候选判定，恒强制完整计算。Requests 端点需要标记列
+//     （前端徽章），但 provider 口径只输出非会话行、标记恒空，同样跳过。
+//   - candidate 选取从 LEFT JOIN 基表 + 逐行相关子查询改为 CASE 惰性子查询：非会话行（约 82%）
+//     完全跳过候选查找（SQLite 对 CASE 分支惰性求值），仅会话行执行；过滤后最优候选语义不变。
+//     该结构在六端点 60k 基准上逐字段等价（R4 A/B 逐字段断言），且消除 R3 计划中每行一次
+//     SEARCH d（LEFT JOIN），Summary 约 -21%。
+//   - 已实验否决的替代结构（R4 报告）：COUNT(*) OVER() 合并 Requests count+page（窗口函数强制
+//     全量物化排序，破坏 page 的 LIMIT 提前终止，60k 上 445ms vs 166ms）；GROUP BY 物化候选 CTE
+//     （346ms 且重新引入 AUTOMATIC INDEX，违反 R3 防回归断言）。
+//
+// 时间过滤（started_at >= ? AND started_at < ?）由 filterWhere 参数化生成，SQLite 计划器自动
+// 选择 idx_usage_requests_started_id 范围 SEARCH（实测 7 天窗口 count 152ms→15ms），由
+// TestUsageQueryPlansUseStartedIDIndexOnTimeRange 锁定。
+func buildScopedCTE(filter Filter, needDedupe bool) (string, []any) {
 	where, args := filterWhere(filter)
 	filteredWhere := ""
 	if where != "" {
@@ -395,9 +442,13 @@ func buildScopedCTE(filter Filter) (string, []any) {
 	if scope == "" {
 		scope = StatsScopeEffective
 	}
+	if scope == StatsScopeEffective {
+		// effective 口径的 scoped WHERE 依赖候选判定（is_session_log = 0 OR 非重复），恒需完整计算。
+		needDedupe = true
+	}
 	args = append(args, scope)
 
-	return `WITH filtered AS (
+	filtered := `WITH filtered AS (
 	SELECT
 		r.id AS request_id,
 		r.started_at,
@@ -418,36 +469,66 @@ func buildScopedCTE(filter Filter) (string, []any) {
 		END AS is_provider_usage
 	FROM usage_requests r
 	JOIN usage_tokens t ON t.request_id = r.id` + filteredWhere + `
-),
+)`
+
+	if !needDedupe {
+		// P2：无去重标记需求的 scope 完全跳过 candidate JOIN。scoped 恒输出空标记列，
+		// 下游投影（Requests 页列 / 各聚合引用）保持兼容。
+		return filtered + `,
 scoped AS (
 	SELECT
 		filtered.request_id,
 		filtered.started_at,
 		filtered.is_session_log,
-		CASE
-			WHEN d.provider_request_id IS NOT NULL THEN 'duplicate'
-			ELSE ''
-		END AS dedupe_status,
-		COALESCE(d.provider_request_id, '') AS dedupe_request_id
+		'' AS dedupe_status,
+		'' AS dedupe_request_id
 	FROM filtered
-	LEFT JOIN usage_dedupe_candidates d
-		ON d.session_request_id = filtered.request_id
-		AND filtered.is_dedupe_session = 1
-		AND d.candidate_rank = (
-			SELECT MIN(d2.candidate_rank)
-			FROM usage_dedupe_candidates d2
-			JOIN filtered provider2
-				ON provider2.request_id = d2.provider_request_id
-				AND provider2.is_provider_usage = 1
-			WHERE d2.session_request_id = filtered.request_id
-		)
 	WHERE CASE ?
 		WHEN 'raw' THEN 1
 		WHEN 'provider' THEN filtered.is_session_log = 0
 		WHEN 'session_log' THEN filtered.is_session_log = 1
+		ELSE 0
+	END
+)`, args
+	}
+
+	// 完整 candidate：CASE 惰性子查询。非会话行（is_dedupe_session=0）不执行任何候选查找；
+	// 会话行取“过滤后候选集”中 candidate_rank 最小者（含 filter 排除最优后的 fallback 语义）。
+	return filtered + `,
+scoped AS (
+	SELECT
+		request_id,
+		started_at,
+		is_session_log,
+		CASE WHEN cand_provider IS NOT NULL THEN 'duplicate' ELSE '' END AS dedupe_status,
+		COALESCE(cand_provider, '') AS dedupe_request_id
+	FROM (
+		SELECT
+			filtered.request_id,
+			filtered.started_at,
+			filtered.is_session_log,
+			CASE WHEN filtered.is_dedupe_session = 1 THEN (
+				SELECT d.provider_request_id
+				FROM usage_dedupe_candidates d
+				WHERE d.session_request_id = filtered.request_id
+					AND d.candidate_rank = (
+						SELECT MIN(d2.candidate_rank)
+						FROM usage_dedupe_candidates d2
+						JOIN filtered provider2
+							ON provider2.request_id = d2.provider_request_id
+							AND provider2.is_provider_usage = 1
+						WHERE d2.session_request_id = filtered.request_id
+					)
+			) ELSE NULL END AS cand_provider
+		FROM filtered
+	)
+	WHERE CASE ?
+		WHEN 'raw' THEN 1
+		WHEN 'provider' THEN is_session_log = 0
+		WHEN 'session_log' THEN is_session_log = 1
 		ELSE (
-			filtered.is_session_log = 0
-			OR d.provider_request_id IS NULL
+			is_session_log = 0
+			OR cand_provider IS NULL
 		)
 	END
 )`, args

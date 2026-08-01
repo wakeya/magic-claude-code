@@ -282,7 +282,7 @@ func TestBuildScopedCTEParameterizesFiltersInStableOrder(t *testing.T) {
 		StatsScope:       StatsScopeRaw,
 	}
 
-	cte, args := buildScopedCTE(filter)
+	cte, args := buildScopedCTE(filter, true)
 	wantArgs := []any{
 		formatTime(from),
 		formatTime(to),
@@ -325,9 +325,11 @@ func TestBuildScopedCTEParameterizesFiltersInStableOrder(t *testing.T) {
 			t.Fatalf("CTE is missing %s dataset:\n%s", name, cte)
 		}
 	}
-	// R3：candidate 不再以 ROW_NUMBER CTE 每查询物化，改为直接 JOIN 基表 usage_dedupe_candidates
-	// 并用持久化 candidate_rank 的相关子查询选取“过滤后最优候选”（走持久索引）。
-	for _, want := range []string{"LEFT JOIN usage_dedupe_candidates d", "MIN(d2.candidate_rank)"} {
+	// R3：candidate 不再以 ROW_NUMBER CTE 每查询物化，改为相关子查询在“过滤后候选集”中取最优
+	// （走持久 candidate_rank 索引）。
+	// R4：candidate 从逐行 LEFT JOIN 基表改为 CASE 惰性子查询——非会话行不执行候选查找；
+	// 无去重标记需求的 scope 完全跳过 candidate 计算（P2）。
+	for _, want := range []string{"FROM usage_dedupe_candidates d", "MIN(d2.candidate_rank)", "CASE WHEN filtered.is_dedupe_session = 1 THEN"} {
 		if !strings.Contains(cte, want) {
 			t.Fatalf("CTE is missing persisted-rank candidate selection %q:\n%s", want, cte)
 		}
@@ -335,11 +337,27 @@ func TestBuildScopedCTEParameterizesFiltersInStableOrder(t *testing.T) {
 	if strings.Contains(cte, "ROW_NUMBER() OVER (\n\t\t\tPARTITION BY d.session_request_id") {
 		t.Fatalf("CTE still materializes candidate ROW_NUMBER window:\n%s", cte)
 	}
+	if strings.Contains(cte, "LEFT JOIN usage_dedupe_candidates d") {
+		t.Fatalf("CTE still LEFT JOINs candidate base table per row (R4 应改为 CASE 惰性子查询):\n%s", cte)
+	}
+
+	// R4（P2）：无去重标记需求的 scope（needDedupe=false）完全跳过 candidate 计算，
+	// scoped 恒输出空标记列保持投影兼容；参数顺序与完整结构一致。
+	cteNoDedupe, argsNoDedupe := buildScopedCTE(filter, false)
+	if strings.Contains(cteNoDedupe, "usage_dedupe_candidates") {
+		t.Fatalf("needDedupe=false CTE must skip candidate computation entirely:\n%s", cteNoDedupe)
+	}
+	if !strings.Contains(cteNoDedupe, "'' AS dedupe_status") || !strings.Contains(cteNoDedupe, "'' AS dedupe_request_id") {
+		t.Fatalf("needDedupe=false CTE must still expose empty dedupe marker columns:\n%s", cteNoDedupe)
+	}
+	if !reflect.DeepEqual(argsNoDedupe, args) {
+		t.Fatalf("needDedupe=false args = %#v, want %#v", argsNoDedupe, args)
+	}
 }
 
 func queryScopedOracleRows(t *testing.T, db *sql.DB, filter Filter) []scopedOracleRow {
 	t.Helper()
-	cte, args := buildScopedCTE(filter)
+	cte, args := buildScopedCTE(filter, true)
 	rows, err := db.Query(
 		cte+`
 		SELECT request_id, dedupe_status, dedupe_request_id

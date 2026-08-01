@@ -342,8 +342,8 @@ func TestCoverageRedactsLegacyDirtyURL(t *testing.T) {
 	req.ProviderAPIURL = "https://user:secret-pass@legacy.example.com/v1?token=abc&model=claude"
 	req.BackendURL = "https://user:secret-pass@legacy.example.com/v1/messages?sign=xyz"
 	if err := store.Record(req, TokenRecord{
-		RequestID:       "dirty-1",
-		UsageSource:     UsageSourceProvider,
+		RequestID:        "dirty-1",
+		UsageSource:      UsageSourceProvider,
 		UsageParseStatus: ParseStatusOK,
 	}); err != nil {
 		t.Fatalf("Record() error = %v", err)

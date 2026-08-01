@@ -264,3 +264,60 @@ func (c explainCosts) String() string {
 		c.Scans, c.TempBTrees, c.AutoIndexes, c.Subqueries, c.IndexUsed, c.SearchPK,
 	)
 }
+
+// TestUsageQueryPlansUseStartedIDIndexOnTimeRange 是 R4（任务 3）的 CI 防回归 EXPLAIN
+// 断言：带 started_at 时间范围过滤（最高频的常见过滤组合）时，六端点 filtered 主循环
+// 必须走 idx_usage_requests_started_id 的范围 SEARCH，而非 60k 全表 SCAN。计划形态只取
+// 决于查询结构与可用索引，故在一个小迁移库上验证（CI 默认执行，不受 MCC_USAGE_EXPLAIN
+// 门控；计划器统计信息足够即可稳定选索引）。无过滤/其他过滤组合的全扫仍不可避免（需
+// 统计全部行），不属于本断言范围。
+func TestUsageQueryPlansUseStartedIDIndexOnTimeRange(t *testing.T) {
+	// 用确定性基准生成器铺一个 5000 行库（含候选关系），使计划器统计信息贴近生产。
+	ds := newBenchDatasetInDir(t, t.TempDir(), 5000)
+	ds.runMigration(t)
+
+	filter := benchFilter()
+	filter.From = benchFixedNow.Add(-7 * 24 * time.Hour)
+	filter.To = benchFixedNow.Add(-24 * time.Hour)
+	now := benchFixedNow
+
+	for _, ep := range explainEndpoints() {
+		for _, q := range ep.build(filter, now) {
+			rows, err := ds.db.Query("EXPLAIN QUERY PLAN "+q.sql, q.args...)
+			if err != nil {
+				t.Fatalf("%s/%s EXPLAIN QUERY PLAN: %v", ep.name, q.label, err)
+			}
+			var plan []string
+			var startedIndexSearches, fullScans int
+			for rows.Next() {
+				var id, parent, notused int
+				var detail string
+				if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+					rows.Close()
+					t.Fatalf("%s/%s scan explain row: %v", ep.name, q.label, err)
+				}
+				plan = append(plan, detail)
+				upper := strings.ToUpper(detail)
+				// 6A 基础索引 idx_usage_requests_started_at（单列）与 R1 复合索引
+				// idx_usage_requests_started_id 都可用于时间范围 SEARCH；计划器按代价任选其一。
+				if strings.Contains(upper, "SEARCH R USING INDEX IDX_USAGE_REQUESTS_STARTED_AT") ||
+					strings.Contains(upper, "SEARCH R USING INDEX IDX_USAGE_REQUESTS_STARTED_ID") {
+					startedIndexSearches++
+				}
+				// 仅统计 usage_requests 主循环的裸全扫（不含相关子查询按 PK 反查）。
+				if strings.Contains(upper, "SCAN R") && !strings.Contains(upper, "USING INDEX") {
+					fullScans++
+				}
+			}
+			rows.Close()
+			if startedIndexSearches == 0 {
+				t.Errorf("%s/%s plan does not SEARCH a started_at index on time range (R4 任务 3 应走索引避免 60k 全扫):\n%s",
+					ep.name, q.label, strings.Join(plan, "\n"))
+			}
+			if fullScans != 0 {
+				t.Errorf("%s/%s plan full-scans usage_requests despite time range (%d SCAN r), want index SEARCH:\n%s",
+					ep.name, q.label, fullScans, strings.Join(plan, "\n"))
+			}
+		}
+	}
+}

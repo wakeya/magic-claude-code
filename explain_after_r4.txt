@@ -1,0 +1,15 @@
+    explain_diagnostic_test.go:187:   [summary-aggregate] costs: SCAN=1 TEMP_BTREE=0 AUTO_INDEX=0 SUBQUERY/CO-Routine=2 USING_INDEX=7 PK_SEARCH=0
+    explain_diagnostic_test.go:189:   >> Summary/status TOTAL: SCAN=1 TEMP_BTREE=0 AUTO_INDEX=0 SUBQUERY/CO-Routine=2 USING_INDEX=7 PK_SEARCH=0
+    explain_diagnostic_test.go:187:   [requests-count] costs: SCAN=1 TEMP_BTREE=0 AUTO_INDEX=0 SUBQUERY/CO-Routine=2 USING_INDEX=5 PK_SEARCH=0
+    explain_diagnostic_test.go:187:   [requests-page] costs: SCAN=1 TEMP_BTREE=0 AUTO_INDEX=0 SUBQUERY/CO-Routine=6 USING_INDEX=16 PK_SEARCH=0
+    explain_diagnostic_test.go:189:   >> Requests TOTAL: SCAN=2 TEMP_BTREE=0 AUTO_INDEX=0 SUBQUERY/CO-Routine=8 USING_INDEX=21 PK_SEARCH=0
+    explain_diagnostic_test.go:187:   [trends-range] costs: SCAN=1 TEMP_BTREE=0 AUTO_INDEX=0 SUBQUERY/CO-Routine=2 USING_INDEX=6 PK_SEARCH=0
+    explain_diagnostic_test.go:187:   [trends-bucket] costs: SCAN=1 TEMP_BTREE=1 AUTO_INDEX=0 SUBQUERY/CO-Routine=2 USING_INDEX=7 PK_SEARCH=0
+    explain_diagnostic_test.go:189:   >> Trends TOTAL: SCAN=2 TEMP_BTREE=1 AUTO_INDEX=0 SUBQUERY/CO-Routine=4 USING_INDEX=13 PK_SEARCH=0
+    explain_diagnostic_test.go:187:   [providers-aggregate] costs: SCAN=3 TEMP_BTREE=3 AUTO_INDEX=0 SUBQUERY/CO-Routine=6 USING_INDEX=8 PK_SEARCH=0
+    explain_diagnostic_test.go:189:   >> Providers TOTAL: SCAN=3 TEMP_BTREE=3 AUTO_INDEX=0 SUBQUERY/CO-Routine=6 USING_INDEX=8 PK_SEARCH=0
+    explain_diagnostic_test.go:187:   [models-aggregate] costs: SCAN=3 TEMP_BTREE=3 AUTO_INDEX=0 SUBQUERY/CO-Routine=6 USING_INDEX=8 PK_SEARCH=0
+    explain_diagnostic_test.go:189:   >> Models TOTAL: SCAN=3 TEMP_BTREE=3 AUTO_INDEX=0 SUBQUERY/CO-Routine=6 USING_INDEX=8 PK_SEARCH=0
+    explain_diagnostic_test.go:187:   [coverage-summary] costs: SCAN=3 TEMP_BTREE=2 AUTO_INDEX=0 SUBQUERY/CO-Routine=6 USING_INDEX=8 PK_SEARCH=0
+    explain_diagnostic_test.go:187:   [coverage-status] costs: SCAN=1 TEMP_BTREE=1 AUTO_INDEX=0 SUBQUERY/CO-Routine=2 USING_INDEX=7 PK_SEARCH=0
+    explain_diagnostic_test.go:189:   >> Coverage TOTAL: SCAN=4 TEMP_BTREE=3 AUTO_INDEX=0 SUBQUERY/CO-Routine=8 USING_INDEX=15 PK_SEARCH=0

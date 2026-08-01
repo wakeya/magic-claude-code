@@ -103,7 +103,7 @@ type r2SummaryScalars struct {
 // CTE（60k 全扫 + candidate 物化 + 自动索引 + 末级排序）执行两次。与 R1 之前的
 // buildSummaryQuery 逐字一致，仅用于同会话 A/B 归因。
 func r2LegacyScalarSummaryQuery(filter Filter, startOfToday, endOfToday time.Time) (string, []any) {
-	cte, args := buildScopedCTE(filter)
+	cte, args := buildScopedCTE(filter, true)
 	epoch := scopedEpochSecondsExpr("r.started_at")
 	todayPredicate := epoch + ` >= ? AND ` + epoch + ` < ?`
 	lastStarted := `(
@@ -393,7 +393,7 @@ func r3LegacyPair(newCTE, legacyCTE, label, fullQuery string, args []any) r3ABQu
 // r3ABBuildEndpoints 构造六端点的新/旧查询对，与 store.go 读取路径一一对应。
 func r3ABBuildEndpoints(tb testing.TB, filter Filter, now time.Time) []r3ABEndpoint {
 	tb.Helper()
-	newCTE, _ := buildScopedCTE(filter)
+	newCTE, _ := buildScopedCTE(filter, true)
 	legacyCTE, _ := r3LegacyScopedCTE(filter)
 
 	drain := func(query string, args []any) error {
@@ -651,3 +651,246 @@ func sortDurationsAsc(a []time.Duration) {
 var abDB *sql.DB
 
 func setABDB(db *sql.DB) { abDB = db }
+
+// ============================================================================
+// R4（P2+P3）同会话 A/B：CASE 惰性 candidate + scope 裁剪 + Summary epoch 单次求值
+// 前后对照。
+//
+// 方法：在同一进程、同一 60,332 行数据集（seed=1）上，交替测量“R4 新结构”（CASE 惰性
+// candidate 相关子查询 + Summary epoch 单次投影）与“R4 前旧结构”（test-only 重建的 R3
+// LEFT JOIN candidate + 逐行相关子查询 + Summary 三处 epoch 求值）两套查询的六端点延迟
+// 与六并发墙钟。先逐字段断言两套查询在全部六端点上结果完全一致，再交替多轮、丢弃预热、
+// 各取中位比较。仅由 MCC_USAGE_EXPLAIN=1 + MCC_USAGE_AB=1 门控，CI 默认不执行。
+// ============================================================================
+
+// r4LegacySummaryQuery 重建 R4 之前的 buildSummaryQuery（test-only 性能对照体）：
+// R3 版 scoped CTE + epoch 三处求值的聚合后缀，与 abeaa1e（R3）逐字一致。
+func r4LegacySummaryQuery(filter Filter, startOfToday, endOfToday time.Time) (string, []any) {
+	cte, args := r3LegacyScopedCTE(filter)
+	epoch := scopedEpochSecondsExpr("r.started_at")
+	todayPredicate := epoch + ` >= ? AND ` + epoch + ` < ?`
+	lastStarted := `substr(MAX(` + scopedTimeOrderKeyExpr("r.started_at") + ` || r.started_at), 30)`
+	query := cte + `
+	SELECT
+		COUNT(*),
+		COALESCE(SUM(CASE WHEN ` + scopedHasUsagePredicate + ` THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN ` + scopedHasUsagePredicate + ` THEN ` + scopedTokenSumExpr + ` ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN ` + scopedIsFailedPredicate + ` THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN ` + todayPredicate + ` THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN ` + todayPredicate + ` AND ` + scopedHasUsagePredicate + ` THEN ` + scopedTokenSumExpr + ` ELSE 0 END), 0),
+		` + lastStarted + `
+	FROM scoped
+	JOIN usage_requests r ON r.id = scoped.request_id
+	JOIN usage_tokens t ON t.request_id = r.id`
+	args = append(args, startOfToday.Unix(), endOfToday.Unix(), startOfToday.Unix(), endOfToday.Unix())
+	return query, args
+}
+
+// r4ABBuildEndpoints 构造六端点的新（R4）/旧（R3）查询对。Summary 的旧查询用
+// r4LegacySummaryQuery（R3 版聚合后缀）；其余端点 R4 只改 scoped CTE、后缀不变，
+// 沿用 r3LegacyPair 的“旧 CTE + 新后缀”派生机制。
+func r4ABBuildEndpoints(tb testing.TB, filter Filter, now time.Time) []r3ABEndpoint {
+	tb.Helper()
+	newCTE, _ := buildScopedCTE(filter, true)
+	legacyCTE, _ := r3LegacyScopedCTE(filter)
+
+	drain := func(query string, args []any) error {
+		_, err := drainRowsMatrix(tb, query, args)
+		return err
+	}
+
+	var endpoints []r3ABEndpoint
+	addEndpoint := func(name string, pairs ...r3ABQueryPair) {
+		ep := r3ABEndpoint{name: name, queries: pairs}
+		ep.run = func(useOld bool) error {
+			for _, q := range pairs {
+				sql := q.newSQL
+				if useOld {
+					sql = q.oldSQL
+				}
+				if err := drain(sql, q.args); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		endpoints = append(endpoints, ep)
+	}
+
+	// Summary/status（R4 epoch 单次求值 vs R3 三处求值）
+	startOfToday, endOfToday, err := todayRange(filter)
+	if err != nil {
+		tb.Fatalf("today range: %v", err)
+	}
+	newSummarySQL, summaryArgs := buildSummaryQuery(filter, startOfToday, endOfToday)
+	oldSummarySQL, _ := r4LegacySummaryQuery(filter, startOfToday, endOfToday)
+	addEndpoint("Summary/status", r3ABQueryPair{label: "summary-aggregate", newSQL: newSummarySQL, oldSQL: oldSummarySQL, args: summaryArgs})
+
+	// Requests（count + page，page=1/size=50）
+	countSQL, pageSQL, reqArgs := buildRequestsQueries(filter)
+	pageArgs := append(append([]any{}, reqArgs...), 50, 0)
+	addEndpoint("Requests",
+		r3LegacyPair(newCTE, legacyCTE, "requests-count", countSQL, reqArgs),
+		r3LegacyPair(newCTE, legacyCTE, "requests-page", pageSQL, pageArgs),
+	)
+
+	// Trends（range + bucket；UTC 单一偏移区间，确定性参数）
+	rangeSQL, rangeArgs := buildTrendsRangeQuery(filter)
+	loc, err := filterLocation(filter)
+	if err != nil {
+		tb.Fatalf("location: %v", err)
+	}
+	intervals := trendsZoneIntervals(loc, sql.NullInt64{Int64: 0, Valid: true}, sql.NullInt64{Int64: now.Unix(), Valid: true})
+	bucketSQL, bucketArgs := buildTrendsQuery(filter, loc, intervals)
+	addEndpoint("Trends",
+		r3LegacyPair(newCTE, legacyCTE, "trends-range", rangeSQL, rangeArgs),
+		r3LegacyPair(newCTE, legacyCTE, "trends-bucket", bucketSQL, bucketArgs),
+	)
+
+	// Providers / Models
+	providersSQL, providersArgs := buildAggregateQuery(filter, "r.provider_id", "r.provider_name")
+	addEndpoint("Providers", r3LegacyPair(newCTE, legacyCTE, "providers-aggregate", providersSQL, providersArgs))
+	modelsSQL, modelsArgs := buildAggregateQuery(filter, "r.mapped_model", "r.mapped_model")
+	addEndpoint("Models", r3LegacyPair(newCTE, legacyCTE, "models-aggregate", modelsSQL, modelsArgs))
+
+	// Coverage（summary + status）
+	coverageSummarySQL, coverageStatusSQL, coverageArgs := buildCoverageQueries(filter)
+	addEndpoint("Coverage",
+		r3LegacyPair(newCTE, legacyCTE, "coverage-summary", coverageSummarySQL, coverageArgs),
+		r3LegacyPair(newCTE, legacyCTE, "coverage-status", coverageStatusSQL, coverageArgs),
+	)
+
+	return endpoints
+}
+
+// TestUsageR4CandidateABCompare 在同会话交替测量 R4 前后六端点 + 六并发延迟并给加速比。
+// 该测试同时用于验证 R4 结构无回归：旧结构即 R3 生产实现（LEFT JOIN candidate +
+// 三处 epoch 求值），若 R4 任一端点慢于 R3 即红（在输出表中直接可见）。
+func TestUsageR4CandidateABCompare(t *testing.T) {
+	if !explainEnabled() || os.Getenv("MCC_USAGE_AB") == "" {
+		t.Skip("set MCC_USAGE_EXPLAIN=1 and MCC_USAGE_AB=1 to run the R4 A/B comparison")
+	}
+	n := benchRows(t)
+	if n == 0 {
+		n = 60332
+	}
+	ds := newBenchDatasetInDir(t, t.TempDir(), n)
+	ds.runMigration(t)
+	setABDB(ds.db)
+	defer setABDB(nil)
+
+	filter := benchFilter()
+	endpoints := r4ABBuildEndpoints(t, filter, benchFixedNow)
+
+	// 逐字段等价：六端点全部子查询在 60k 基准数据上新旧结果必须完全一致。
+	for _, ep := range endpoints {
+		for _, q := range ep.queries {
+			newRows, err := drainRowsMatrix(t, q.newSQL, q.args)
+			if err != nil {
+				t.Fatalf("%s/%s new drain: %v", ep.name, q.label, err)
+			}
+			oldRows, err := drainRowsMatrix(t, q.oldSQL, q.args)
+			if err != nil {
+				t.Fatalf("%s/%s old drain: %v", ep.name, q.label, err)
+			}
+			if !reflect.DeepEqual(newRows, oldRows) {
+				t.Fatalf("%s/%s R4 result differs from R3 legacy structure: new=%d rows, old=%d rows",
+					ep.name, q.label, len(newRows), len(oldRows))
+			}
+		}
+	}
+
+	// 六并发：六端点并发执行（按 useOld 选择新/旧 SQL），返回墙钟。
+	sixParallel := func(useOld bool) error {
+		var wg sync.WaitGroup
+		errs := make([]error, len(endpoints))
+		for i, ep := range endpoints {
+			wg.Add(1)
+			go func(i int, run func(bool) error) {
+				defer wg.Done()
+				errs[i] = run(useOld)
+			}(i, ep.run)
+		}
+		wg.Wait()
+		for _, err := range errs {
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	const rounds = 3
+	const runs = 5
+	type sample struct{ old, new time.Duration }
+	perEndpoint := make(map[string][]sample)
+	for _, ep := range endpoints {
+		perEndpoint[ep.name] = make([]sample, 0, rounds)
+	}
+	wallSamples := make([]sample, 0, rounds)
+
+	measure := func(fn func() error) time.Duration {
+		d, err := medianDuration(runs, fn)
+		if err != nil {
+			t.Fatalf("measure: %v", err)
+		}
+		return d
+	}
+
+	// 丢弃一次预热（纯 Go SQLite 冷启动），随后交替多轮。
+	_ = measure(func() error { return sixParallel(false) })
+
+	for round := 0; round < rounds; round++ {
+		oldFirst := round%2 == 0
+		for _, ep := range endpoints {
+			var o, w time.Duration
+			if oldFirst {
+				o = measure(func() error { return ep.run(true) })
+				w = measure(func() error { return ep.run(false) })
+			} else {
+				w = measure(func() error { return ep.run(false) })
+				o = measure(func() error { return ep.run(true) })
+			}
+			perEndpoint[ep.name] = append(perEndpoint[ep.name], sample{old: o, new: w})
+		}
+		var ow, ww time.Duration
+		if oldFirst {
+			ow = measure(func() error { return sixParallel(true) })
+			ww = measure(func() error { return sixParallel(false) })
+		} else {
+			ww = measure(func() error { return sixParallel(false) })
+			ow = measure(func() error { return sixParallel(true) })
+		}
+		wallSamples = append(wallSamples, sample{old: ow, new: ww})
+	}
+
+	medianSample := func(samples []sample) sample {
+		olds := make([]time.Duration, len(samples))
+		news := make([]time.Duration, len(samples))
+		for i, s := range samples {
+			olds[i], news[i] = s.old, s.new
+		}
+		sortDurationsAsc(olds)
+		sortDurationsAsc(news)
+		return sample{old: olds[len(olds)/2], new: news[len(news)/2]}
+	}
+
+	t.Logf("\n==== R4 A/B (rows=%d, same session, warmup discarded, %d rounds × %d runs) ====", n, rounds, runs)
+	t.Logf("field-by-field equivalence on %d rows: all six endpoints IDENTICAL", n)
+	t.Logf("%-24s %14s %14s %10s", "metric", "R4-new", "R3-legacy", "speedup")
+	for _, ep := range endpoints {
+		med := medianSample(perEndpoint[ep.name])
+		t.Logf("%-24s %14s %14s %9.2fx", ep.name, med.new, med.old, float64(med.old)/float64(med.new))
+	}
+	wallMed := medianSample(wallSamples)
+	t.Logf("%-24s %14s %14s %9.2fx", "six parallel wall", wallMed.new, wallMed.old, float64(wallMed.old)/float64(wallMed.new))
+	for _, ep := range endpoints {
+		samples := perEndpoint[ep.name]
+		oldList, newList := make([]time.Duration, len(samples)), make([]time.Duration, len(samples))
+		for i, s := range samples {
+			oldList[i], newList[i] = s.old, s.new
+		}
+		t.Logf("  %-22s old samples %v | new samples %v", ep.name, oldList, newList)
+	}
+	t.Logf("==================================================================")
+}

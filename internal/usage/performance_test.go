@@ -142,10 +142,10 @@ func seedBenchRows(tb testing.TB, db *sql.DB, n int) {
 	profiles := make([]tokenProfile, 0, 64)
 	for i := 0; i < 64; i++ {
 		profiles = append(profiles, tokenProfile{
-			in:         int64(rng.Intn(8000) + 100),
-			out:        int64(rng.Intn(4000) + 50),
+			in:          int64(rng.Intn(8000) + 100),
+			out:         int64(rng.Intn(4000) + 50),
 			cacheCreate: int64(rng.Intn(2000)),
-			cacheRead:  int64(rng.Intn(10000)),
+			cacheRead:   int64(rng.Intn(10000)),
 		})
 	}
 
@@ -239,7 +239,7 @@ func seedBenchRows(tb testing.TB, db *sql.DB, n int) {
 	// 供应商行：约 8% 失败（无 usage），其余为 ok 供应商候选。
 	for i := 0; i < nProvider; i++ {
 		startedAt := windowStart.Add(time.Duration(int64(float64(windowSpan) * float64(i) / float64(nProvider))))
-		startedAt = startedAt.Add(time.Duration(rng.Intn(int(time.Second))) )
+		startedAt = startedAt.Add(time.Duration(rng.Intn(int(time.Second))))
 		modelIdx := rng.Intn(len(models))
 		profileIdx := rng.Intn(len(profiles))
 		provIdx := rng.Intn(len(providers))
