@@ -1,6 +1,7 @@
 package usage
 
 import (
+	"strconv"
 	"strings"
 	"time"
 )
@@ -81,11 +82,32 @@ func buildRequestsQueries(filter Filter) (countSQL, pageSQL string, args []any) 
 	return countSQL, pageSQL, args
 }
 
+// scopedTimeOrderKeyLength 是 scopedTimeOrderKeyExpr 返回的时间排序键前缀固定长度
+// （20 位偏置整秒 epoch + 9 位小数秒）。与键表达式同步维护，供 MAX 编码取最晚行后
+// 用 substr 剥离前缀、还原 started_at 原值。
+const scopedTimeOrderKeyLength = 29
+
+// scopedTimeOrderKeyExpr 返回 started_at 列的定长 29 字符时间排序键表达式：整秒
+// epoch 偏置 Go 零值时间的 Unix 秒后恒非负（合法时戳 ≥ 1、非法时戳恰为 0），经
+// printf 补零为定长 20 位，再拼接定长 9 位小数秒。键的字典序等价于“(整秒 epoch,
+// 小数秒)”元组序，因此可直接用于 MAX/字符串比较复现 Go 时间大小（含非法时戳容错
+// 为零值、同整秒按小数秒精确比较）。拼接 started_at 原值后取 MAX，即可在同一次
+// 扫描的单个聚合里得到“时间最晚行的 started_at 原值”；同整秒同小数秒的并列行
+// （同一时刻的不同字符串表示）由 started_at 字符串降序决胜，与旧差分判定器“按
+// started_at DESC 迭代、严格 After 保留首个遇到的行”的并列语义一致。
+func scopedTimeOrderKeyExpr(column string) string {
+	return `printf('%020d', ` + scopedEpochSecondsExpr(column) + ` + 62135596800) || ` + scopedStartedAtFractionExpr(column)
+}
+
 // buildSummaryQuery 基于 buildScopedCTE 生成 Summary 的聚合查询。计数/求和/最新
 // 时间全部下推到 scoped 数据集上的 SQLite 聚合，只投影聚合所需字段（不物化完整
-// RequestRow，不读取/解析 URL）。last_provider_request 用标量子查询按“整秒 epoch +
-// 9 位小数秒”两级排序取时间最晚的 started_at 原值，由调用方 parseTime，与旧算法
-// 的 Go 时间最大值语义逐字段一致；scoped 数据集为空时子查询返回 NULL，对应 nil 指针。
+// RequestRow，不读取/解析 URL）。last_provider_request 与主聚合共享同一次 scoped
+// 扫描（R2 P0）：在同一 SELECT 内取 MAX(定长时间键 || started_at)，由 substr 剥离
+// 定长 29 字符前缀得到时间最晚行的 started_at 原值，由调用方 parseTime，与旧算法
+// 的 Go 时间最大值语义逐字段一致；scoped 数据集为空时 MAX 返回 NULL，对应 nil 指针。
+// 旧实现的标量子查询会使整套 scoped CTE（60k 全扫 + candidate 物化 + 运行时自动
+// 索引 + 末级排序）执行两次；本结构将其降为一次（计划中主表全扫/自动索引/临时
+// 排序树各 1 份），由 TestSummaryQueryPlanScansScopedOnce 锁定。
 // startOfToday/endOfToday 为本地今日区间转 UTC 后的整秒边界，以 Unix 秒参数传入；
 // 今日判定在整秒边界上与 Go 的 start <= t < end 完全等价（含小数秒行与非法时戳行）。
 func buildSummaryQuery(filter Filter, startOfToday, endOfToday time.Time) (string, []any) {
@@ -93,13 +115,9 @@ func buildSummaryQuery(filter Filter, startOfToday, endOfToday time.Time) (strin
 	epoch := scopedEpochSecondsExpr("r.started_at")
 	// todayPredicate 在主 SELECT 中出现两次（今日计数与今日 token），各消耗 start/end 两个参数。
 	todayPredicate := epoch + ` >= ? AND ` + epoch + ` < ?`
-	lastStarted := `(
-		SELECT r2.started_at
-		FROM scoped sc2
-		JOIN usage_requests r2 ON r2.id = sc2.request_id
-		ORDER BY ` + scopedEpochSecondsExpr("r2.started_at") + ` DESC, ` + scopedStartedAtFractionExpr("r2.started_at") + ` DESC
-		LIMIT 1
-	)`
+	// 定长前缀（29 字符）保证 MAX 的字典序等价于时间序；substr 第 30 位起即 started_at 原值。
+	lastStarted := `substr(MAX(` + scopedTimeOrderKeyExpr("r.started_at") + ` || r.started_at), ` +
+		strconv.Itoa(scopedTimeOrderKeyLength+1) + `)`
 	query := cte + `
 	SELECT
 		COUNT(*),

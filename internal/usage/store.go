@@ -285,8 +285,8 @@ func (s *Store) Summary(filter Filter) (Summary, error) {
 	); err != nil {
 		return Summary{}, err
 	}
-	// scoped 数据集非空时子查询必返回一个 started_at（可能为非法历史值，parseTime
-	// 容错为 Go 零值时间），对应旧实现“有行即非 nil”；空数据集 NULL 对应 nil。
+	// scoped 数据集非空时 MAX 聚合必返回一个 started_at（可能为非法历史值，parseTime
+	// 容错为 Go 零值时间），对应旧实现“有行即非 nil”；空数据集 MAX 为 NULL 对应 nil。
 	if lastStarted.Valid {
 		started := parseTime(lastStarted.String)
 		summary.LastProviderRequest = &started
