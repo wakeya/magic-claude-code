@@ -451,6 +451,226 @@ func TestDedupeIncrementalMaintainsAllCandidatesInEitherOrder(t *testing.T) {
 	}
 }
 
+// TestDedupeIncrementalPairsHistoricalOffsetStartedAtText 覆盖 M-1（gpt-5.6 审查）：历史库
+// 的 started_at 可能保留带非 UTC 偏移的 RFC3339 文本（如 2026-07-30T12:00:00-07:00，instant
+// 为 19:00Z）。迁移后经 Record 写入新对端行时，增量候选查询必须按 instant 解析并在含边界
+// ±10 分钟窗口内配对，与旧 Go 去重（legacyOracleMarkDuplicates 的 time.Parse + Before/After
+// 窗口判断）逐字段一致；不得因原始 TEXT 字典序与 canonical UTC 边界不在同一 instant 而漏配
+// 候选。每个用例先插入历史行（原始偏移 TEXT）→ Migrate（回填无对端，不产生候选）→ Record
+// 新行（canonical UTC）触发增量维护，随后断言候选表与 Requests 去重标记同 legacy oracle 差分一致。
+func TestDedupeIncrementalPairsHistoricalOffsetStartedAtText(t *testing.T) {
+	instant := time.Date(2026, 7, 30, 19, 0, 0, 0, time.UTC)
+	values := UsageValues{
+		InputTokens:              100,
+		OutputTokens:             20,
+		CacheCreationInputTokens: 30,
+		CacheReadInputTokens:     400,
+	}
+
+	t.Run("historical session with -07:00 offset pairs with new canonical provider", func(t *testing.T) {
+		store := newLegacyUsageStore(t)
+		recordDedupeHistoryWithStartedText(t, store, "2026-07-30T12:00:00-07:00",
+			dedupeSessionRequest("session", instant, "mapped-model", "original-model"),
+			dedupeToken("session", UsageSourceSessionLog, ParseStatusOK, values),
+		)
+		if err := store.Migrate(); err != nil {
+			t.Fatalf("Migrate() error = %v", err)
+		}
+		if err := store.Record(
+			dedupeProviderRequest("provider", instant, "mapped-model", "original-model"),
+			dedupeToken("provider", UsageSourceProvider, ParseStatusOK, values),
+		); err != nil {
+			t.Fatalf("Record(provider) error = %v", err)
+		}
+		if got, want := dedupeCandidates(t, store.db, "session"), (map[string]int{"provider": 0}); fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("candidates = %v, want %v", got, want)
+		}
+		assertDedupeMarksMatchLegacyOracle(t, store)
+	})
+
+	t.Run("reverse order historical provider with offset pairs with new canonical session", func(t *testing.T) {
+		store := newLegacyUsageStore(t)
+		recordDedupeHistoryWithStartedText(t, store, "2026-07-30T12:00:00-07:00",
+			dedupeProviderRequest("provider", instant, "mapped-model", "original-model"),
+			dedupeToken("provider", UsageSourceProvider, ParseStatusOK, values),
+		)
+		if err := store.Migrate(); err != nil {
+			t.Fatalf("Migrate() error = %v", err)
+		}
+		if err := store.Record(
+			dedupeSessionRequest("session", instant, "mapped-model", "original-model"),
+			dedupeToken("session", UsageSourceSessionLog, ParseStatusOK, values),
+		); err != nil {
+			t.Fatalf("Record(session) error = %v", err)
+		}
+		if got, want := dedupeCandidates(t, store.db, "session"), (map[string]int{"provider": 0}); fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("candidates = %v, want %v", got, want)
+		}
+		assertDedupeMarksMatchLegacyOracle(t, store)
+	})
+
+	t.Run("fractional seconds with offset stay inside window", func(t *testing.T) {
+		store := newLegacyUsageStore(t)
+		// instant 2026-07-30T18:55:00.123456789Z：距新行 19:00:00Z 约 4 分 60 秒内，窗口内。
+		recordDedupeHistoryWithStartedText(t, store, "2026-07-30T11:55:00.123456789-07:00",
+			dedupeSessionRequest("session", instant, "mapped-model", "original-model"),
+			dedupeToken("session", UsageSourceSessionLog, ParseStatusOK, values),
+		)
+		if err := store.Migrate(); err != nil {
+			t.Fatalf("Migrate() error = %v", err)
+		}
+		if err := store.Record(
+			dedupeProviderRequest("provider", instant, "mapped-model", "original-model"),
+			dedupeToken("provider", UsageSourceProvider, ParseStatusOK, values),
+		); err != nil {
+			t.Fatalf("Record(provider) error = %v", err)
+		}
+		if got, want := dedupeCandidates(t, store.db, "session"), (map[string]int{"provider": 0}); fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("candidates = %v, want %v", got, want)
+		}
+		assertDedupeMarksMatchLegacyOracle(t, store)
+	})
+
+	t.Run("offset text at inclusive window boundary pairs", func(t *testing.T) {
+		store := newLegacyUsageStore(t)
+		// instant 2026-07-30T19:10:00Z = 新行 19:00:00Z + 10 分钟整，含边界窗口应配对。
+		recordDedupeHistoryWithStartedText(t, store, "2026-07-30T12:10:00-07:00",
+			dedupeSessionRequest("session", instant, "mapped-model", "original-model"),
+			dedupeToken("session", UsageSourceSessionLog, ParseStatusOK, values),
+		)
+		if err := store.Migrate(); err != nil {
+			t.Fatalf("Migrate() error = %v", err)
+		}
+		if err := store.Record(
+			dedupeProviderRequest("provider", instant, "mapped-model", "original-model"),
+			dedupeToken("provider", UsageSourceProvider, ParseStatusOK, values),
+		); err != nil {
+			t.Fatalf("Record(provider) error = %v", err)
+		}
+		if got, want := dedupeCandidates(t, store.db, "session"), (map[string]int{"provider": 0}); fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("candidates = %v, want %v", got, want)
+		}
+		assertDedupeMarksMatchLegacyOracle(t, store)
+	})
+
+	t.Run("offset text just outside window does not pair", func(t *testing.T) {
+		store := newLegacyUsageStore(t)
+		// instant 2026-07-30T19:10:00.000000001Z = 新行 + 10 分钟 + 1ns，窗口外不得配对，
+		// 防止修复把候选范围放宽到超过旧 Go 窗口语义。
+		recordDedupeHistoryWithStartedText(t, store, "2026-07-30T12:10:00.000000001-07:00",
+			dedupeSessionRequest("session", instant, "mapped-model", "original-model"),
+			dedupeToken("session", UsageSourceSessionLog, ParseStatusOK, values),
+		)
+		if err := store.Migrate(); err != nil {
+			t.Fatalf("Migrate() error = %v", err)
+		}
+		if err := store.Record(
+			dedupeProviderRequest("provider", instant, "mapped-model", "original-model"),
+			dedupeToken("provider", UsageSourceProvider, ParseStatusOK, values),
+		); err != nil {
+			t.Fatalf("Record(provider) error = %v", err)
+		}
+		if got := dedupeCandidates(t, store.db, "session"); len(got) != 0 {
+			t.Fatalf("candidates = %v, want empty", got)
+		}
+		assertDedupeMarksMatchLegacyOracle(t, store)
+	})
+
+	t.Run("DST transition offsets pair by instant not wall text", func(t *testing.T) {
+		store := newLegacyUsageStore(t)
+		// 美洲洛杉矶 DST 切换日：-07:00（PDT）与 -08:00（PST）两种偏移并存。
+		// session-pdt instant 2026-11-01T08:30:00Z，距 provider 08:35:00Z 5 分钟，窗口内。
+		// session-pst instant 2026-11-01T09:40:00Z，距 provider 65 分钟，窗口外。
+		providerAt := time.Date(2026, 11, 1, 8, 35, 0, 0, time.UTC)
+		recordDedupeHistoryWithStartedText(t, store, "2026-11-01T01:30:00-07:00",
+			dedupeSessionRequest("session-pdt", providerAt, "mapped-model", "original-model"),
+			dedupeToken("session-pdt", UsageSourceSessionLog, ParseStatusOK, values),
+		)
+		recordDedupeHistoryWithStartedText(t, store, "2026-11-01T01:40:00-08:00",
+			dedupeSessionRequest("session-pst", providerAt, "mapped-model", "original-model"),
+			dedupeToken("session-pst", UsageSourceSessionLog, ParseStatusOK, values),
+		)
+		if err := store.Migrate(); err != nil {
+			t.Fatalf("Migrate() error = %v", err)
+		}
+		if err := store.Record(
+			dedupeProviderRequest("provider", providerAt, "mapped-model", "original-model"),
+			dedupeToken("provider", UsageSourceProvider, ParseStatusOK, values),
+		); err != nil {
+			t.Fatalf("Record(provider) error = %v", err)
+		}
+		if got, want := dedupeCandidates(t, store.db, "session-pdt"), (map[string]int{"provider": 0}); fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("session-pdt candidates = %v, want %v", got, want)
+		}
+		if got := dedupeCandidates(t, store.db, "session-pst"); len(got) != 0 {
+			t.Fatalf("session-pst candidates = %v, want empty", got)
+		}
+		assertDedupeMarksMatchLegacyOracle(t, store)
+	})
+
+	t.Run("same instant under multiple offset spellings all pair", func(t *testing.T) {
+		store := newLegacyUsageStore(t)
+		// 同一 instant（19:00Z）的三种历史文本表示：canonical Z、-07:00、+08:00（跨日）。
+		recordDedupeHistoryWithStartedText(t, store, "2026-07-30T19:00:00Z",
+			dedupeSessionRequest("session-z", instant, "mapped-model", "original-model"),
+			dedupeToken("session-z", UsageSourceSessionLog, ParseStatusOK, values),
+		)
+		recordDedupeHistoryWithStartedText(t, store, "2026-07-30T12:00:00-07:00",
+			dedupeSessionRequest("session-minus7", instant, "mapped-model", "original-model"),
+			dedupeToken("session-minus7", UsageSourceSessionLog, ParseStatusOK, values),
+		)
+		recordDedupeHistoryWithStartedText(t, store, "2026-07-31T03:00:00+08:00",
+			dedupeSessionRequest("session-plus8", instant, "mapped-model", "original-model"),
+			dedupeToken("session-plus8", UsageSourceSessionLog, ParseStatusOK, values),
+		)
+		if err := store.Migrate(); err != nil {
+			t.Fatalf("Migrate() error = %v", err)
+		}
+		providerAt := instant.Add(5 * time.Second)
+		if err := store.Record(
+			dedupeProviderRequest("provider", providerAt, "mapped-model", "original-model"),
+			dedupeToken("provider", UsageSourceProvider, ParseStatusOK, values),
+		); err != nil {
+			t.Fatalf("Record(provider) error = %v", err)
+		}
+		for _, sessionID := range []string{"session-z", "session-minus7", "session-plus8"} {
+			if got, want := dedupeCandidates(t, store.db, sessionID), (map[string]int{"provider": 0}); fmt.Sprint(got) != fmt.Sprint(want) {
+				t.Fatalf("%s candidates = %v, want %v", sessionID, got, want)
+			}
+		}
+		assertDedupeMarksMatchLegacyOracle(t, store)
+	})
+}
+
+// assertDedupeMarksMatchLegacyOracle 对全量行逐字段比较 SQL 读取路径的 dedupe 标记与
+// legacy oracle（旧 Go “先筛选、再去重、后口径”算法）的判定：DedupeStatus 与
+// DedupeRequestID 必须一致。用于锁定增量候选修复与旧去重的完全兼容性。
+func assertDedupeMarksMatchLegacyOracle(t *testing.T, store *Store) {
+	t.Helper()
+	wantRows := legacyOracleQueryRows(t, store.db, Filter{StatsScope: StatsScopeRaw})
+	page, err := store.Requests(Filter{StatsScope: StatsScopeRaw, Page: 1, PageSize: 1000})
+	if err != nil {
+		t.Fatalf("Requests() error = %v", err)
+	}
+	gotByID := make(map[string]RequestRow, len(page.Rows))
+	for _, row := range page.Rows {
+		gotByID[row.ID] = row
+	}
+	if len(gotByID) != len(wantRows) {
+		t.Fatalf("Requests() returned %d rows, want %d", len(gotByID), len(wantRows))
+	}
+	for _, want := range wantRows {
+		got, ok := gotByID[want.ID]
+		if !ok {
+			t.Fatalf("Requests() missing row %q", want.ID)
+		}
+		if got.DedupeStatus != want.DedupeStatus || got.DedupeRequestID != want.DedupeRequestID {
+			t.Fatalf("row %q dedupe mark = %q/%q, want %q/%q (legacy oracle)",
+				want.ID, got.DedupeStatus, got.DedupeRequestID, want.DedupeStatus, want.DedupeRequestID)
+		}
+	}
+}
+
 func TestDedupeIncrementalIgnoresIncompatibleRows(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -721,7 +941,14 @@ func TestDedupeIncrementalCandidateQueryUsesStartedAtIndex(t *testing.T) {
 		RequestRecord: dedupeSessionRequest("session", started, "model", "model"),
 		TokenRecord:   dedupeToken("session", UsageSourceSessionLog, ParseStatusOK, values),
 	}
-	query, args := incrementalDedupeCandidateQuery(current, incrementalDedupeProviderWhere)
+	for _, wide := range []bool{false, true} {
+		assertIncrementalCandidatePlanUsesIndex(t, store, current, wide)
+	}
+}
+
+func assertIncrementalCandidatePlanUsesIndex(t *testing.T, store *Store, current RequestRow, wide bool) {
+	t.Helper()
+	query, args := incrementalDedupeCandidateQuery(current, incrementalDedupeProviderWhere, wide)
 	rows, err := store.db.Query("EXPLAIN QUERY PLAN "+query, args...)
 	if err != nil {
 		t.Fatalf("explain incremental candidate query: %v", err)
@@ -913,6 +1140,72 @@ func recordDedupeHistory(t *testing.T, store *Store, req RequestRecord, tok Toke
 	}
 }
 
+// recordDedupeHistoryWithStartedText 与 recordDedupeHistory 相同，但按原样写入调用方
+// 给定的 started_at TEXT（不做 canonical UTC 规范化），用于构造保留历史偏移文本的脏库行。
+func recordDedupeHistoryWithStartedText(t *testing.T, store *Store, startedText string, req RequestRecord, tok TokenRecord) {
+	t.Helper()
+	tx, err := store.db.Begin()
+	if err != nil {
+		t.Fatalf("begin legacy history insert: %v", err)
+	}
+	defer tx.Rollback()
+	if tok.RequestID == "" {
+		tok.RequestID = req.ID
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO usage_requests(
+			id, started_at, ended_at, duration_ms, upstream_response_header_ms, time_to_first_byte_ms,
+			status_code, error_type, error_message, method, request_path, backend_url,
+			provider_id, provider_name, provider_api_url, source_app, source_entrypoint, user_agent,
+			original_model, mapped_model, stream, request_bytes, response_bytes
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		req.ID,
+		startedText,
+		formatOptionalTime(req.EndedAt),
+		req.DurationMS,
+		req.UpstreamResponseHeaderMS,
+		req.TimeToFirstByteMS,
+		req.StatusCode,
+		req.ErrorType,
+		req.ErrorMessage,
+		req.Method,
+		req.RequestPath,
+		req.BackendURL,
+		req.ProviderID,
+		req.ProviderName,
+		req.ProviderAPIURL,
+		defaultString(req.SourceApp, "unknown"),
+		req.SourceEntrypoint,
+		req.UserAgent,
+		req.OriginalModel,
+		req.MappedModel,
+		boolToInt(req.Stream),
+		req.RequestBytes,
+		req.ResponseBytes,
+	); err != nil {
+		t.Fatalf("insert legacy usage request %q: %v", req.ID, err)
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO usage_tokens(
+			request_id, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+			usage_source, usage_parse_status, usage_parse_error
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		tok.RequestID,
+		tok.InputTokens,
+		tok.OutputTokens,
+		tok.CacheCreationInputTokens,
+		tok.CacheReadInputTokens,
+		defaultString(tok.UsageSource, UsageSourceNone),
+		defaultString(tok.UsageParseStatus, ParseStatusMissing),
+		tok.UsageParseError,
+	); err != nil {
+		t.Fatalf("insert legacy usage token %q: %v", tok.RequestID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit legacy history insert %q: %v", req.ID, err)
+	}
+}
+
 func dedupeCandidates(t *testing.T, db *sql.DB, sessionID string) map[string]int {
 	t.Helper()
 	rows, err := db.Query(
@@ -1004,5 +1297,95 @@ func assertNoDedupeBackfillMarker(t *testing.T, db *sql.DB) {
 	}
 	if count != 0 {
 		t.Fatalf("dedupe backfill marker count = %d, want 0", count)
+	}
+}
+
+// TestDedupeOffsetStartedAtMarkerDetectsHistoricalText 验证迁移期检测并持久化
+// “库中是否存在非 Z 结尾 started_at 文本”的 marker：空库/全 canonical 库检测为 '0'，
+// 含历史偏移文本的库检测为 '1'；marker 一旦写入，后续 Migrate 直接读取而不重新检测
+// （运行期写入恒经 formatTime 输出 Z 结尾文本，快照语义安全）。
+func TestDedupeOffsetStartedAtMarkerDetectsHistoricalText(t *testing.T) {
+	t.Run("empty store detects all canonical", func(t *testing.T) {
+		store := newTestStore(t)
+		var value string
+		if err := store.db.QueryRow(`SELECT value FROM settings WHERE key = ?`, offsetStartedAtMarkerKey).Scan(&value); err != nil {
+			t.Fatalf("query marker: %v", err)
+		}
+		if value != "0" {
+			t.Fatalf("marker = %q, want 0", value)
+		}
+		if got := store.hasOffsetStartedAt.Load(); got != offsetStartedAtAllCanonical {
+			t.Fatalf("hasOffsetStartedAt = %d, want %d", got, offsetStartedAtAllCanonical)
+		}
+	})
+
+	t.Run("historical offset text detects present", func(t *testing.T) {
+		store := newLegacyUsageStore(t)
+		instant := time.Date(2026, 7, 30, 19, 0, 0, 0, time.UTC)
+		values := UsageValues{InputTokens: 1, OutputTokens: 2}
+		recordDedupeHistoryWithStartedText(t, store, "2026-07-30T12:00:00-07:00",
+			dedupeSessionRequest("session", instant, "model", "model"),
+			dedupeToken("session", UsageSourceSessionLog, ParseStatusOK, values),
+		)
+		if err := store.Migrate(); err != nil {
+			t.Fatalf("Migrate() error = %v", err)
+		}
+		var value string
+		if err := store.db.QueryRow(`SELECT value FROM settings WHERE key = ?`, offsetStartedAtMarkerKey).Scan(&value); err != nil {
+			t.Fatalf("query marker: %v", err)
+		}
+		if value != "1" {
+			t.Fatalf("marker = %q, want 1", value)
+		}
+		if got := store.hasOffsetStartedAt.Load(); got != offsetStartedAtPresent {
+			t.Fatalf("hasOffsetStartedAt = %d, want %d", got, offsetStartedAtPresent)
+		}
+	})
+
+	t.Run("marker is snapshot not re-detected on later migrate", func(t *testing.T) {
+		store := newTestStore(t)
+		// 首次 Migrate（newTestStore 内）已检测空库为 '0'。运行期外部直接插入非 Z 行
+		// 不属于系统写入契约；再次 Migrate 应读快照而不重新检测。
+		if _, err := store.db.Exec(
+			`INSERT INTO usage_requests(id, started_at) VALUES ('external', '2026-07-30T12:00:00-07:00')`,
+		); err != nil {
+			t.Fatalf("insert external row: %v", err)
+		}
+		if err := store.Migrate(); err != nil {
+			t.Fatalf("Migrate() again error = %v", err)
+		}
+		var value string
+		if err := store.db.QueryRow(`SELECT value FROM settings WHERE key = ?`, offsetStartedAtMarkerKey).Scan(&value); err != nil {
+			t.Fatalf("query marker: %v", err)
+		}
+		if value != "0" {
+			t.Fatalf("marker = %q, want snapshot 0", value)
+		}
+	})
+}
+
+// TestIncrementalDedupeSQLBoundsCoarseWidth 验证粗滤边界宽度开关：窄模式（全 canonical
+// 库）粗滤收敛为 ±10 分钟±1 秒窄边界（旧实现索引扫描范围）；宽模式按合法偏移上限放宽。
+// 两种模式的 epoch 决定性边界相同。
+func TestIncrementalDedupeSQLBoundsCoarseWidth(t *testing.T) {
+	started := time.Date(2026, 7, 30, 19, 0, 0, 500_000_000, time.UTC)
+	coarseLowNarrow, coarseHighNarrow, narrowLow, narrowHigh, epochLowNarrow, epochHighNarrow := incrementalDedupeSQLBounds(started, false)
+	if coarseLowNarrow != narrowLow || coarseHighNarrow != narrowHigh {
+		t.Fatalf("narrow mode coarse bounds = [%s, %s), want equal to narrow [%s, %s)",
+			coarseLowNarrow, coarseHighNarrow, narrowLow, narrowHigh)
+	}
+	coarseLowWide, coarseHighWide, narrowLowWide, narrowHighWide, epochLowWide, epochHighWide := incrementalDedupeSQLBounds(started, true)
+	if narrowLowWide != narrowLow || narrowHighWide != narrowHigh {
+		t.Fatalf("narrow bounds differ between modes: %s/%s vs %s/%s", narrowLowWide, narrowHighWide, narrowLow, narrowHigh)
+	}
+	if epochLowWide != epochLowNarrow || epochHighWide != epochHighNarrow {
+		t.Fatalf("epoch bounds differ between modes: [%d, %d] vs [%d, %d]",
+			epochLowWide, epochHighWide, epochLowNarrow, epochHighNarrow)
+	}
+	wantCoarseLow := formatTime(started.Add(-10*time.Minute).Truncate(time.Second).Add(-time.Second).Add(-maxHistoricalUTCOffsetSkew))
+	wantCoarseHigh := formatTime(started.Add(10*time.Minute).Truncate(time.Second).Add(time.Second).Add(maxHistoricalUTCOffsetSkew))
+	if coarseLowWide != wantCoarseLow || coarseHighWide != wantCoarseHigh {
+		t.Fatalf("wide coarse bounds = [%s, %s), want [%s, %s)",
+			coarseLowWide, coarseHighWide, wantCoarseLow, wantCoarseHigh)
 	}
 }

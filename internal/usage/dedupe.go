@@ -2,12 +2,17 @@ package usage
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
 )
 
 const dedupeCandidatesBackfillMarker = "usage_dedupe_candidates_backfill_v1"
+
+// offsetStartedAtMarkerKey 持久化“库中是否存在非 Z 结尾的历史偏移 started_at 文本”的
+// 检测结果，供增量候选查询选择 TEXT 粗滤边界宽度（见 incrementalDedupeSQLBounds）。
+const offsetStartedAtMarkerKey = "usage_dedupe_offset_started_at_v1"
 
 const (
 	incrementalDedupeProviderWhere = `
@@ -234,7 +239,9 @@ func dedupeBackfillModelKeys(row RequestRow) []dedupeBackfillModelKey {
 	return keys
 }
 
-func maintainDedupeCandidatesTx(tx *sql.Tx, req RequestRecord, tok TokenRecord) error {
+// maintainDedupeCandidatesTx 在写入事务内增量维护候选表。wideCoarseBounds 由 Store 的
+// 迁移期检测缓存给出：库中存在非 Z 结尾的历史偏移文本时放宽 TEXT 粗滤边界。
+func (s *Store) maintainDedupeCandidatesTx(tx *sql.Tx, req RequestRecord, tok TokenRecord) error {
 	current := RequestRow{RequestRecord: req, TokenRecord: tok}
 	current.SourceApp = defaultString(current.SourceApp, "unknown")
 	current.UsageSource = defaultString(current.UsageSource, UsageSourceNone)
@@ -250,7 +257,9 @@ func maintainDedupeCandidatesTx(tx *sql.Tx, req RequestRecord, tok TokenRecord) 
 		return nil
 	}
 
-	opposite, err := queryDedupeOppositeRowsTx(tx, current, oppositeWhere)
+	// Unknown（Migrate 未完成）保守按宽边界处理，正确性优先。
+	wideCoarseBounds := s.hasOffsetStartedAt.Load() != offsetStartedAtAllCanonical
+	opposite, err := queryDedupeOppositeRowsTx(tx, current, oppositeWhere, wideCoarseBounds)
 	if err != nil {
 		return err
 	}
@@ -359,8 +368,8 @@ func backfillCandidateRankTx(tx *sql.Tx) error {
 	return nil
 }
 
-func queryDedupeOppositeRowsTx(tx *sql.Tx, current RequestRow, oppositeWhere string) ([]RequestRow, error) {
-	query, args := incrementalDedupeCandidateQuery(current, oppositeWhere)
+func queryDedupeOppositeRowsTx(tx *sql.Tx, current RequestRow, oppositeWhere string, wideCoarseBounds bool) ([]RequestRow, error) {
+	query, args := incrementalDedupeCandidateQuery(current, oppositeWhere, wideCoarseBounds)
 	rows, err := tx.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query incremental usage dedupe candidates: %w", err)
@@ -396,7 +405,7 @@ func queryDedupeOppositeRowsTx(tx *sql.Tx, current RequestRow, oppositeWhere str
 	return candidates, nil
 }
 
-func incrementalDedupeCandidateQuery(current RequestRow, oppositeWhere string) (string, []any) {
+func incrementalDedupeCandidateQuery(current RequestRow, oppositeWhere string, wideCoarseBounds bool) (string, []any) {
 	query := `SELECT
 			r.id, r.started_at, r.original_model, r.mapped_model
 		 FROM usage_requests r INDEXED BY idx_usage_requests_started_id
@@ -404,6 +413,12 @@ func incrementalDedupeCandidateQuery(current RequestRow, oppositeWhere string) (
 		 WHERE ` + oppositeWhere + `
 		   AND r.started_at >= ?
 		   AND r.started_at < ?
+		   AND (
+				(r.started_at >= ? AND r.started_at < ?)
+				OR substr(r.started_at, -1) <> 'Z'
+		   )
+		   AND ` + scopedEpochSecondsExpr("r.started_at") + ` >= ?
+		   AND ` + scopedEpochSecondsExpr("r.started_at") + ` <= ?
 		   AND t.input_tokens = ?
 		   AND t.output_tokens = ?
 		   AND t.cache_creation_input_tokens = ?
@@ -413,10 +428,14 @@ func incrementalDedupeCandidateQuery(current RequestRow, oppositeWhere string) (
 				OR
 				(r.original_model <> '' AND (r.original_model = ? OR r.original_model = ?))
 		   )`
-	lowerBound, upperBound := incrementalDedupeSQLBounds(current.StartedAt)
+	coarseLower, coarseUpper, narrowLower, narrowUpper, epochLower, epochUpper := incrementalDedupeSQLBounds(current.StartedAt, wideCoarseBounds)
 	args := []any{
-		lowerBound,
-		upperBound,
+		coarseLower,
+		coarseUpper,
+		narrowLower,
+		narrowUpper,
+		epochLower,
+		epochUpper,
 		current.InputTokens,
 		current.OutputTokens,
 		current.CacheCreationInputTokens,
@@ -429,10 +448,93 @@ func incrementalDedupeCandidateQuery(current RequestRow, oppositeWhere string) (
 	return query, args
 }
 
-func incrementalDedupeSQLBounds(startedAt time.Time) (string, string) {
+// maxHistoricalUTCOffsetSkew 是 Go time.Parse(RFC3339Nano) 可接受的时区偏移上限（实测
+// ±24:59 可解析、±25:00 拒绝；取 25 小时为上界）叠加 1 秒小数秒字典序余量。历史库
+// started_at 若保留带偏移文本（如 2026-07-30T12:00:00-07:00），其墙上时间文本相对同一
+// instant 的 canonical UTC 文本最多偏离该量；增量候选 TEXT 粗滤边界按此放宽，保证任何
+// 窗口内候选的原始文本都落在粗滤区间内（严格超集，不参与候选判定）。
+const maxHistoricalUTCOffsetSkew = 25*time.Hour + time.Second
+
+// incrementalDedupeSQLBounds 计算增量候选查询的三组时间过滤边界：
+//
+//   - epochLower/epochUpper（决定性过滤）：±10 分钟窗口各加 1 秒整秒余量后的 Unix 秒，
+//     与 SQL 中 scopedEpochSecondsExpr（strftime('%s') 解析后的整秒 epoch，非法时戳容错为
+//     Go 零值）比较。strftime 按 instant 解析带任意合法偏移的 RFC3339 文本，故该过滤对
+//     历史偏移文本与 canonical UTC 文本给出同一 instant 判定；±1 秒余量吸收小数秒截断与
+//     负 epoch（1970 年前）截断方向差异，使过滤结果构成 Go 含边界窗口的严格超集。
+//     原始时间 TEXT 字典序比较不决定候选（M-1）：带偏移文本与 canonical 边界不在同一
+//     instant，直接做字符串范围比较会漏配窗口内候选；候选语义完全由 epoch 过滤与
+//     maintainDedupeCandidatesTx 的 Go Before/After 含边界窗口判定（小数秒精度）决定，
+//     与旧 Go 去重逐字段一致。
+//   - coarseLower/coarseUpper（TEXT 索引粗滤）：仅为 idx_usage_requests_started_id 索引
+//     加速，边界在窗口外再按 maxHistoricalUTCOffsetSkew 放宽，保证任何窗口内候选（无论
+//     偏移多大）的原始文本都落在区间内（严格超集）。
+//   - narrowLower/narrowUpper（canonical 行快速通道）：等价旧 ±10 分钟±1 秒 TEXT 边界。
+//     本系统写入（formatTime）恒输出以 'Z' 结尾的 canonical UTC 文本，其字典序即时序，
+//     窄范围对 Z 行构成 epoch 窗口的严格超集；查询中 Z 行仅需满足窄范围即可进入 JOIN，
+//     使全 canonical 库（常态）的 JOIN 行数与旧实现相同，非 Z 的历史偏移行则经宽粗滤
+//     范围进入、由 epoch 过滤决定。两分支 OR 后再统一过 epoch 过滤，语义不变。
+// wideCoarseBounds 为 false（迁移期检测确认全库 started_at 均为 Z 结尾 canonical 文本）
+// 时，粗滤边界收敛为窄边界：Z 文本字典序即时序，窄范围对 Z 行构成 epoch 窗口的严格
+// 超集，索引扫描范围与旧实现相同（常态库写路径性能不变）；为 true（库中存在历史偏移
+// 文本，或检测状态未知）时按 maxHistoricalUTCOffsetSkew 放宽，覆盖任意合法偏移行。
+func incrementalDedupeSQLBounds(startedAt time.Time, wideCoarseBounds bool) (coarseLower, coarseUpper, narrowLower, narrowUpper string, epochLower, epochUpper int64) {
 	lower := startedAt.Add(-10 * time.Minute).Truncate(time.Second).Add(-time.Second)
 	upper := startedAt.Add(10 * time.Minute).Truncate(time.Second).Add(time.Second)
-	return formatTime(lower), formatTime(upper)
+	coarseLow, coarseHigh := lower, upper
+	if wideCoarseBounds {
+		coarseLow = lower.Add(-maxHistoricalUTCOffsetSkew)
+		coarseHigh = upper.Add(maxHistoricalUTCOffsetSkew)
+	}
+	return formatTime(coarseLow),
+		formatTime(coarseHigh),
+		formatTime(lower),
+		formatTime(upper),
+		lower.Unix(),
+		upper.Unix()
+}
+
+// migrateOffsetStartedAtMarker 检测并持久化“库中是否存在非 Z 结尾的 started_at 文本”，
+// 并加载进内存缓存。本系统所有写入经 Record → formatTime 恒输出 'Z' 结尾的 canonical
+// UTC 文本，运行期写入不会引入非 Z 行，故该状态只需迁移期检测一次（后续启动直接读
+// 取 marker）：检测以迁移时的库快照为准，与 M-1 复现路径“历史脏行 + 迁移后新增对端”
+// 的时序一致。检测结果只影响增量候选查询的索引扫描范围，不影响候选语义（始终由
+// epoch 过滤与 Go 窗口判定决定）。
+func (s *Store) migrateOffsetStartedAtMarker() error {
+	var value string
+	err := s.db.QueryRow(`SELECT value FROM settings WHERE key = ?`, offsetStartedAtMarkerKey).Scan(&value)
+	switch {
+	case err == nil:
+		if value == "1" {
+			s.hasOffsetStartedAt.Store(offsetStartedAtPresent)
+		} else {
+			s.hasOffsetStartedAt.Store(offsetStartedAtAllCanonical)
+		}
+		return nil
+	case !errors.Is(err, sql.ErrNoRows):
+		return fmt.Errorf("query usage offset started_at marker: %w", err)
+	}
+	var present int
+	if err := s.db.QueryRow(
+		`SELECT EXISTS(SELECT 1 FROM usage_requests WHERE substr(started_at, -1) <> 'Z')`,
+	).Scan(&present); err != nil {
+		return fmt.Errorf("detect usage offset started_at rows: %w", err)
+	}
+	marker := "0"
+	state := int32(offsetStartedAtAllCanonical)
+	if present == 1 {
+		marker = "1"
+		state = offsetStartedAtPresent
+	}
+	if _, err := s.db.Exec(
+		`INSERT INTO settings(key, value) VALUES (?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		offsetStartedAtMarkerKey, marker,
+	); err != nil {
+		return fmt.Errorf("write usage offset started_at marker: %w", err)
+	}
+	s.hasOffsetStartedAt.Store(state)
+	return nil
 }
 
 func dedupeCandidateModelPriority(session, provider RequestRow) (int, bool) {

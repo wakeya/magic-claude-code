@@ -5,11 +5,27 @@ import (
 	"database/sql"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
+)
+
+// offsetStartedAtUnknown/AllCanonical/Present 是 Store.hasOffsetStartedAt 的三态值：
+// 库中是否存在不以 'Z' 结尾的 started_at 文本（历史脏库可能保留带时区偏移的
+// RFC3339 文本）。Unknown 仅在 Migrate 未完成时出现，增量候选查询保守按宽边界处理。
+const (
+	offsetStartedAtUnknown = iota
+	offsetStartedAtAllCanonical
+	offsetStartedAtPresent
 )
 
 type Store struct {
 	db *sql.DB
+	// hasOffsetStartedAt 缓存“库中是否存在非 Z 结尾的历史偏移 started_at 文本”的
+	// 迁移期检测结果（settings 持久化）。本系统所有写入经 Record → formatTime 恒输出
+	// canonical UTC（'Z' 结尾）文本，故该状态在运行期不会由 false 变 true：检测为
+	// 全 canonical 时增量候选查询可用窄 TEXT 粗滤边界（旧性能），否则放宽至覆盖任意
+	// 合法偏移。候选语义始终由 epoch 过滤与 Go 窗口判定决定，该缓存只影响索引扫描范围。
+	hasOffsetStartedAt atomic.Int32
 }
 
 func NewStore(db *sql.DB) *Store {
@@ -88,6 +104,9 @@ func (s *Store) Migrate() error {
 	if err := s.migrateCandidateRank(); err != nil {
 		return err
 	}
+	if err := s.migrateOffsetStartedAtMarker(); err != nil {
+		return err
+	}
 	return s.migrateUsageQueryIndexes()
 }
 
@@ -152,7 +171,7 @@ func (s *Store) Record(req RequestRecord, tok TokenRecord) error {
 	if err != nil {
 		return err
 	}
-	if err := maintainDedupeCandidatesTx(tx, req, tok); err != nil {
+	if err := s.maintainDedupeCandidatesTx(tx, req, tok); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -223,7 +242,7 @@ func (s *Store) recordIfAbsent(req RequestRecord, tok TokenRecord) (bool, error)
 	if err != nil {
 		return false, err
 	}
-	if err := maintainDedupeCandidatesTx(tx, req, tok); err != nil {
+	if err := s.maintainDedupeCandidatesTx(tx, req, tok); err != nil {
 		return false, err
 	}
 	return true, tx.Commit()
