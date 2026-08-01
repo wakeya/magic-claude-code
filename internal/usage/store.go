@@ -118,6 +118,12 @@ func (s *Store) Migrate() error {
 // backfill so historical negative values cannot participate in dedupe or SQL
 // aggregation.
 func (s *Store) migrateNonNegativeUsageValues() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
 	for _, stmt := range []string{
 		`UPDATE usage_tokens SET input_tokens = 0 WHERE input_tokens < 0`,
 		`UPDATE usage_tokens SET output_tokens = 0 WHERE output_tokens < 0`,
@@ -127,11 +133,11 @@ func (s *Store) migrateNonNegativeUsageValues() error {
 		`UPDATE usage_requests SET upstream_response_header_ms = 0 WHERE upstream_response_header_ms < 0`,
 		`UPDATE usage_requests SET time_to_first_byte_ms = 0 WHERE time_to_first_byte_ms < 0`,
 	} {
-		if _, err := s.db.Exec(stmt); err != nil {
+		if _, err := tx.Exec(stmt); err != nil {
 			return err
 		}
 	}
-	return nil
+	return tx.Commit()
 }
 
 func validateNonNegativeUsage(req RequestRecord, tok TokenRecord) error {

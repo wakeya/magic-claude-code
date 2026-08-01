@@ -327,10 +327,13 @@ old algorithm only within that range:
 - **I1 Single values**: every token counter and duration value is non-negative and
   representable as an int64 (`0 ≤ value ≤ MaxInt64`; ordinary product values are in
   `[0, MaxInt64)`). The API parser (`usageFieldInt64` in `parse.go`) rejects negative
-  token values with the stable `invalid_value` parse status, and ignores integers `>
-  MaxInt64` or floats `≥ 2^63` as junk fields. The session-sync and `Store.Record` /
-  `recordIfAbsent` write boundaries reject negative counters and durations before any
-  row is inserted. `duration_ms` derives from Go `time.Since` (≤ ~9.2e12 ms per value).
+  token values with the stable public `invalid_value` parse status. This status means
+  negative token usage is rejected; the proxy still records the provider request as a
+  no-usage row (zero token contribution), so it remains visible in request counts and
+  coverage denominators. Integers `> MaxInt64` or floats `≥ 2^63` remain junk fields.
+  The session-sync and `Store.Record` / `recordIfAbsent` write boundaries reject
+  negative counters and durations before any row is inserted. `duration_ms` derives
+  from Go `time.Since` (≤ ~9.2e12 ms per value).
 - **I2 In-row sum**: all four token counters are non-negative and every left-to-right
   accumulation prefix, including the final sum, stays within int64. Since all terms are
   non-negative, this is equivalent to the final row sum being in `[0, MaxInt64]`.
@@ -345,18 +348,25 @@ Real product data always satisfies I2/I3: single counters are non-negative real 
 limit (≈9.2e18). Within the range, SQL aggregates are always INTEGER and match the old
 Go int64 accumulation bit-for-bit.
 
-**Historical and overflow behavior**: `Store.Migrate` performs an idempotent one-time-
-per-dirty-row normalization before candidate backfill: negative token counters and
-duration columns already present in a legacy database are set to zero. New writes cannot
-create such rows because both write paths validate before opening a transaction. Thus
-negative cancellation paths are outside the supported database contract. For positive
-database contents violating I2/I3 (for example hand-edited values near 2^63), the SQL
-aggregation path fails with an explicit error and never silently returns a distorted
-number. An in-row sum overflow promotes the SQLite integer expression to REAL, and
-database/sql cannot scan the scientific-notation REAL into int64 (`Scan error`); a
-cross-row `SUM()` integer overflow fails at query time with SQLite `integer overflow`.
-The old Go implementation silently wrapped at these positive overflow points; the new
-path fails explicitly instead. The boundary is locked by
+**Historical and overflow behavior**: `Store.Migrate` performs an idempotent,
+explicitly transactional normalization before candidate backfill: all seven negative
+token and duration columns are updated in one transaction, so a failure rolls back the
+whole normalization and a concurrent reader sees either the pre-migration values or
+the fully normalized values, never a partial state. On a retry/reopen, the same
+transaction safely completes the remaining dirty rows. Historical negative values are
+set to zero, preserving the request row and its request/coverage denominator; their
+token and duration contributions are therefore zero. This differs from a new direct
+`Store.Record` / `recordIfAbsent` call with negative values, which is rejected before
+inserting a row. New writes cannot create such rows because both write paths validate
+before opening a transaction. Thus negative cancellation paths are outside the
+supported database contract. For positive database contents violating I2/I3 (for
+example hand-edited values near 2^63), the SQL aggregation path fails with an explicit
+error and never silently returns a distorted number. An in-row sum overflow promotes
+the SQLite integer expression to REAL, and database/sql cannot scan the
+scientific-notation REAL into int64 (`Scan error`); a cross-row `SUM()` integer
+overflow fails at query time with SQLite `integer overflow`. The old Go implementation
+silently wrapped at these positive overflow points; the new path fails explicitly
+instead. The boundary is locked by
 `internal/usage/int64_boundary_test.go` on the target driver (modernc.org/sqlite):
 single values near MaxInt64, in-row sums exactly at MaxInt64, and cross-row totals near
 MaxInt64 (including duration) all match the legacyOracle field-for-field; pure-positive

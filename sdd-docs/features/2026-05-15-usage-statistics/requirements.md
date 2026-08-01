@@ -148,6 +148,7 @@ none         = provider 未返回 usage，或响应格式不支持，或请求�
 |------|------|
 | `ok` | 成功提取 usage |
 | `missing` | 2xx 响应成功，但未发现 usage 字段 |
+| `invalid_value` | usage 包含负 token 等被拒绝的值；该请求仍记录为无 usage 请求，token 贡献为 0 |
 | `unsupported_format` | 响应格式不是当前支持的 Anthropic-style usage |
 | `parse_error` | 响应像是目标格式，但 JSON 或字段解析失败 |
 | `skipped_non_2xx` | provider 返回 4xx/5xx，不按成功响应解析 usage |

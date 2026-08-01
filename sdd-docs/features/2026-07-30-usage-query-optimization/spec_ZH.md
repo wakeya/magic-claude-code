@@ -275,7 +275,9 @@ Summary/Trends/Providers/Models 查询）把旧 Go 逐行 int64 加法下推到 
 
 - **I1 单值**：四个 token 计数器与 duration 均为非负且可表示为 int64
   （`0 ≤ value ≤ MaxInt64`；普通产品数据位于 `[0, MaxInt64)`）。API parser
-  （`parse.go` 的 `usageFieldInt64`）拒绝负 token，并以稳定的 `invalid_value` 状态分类；
+  （`parse.go` 的 `usageFieldInt64`）拒绝负 token，并以公共稳定状态
+  `invalid_value` 分类。该状态表示负 token usage 被拒绝；代理仍会把该 provider
+  请求记录为无 usage 请求（token 列为 0），因此请求计数与覆盖率分母仍保留。
   `> MaxInt64` 的整数与 `≥ 2^63` 的浮点仍按垃圾字段忽略。session-sync 与
   `Store.Record`/`recordIfAbsent` 写入边界在插入任何行前拒绝负 token 与 duration；
   `duration_ms` 来自 Go `time.Since`（单值 ≤ ~9.2e12 ms）。
@@ -289,14 +291,17 @@ Summary/Trends/Providers/Models 查询）把旧 Go 逐行 int64 加法下推到 
 `duration_ms` ≤ 9.2e12 ms/行（10^6 行内可证明安全），与 int64 上限（≈9.2e18）富余 5 个
 以上数量级。范围内 SQL 聚合结果恒为 INTEGER，与旧 Go int64 累加逐位一致。
 
-**历史脏库与溢出点行为**：`Store.Migrate` 在候选回填前执行幂等的一次性脏行归一化，
-将历史数据库中已有的负 token 与 duration 列归零；新写入的 `Record` 与 `recordIfAbsent`
-在开启事务前拒绝负值。因此负值抵消型中间溢出不属于支持的数据契约。对于纯正向、违反
-I2/I3 的数据库内容（如手工写入接近 2^63 的伪造非负计数），SQL 聚合路径以显式错误失败，
-绝不静默返回失真数值：行内和溢出时 SQLite 整数表达式提升为 REAL，database/sql 无法把
-科学计数法 REAL 扫描成 int64，报 `Scan error`；跨行 `SUM()` 整数累计溢出时 SQLite 直接报
-`integer overflow` 查询错误。旧 Go 实现在纯正向溢出点静默回绕，新路径选择显式报错；该
-差异不改变支持范围内行为。以上边界由 `internal/usage/int64_boundary_test.go` 在目标 driver
+**历史脏库与溢出点行为**：`Store.Migrate` 在候选回填前执行幂等且显式事务化的归一化：
+七条负 token/duration 更新在同一事务中提交，任一失败整体回滚；并发读者只能看到迁移前
+值或全部归零后的值，不能看到部分归零。失败后重开/重试会在同一事务中完整处理剩余脏行。
+历史负值归零会保留请求行及请求计数/覆盖率分母，但这些 token 与 duration 对聚合的贡献为
+零；这与新写入时 `Record`/`recordIfAbsent` 在插入前拒绝负值、因而不产生该行不同。因此
+负值抵消型中间溢出不属于支持的数据契约。对于纯正向、违反 I2/I3 的数据库内容（如手工
+写入接近 2^63 的伪造非负计数），SQL 聚合路径以显式错误失败，绝不静默返回失真数值：
+行内和溢出时 SQLite 整数表达式提升为 REAL，database/sql 无法把科学计数法 REAL 扫描成
+int64，报 `Scan error`；跨行 `SUM()` 整数累计溢出时 SQLite 直接报 `integer overflow`
+查询错误。旧 Go 实现在纯正向溢出点静默回绕，新路径选择显式报错；该差异不改变支持范围
+内行为。以上边界由 `internal/usage/int64_boundary_test.go` 在目标 driver
 （modernc.org/sqlite）上锁定：范围内单值接近 MaxInt64、行内和恰为 MaxInt64、跨行总和接近
 MaxInt64（含 duration）均与 legacyOracle 逐字段一致；纯正向溢出点断言显式错误与旧回绕值
 的文档对照。
