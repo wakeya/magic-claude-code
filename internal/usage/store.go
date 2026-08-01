@@ -1,6 +1,7 @@
 package usage
 
 import (
+	"context"
 	"database/sql"
 	"sort"
 	"strings"
@@ -494,7 +495,21 @@ func (s *Store) aggregateSQL(filter Filter, groupColumn, nameColumn string) ([]A
 func (s *Store) Coverage(filter Filter) ([]CoverageRow, error) {
 	summarySQL, statusSQL, args := buildCoverageQueries(filter)
 
-	summaryRows, err := s.db.Query(summarySQL, args...)
+	// M-2：summary 与 status 两条查询必须在同一只读事务内执行（事务结束回滚，只发
+	// SELECT、不升级写锁、不阻塞并发 writer）。否则 WAL 下两次独立 db.Query 各自取得
+	// 不同 reader snapshot：写入恰在两次查询之间提交时，Total/WithoutUsage 分子分母
+	// 来自旧快照、usage_parse_status 状态分布混入新快照行（或新分组的解析状态被
+	// groups[key] 查找静默丢弃），返回结构不对应同一筛选结果。同一事务内 SQLite 为
+	// 所有语句共享同一 reader snapshot；快照在事务开始时建立，事务结束（Rollback）
+	// 即释放，不跨调用泄漏。由 TestCoverageSummaryStatusShareSnapshotUnderConcurrent
+	// WALWrite 锁定。
+	tx, err := s.db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	summaryRows, err := tx.Query(summarySQL, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -546,7 +561,7 @@ func (s *Store) Coverage(filter Filter) ([]CoverageRow, error) {
 		return nil, err
 	}
 
-	statusRows, err := s.db.Query(statusSQL, args...)
+	statusRows, err := tx.Query(statusSQL, args...)
 	if err != nil {
 		return nil, err
 	}
