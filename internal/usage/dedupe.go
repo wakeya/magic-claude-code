@@ -30,6 +30,7 @@ var dedupeMigrationStatements = []string{
 		session_request_id TEXT NOT NULL,
 		provider_request_id TEXT NOT NULL,
 		model_priority INTEGER NOT NULL,
+		candidate_rank INTEGER NOT NULL DEFAULT 0,
 		PRIMARY KEY (session_request_id, provider_request_id),
 		FOREIGN KEY (session_request_id) REFERENCES usage_requests(id) ON DELETE CASCADE,
 		FOREIGN KEY (provider_request_id) REFERENCES usage_requests(id) ON DELETE CASCADE
@@ -265,6 +266,11 @@ func maintainDedupeCandidatesTx(tx *sql.Tx, req RequestRecord, tok TokenRecord) 
 	}
 	defer insert.Close()
 
+	// affected 收集本次写入触及的全部 session_request_id：插入新候选或经 ON CONFLICT 下调
+	// 既有候选的 model_priority 都会改变该 session 的候选排序，故在循环结束后对其持久化
+	// candidate_rank 统一重排（R3）。每个 session 的候选数极少（±10 分钟窗口内同指纹），重排
+	// 成本可忽略，且与 usage 写入处于同一事务，失败一并回滚。
+	affected := make(map[string]struct{})
 	for _, candidate := range opposite {
 		session, provider := current, candidate
 		if isProviderUsageRow(current) {
@@ -281,6 +287,74 @@ func maintainDedupeCandidatesTx(tx *sql.Tx, req RequestRecord, tok TokenRecord) 
 		if _, err := insert.Exec(session.ID, provider.ID, priority); err != nil {
 			return fmt.Errorf("insert incremental usage dedupe candidate: %w", err)
 		}
+		affected[session.ID] = struct{}{}
+	}
+	for sessionID := range affected {
+		if err := rerankCandidateSessionTx(tx, sessionID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// candidateRankOrderExpr 返回 candidate_rank 的 ORDER BY 表达式主体（不含 "ORDER BY" 前缀）。
+// 排序与 buildScopedCTE 旧 ROW_NUMBER 窗口逐字一致：model_priority 升序优先，随后 provider 行
+// started_at 的整秒 epoch 升序、9 位小数秒升序，最后 provider_request_id 升序。candidateAlias
+// 为候选表别名（提供 model_priority / provider_request_id），providerAlias 为已 JOIN 的 provider
+// usage_requests 别名（其 started_at 决定时间序）。持久化 rank 与查询期 MIN(candidate_rank)
+// 共用此排序，保证“最早 provider 候选选择”语义在写入/回填/读取三处完全一致。
+func candidateRankOrderExpr(candidateAlias, providerAlias string) string {
+	return candidateAlias + `.model_priority ASC, ` +
+		scopedEpochSecondsExpr(providerAlias+`.started_at`) + ` ASC, ` +
+		scopedStartedAtFractionExpr(providerAlias+`.started_at`) + ` ASC, ` +
+		candidateAlias + `.provider_request_id ASC`
+}
+
+// rerankCandidateSessionTx 在事务内重排单个 session 的候选持久化 candidate_rank 为稠密 1..N，
+// 排序由 candidateRankOrderExpr 给出。供增量写入路径在候选集合变化后维护排名；候选数极少，
+// 单会话重排开销可忽略。ROW_NUMBER 的 PARTITION 退化为单一 session（WHERE 已限定）。
+func rerankCandidateSessionTx(tx *sql.Tx, sessionRequestID string) error {
+	_, err := tx.Exec(`
+		UPDATE usage_dedupe_candidates
+		SET candidate_rank = ranked.rn
+		FROM (
+			SELECT d2.provider_request_id AS pid,
+				ROW_NUMBER() OVER (
+					ORDER BY `+candidateRankOrderExpr("d2", "p2")+`
+				) AS rn
+			FROM usage_dedupe_candidates d2
+			JOIN usage_requests p2 ON p2.id = d2.provider_request_id
+			WHERE d2.session_request_id = ?
+		) AS ranked
+		WHERE usage_dedupe_candidates.session_request_id = ?
+		  AND usage_dedupe_candidates.provider_request_id = ranked.pid`,
+		sessionRequestID, sessionRequestID)
+	if err != nil {
+		return fmt.Errorf("rerank usage candidate session %q: %w", sessionRequestID, err)
+	}
+	return nil
+}
+
+// backfillCandidateRankTx 在事务内为全表候选批量计算持久化 candidate_rank（按 session 分区稠密
+// 1..N）。供历史回填迁移一次性升级存量候选；与 6A 候选回填同事务原子提交。ROW_NUMBER 排序与
+// 增量重排、查询期 MIN 完全一致。
+func backfillCandidateRankTx(tx *sql.Tx) error {
+	_, err := tx.Exec(`
+		UPDATE usage_dedupe_candidates
+		SET candidate_rank = ranked.rn
+		FROM (
+			SELECT d2.session_request_id AS sid, d2.provider_request_id AS pid,
+				ROW_NUMBER() OVER (
+					PARTITION BY d2.session_request_id
+					ORDER BY ` + candidateRankOrderExpr("d2", "p2") + `
+				) AS rn
+			FROM usage_dedupe_candidates d2
+			JOIN usage_requests p2 ON p2.id = d2.provider_request_id
+		) AS ranked
+		WHERE usage_dedupe_candidates.session_request_id = ranked.sid
+		  AND usage_dedupe_candidates.provider_request_id = ranked.pid`)
+	if err != nil {
+		return fmt.Errorf("backfill usage candidate rank: %w", err)
 	}
 	return nil
 }

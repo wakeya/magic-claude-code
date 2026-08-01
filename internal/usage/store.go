@@ -84,6 +84,9 @@ func (s *Store) Migrate() error {
 	if err := s.migrateDedupeCandidates(); err != nil {
 		return err
 	}
+	if err := s.migrateCandidateRank(); err != nil {
+		return err
+	}
 	return s.migrateUsageQueryIndexes()
 }
 

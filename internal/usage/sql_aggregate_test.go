@@ -60,7 +60,7 @@ func TestBuildSummaryQueryAggregatesScopedDataset(t *testing.T) {
 		t.Fatalf("placeholder count = %d, args = %d", strings.Count(query, "?"), len(args))
 	}
 
-	for _, want := range []string{"COUNT(*)", "SUM(", "filtered AS", "candidate AS", "scoped AS", "r.error_type", "r.status_code", "t.input_tokens"} {
+	for _, want := range []string{"COUNT(*)", "SUM(", "filtered AS", "usage_dedupe_candidates d", "MIN(d2.candidate_rank)", "scoped AS", "r.error_type", "r.status_code", "t.input_tokens"} {
 		if !strings.Contains(query, want) {
 			t.Fatalf("summary query missing %q:\n%s", want, query)
 		}
@@ -87,13 +87,13 @@ func TestBuildSummaryQueryAggregatesScopedDataset(t *testing.T) {
 	}
 }
 
-// TestSummaryQueryPlanScansScopedOnce 锁定 Summary 的单次扫描查询结构（R2 P0）：
-// 主聚合与“最新请求时间”共享同一次 scoped 扫描，EXPLAIN QUERY PLAN 中只允许出现
-// 一次 usage_requests 主表全扫（SCAN r）、一个为 scoped LEFT JOIN candidate 建立的
-// 运行时自动索引，且不得存在标量子查询。该测试防止结构回归为“标量子查询二次
-// 物化整套 scoped CTE”（R1 诊断：旧结构使 60k 全扫与自动索引各执行两次，是
-// Summary 为本机原始聚合下限 4.4× 的主因）。计划形态只取决于查询结构、与行数
-// 无关，故在小数据集上即可验证，CI 默认执行。
+// TestSummaryQueryPlanScansScopedOnce 锁定 Summary 的单次扫描查询结构（R2 P0 + R3 P1）：
+// 主聚合与“最新请求时间”共享同一次 scoped 扫描（R2），且 candidate 选取不再每查询物化
+// ROW_NUMBER 窗口、不再建运行时自动索引，改为走持久索引 idx_usage_dedupe_candidates_session_rank
+// 的相关子查询（R3）。EXPLAIN QUERY PLAN 中只允许出现一次 usage_requests 主表全扫（SCAN r）、
+// 零个自动索引、无 candidate 窗口临时排序（LAST 3 TERMS），且必须出现持久索引探测。该测试防止
+// 结构回归为“标量子查询二次物化整套 scoped CTE”（R1）或“candidate 每查询窗口物化 + 自动索引”（R3 前）。
+// 计划形态只取决于查询结构、与行数无关，故在小数据集上即可验证，CI 默认执行。
 func TestSummaryQueryPlanScansScopedOnce(t *testing.T) {
 	store := newTestStore(t)
 	seedSummaryDifferentialFixture(t, store)
@@ -122,7 +122,7 @@ func TestSummaryQueryPlanScansScopedOnce(t *testing.T) {
 		t.Fatalf("read explain rows: %v", err)
 	}
 
-	var autoIndexes, mainTableScans, scalarSubqueries int
+	var autoIndexes, mainTableScans, candidateWindows, persistentIndexHits int
 	for _, detail := range plan {
 		upper := strings.ToUpper(detail)
 		if strings.Contains(upper, "AUTOMATIC") {
@@ -131,21 +131,28 @@ func TestSummaryQueryPlanScansScopedOnce(t *testing.T) {
 		if detail == "SCAN r" || strings.HasPrefix(detail, "SCAN r ") {
 			mainTableScans++
 		}
-		if strings.Contains(upper, "SCALAR SUBQUERY") {
-			scalarSubqueries++
+		if strings.Contains(upper, "LAST 3 TERMS") {
+			candidateWindows++
+		}
+		if strings.Contains(detail, "idx_usage_dedupe_candidates_session_rank") {
+			persistentIndexHits++
 		}
 	}
-	if scalarSubqueries != 0 {
-		t.Errorf("summary plan contains %d scalar subqueries, want 0 (最新请求时间应与主聚合共享同一次 scoped 扫描):\n%s",
-			scalarSubqueries, strings.Join(plan, "\n"))
-	}
 	if mainTableScans != 1 {
-		t.Errorf("summary plan scans usage_requests %d times, want 1:\n%s",
+		t.Errorf("summary plan scans usage_requests %d times, want 1 (R2 单次扫描回归):\n%s",
 			mainTableScans, strings.Join(plan, "\n"))
 	}
-	if autoIndexes != 1 {
-		t.Errorf("summary plan builds %d automatic indexes, want 1:\n%s",
+	if autoIndexes != 0 {
+		t.Errorf("summary plan builds %d automatic indexes, want 0 (R3 candidate 自动索引应被持久索引取代):\n%s",
 			autoIndexes, strings.Join(plan, "\n"))
+	}
+	if candidateWindows != 0 {
+		t.Errorf("summary plan contains %d candidate ROW_NUMBER window sorts (LAST 3 TERMS), want 0:\n%s",
+			candidateWindows, strings.Join(plan, "\n"))
+	}
+	if persistentIndexHits == 0 {
+		t.Errorf("summary plan does not use idx_usage_dedupe_candidates_session_rank, want persistent index engagement:\n%s",
+			strings.Join(plan, "\n"))
 	}
 }
 
@@ -496,7 +503,7 @@ func TestBuildTrendsQueryAggregatesScopedDataset(t *testing.T) {
 		t.Fatalf("placeholder count = %d, args = %d", strings.Count(query, "?"), len(args))
 	}
 
-	for _, want := range []string{"COUNT(*)", "SUM(", "filtered AS", "candidate AS", "scoped AS", "GROUP BY bucket", "ORDER BY bucket ASC", "'unixepoch'", "r.error_type", "r.status_code", "t.input_tokens"} {
+	for _, want := range []string{"COUNT(*)", "SUM(", "filtered AS", "usage_dedupe_candidates d", "MIN(d2.candidate_rank)", "scoped AS", "GROUP BY bucket", "ORDER BY bucket ASC", "'unixepoch'", "r.error_type", "r.status_code", "t.input_tokens"} {
 		if !strings.Contains(query, want) {
 			t.Fatalf("trends query missing %q:\n%s", want, query)
 		}
@@ -1035,7 +1042,7 @@ func TestBuildAggregateQueryAggregatesScopedDataset(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"COUNT(*)", "SUM(", "filtered AS", "candidate AS", "scoped AS",
+		"COUNT(*)", "SUM(", "filtered AS", "usage_dedupe_candidates d", "MIN(d2.candidate_rank)", "scoped AS",
 		"GROUP BY group_key", "ROW_NUMBER()", "PARTITION BY r.provider_id",
 		"ORDER BY scoped.started_at DESC, scoped.request_id DESC",
 		"ORDER BY total_requests DESC, group_key ASC",
@@ -1530,7 +1537,7 @@ func TestBuildCoverageQueriesAggregateScopedDataset(t *testing.T) {
 		if strings.Count(query, "?") != len(args) {
 			t.Fatalf("%s placeholder count = %d, args = %d", name, strings.Count(query, "?"), len(args))
 		}
-		for _, want := range []string{"filtered AS", "candidate AS", "scoped AS", "COUNT(*)"} {
+		for _, want := range []string{"filtered AS", "usage_dedupe_candidates d", "MIN(d2.candidate_rank)", "scoped AS", "COUNT(*)"} {
 			if !strings.Contains(query, want) {
 				t.Fatalf("%s coverage query missing %q:\n%s", name, want, query)
 			}

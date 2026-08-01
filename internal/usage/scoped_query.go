@@ -372,9 +372,18 @@ GROUP BY r.provider_name, r.provider_api_url, r.mapped_model, r.source_entrypoin
 	return summarySQL, statusSQL, args
 }
 
-// buildScopedCTE returns the common filtered/candidate/scoped datasets used by
-// SQL-backed usage reads. Callers append their own projection, aggregation,
-// ordering, and pagination and pass the returned arguments unchanged.
+// buildScopedCTE returns the common filtered/scoped datasets used by SQL-backed
+// usage reads. Callers append their own projection, aggregation, ordering, and
+// pagination and pass the returned arguments unchanged.
+//
+// R3（P1）：candidate 选取不再以 ROW_NUMBER 窗口每查询物化（旧结构在物化结果上重建运行时
+// AUTOMATIC PARTIAL COVERING INDEX + 窗口 TEMP B-TREE，见 R1 诊断）。改为：候选排名持久化于
+// usage_dedupe_candidates.candidate_rank（写入/回填维护，稠密 1..N，排序与旧 ROW_NUMBER 逐字一致：
+// model_priority 升序 → provider 整秒 epoch 升序 → 9 位小数秒升序 → provider_request_id 升序），
+// scoped 直接 LEFT JOIN 基表 usage_dedupe_candidates 走持久索引 (session_request_id, candidate_rank)，
+// 并用相关子查询 MIN(candidate_rank) 在“过滤后候选集”中取最优（保留旧“普通过滤后 fallback”语义：
+// 最优候选被筛选排除时回退到下一个过滤后候选）。由 TestUsageQueryPlansEliminateCandidateWindowAndAutoIndex
+// 锁定六端点计划无自动索引/无 candidate 窗口、且走持久索引。
 func buildScopedCTE(filter Filter) (string, []any) {
 	where, args := filterWhere(filter)
 	filteredWhere := ""
@@ -410,47 +419,35 @@ func buildScopedCTE(filter Filter) (string, []any) {
 	FROM usage_requests r
 	JOIN usage_tokens t ON t.request_id = r.id` + filteredWhere + `
 ),
-candidate AS (
-	SELECT
-		d.session_request_id,
-		d.provider_request_id,
-		ROW_NUMBER() OVER (
-			PARTITION BY d.session_request_id
-			ORDER BY
-				d.model_priority ASC,
-				` + scopedEpochSecondsExpr("provider.started_at") + ` ASC,
-				` + scopedStartedAtFractionExpr("provider.started_at") + ` ASC,
-				provider.request_id ASC
-		) AS candidate_rank
-	FROM usage_dedupe_candidates d
-	JOIN filtered session
-		ON session.request_id = d.session_request_id
-		AND session.is_dedupe_session = 1
-	JOIN filtered provider
-		ON provider.request_id = d.provider_request_id
-		AND provider.is_provider_usage = 1
-),
 scoped AS (
 	SELECT
 		filtered.request_id,
 		filtered.started_at,
 		filtered.is_session_log,
 		CASE
-			WHEN candidate.provider_request_id IS NOT NULL THEN 'duplicate'
+			WHEN d.provider_request_id IS NOT NULL THEN 'duplicate'
 			ELSE ''
 		END AS dedupe_status,
-		COALESCE(candidate.provider_request_id, '') AS dedupe_request_id
+		COALESCE(d.provider_request_id, '') AS dedupe_request_id
 	FROM filtered
-	LEFT JOIN candidate
-		ON candidate.session_request_id = filtered.request_id
-		AND candidate.candidate_rank = 1
+	LEFT JOIN usage_dedupe_candidates d
+		ON d.session_request_id = filtered.request_id
+		AND filtered.is_dedupe_session = 1
+		AND d.candidate_rank = (
+			SELECT MIN(d2.candidate_rank)
+			FROM usage_dedupe_candidates d2
+			JOIN filtered provider2
+				ON provider2.request_id = d2.provider_request_id
+				AND provider2.is_provider_usage = 1
+			WHERE d2.session_request_id = filtered.request_id
+		)
 	WHERE CASE ?
 		WHEN 'raw' THEN 1
 		WHEN 'provider' THEN filtered.is_session_log = 0
 		WHEN 'session_log' THEN filtered.is_session_log = 1
 		ELSE (
 			filtered.is_session_log = 0
-			OR candidate.provider_request_id IS NULL
+			OR d.provider_request_id IS NULL
 		)
 	END
 )`, args

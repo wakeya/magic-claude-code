@@ -320,10 +320,20 @@ func TestBuildScopedCTEParameterizesFiltersInStableOrder(t *testing.T) {
 			t.Fatalf("CTE contains unparameterized filter value %q", value)
 		}
 	}
-	for _, name := range []string{"filtered", "candidate", "scoped"} {
+	for _, name := range []string{"filtered", "scoped"} {
 		if !strings.Contains(cte, name+" AS") {
 			t.Fatalf("CTE is missing %s dataset:\n%s", name, cte)
 		}
+	}
+	// R3：candidate 不再以 ROW_NUMBER CTE 每查询物化，改为直接 JOIN 基表 usage_dedupe_candidates
+	// 并用持久化 candidate_rank 的相关子查询选取“过滤后最优候选”（走持久索引）。
+	for _, want := range []string{"LEFT JOIN usage_dedupe_candidates d", "MIN(d2.candidate_rank)"} {
+		if !strings.Contains(cte, want) {
+			t.Fatalf("CTE is missing persisted-rank candidate selection %q:\n%s", want, cte)
+		}
+	}
+	if strings.Contains(cte, "ROW_NUMBER() OVER (\n\t\t\tPARTITION BY d.session_request_id") {
+		t.Fatalf("CTE still materializes candidate ROW_NUMBER window:\n%s", cte)
 	}
 }
 

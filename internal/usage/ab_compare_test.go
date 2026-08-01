@@ -7,8 +7,10 @@ package usage
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -267,3 +269,385 @@ func TestUsageSummaryR2ABCompare(t *testing.T) {
 	t.Logf("six-parallel new: %v", newWall)
 	t.Logf("==================================================================")
 }
+
+// ============================================================================
+// R3（P1）同会话 A/B：candidate 排名持久化（消除每查询窗口物化 + 自动索引）前后对照。
+//
+// 方法：在同一进程、同一 60,332 行数据集（seed=1）上，交替测量“R3 新结构”（buildScopedCTE
+// 直接 JOIN 基表 usage_dedupe_candidates 走持久索引 idx_usage_dedupe_candidates_session_rank
+// 的相关子查询）与“R3 前旧结构”（test-only 重建的 ROW_NUMBER candidate CTE 每查询物化 + 运行时
+// 自动索引）两套查询的六端点延迟与六并发墙钟。先逐字段断言两套查询在全部六端点上结果完全一致
+// （差分兼容的附加实数据证明），再交替多轮（轮内顺序交替抵消趋势性漂移）、丢弃预热、各取中位比较。
+// 仅由 MCC_USAGE_EXPLAIN=1 + MCC_USAGE_AB=1 门控，CI 默认不执行。绝对值随机器负载漂移，仅同会话
+// 比值可归因；建议多次独立运行（多会话）确认加速比稳定。
+// ============================================================================
+
+// r3LegacyScopedCTE 重建 R3 之前的 buildScopedCTE（test-only 性能对照体）：candidate 以
+// ROW_NUMBER 窗口每查询物化，scoped LEFT JOIN candidate ON candidate_rank=1 在物化结果上触发
+// 运行时自动索引。与 R2 末尾的 buildScopedCTE 逐字一致，仅用于同会话 A/B 归因。
+func r3LegacyScopedCTE(filter Filter) (string, []any) {
+	where, args := filterWhere(filter)
+	filteredWhere := ""
+	if where != "" {
+		filteredWhere = "\n\tWHERE " + where
+	}
+	scope := filter.StatsScope
+	if scope == "" {
+		scope = StatsScopeEffective
+	}
+	args = append(args, scope)
+
+	return `WITH filtered AS (
+	SELECT
+		r.id AS request_id,
+		r.started_at,
+		CASE WHEN ` + scopedSessionRowPredicate + ` THEN 1 ELSE 0 END AS is_session_log,
+		CASE
+			WHEN t.usage_parse_status = 'ok'
+				AND ` + scopedSessionRowPredicate + `
+			THEN 1
+			ELSE 0
+		END AS is_dedupe_session,
+		CASE
+			WHEN NOT ` + scopedSessionRowPredicate + `
+				AND r.source_app = 'claude_code'
+				AND t.usage_source = 'provider'
+				AND t.usage_parse_status = 'ok'
+			THEN 1
+			ELSE 0
+		END AS is_provider_usage
+	FROM usage_requests r
+	JOIN usage_tokens t ON t.request_id = r.id` + filteredWhere + `
+),
+candidate AS (
+	SELECT
+		d.session_request_id,
+		d.provider_request_id,
+		ROW_NUMBER() OVER (
+			PARTITION BY d.session_request_id
+			ORDER BY
+				d.model_priority ASC,
+				` + scopedEpochSecondsExpr("provider.started_at") + ` ASC,
+				` + scopedStartedAtFractionExpr("provider.started_at") + ` ASC,
+				provider.request_id ASC
+		) AS candidate_rank
+	FROM usage_dedupe_candidates d
+	JOIN filtered session
+		ON session.request_id = d.session_request_id
+		AND session.is_dedupe_session = 1
+	JOIN filtered provider
+		ON provider.request_id = d.provider_request_id
+		AND provider.is_provider_usage = 1
+),
+scoped AS (
+	SELECT
+		filtered.request_id,
+		filtered.started_at,
+		filtered.is_session_log,
+		CASE
+			WHEN candidate.provider_request_id IS NOT NULL THEN 'duplicate'
+			ELSE ''
+		END AS dedupe_status,
+		COALESCE(candidate.provider_request_id, '') AS dedupe_request_id
+	FROM filtered
+	LEFT JOIN candidate
+		ON candidate.session_request_id = filtered.request_id
+		AND candidate.candidate_rank = 1
+	WHERE CASE ?
+		WHEN 'raw' THEN 1
+		WHEN 'provider' THEN filtered.is_session_log = 0
+		WHEN 'session_log' THEN filtered.is_session_log = 1
+		ELSE (
+			filtered.is_session_log = 0
+			OR candidate.provider_request_id IS NULL
+		)
+	END
+)`, args
+}
+
+// r3ABQueryPair 是一对仅在 scoped CTE 结构上不同（新=持久化 rank JOIN，旧=ROW_NUMBER 窗口物化）、
+// 下游投影/参数完全相同的端点子查询。
+type r3ABQueryPair struct {
+	label  string
+	newSQL string
+	oldSQL string
+	args   []any
+}
+
+// r3ABEndpoint 是一个待 A/B 的端点：名称 + 其全部子查询对 + 一个执行闭包（按 useOld 选择新/旧 SQL，
+//
+//	drain 全部结果行以强制完整执行）。
+type r3ABEndpoint struct {
+	name    string
+	queries []r3ABQueryPair
+	run     func(useOld bool) error
+}
+
+// r3LegacyPair 由新结构全查询派生旧结构全查询：旧查询 = 旧 CTE + 新查询剥离新 CTE 后的下游后缀，
+// 保证两套查询仅在 scoped CTE 结构上不同、下游逐字一致，参数完全相同。
+func r3LegacyPair(newCTE, legacyCTE, label, fullQuery string, args []any) r3ABQueryPair {
+	suffix := strings.TrimPrefix(fullQuery, newCTE)
+	return r3ABQueryPair{label: label, newSQL: fullQuery, oldSQL: legacyCTE + suffix, args: args}
+}
+
+// r3ABBuildEndpoints 构造六端点的新/旧查询对，与 store.go 读取路径一一对应。
+func r3ABBuildEndpoints(tb testing.TB, filter Filter, now time.Time) []r3ABEndpoint {
+	tb.Helper()
+	newCTE, _ := buildScopedCTE(filter)
+	legacyCTE, _ := r3LegacyScopedCTE(filter)
+
+	drain := func(query string, args []any) error {
+		_, err := drainRowsMatrix(tb, query, args)
+		return err
+	}
+
+	var endpoints []r3ABEndpoint
+	addEndpoint := func(name string, pairs ...r3ABQueryPair) {
+		ep := r3ABEndpoint{name: name, queries: pairs}
+		ep.run = func(useOld bool) error {
+			for _, q := range pairs {
+				sql := q.newSQL
+				if useOld {
+					sql = q.oldSQL
+				}
+				if err := drain(sql, q.args); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		endpoints = append(endpoints, ep)
+	}
+
+	// Summary/status
+	startOfToday, endOfToday, err := todayRange(filter)
+	if err != nil {
+		tb.Fatalf("today range: %v", err)
+	}
+	summarySQL, summaryArgs := buildSummaryQuery(filter, startOfToday, endOfToday)
+	addEndpoint("Summary/status", r3LegacyPair(newCTE, legacyCTE, "summary-aggregate", summarySQL, summaryArgs))
+
+	// Requests（count + page，page=1/size=50）
+	countSQL, pageSQL, reqArgs := buildRequestsQueries(filter)
+	pageArgs := append(append([]any{}, reqArgs...), 50, 0)
+	addEndpoint("Requests",
+		r3LegacyPair(newCTE, legacyCTE, "requests-count", countSQL, reqArgs),
+		r3LegacyPair(newCTE, legacyCTE, "requests-page", pageSQL, pageArgs),
+	)
+
+	// Trends（range + bucket；UTC 单一偏移区间，确定性参数）
+	rangeSQL, rangeArgs := buildTrendsRangeQuery(filter)
+	loc, err := filterLocation(filter)
+	if err != nil {
+		tb.Fatalf("location: %v", err)
+	}
+	intervals := trendsZoneIntervals(loc, sql.NullInt64{Int64: 0, Valid: true}, sql.NullInt64{Int64: now.Unix(), Valid: true})
+	bucketSQL, bucketArgs := buildTrendsQuery(filter, loc, intervals)
+	addEndpoint("Trends",
+		r3LegacyPair(newCTE, legacyCTE, "trends-range", rangeSQL, rangeArgs),
+		r3LegacyPair(newCTE, legacyCTE, "trends-bucket", bucketSQL, bucketArgs),
+	)
+
+	// Providers / Models
+	providersSQL, providersArgs := buildAggregateQuery(filter, "r.provider_id", "r.provider_name")
+	addEndpoint("Providers", r3LegacyPair(newCTE, legacyCTE, "providers-aggregate", providersSQL, providersArgs))
+	modelsSQL, modelsArgs := buildAggregateQuery(filter, "r.mapped_model", "r.mapped_model")
+	addEndpoint("Models", r3LegacyPair(newCTE, legacyCTE, "models-aggregate", modelsSQL, modelsArgs))
+
+	// Coverage（summary + status）
+	coverageSummarySQL, coverageStatusSQL, coverageArgs := buildCoverageQueries(filter)
+	addEndpoint("Coverage",
+		r3LegacyPair(newCTE, legacyCTE, "coverage-summary", coverageSummarySQL, coverageArgs),
+		r3LegacyPair(newCTE, legacyCTE, "coverage-status", coverageStatusSQL, coverageArgs),
+	)
+
+	return endpoints
+}
+
+// drainRowsMatrix 执行查询并将全部结果行规范化为字符串矩阵（[]byte→string、nil→"<nil>"、
+// 其余 fmt 默认格式），供逐字段等价比较与计时时的完整 drain。
+func drainRowsMatrix(tb testing.TB, query string, args []any) ([][]string, error) {
+	tb.Helper()
+	rows, err := abDB.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("drain query: %w", err)
+	}
+	defer rows.Close()
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, fmt.Errorf("columns: %w", err)
+	}
+	var matrix [][]string
+	for rows.Next() {
+		raw := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range raw {
+			ptrs[i] = &raw[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
+		}
+		row := make([]string, len(cols))
+		for i, v := range raw {
+			switch x := v.(type) {
+			case []byte:
+				row[i] = string(x)
+			case nil:
+				row[i] = "<nil>"
+			default:
+				row[i] = fmt.Sprintf("%v", x)
+			}
+		}
+		matrix = append(matrix, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows: %w", err)
+	}
+	return matrix, nil
+}
+
+// TestUsageR3CandidateRankABCompare 在同会话交替测量 R3 前后六端点 + 六并发延迟并给加速比。
+func TestUsageR3CandidateRankABCompare(t *testing.T) {
+	if !explainEnabled() || os.Getenv("MCC_USAGE_AB") == "" {
+		t.Skip("set MCC_USAGE_EXPLAIN=1 and MCC_USAGE_AB=1 to run the R3 candidate-rank A/B comparison")
+	}
+	n := benchRows(t)
+	if n == 0 {
+		n = 60332
+	}
+	ds := newBenchDatasetInDir(t, t.TempDir(), n)
+	ds.runMigration(t)
+	setABDB(ds.db)
+	defer setABDB(nil)
+
+	filter := benchFilter()
+	endpoints := r3ABBuildEndpoints(t, filter, benchFixedNow)
+
+	// 逐字段等价：六端点全部子查询在 60k 基准数据上新旧结果必须完全一致。
+	for _, ep := range endpoints {
+		for _, q := range ep.queries {
+			newRows, err := drainRowsMatrix(t, q.newSQL, q.args)
+			if err != nil {
+				t.Fatalf("%s/%s new drain: %v", ep.name, q.label, err)
+			}
+			oldRows, err := drainRowsMatrix(t, q.oldSQL, q.args)
+			if err != nil {
+				t.Fatalf("%s/%s old drain: %v", ep.name, q.label, err)
+			}
+			if !reflect.DeepEqual(newRows, oldRows) {
+				t.Fatalf("%s/%s R3 result differs from legacy ROW_NUMBER structure: new=%d rows, old=%d rows",
+					ep.name, q.label, len(newRows), len(oldRows))
+			}
+		}
+	}
+
+	// 六并发：六端点并发执行（按 useOld 选择新/旧 SQL），返回墙钟。
+	sixParallel := func(useOld bool) error {
+		var wg sync.WaitGroup
+		errs := make([]error, len(endpoints))
+		for i, ep := range endpoints {
+			wg.Add(1)
+			go func(i int, run func(bool) error) {
+				defer wg.Done()
+				errs[i] = run(useOld)
+			}(i, ep.run)
+		}
+		wg.Wait()
+		for _, err := range errs {
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	const rounds = 3
+	const runs = 5
+	type sample struct{ old, new time.Duration }
+	perEndpoint := make(map[string][]sample)
+	for _, ep := range endpoints {
+		perEndpoint[ep.name] = make([]sample, 0, rounds)
+	}
+	wallSamples := make([]sample, 0, rounds)
+
+	measure := func(fn func() error) time.Duration {
+		d, err := medianDuration(runs, fn)
+		if err != nil {
+			t.Fatalf("measure: %v", err)
+		}
+		return d
+	}
+
+	// 丢弃一次预热（纯 Go SQLite 冷启动），随后交替多轮。
+	_ = measure(func() error { return sixParallel(false) })
+
+	for round := 0; round < rounds; round++ {
+		oldFirst := round%2 == 0
+		for _, ep := range endpoints {
+			var o, w time.Duration
+			if oldFirst {
+				o = measure(func() error { return ep.run(true) })
+				w = measure(func() error { return ep.run(false) })
+			} else {
+				w = measure(func() error { return ep.run(false) })
+				o = measure(func() error { return ep.run(true) })
+			}
+			perEndpoint[ep.name] = append(perEndpoint[ep.name], sample{old: o, new: w})
+		}
+		var ow, ww time.Duration
+		if oldFirst {
+			ow = measure(func() error { return sixParallel(true) })
+			ww = measure(func() error { return sixParallel(false) })
+		} else {
+			ww = measure(func() error { return sixParallel(false) })
+			ow = measure(func() error { return sixParallel(true) })
+		}
+		wallSamples = append(wallSamples, sample{old: ow, new: ww})
+	}
+
+	medianSample := func(samples []sample) sample {
+		olds := make([]time.Duration, len(samples))
+		news := make([]time.Duration, len(samples))
+		for i, s := range samples {
+			olds[i], news[i] = s.old, s.new
+		}
+		sortDurationsAsc(olds)
+		sortDurationsAsc(news)
+		return sample{old: olds[len(olds)/2], new: news[len(news)/2]}
+	}
+
+	t.Logf("\n==== R3 candidate-rank A/B (rows=%d, same session, warmup discarded, %d rounds × %d runs) ====", n, rounds, runs)
+	t.Logf("field-by-field equivalence on %d rows: all six endpoints IDENTICAL", n)
+	t.Logf("%-24s %14s %14s %10s", "metric", "R3-new", "R3-legacy", "speedup")
+	for _, ep := range endpoints {
+		med := medianSample(perEndpoint[ep.name])
+		t.Logf("%-24s %14s %14s %9.2fx", ep.name, med.new, med.old, float64(med.old)/float64(med.new))
+	}
+	wallMed := medianSample(wallSamples)
+	t.Logf("%-24s %14s %14s %9.2fx", "six parallel wall", wallMed.new, wallMed.old, float64(wallMed.old)/float64(wallMed.new))
+	for _, ep := range endpoints {
+		samples := perEndpoint[ep.name]
+		oldList, newList := make([]time.Duration, len(samples)), make([]time.Duration, len(samples))
+		for i, s := range samples {
+			oldList[i], newList[i] = s.old, s.new
+		}
+		t.Logf("  %-22s old samples %v | new samples %v", ep.name, oldList, newList)
+	}
+	t.Logf("==================================================================")
+}
+
+// sortDurationsAsc 原地升序排序（小样本，避免额外 import 依赖）。
+func sortDurationsAsc(a []time.Duration) {
+	for i := range a {
+		for j := i + 1; j < len(a); j++ {
+			if a[j] < a[i] {
+				a[i], a[j] = a[j], a[i]
+			}
+		}
+	}
+}
+
+// abDB 是 R3 A/B drain 使用的库句柄（由测试设置/清空），使 drainRowsMatrix 不依赖具体 Store。
+var abDB *sql.DB
+
+func setABDB(db *sql.DB) { abDB = db }

@@ -106,6 +106,11 @@ func newBenchDatasetInDir(tb testing.TB, dir string, n int) *benchDataset {
 	if _, err := db.Exec(`DELETE FROM settings WHERE key = ?`, dedupeCandidatesBackfillMarker); err != nil {
 		tb.Fatalf("reset dedupe marker: %v", err)
 	}
+	// 同时移除 R3 candidate_rank 迁移标记：使下一次 Migrate 在 dedupe 回填重建候选后重跑
+	// 排名回填，模拟“生产升级：候选已存在但尚未持久化 rank”的真实迁移路径。
+	if _, err := db.Exec(`DELETE FROM settings WHERE key = ?`, usageCandidateRankMarker); err != nil {
+		tb.Fatalf("reset candidate rank marker: %v", err)
+	}
 	return &benchDataset{store: store, db: db, rows: n}
 }
 

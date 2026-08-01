@@ -1,0 +1,144 @@
+=== RUN   TestUsageExplainDiagnostic
+    explain_diagnostic_test.go:179: 
+        ==== EXPLAIN QUERY PLAN diagnostics (rows=60332, seed=1) ====
+    explain_diagnostic_test.go:181: 
+        ---- endpoint: Summary/status ----
+    explain_diagnostic_test.go:186:   [summary-aggregate]
+                SCAN r
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH d USING INDEX idx_usage_dedupe_candidates_session_rank (session_request_id=? AND candidate_rank=?) LEFT-JOIN
+                CORRELATED SCALAR SUBQUERY 2
+                SEARCH d2 USING INDEX idx_usage_dedupe_candidates_session_rank (session_request_id=?)
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+    explain_diagnostic_test.go:187:   [summary-aggregate] costs: SCAN=1 TEMP_BTREE=0 AUTO_INDEX=0 SUBQUERY/CO-Routine=1 USING_INDEX=7 PK_SEARCH=0
+    explain_diagnostic_test.go:189:   >> Summary/status TOTAL: SCAN=1 TEMP_BTREE=0 AUTO_INDEX=0 SUBQUERY/CO-Routine=1 USING_INDEX=7 PK_SEARCH=0
+    explain_diagnostic_test.go:181: 
+        ---- endpoint: Requests ----
+    explain_diagnostic_test.go:186:   [requests-count]
+                SCAN r
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH d USING INDEX idx_usage_dedupe_candidates_session_rank (session_request_id=? AND candidate_rank=?) LEFT-JOIN
+                CORRELATED SCALAR SUBQUERY 2
+                SEARCH d2 USING INDEX idx_usage_dedupe_candidates_session_rank (session_request_id=?)
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+    explain_diagnostic_test.go:187:   [requests-count] costs: SCAN=1 TEMP_BTREE=0 AUTO_INDEX=0 SUBQUERY/CO-Routine=1 USING_INDEX=5 PK_SEARCH=0
+    explain_diagnostic_test.go:186:   [requests-page]
+                SCAN r USING INDEX idx_usage_requests_started_id
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH d USING INDEX idx_usage_dedupe_candidates_session_rank (session_request_id=? AND candidate_rank=?) LEFT-JOIN
+                CORRELATED SCALAR SUBQUERY 2
+                SEARCH d2 USING INDEX idx_usage_dedupe_candidates_session_rank (session_request_id=?)
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+    explain_diagnostic_test.go:187:   [requests-page] costs: SCAN=1 TEMP_BTREE=0 AUTO_INDEX=0 SUBQUERY/CO-Routine=1 USING_INDEX=8 PK_SEARCH=0
+    explain_diagnostic_test.go:189:   >> Requests TOTAL: SCAN=2 TEMP_BTREE=0 AUTO_INDEX=0 SUBQUERY/CO-Routine=2 USING_INDEX=13 PK_SEARCH=0
+    explain_diagnostic_test.go:181: 
+        ---- endpoint: Trends ----
+    explain_diagnostic_test.go:186:   [trends-range]
+                SCAN r
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH d USING INDEX idx_usage_dedupe_candidates_session_rank (session_request_id=? AND candidate_rank=?) LEFT-JOIN
+                CORRELATED SCALAR SUBQUERY 2
+                SEARCH d2 USING INDEX idx_usage_dedupe_candidates_session_rank (session_request_id=?)
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+    explain_diagnostic_test.go:187:   [trends-range] costs: SCAN=1 TEMP_BTREE=0 AUTO_INDEX=0 SUBQUERY/CO-Routine=1 USING_INDEX=6 PK_SEARCH=0
+    explain_diagnostic_test.go:186:   [trends-bucket]
+                SCAN r
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH d USING INDEX idx_usage_dedupe_candidates_session_rank (session_request_id=? AND candidate_rank=?) LEFT-JOIN
+                CORRELATED SCALAR SUBQUERY 2
+                SEARCH d2 USING INDEX idx_usage_dedupe_candidates_session_rank (session_request_id=?)
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                USE TEMP B-TREE FOR GROUP BY
+    explain_diagnostic_test.go:187:   [trends-bucket] costs: SCAN=1 TEMP_BTREE=1 AUTO_INDEX=0 SUBQUERY/CO-Routine=1 USING_INDEX=7 PK_SEARCH=0
+    explain_diagnostic_test.go:189:   >> Trends TOTAL: SCAN=2 TEMP_BTREE=1 AUTO_INDEX=0 SUBQUERY/CO-Routine=2 USING_INDEX=13 PK_SEARCH=0
+    explain_diagnostic_test.go:181: 
+        ---- endpoint: Providers ----
+    explain_diagnostic_test.go:186:   [providers-aggregate]
+                CO-ROUTINE (subquery-4)
+                CO-ROUTINE (subquery-6)
+                SCAN r USING INDEX idx_usage_requests_provider
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH d USING INDEX idx_usage_dedupe_candidates_session_rank (session_request_id=? AND candidate_rank=?) LEFT-JOIN
+                CORRELATED SCALAR SUBQUERY 2
+                SEARCH d2 USING INDEX idx_usage_dedupe_candidates_session_rank (session_request_id=?)
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                USE TEMP B-TREE FOR LAST 2 TERMS OF ORDER BY
+                SCAN (subquery-6)
+                SCAN (subquery-4)
+                USE TEMP B-TREE FOR GROUP BY
+                USE TEMP B-TREE FOR ORDER BY
+    explain_diagnostic_test.go:187:   [providers-aggregate] costs: SCAN=3 TEMP_BTREE=3 AUTO_INDEX=0 SUBQUERY/CO-Routine=5 USING_INDEX=8 PK_SEARCH=0
+    explain_diagnostic_test.go:189:   >> Providers TOTAL: SCAN=3 TEMP_BTREE=3 AUTO_INDEX=0 SUBQUERY/CO-Routine=5 USING_INDEX=8 PK_SEARCH=0
+    explain_diagnostic_test.go:181: 
+        ---- endpoint: Models ----
+    explain_diagnostic_test.go:186:   [models-aggregate]
+                CO-ROUTINE (subquery-4)
+                CO-ROUTINE (subquery-6)
+                SCAN r USING INDEX idx_usage_requests_model
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH d USING INDEX idx_usage_dedupe_candidates_session_rank (session_request_id=? AND candidate_rank=?) LEFT-JOIN
+                CORRELATED SCALAR SUBQUERY 2
+                SEARCH d2 USING INDEX idx_usage_dedupe_candidates_session_rank (session_request_id=?)
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                USE TEMP B-TREE FOR LAST 2 TERMS OF ORDER BY
+                SCAN (subquery-6)
+                SCAN (subquery-4)
+                USE TEMP B-TREE FOR GROUP BY
+                USE TEMP B-TREE FOR ORDER BY
+    explain_diagnostic_test.go:187:   [models-aggregate] costs: SCAN=3 TEMP_BTREE=3 AUTO_INDEX=0 SUBQUERY/CO-Routine=5 USING_INDEX=8 PK_SEARCH=0
+    explain_diagnostic_test.go:189:   >> Models TOTAL: SCAN=3 TEMP_BTREE=3 AUTO_INDEX=0 SUBQUERY/CO-Routine=5 USING_INDEX=8 PK_SEARCH=0
+    explain_diagnostic_test.go:181: 
+        ---- endpoint: Coverage ----
+    explain_diagnostic_test.go:186:   [coverage-summary]
+                CO-ROUTINE (subquery-4)
+                CO-ROUTINE (subquery-6)
+                SCAN r USING INDEX sqlite_autoindex_usage_requests_1
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH d USING INDEX idx_usage_dedupe_candidates_session_rank (session_request_id=? AND candidate_rank=?) LEFT-JOIN
+                CORRELATED SCALAR SUBQUERY 2
+                SEARCH d2 USING INDEX idx_usage_dedupe_candidates_session_rank (session_request_id=?)
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                USE TEMP B-TREE FOR ORDER BY
+                SCAN (subquery-6)
+                SCAN (subquery-4)
+                USE TEMP B-TREE FOR GROUP BY
+    explain_diagnostic_test.go:187:   [coverage-summary] costs: SCAN=3 TEMP_BTREE=2 AUTO_INDEX=0 SUBQUERY/CO-Routine=5 USING_INDEX=8 PK_SEARCH=0
+    explain_diagnostic_test.go:186:   [coverage-status]
+                SCAN r USING INDEX idx_usage_requests_model
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH d USING INDEX idx_usage_dedupe_candidates_session_rank (session_request_id=? AND candidate_rank=?) LEFT-JOIN
+                CORRELATED SCALAR SUBQUERY 2
+                SEARCH d2 USING INDEX idx_usage_dedupe_candidates_session_rank (session_request_id=?)
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                USE TEMP B-TREE FOR GROUP BY
+    explain_diagnostic_test.go:187:   [coverage-status] costs: SCAN=1 TEMP_BTREE=1 AUTO_INDEX=0 SUBQUERY/CO-Routine=1 USING_INDEX=8 PK_SEARCH=0
+    explain_diagnostic_test.go:189:   >> Coverage TOTAL: SCAN=4 TEMP_BTREE=3 AUTO_INDEX=0 SUBQUERY/CO-Routine=6 USING_INDEX=16 PK_SEARCH=0
+    explain_diagnostic_test.go:191: 
+        ==============================================================
+--- PASS: TestUsageExplainDiagnostic (2.77s)
+PASS
+ok  	magic-claude-code/internal/usage	2.787s

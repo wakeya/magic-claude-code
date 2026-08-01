@@ -52,13 +52,13 @@ func explainRows(tb testing.TB, db *sql.DB, query string, args []any) (string, e
 
 // explainCosts 汇总一条查询计划中各类开销来源的出现次数。
 type explainCosts struct {
-	Scans        int // 全表 SCAN（未走持久索引）
-	TempBTrees   int // USE TEMP B-TREE（排序/分组临时结构）
-	AutoIndexes  int // AUTOMATIC ... INDEX（运行时自建索引）
-	RowNumbers   int // ROW_NUMBER / 窗口函数（CO-Routine / WINDOW）
-	Subqueries   int // 子查询 / 物化（CO-Routine / SUBQUERY / LIST SUBQUERY）
-	IndexUsed    int // USING INDEX / COVERING INDEX（走持久索引）
-	SearchPK     int // SEARCH ... USING INTEGER PK / PRIMARY KEY
+	Scans       int // 全表 SCAN（未走持久索引）
+	TempBTrees  int // USE TEMP B-TREE（排序/分组临时结构）
+	AutoIndexes int // AUTOMATIC ... INDEX（运行时自建索引）
+	RowNumbers  int // ROW_NUMBER / 窗口函数（CO-Routine / WINDOW）
+	Subqueries  int // 子查询 / 物化（CO-Routine / SUBQUERY / LIST SUBQUERY）
+	IndexUsed   int // USING INDEX / COVERING INDEX（走持久索引）
+	SearchPK    int // SEARCH ... USING INTEGER PK / PRIMARY KEY
 }
 
 // observe 根据计划行 detail 累加对应开销计数。
@@ -189,6 +189,61 @@ func TestUsageExplainDiagnostic(t *testing.T) {
 		t.Logf("  >> %s TOTAL: %s", ep.name, total.String())
 	}
 	t.Logf("\n==============================================================")
+}
+
+// TestUsageQueryPlansEliminateCandidateWindowAndAutoIndex 是 R3 的 CI 防回归 EXPLAIN 断言：对六个
+// usage 统计端点当前 SQL 执行 EXPLAIN QUERY PLAN，断言 candidate 选取不再每查询物化 ROW_NUMBER
+// 窗口（无 LAST 3 TERMS 临时排序）、不再建运行时自动索引（无 AUTOMATIC INDEX），且 LEFT JOIN 候选
+// 走持久索引 idx_usage_dedupe_candidates_session_rank。计划形态只取决于查询结构与可用索引；为使
+// 计划器统计信息贴近生产，在一个含候选关系的小迁移库上验证，CI 默认执行（不受 MCC_USAGE_EXPLAIN
+// 门控）。任一端点回归为“candidate 窗口物化 + 自动索引”即红。
+func TestUsageQueryPlansEliminateCandidateWindowAndAutoIndex(t *testing.T) {
+	store := newTestStore(t)
+	seedScopedQueryFixture(t, store)
+	filter := benchFilter()
+	now := benchFixedNow
+	for _, ep := range explainEndpoints() {
+		for _, q := range ep.build(filter, now) {
+			rows, err := store.db.Query("EXPLAIN QUERY PLAN "+q.sql, q.args...)
+			if err != nil {
+				t.Fatalf("%s/%s EXPLAIN QUERY PLAN: %v", ep.name, q.label, err)
+			}
+			var plan []string
+			var autoIndexes, candidateWindows, persistentIndexHits int
+			for rows.Next() {
+				var id, parent, notused int
+				var detail string
+				if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+					rows.Close()
+					t.Fatalf("%s/%s scan explain row: %v", ep.name, q.label, err)
+				}
+				plan = append(plan, detail)
+				upper := strings.ToUpper(detail)
+				if strings.Contains(upper, "AUTOMATIC") {
+					autoIndexes++
+				}
+				if strings.Contains(upper, "LAST 3 TERMS") {
+					candidateWindows++
+				}
+				if strings.Contains(detail, usageCandidateRankIndexName) {
+					persistentIndexHits++
+				}
+			}
+			rows.Close()
+			if autoIndexes != 0 {
+				t.Errorf("%s/%s plan builds %d automatic indexes, want 0 (R3 应消除 candidate 自动索引):\n%s",
+					ep.name, q.label, autoIndexes, strings.Join(plan, "\n"))
+			}
+			if candidateWindows != 0 {
+				t.Errorf("%s/%s plan contains %d candidate window sorts (LAST 3 TERMS), want 0 (R3 应消除 candidate 窗口物化):\n%s",
+					ep.name, q.label, candidateWindows, strings.Join(plan, "\n"))
+			}
+			if persistentIndexHits == 0 {
+				t.Errorf("%s/%s plan does not use %s, want persistent index engagement:\n%s",
+					ep.name, q.label, usageCandidateRankIndexName, strings.Join(plan, "\n"))
+			}
+		}
+	}
 }
 
 // add 将另一组开销计数累加到当前组。
