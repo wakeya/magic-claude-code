@@ -8,12 +8,13 @@ import (
 )
 
 type SSEObserver struct {
-	startedAt  time.Time
-	buffer     []byte
-	usage      UsageValues
-	parseError bool
-	complete   bool
-	firstByte  *int64
+	startedAt    time.Time
+	buffer       []byte
+	usage        UsageValues
+	parseError   bool
+	invalidUsage bool
+	complete     bool
+	firstByte    *int64
 
 	// diagnostics 状态
 	diagEvents            map[string]int
@@ -122,7 +123,13 @@ func nextSSEBlockDelimiter(buffer []byte) (int, int) {
 
 func (o *SSEObserver) Result() (UsageValues, string, string, *int64) {
 	if o.usage.HasAny {
+		if o.invalidUsage {
+			return UsageValues{}, UsageSourceNone, ParseStatusInvalidValue, o.firstByte
+		}
 		return o.usage, UsageSourceProvider, ParseStatusOK, o.firstByte
+	}
+	if o.invalidUsage {
+		return UsageValues{}, UsageSourceNone, ParseStatusInvalidValue, o.firstByte
 	}
 	if o.parseError {
 		return UsageValues{}, UsageSourceNone, ParseStatusParseError, o.firstByte
@@ -211,9 +218,15 @@ func (o *SSEObserver) observeBlock(block string) {
 // merge 把一个事件的 usage 合并进累计值：只覆盖"存在且为可用数字"的字段，
 // 保持 message_start 提供 input、message_delta 提供 output 的跨事件拼接语义。
 // 解析复用与非流式路径相同的宽松提取器，容忍数字/浮点/数字字符串，
-// 忽略非数字字段（server_tool_use、service_tier 等）。
+// 忽略非数字字段（server_tool_use、service_tier 等），但负 token 会使整条
+// usage 结果进入 invalid_value 状态。
 func (o *SSEObserver) merge(raw json.RawMessage) {
-	for key, v := range parseUsageFields(raw) {
+	fields, invalid := parseUsageFieldsWithValidation(raw)
+	if invalid {
+		o.invalidUsage = true
+		return
+	}
+	for key, v := range fields {
 		switch key {
 		case "input_tokens":
 			o.usage.InputTokens = v

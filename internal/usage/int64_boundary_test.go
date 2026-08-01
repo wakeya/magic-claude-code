@@ -12,22 +12,22 @@ import (
 // 聚合边界）」。本文件在目标 driver（modernc.org/sqlite v1.50.1 + Go 1.26）上锁定
 // 该边界的逐字段行为：
 //
-//   I1 单值：usage_tokens 四个计数器与 duration_ms 均为合法 int64（API parser 拒绝
-//      >MaxInt64 整数与 ≥2^63 浮点，恰为 MaxInt64/MinInt64 可写入；session-sync 由
-//      encoding/json 对 int64 字段拒绝超界；duration 来自 Go time.Since）。
-//   I2 行内和：每行四个 token 计数器之和在 int64 内。
-//   I3 跨行和：任意聚合分组（Summary 全局、Providers/Models 每组、Trends 每桶）的
-//      token 总和与 duration 总和在 int64 内。
+//	I1 单值：usage_tokens 四个计数器与 duration_ms 均为非负合法 int64（API parser 拒绝
+//	   负数、>MaxInt64 整数与 ≥2^63 浮点；session-sync/Record 写入边界同样拒绝负数；
+//	   duration 来自 Go time.Since）。
+//	I2 行内和：每行四个 token 计数器之和在 int64 内。
+//	I3 跨行和：任意聚合分组（Summary 全局、Providers/Models 每组、Trends 每桶）的
+//	   token 总和与 duration 总和在 int64 内。
 //
 // 真实产品数据（单计数器 ≤ ~1e9、行数 ≤ 数十万、duration ≤ 9.2e12 ms/行）距 int64
 // 上限富余 5 个以上数量级，恒满足 I2/I3；SQL 聚合结果恒为 INTEGER，与旧 Go 逐行
 // int64 累加逐位一致（本文件 A 组用例与 legacyOracle 差分锁定）。
 //
-// 超出 I2/I3 的数据（如手工编辑数据库写入接近 2^63 的伪造计数）不受支持，溢出点
+// 超出 I2/I3 的数据（如手工编辑数据库写入接近 2^63 的伪造非负计数）不受支持，溢出点
 // 行为确定且被文档定义：行内和溢出 → SQLite 整数表达式提升为 REAL → database/sql
 // Scan 到 int64 报 "Scan error"；跨行 SUM() 溢出 → SQLite 查询时报 "integer
 // overflow"。两者都是显式错误，绝不静默返回失真数值（本文件 B 组用例锁定）；旧 Go
-// 实现在这两点静默回绕（负数垃圾），新路径选择显式报错，仅对超界数据生效。
+// 实现在这两点静默回绕，新路径选择显式报错，仅对超界数据生效。
 func TestInt64BoundarySingleValueNearMax(t *testing.T) {
 	// A1：单值接近 MaxInt64（每类计数器各测一次），行内和/跨行和均 ≤ MaxInt64，
 	// SQL 聚合路径必须与旧 Go 逐行聚合逐字段一致。
@@ -51,15 +51,14 @@ func TestInt64BoundarySingleValueNearMax(t *testing.T) {
 }
 
 func TestInt64BoundaryRowSumExactlyAtMax(t *testing.T) {
-	// A2：行内四 token 和恰为 MaxInt64（精确边界），以及单值恰为 MaxInt64/MinInt64
-	// （parser 允许的极端单值，其余计数器为 0 时行内和/跨行和仍在 int64 内）。
+	// A2：行内四 token 和恰为 MaxInt64（精确边界），以及单值恰为 MaxInt64
+	// （非负契约允许的极端单值，其余计数器为 0 时行内和/跨行和仍在 int64 内）。
 	cases := []struct {
 		name   string
 		values UsageValues
 	}{
 		{name: "half_split", values: UsageValues{InputTokens: math.MaxInt64/2 + 1, OutputTokens: math.MaxInt64 / 2}},
 		{name: "single_max", values: UsageValues{InputTokens: math.MaxInt64}},
-		{name: "single_min", values: UsageValues{InputTokens: math.MinInt64}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -124,17 +123,17 @@ func TestInt64BoundaryDurationNearMax(t *testing.T) {
 }
 
 func TestInt64BoundaryRowSumOverflowFailsDeterministically(t *testing.T) {
-	// B1：行内四 token 和超过 MaxInt64（MaxInt64 + 1；MinInt64 + (-1)）。SQLite 整数
+	// B1：行内四 token 和超过 MaxInt64（MaxInt64 + 1）。SQLite 整数
 	// 表达式溢出提升为 REAL，database/sql 无法把科学计数法 REAL 扫描成 int64，聚合
 	// 端点以显式错误失败（文档定义的溢出点行为），绝不静默返回失真数值。旧 Go 实现
-	// 在此静默回绕（断言其回绕值仅作文档对照）。
+	// 在此静默回绕（断言其回绕值仅作文档对照）。负向形态已由非负写入边界拒绝，
+	// 因而不可达，不再作为 SQL 溢出路径测试。
 	cases := []struct {
 		name          string
 		values        UsageValues
 		legacyWrapped int64
 	}{
 		{name: "positive", values: UsageValues{InputTokens: math.MaxInt64, OutputTokens: 1}, legacyWrapped: math.MinInt64},
-		{name: "negative", values: UsageValues{InputTokens: math.MinInt64, OutputTokens: -1}, legacyWrapped: math.MaxInt64},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -170,17 +169,17 @@ func TestInt64BoundaryRowSumOverflowFailsDeterministically(t *testing.T) {
 }
 
 func TestInt64BoundaryCrossRowSumOverflowFailsDeterministically(t *testing.T) {
-	// B2：跨行 SUM 超过 MaxInt64（两行各 MaxInt64 → 列 SUM = 2×MaxInt64；两行各
-	// MinInt64 → -2^64）。每行行内和仍为合法 int64，SQLite SUM() 整数累计溢出时报
+	// B2：跨行 SUM 超过 MaxInt64（两行各 MaxInt64 → 列 SUM = 2×MaxInt64）。每行
+	// 行内和仍为合法 int64，SQLite SUM() 整数累计溢出时报
 	// "integer overflow" 查询错误（文档定义的溢出点行为），绝不静默返回失真数值。
-	// 旧 Go 实现在此静默回绕（断言其回绕值仅作文档对照）。
+	// 旧 Go 实现在此静默回绕（断言其回绕值仅作文档对照）。负向形态已由非负写入边界拒绝，
+	// 因而不可达，不再作为 SQL 溢出路径测试。
 	cases := []struct {
 		name          string
 		values        UsageValues
 		legacyWrapped int64
 	}{
 		{name: "positive", values: UsageValues{InputTokens: math.MaxInt64}, legacyWrapped: -2},
-		{name: "negative", values: UsageValues{InputTokens: math.MinInt64}, legacyWrapped: 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

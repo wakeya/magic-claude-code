@@ -98,6 +98,9 @@ func (s *Store) Migrate() error {
 			return err
 		}
 	}
+	if err := s.migrateNonNegativeUsageValues(); err != nil {
+		return err
+	}
 	if err := s.migrateDedupeCandidates(); err != nil {
 		return err
 	}
@@ -110,7 +113,44 @@ func (s *Store) Migrate() error {
 	return s.migrateUsageQueryIndexes()
 }
 
+// migrateNonNegativeUsageValues repairs rows written by versions that did not
+// enforce the usage value contract. It is idempotent and runs before candidate
+// backfill so historical negative values cannot participate in dedupe or SQL
+// aggregation.
+func (s *Store) migrateNonNegativeUsageValues() error {
+	for _, stmt := range []string{
+		`UPDATE usage_tokens SET input_tokens = 0 WHERE input_tokens < 0`,
+		`UPDATE usage_tokens SET output_tokens = 0 WHERE output_tokens < 0`,
+		`UPDATE usage_tokens SET cache_creation_input_tokens = 0 WHERE cache_creation_input_tokens < 0`,
+		`UPDATE usage_tokens SET cache_read_input_tokens = 0 WHERE cache_read_input_tokens < 0`,
+		`UPDATE usage_requests SET duration_ms = 0 WHERE duration_ms < 0`,
+		`UPDATE usage_requests SET upstream_response_header_ms = 0 WHERE upstream_response_header_ms < 0`,
+		`UPDATE usage_requests SET time_to_first_byte_ms = 0 WHERE time_to_first_byte_ms < 0`,
+	} {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateNonNegativeUsage(req RequestRecord, tok TokenRecord) error {
+	if tok.InputTokens < 0 || tok.OutputTokens < 0 ||
+		tok.CacheCreationInputTokens < 0 || tok.CacheReadInputTokens < 0 {
+		return ErrNegativeTokenCount
+	}
+	if (req.DurationMS != nil && *req.DurationMS < 0) ||
+		(req.UpstreamResponseHeaderMS != nil && *req.UpstreamResponseHeaderMS < 0) ||
+		(req.TimeToFirstByteMS != nil && *req.TimeToFirstByteMS < 0) {
+		return ErrNegativeDuration
+	}
+	return nil
+}
+
 func (s *Store) Record(req RequestRecord, tok TokenRecord) error {
+	if err := validateNonNegativeUsage(req, tok); err != nil {
+		return err
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -178,6 +218,9 @@ func (s *Store) Record(req RequestRecord, tok TokenRecord) error {
 }
 
 func (s *Store) recordIfAbsent(req RequestRecord, tok TokenRecord) (bool, error) {
+	if err := validateNonNegativeUsage(req, tok); err != nil {
+		return false, err
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return false, err
