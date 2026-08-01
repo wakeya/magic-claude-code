@@ -81,7 +81,10 @@ func (s *Store) Migrate() error {
 			return err
 		}
 	}
-	return s.migrateDedupeCandidates()
+	if err := s.migrateDedupeCandidates(); err != nil {
+		return err
+	}
+	return s.migrateUsageQueryIndexes()
 }
 
 func (s *Store) Record(req RequestRecord, tok TokenRecord) error {
