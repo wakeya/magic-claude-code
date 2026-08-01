@@ -4,17 +4,20 @@ Local page: `/` service status, `/` usage statistics, `/` sessions
 Admin entry points: `GET /api/status`, `GET /api/usage/*`, `GET /api/sessions`, `GET /api/sessions/projects`  
 Reference features: `2026-05-15-usage-statistics`, `2026-05-21-sqlite-wal-optimization`, `2026-06-12-windows-usage-statistics-fixes`, `2026-07-17-kimi-quota-usage-parsing-fixes`  
 Stack: Go 1.26, SQLite/WAL, Vue 3, TypeScript  
-Last updated: 2026-07-30  
-Progress: design approved; implementation 6 / 6 tasks (code complete, compatibility confirmed by independent review); Task 6 performance verification executed — **R7 absolute performance targets NOT met**, see the “Implementation Status / Deviations” sections below
+Last updated: 2026-08-01
+
+Progress: design approved; implementation 6 / 6 tasks (code complete, compatibility confirmed by independent review); Task 6 performance verification executed; **rework rounds R1–R5 completed** (index diagnostics → Summary single-scan → candidate-rank persistence → lazy candidate + scope pruning → final verification). Cumulative same-session A/B vs the pre-rework state: **all six endpoints faster (1.07×–1.86×), no regressions, both recorded regressions (Coverage 0.65× / six-parallel 0.82×) eliminated**; status now approaches the R7 100 ms target (≈110–140 ms at 3× production scaling) but six-parallel remains ≈1.7–2.9× over 300 ms (needs cross-request materialization, proposed R6). See “Implementation Status / Deviations” sections below.
 
 ## Implementation Status
 
-Last verified: 2026-07-31 (branch `perf/usage-query-optimization`, HEAD `dcf1dbb`)
+Last verified: 2026-08-01 (branch `perf/usage-query-optimization`, HEAD `c3b3056` + R5 docs commit)
 
 ### Completion
 
 All six tasks are code-complete and passed compatibility review (14 implementation commits:
-`956f2ec`→`dcf1dbb`):
+`956f2ec`→`dcf1dbb`). Performance rework rounds R1–R5 were then executed on top (5 commits,
+`5ddabe1`/`4ae4e89`/`abeaa1e`/`34d5826`+`c3b3056`, all limited to `internal/usage` + docs — no
+frontend changes):
 
 - Backend independent review (Task 6A, `review-6A-backend.md`): **no high/medium findings**;
   field-for-field compatible with the legacy algorithm. Independent-oracle differential tests,
@@ -23,16 +26,35 @@ All six tasks are code-complete and passed compatibility review (14 implementati
   transients (see “Residual risks”).
 - Frontend re-review (Task 6B2): all four findings are no longer triggerable; no medium/high
   regression.
+- Rework rounds (see reports `R1-index-diagnostics.md` … `R5-final-verification.md`):
+  - **R1** index foundation + EXPLAIN diagnostics: proved via same-session A/B that indexes alone
+    yield no measurable per-endpoint gain (0.95×–1.10×, inside noise) — the real root cause is the
+    scoped CTE repeatedly full-scanning 60k rows, requiring query-structure rewrite.
+  - **R2** Summary single-scan: `last_provider_request` reworked from a scalar subquery (which
+    re-materialized the whole scoped CTE a second time) to a single-scan `MAX` time-key encoding;
+    Summary 1.35×–1.40× in three independent same-session A/Bs.
+  - **R3** candidate-rank persistence (`candidate_rank` column + `(session_request_id,
+    candidate_rank)` index): eliminated the per-query ROW_NUMBER window sort and the runtime
+    automatic index in all six endpoints; Requests 1.48×–1.65× across four sessions.
+  - **R4** CASE-lazy candidate (non-session rows do zero candidate lookups) + scope pruning
+    (raw/provider/session_log aggregates skip candidate computation entirely) + single-eval
+    Summary epoch: per-scope Summary −36% (provider) / −77% (session_log), Requests provider −52%,
+    six-parallel 1.09×–1.37×. `COUNT(*) OVER()` count+page merge was measured and rejected
+    (445 ms vs 166 ms, net regression).
+  - **R5** final verification: full suite re-run + same-session A/B of the complete pre-rework
+    state (`733461a`) vs HEAD (see measurements below).
 
-### Test evidence (Task 6 full verification, measured 2026-07-31)
+### Test evidence (re-verified 2026-08-01 for R5)
 
 | Command | Result |
 |---|---|
 | `go build ./...` | pass (exit 0) |
 | `go vet ./...` | pass (exit 0) |
+| `gofmt -l internal/usage/` | clean |
 | `go test ./... -count=1` | all ok |
 | `CGO_ENABLED=0 go test ./... -count=1` | all ok |
 | Cross builds linux/darwin/windows × amd64/arm64 (`CGO_ENABLED=0`) | 6/6 pass |
+| `go test ./internal/usage/ -race -count=1` | ok (no data races) |
 | `npm --prefix internal/frontend test` | 269 pass / 0 fail |
 | `npm --prefix internal/frontend run build` | pass (no unexpected `dist` changes) |
 | `git diff --check` | clean |
@@ -51,8 +73,11 @@ MCC_USAGE_BENCH_ROWS=60332 go test ./internal/usage/ -run TestUsagePerformancePr
 ### Performance measurements (60,332-row deterministic dataset, seed=1)
 
 Environment: 8 cores / 30GB, `modernc.org/sqlite` (pure Go, same driver as production), WAL +
-`synchronous=NORMAL`, median of several warmed runs. The pre-optimization implementation `032aa80`
-was measured on the same hardware and dataset as a control (new/old values are same-machine relative).
+`synchronous=NORMAL`, median of several warmed runs. **Attribution rule (R1 §3.1): machine load drifts
+between sessions (±25% on identical code), so only same-session A/B ratios are attributable; absolute
+values across runs are reference only.**
+
+#### Historical baselines (reference only, heavy load during 6C2 baseline)
 
 | Metric | Before (032aa80) | After (dcf1dbb) | Relative | R7 target | Met |
 |---|---:|---:|---:|---:|:--:|
@@ -65,46 +90,102 @@ was measured on the same hardware and dataset as a control (new/old values are s
 | Coverage single | 989 ms | 1,534 ms | **0.65× slower (regression)** | — | — |
 | Six endpoints parallel wall | 4,817 ms | 5,885 ms | **0.82× slower (regression)** | ≤ 300 ms | ❌ ~19× over |
 
+#### R5 same-session A/B: pre-rework (`733461a`) → HEAD, two independent sessions (2026-08-01)
+
+Same-session A/B tooling: `internal/usage/ab_compare_test.go` (`TestUsageR5FullReworkABCompare`, gated
+by `MCC_USAGE_EXPLAIN=1 + MCC_USAGE_AB=1`). The pre-rework side is a test-only reconstruction of the
+`733461a` queries, verified verbatim against `git show 733461a` (ROW_NUMBER candidate CTE + Summary
+scalar subquery); field-by-field equivalence of all six endpoint queries on 60,332 rows is asserted
+before timing, alternating 3 rounds × 5 runs per sample, medians reported.
+
+| Metric | S1 HEAD | S1 pre-rework | S1 speedup | S2 HEAD | S2 pre-rework | S2 speedup |
+|---|---:|---:|---:|---:|---:|---:|
+| `GET /api/status` (Summary, single) | 331 ms | 523 ms | **1.58×** | 417 ms | 568 ms | **1.36×** |
+| Requests page 50 (count+page) | 125 ms | 234 ms | **1.86×** | 142 ms | 255 ms | **1.80×** |
+| Trends single | 550 ms | 617 ms | 1.12× | 597 ms | 660 ms | 1.11× |
+| Providers single | 483 ms | 537 ms | 1.11× | 616 ms | 610 ms | 0.99× (noise) |
+| Models single | 525 ms | 587 ms | 1.12× | 625 ms | 669 ms | 1.07× |
+| Coverage single | 813 ms | 1,007 ms | **1.24×** | 879 ms | 1,133 ms | **1.29×** |
+| Six endpoints parallel wall | 1.90 s | 2.50 s | **1.31×** | 2.59 s | 3.32 s | **1.28×** |
+
+Two sessions agree in direction: Summary 1.36×–1.58×, Requests 1.80×–1.86×, Trends 1.11×–1.12×,
+Coverage 1.24×–1.29×, six-parallel 1.28×–1.31×; Providers (0.99×–1.11×) and Models (1.07×–1.12×)
+stay inside the shared-machine noise band (their latency is dominated by the mandatory 60k filtered
+full scan). **Both recorded 6C2-baseline regressions are eliminated: Coverage and six-parallel are
+now faster than the pre-rework implementation.**
+
+#### Cumulative rework attribution chain (each round same-session A/B, same dataset)
+
+| Round | Change | Key same-session speedup |
+|---|---|---|
+| R1 | index foundation + diagnostics | per-endpoint 0.95×–1.10× (noise; indexes alone don't help) |
+| R2 | Summary single-scan | Summary 1.35×–1.40× (3 sessions) |
+| R3 | candidate-rank persistence | Requests 1.48×–1.65× (4 sessions); auto-index + window eliminated in all 6 endpoints |
+| R4 | CASE-lazy candidate + scope pruning + single-epoch | Summary provider −36% / session_log −77%; Requests provider −52%; six-parallel 1.09×–1.37× |
+| R5 | pre-rework → HEAD cumulative | Summary 1.36×–1.58×; Requests 1.80×–1.86×; Coverage 1.24×–1.29×; six-parallel 1.28×–1.31× |
+
+#### R7 status after rework
+
+| Metric | R7 target | HEAD (this machine) | 3× production scaling | Met |
+|---|---:|---:|---:|:--:|
+| Migration incl. backfill (5,609 candidates) | ≤ 2 s | 362 ms | — | ✅ |
+| `GET /api/status` (Summary, single) | ≤ 100 ms | 331–417 ms | ≈110–140 ms | ❌ **approaches but not met** (10–40% over; R4 idle-baseline estimate ≈113 ms) |
+| Requests page 50 (count+page) | ≤ 100 ms | 125–142 ms | ≈42–47 ms | ⚠️ this-machine accounting still 1.25–1.4× over; met under 3× scaling |
+| Six endpoints parallel wall | ≤ 300 ms | 1.90–2.59 s | ≈510–860 ms | ❌ **still ≈1.7–2.9× over** |
+
 Hardware aggregation-floor calibration: a plain `COUNT/SUM/MAX` on this machine (joined to
 `usage_tokens`, no scoped CTE) is best≈145 ms, whereas the production table records 40-50 ms — i.e.
 this box is about 3× slower than production hardware. The pre-optimization single status latency here
 (807 ms) closely matches the production baseline (760-780 ms), indicating the single-threaded status
-path runs near production speed on this box. Even applying a generous 3× production scaling, the
-optimized status would be ~215 ms (still ~2× over the 100 ms target) and six-endpoint parallel ~1.96 s
-(still ~6× over the 300 ms target, and roughly equal to the pre-optimization production baseline of
-1.90 s — i.e. no improvement under concurrency versus the old implementation).
+path runs near production speed on this box — so the 3× scaling is a generous upper bound for
+single-threaded paths and the real production gap may be smaller.
 
-### Deviations (root cause of missing R7, located via EXPLAIN QUERY PLAN)
+### Deviations (root causes addressed by rework; remaining gap honest assessment)
 
-The scoped CTE (`buildScopedCTE`) pushes aggregation into SQL, but a single query is far more expensive
-than a naive aggregation:
+**Fixed by the rework (verified via EXPLAIN QUERY PLAN + same-session A/B):**
 
-- multiple full-table `SCAN r` passes over `usage_requests` (three or more in the Summary plan);
-- `candidate` CTE materialization + `ROW_NUMBER() OVER (...)` window function + `USE TEMP B-TREE FOR
-  ORDER BY`;
-- the `candidate` join uses an `AUTOMATIC PARTIAL COVERING INDEX` (index built at runtime);
-- a single Summary measures ~4.4× the raw aggregation floor (145 ms) on this machine.
+- Summary's `last_provider_request` scalar subquery re-materialized the whole scoped CTE a second time
+  (2× 60k full scan + 2× runtime auto-index); R2 replaced it with a single-scan `MAX` time-key
+  encoding (Summary 1.35×–1.40×).
+- The `candidate` ROW_NUMBER CTE materialized per query and its join built an `AUTOMATIC PARTIAL
+  COVERING INDEX` at runtime — a base-table index cannot remove it (R1 proved). R3 persisted
+  `candidate_rank` with a `(session_request_id, candidate_rank)` index: auto-index and window TEMP
+  B-TREE are gone from all six endpoint plans; candidate lookup now hits the persistent index.
+- Candidate computation ran for scopes that neither need dedupe markers nor depend on candidate
+  decisions; R4 made it CASE-lazy (non-session rows do zero lookups) and pruned it entirely for
+  raw/provider/session_log aggregate paths.
+- The two recorded regressions from the 6C2 baseline — Coverage single (0.65×) and six-parallel wall
+  (0.82×) vs the pre-optimization implementation — are eliminated: same-session A/B now shows
+  Coverage 1.24×–1.29× and six-parallel 1.28×–1.31× faster than the pre-rework state.
 
-The optimization therefore delivers a real 1.3-2.4× per-endpoint improvement, but absolute latency
-remains far above the R7 targets; and the heavier scoped queries contend for CPU under concurrency,
-causing Coverage (single) and the six-endpoint parallel wall clock to regress relative to the old
-implementation. Meeting R7 requires further query-structure work (e.g. trimming candidate computation
-by scope, removing repeated full scans, materialization/index tuning) and is **explicitly out of scope
-for this task**; whether to rework is decided separately by the coordinator and user.
+**Remaining deviation (R7 absolute targets):** each endpoint still performs its own unfiltered full
+scan of the 60k filtered rows (semantically required: all rows must be aggregated) plus its own
+candidate subqueries, and the six endpoints run concurrently and contend for CPU on this 8-core box.
+After R5: status ≈331–417 ms on this machine (≈110–140 ms at 3× production scaling, approaching but
+not meeting the 100 ms target), Requests ≈125–142 ms (met at 3× scaling, 1.25–1.4× over on this
+machine), six-parallel ≈1.90–2.59 s (≈510–860 ms at 3× scaling, still ≈1.7–2.9× over 300 ms).
+Further reduction of six-parallel requires **cross-request materialization** (e.g. share one filtered
+scan / candidate result across the six endpoints, incremental materialization of the scoped dataset)
+— a structural caching topic beyond query-shape optimization, **proposed as R6 and explicitly out of
+scope for this task**.
 
 ### Residual risks
 
-- **L1 (low-risk transient)**: Trends issues two queries (min/max epoch, then aggregation). Under WAL
-  concurrent writes near a DST boundary, a new row may momentarily land in the last offset bucket; it
-  self-heals on the next call. No security/persistence impact.
-- **L2 (low-risk transient)**: Requests total and page are two queries; under WAL concurrent writes the
-  total and the current page rows may be momentarily inconsistent. Affects only page boundaries,
-  transient, self-healing.
-- **R7 performance targets not met (new high/medium finding from this verification)**: see
-  “Performance measurements / Deviations” above. The implementation is correct and compatible, but
-  status / requests / six-parallel absolute latencies miss R7, and six-parallel regresses versus the
-  old implementation. Recorded honestly and escalated; per the coordinator's decision, not reworked in
-  this task.
+- **L1 (low-risk transient, pre-existing)**: Trends issues two queries (min/max epoch, then
+  aggregation). Under WAL concurrent writes near a DST boundary, a new row may momentarily land in the
+  last offset bucket; it self-heals on the next call. No security/persistence impact.
+- **L2 (low-risk transient, pre-existing)**: Requests total and page are two queries; under WAL
+  concurrent writes the total and the current page rows may be momentarily inconsistent. Affects only
+  page boundaries, transient, self-healing. (A `COUNT(*) OVER()` merge was measured in R4 and rejected
+  as a net regression: 445 ms vs 166 ms.)
+- **L2 (low-risk transient, added in R4)**: the CASE-lazy candidate subquery is duplicated up to 3× in
+  the requests-page plan by SQLite's flattening (three references); per-page cost is ~2 extra index
+  lookups per session row on a 50-row page — measured at the ~13 ms page level, imperceptible;
+  count/Summary aggregate paths are not affected.
+- **R7 targets partially unmet (persisting finding)**: status approaches the 100 ms target
+  (≈110–140 ms at 3× scaling) but six-parallel remains ≈1.7–2.9× over 300 ms; both recorded
+  regressions are eliminated. Recorded honestly; six-parallel needs cross-request materialization
+  (proposed R6), not in this task.
 
 ## Overall Analysis (Source Analysis)
 
@@ -244,7 +325,7 @@ contract.
 | 3 | Done | Filtered/scoped SQL dataset and real request pagination | Differential and pagination tests (6A pass) |
 | 4 | Done | Dedicated SQL aggregation for all statistics endpoints | Differential tests and query plans (6A pass) |
 | 5 | Done | One initial status request and lazy session loading | Frontend source/behavior tests (6B2 pass) |
-| 6 | Done (R7 not met) | Full regression, cross-build, production-data, and synthetic benchmarks | See “Implementation Status”: all verification passed, but R7 absolute targets not met |
+| 6 | Done (R7 partially met; reworked R1–R5) | Full regression, cross-build, production-data, and synthetic benchmarks | See “Implementation Status”: all verification passed; rework eliminated both recorded regressions and brought status close to target; six-parallel still over (needs cross-request materialization, proposed R6) |
 
 ## Requirements
 
@@ -527,7 +608,9 @@ runs, and a concurrently active WAL database.
   available, so a 60,332-row production-representative synthetic dataset (seed=1) was used
   instead, with the pre-optimization implementation `032aa80` measured on the same machine as a
   control.
-- [x] Update both specs with actual evidence and commit validation documentation.
+- [x] Update both specs with actual evidence and commit validation documentation (incl. rework
+  rounds R1–R5: reports `R1-index-diagnostics.md` … `R5-final-verification.md`; same-session A/B
+  tooling in `internal/usage/ab_compare_test.go`).
 
 #### Verification
 
@@ -535,6 +618,7 @@ runs, and a concurrently active WAL database.
 - [x] Vet/build/diff checks (all pass)
 - [x] Six cross-platform builds (6/6)
 - [x] Synthetic 60-thousand evidence (see “Implementation Status / Performance measurements”;
-  R7 absolute targets not met)
+  rework R1–R5 completed: R7 status approaches target, six-parallel still over — needs
+  cross-request materialization, proposed R6; both recorded regressions eliminated)
 - [ ] Production-data evidence (no production snapshot; synthetic representative dataset used;
   opt-in one-million-row run not executed)

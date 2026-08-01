@@ -4,31 +4,48 @@
 管理入口：`GET /api/status`、`GET /api/usage/*`、`GET /api/sessions`、`GET /api/sessions/projects`  
 参考功能：`2026-05-15-usage-statistics`、`2026-05-21-sqlite-wal-optimization`、`2026-06-12-windows-usage-statistics-fixes`、`2026-07-17-kimi-quota-usage-parsing-fixes`  
 技术栈：Go 1.26、SQLite/WAL、Vue 3、TypeScript  
-最后更新：2026-07-30  
-进度：设计已确认；实现 6 / 6 个任务（代码完成，兼容性经独立审查确认）；任务 6 性能验证已执行——**R7 绝对性能目标未达成**，详见下方“实现状态 / 偏差”段落
+最后更新：2026-08-01
+
+进度：设计已确认；实现 6 / 6 个任务（代码完成，兼容性经独立审查确认）；任务 6 性能验证已执行；**返工轮次 R1–R5 已完成**（索引诊断 → Summary 单次扫描 → candidate 排名持久化 → 惰性 candidate + scope 裁剪 → 终验）。相对返工前的累计同会话 A/B：**六端点全部加速（1.07×–1.86×）、无回归，6C2 基线期两项回归（Coverage 0.65× / 六并发 0.82×）已消除**；status 按生产 3 倍速折算约 110–140 ms，逼近但未达 100 ms 目标；六并发折算约 510–860 ms，仍超 300 ms 约 1.7–2.9 倍（需跨请求物化，建议 R6）。详见下方“实现状态 / 偏差”段落
 
 ## 实现状态（Implementation Status）
 
-最后验证：2026-07-31（分支 `perf/usage-query-optimization`，HEAD `dcf1dbb`）
+最后验证：2026-08-01（分支 `perf/usage-query-optimization`，HEAD `c3b3056` + R5 文档 commit）
 
 ### 完成情况
 
-6 个任务的代码实现均已完成并通过兼容性审查（实现 commit 14 个：`956f2ec`→`dcf1dbb`）：
+6 个任务的代码实现均已完成并通过兼容性审查（实现 commit 14 个：`956f2ec`→`dcf1dbb`）。
+在其上又完成性能返工轮次 R1–R5（5 个 commit：`5ddabe1`/`4ae4e89`/`abeaa1e`/`34d5826`+`c3b3056`，
+全部只改 `internal/usage` + docs，**无前端改动**）：
 
 - 后端独立审查（任务 6A，`review-6A-backend.md`）：**未发现高/中危问题**；实现与旧算法逐字段兼容，
   独立 oracle 差分测试、迁移幂等/原子回滚、8 writer 并发 WAL、分页下推、URL 脱敏、
   DST/小数秒/非法时戳等专项测试全部通过。仅 2 项低危瞬态（见“剩余风险”）。
 - 前端复审（任务 6B2）：四项 finding 均不可再触发，无中/高回归。
+- 返工轮次（报告见 `R1-index-diagnostics.md` … `R5-final-verification.md`）：
+  - **R1** 索引基础 + EXPLAIN 诊断：同会话 A/B 严格证明仅靠索引对单接口无可测量收益
+    （0.95×–1.10×，噪声内）——真正根因是 scoped CTE 对 60k 行重复全扫，必须查询结构重写。
+  - **R2** Summary 单次扫描：`last_provider_request` 由标量子查询（整套 scoped CTE 二次物化）
+    改为单次扫描 `MAX` 时间键编码；三次独立同会话 A/B Summary 1.35×–1.40×。
+  - **R3** candidate 排名持久化（`candidate_rank` 列 + `(session_request_id, candidate_rank)` 索引）：
+    六端点查询计划的 ROW_NUMBER 窗口排序与运行时自动索引全部消除；四次会话 Requests 1.48×–1.65×。
+  - **R4** CASE 惰性 candidate（非会话行零候选查找）+ scope 裁剪（raw/provider/session_log 聚合
+    整段省去 candidate 计算）+ Summary epoch 单次求值：Summary provider 口径 −36% / session_log
+    −77%、Requests provider −52%、六并发 1.09×–1.37×。`COUNT(*) OVER()` 合并 count+page 经实测
+    否决（445 ms vs 166 ms，净负优化）。
+  - **R5** 终验：全量验证重跑 + 返工前（`733461a`）→ HEAD 全套同会话 A/B（见下方测量）。
 
-### 测试证据（任务 6 全量验证，2026-07-31 实测）
+### 测试证据（R5 终验重跑，2026-08-01 实测）
 
 | 命令 | 结果 |
 |---|---|
 | `go build ./...` | 通过（exit 0） |
 | `go vet ./...` | 通过（exit 0） |
+| `gofmt -l internal/usage/` | 干净 |
 | `go test ./... -count=1` | 全部 ok |
 | `CGO_ENABLED=0 go test ./... -count=1` | 全部 ok |
 | 跨平台构建 linux/darwin/windows × amd64/arm64（`CGO_ENABLED=0`） | 6/6 通过 |
+| `go test ./internal/usage/ -race -count=1` | ok（无数据竞争） |
 | `npm --prefix internal/frontend test` | 269 通过 / 0 失败 |
 | `npm --prefix internal/frontend run build` | 通过（`dist` 无意外变更） |
 | `git diff --check` | 干净 |
@@ -45,7 +62,10 @@ MCC_USAGE_BENCH_ROWS=60332 go test ./internal/usage/ -run TestUsagePerformancePr
 ### 性能测量（60,332 行确定性数据集，seed=1）
 
 环境：8 核 / 30GB，`modernc.org/sqlite`（纯 Go，与生产同驱动），WAL + `synchronous=NORMAL`，
-预热后多次取中位。同硬件同数据下另取优化前实现 `032aa80` 作对照（新旧对比为同机同库相对值）。
+预热后多次取中位。**归因规则（R1 §3.1）：共享机器负载跨会话漂移（同一代码 ±25%），只有同会话
+A/B 比值可归因；跨次绝对值仅作参照。**
+
+#### 历史基线（仅参照；6C2 基线测量时机负载较重）
 
 | 指标 | 优化前 (032aa80) | 优化后 (dcf1dbb) | 相对变化 | R7 目标 | 达标 |
 |---|---:|---:|---:|---:|:--:|
@@ -58,35 +78,85 @@ MCC_USAGE_BENCH_ROWS=60332 go test ./internal/usage/ -run TestUsagePerformancePr
 | Coverage 单次 | 989 ms | 1,534 ms | **0.65× 慢（回归）** | — | — |
 | 六接口并发墙钟 | 4,817 ms | 5,885 ms | **0.82× 慢（回归）** | ≤ 300 ms | ❌ 超约 19 倍 |
 
+#### R5 同会话 A/B：返工前（`733461a`）→ HEAD，两次独立会话（2026-08-01）
+
+同会话 A/B 工具：`internal/usage/ab_compare_test.go`（`TestUsageR5FullReworkABCompare`，
+`MCC_USAGE_EXPLAIN=1 + MCC_USAGE_AB=1` 门控）。旧侧为 test-only 重建的 `733461a` 全套查询
+（已对照 `git show 733461a` 逐行核验：ROW_NUMBER candidate CTE + Summary 标量子查询）；计时前
+先在 60,332 行上逐字段断言六端点查询结果完全一致，再交替 3 轮 × 每样本 5 runs、丢弃预热、取中位。
+
+| 指标 | 会话1 HEAD | 会话1 返工前 | 加速比 | 会话2 HEAD | 会话2 返工前 | 加速比 |
+|---|---:|---:|---:|---:|---:|---:|
+| `GET /api/status`（Summary 单次） | 331 ms | 523 ms | **1.58×** | 417 ms | 568 ms | **1.36×** |
+| Requests 第 50 页（count+page） | 125 ms | 234 ms | **1.86×** | 142 ms | 255 ms | **1.80×** |
+| Trends 单次 | 550 ms | 617 ms | 1.12× | 597 ms | 660 ms | 1.11× |
+| Providers 单次 | 483 ms | 537 ms | 1.11× | 616 ms | 610 ms | 0.99×（噪声带） |
+| Models 单次 | 525 ms | 587 ms | 1.12× | 625 ms | 669 ms | 1.07× |
+| Coverage 单次 | 813 ms | 1,007 ms | **1.24×** | 879 ms | 1,133 ms | **1.29×** |
+| 六接口并发墙钟 | 1.90 s | 2.50 s | **1.31×** | 2.59 s | 3.32 s | **1.28×** |
+
+两会话方向一致：Summary 1.36×–1.58×、Requests 1.80×–1.86×、Trends 1.11×–1.12×、Coverage
+1.24×–1.29×、六并发 1.28×–1.31×；Providers（0.99×–1.11×）与 Models（1.07×–1.12×）落在共享机器
+噪声带（其延迟由必须的 60k filtered 全扫主导）。**6C2 基线期两项回归均已消除：Coverage 与六并发
+现在都快于返工前实现。**
+
+#### 累计返工归因链（每轮均为同会话 A/B，同一数据集）
+
+| 轮次 | 改动 | 关键同会话加速比 |
+|---|---|---|
+| R1 | 索引基础 + 诊断 | 单接口 0.95×–1.10×（噪声内；仅索引无收益） |
+| R2 | Summary 单次扫描 | Summary 1.35×–1.40×（3 次会话） |
+| R3 | candidate 排名持久化 | Requests 1.48×–1.65×（4 次会话）；六端点自动索引/窗口全消除 |
+| R4 | CASE 惰性 + scope 裁剪 + 单 epoch | Summary provider −36% / session_log −77%；Requests provider −52%；六并发 1.09×–1.37× |
+| R5 | 返工前 → HEAD 累计 | Summary 1.36×–1.58×；Requests 1.80×–1.86×；Coverage 1.24×–1.29×；六并发 1.28×–1.31× |
+
+#### 返工后 R7 状态
+
+| 指标 | R7 目标 | HEAD 本机 | 生产 3 倍速折算 | 达标 |
+|---|---:|---:|---:|:--:|
+| 迁移（含回填，5,609 候选） | ≤ 2 s | 362 ms | — | ✅ |
+| `GET /api/status`（Summary 单次） | ≤ 100 ms | 331–417 ms | 约 110–140 ms | ❌ **逼近但未达**（差约 10–40%；R4 空闲基线折算约 113 ms） |
+| Requests 第 50 页（count+page） | ≤ 100 ms | 125–142 ms | 约 42–47 ms | ⚠️ 本机口径仍超 1.25–1.4×；3 倍速折算口径可达标 |
+| 六接口并发墙钟 | ≤ 300 ms | 1.90–2.59 s | 约 510–860 ms | ❌ **仍超约 1.7–2.9 倍** |
+
 硬件聚合下限校准：本机原始 `COUNT/SUM/MAX`（联 `usage_tokens`、无 scoped CTE）best≈145 ms，
 而生产规格表记录为 40-50 ms，即本机约比生产硬件慢 3 倍。本机优化前 status 单次 807 ms 与生产
-基线 760-780 ms 基本吻合，说明单线程 status 路径本机接近生产速度。即便按生产 3 倍速折算，优化后
-status 约 215 ms（仍超 100 ms 目标约 2 倍）、六接口并发约 1.96 s（仍超 300 ms 目标约 6 倍，且约等于
-优化前生产基线 1.90 s，即并发场景相对旧实现无改善）。
+基线 760-780 ms 基本吻合，说明单线程 status 路径本机接近生产速度——因此 3 倍速折算对单线程路径
+偏保守，生产实际差距可能更小。
 
-### 偏差（R7 未达成根因，EXPLAIN QUERY PLAN 定位）
+### 偏差（返工已消除的根因 + 剩余差距的诚实评估）
 
-scoped CTE（`buildScopedCTE`）虽将聚合下推至 SQL，但单条查询开销显著高于朴素聚合：
+**返工已修复（EXPLAIN QUERY PLAN + 同会话 A/B 双重验证）：**
 
-- 对 `usage_requests` 多次全表 `SCAN r`（Summary 查询计划中出现 3 次以上）；
-- `candidate` CTE 物化 + `ROW_NUMBER() OVER (...)` 窗口函数 + `USE TEMP B-TREE FOR ORDER BY`；
-- 对 `candidate` 连接使用 `AUTOMATIC PARTIAL COVERING INDEX`（运行时自建索引）；
-- 单条 Summary 实测为本机原始聚合下限（145 ms）的约 4.4 倍。
+- Summary 的 `last_provider_request` 标量子查询使整套 scoped CTE（2× 60k 全扫 + 2× 运行时自动索引）
+  二次物化；R2 改为单次扫描 `MAX` 时间键编码（Summary 1.35×–1.40×）。
+- `candidate` ROW_NUMBER CTE 每查询物化、连接在运行时自建 `AUTOMATIC PARTIAL COVERING INDEX`——
+  基表索引无法消除（R1 已严格证明）。R3 持久化 `candidate_rank` 并建 `(session_request_id,
+  candidate_rank)` 索引：六端点计划中自动索引与窗口 TEMP B-TREE 全部消失，候选查找改走持久索引。
+- candidate 计算对不需要去重标记、过滤也不依赖候选判定的 scope 仍在执行；R4 改为 CASE 惰性
+  （非会话行零查找）并对 raw/provider/session_log 聚合路径整段裁剪。
+- 6C2 基线期两项回归——Coverage 单次（0.65×）与六并发墙钟（0.82×，均相对优化前）——已消除：
+  同会话 A/B 显示 Coverage 1.24×–1.29×、六并发 1.28×–1.31×，都快于返工前实现。
 
-因此优化对单接口取得 1.3-2.4× 的真实提升，但绝对延迟仍远高于 R7 目标；且更重的 scoped 查询在并发下
-相互争用 CPU，导致 Coverage 单接口与六接口并发墙钟相对优化前回归。达成 R7 需进一步的查询结构优化
-（如按 scope 裁剪 candidate 计算、减少重复全表扫描、物化/索引优化），**明确不在本任务范围**；是否
-返工由协调者与用户另行决定。
+**剩余偏差（R7 绝对目标）：** 每个端点仍各自对 60k 行 filtered 做无过滤全扫（语义必需：统计全部行）
+并各自执行候选子查询，六端点并发在 8 核本机争用 CPU。R5 后：status 本机约 331–417 ms（生产 3 倍速
+折算约 110–140 ms，逼近但未达 100 ms 目标），Requests 约 125–142 ms（3 倍速折算可达标；本机口径
+仍超 1.25–1.4×），六并发约 1.90–2.59 s（3 倍速折算约 510–860 ms，仍超 300 ms 约 1.7–2.9 倍）。
+六并发进一步下降必须**跨请求物化**（六端点共享一次 filtered 全扫/候选结果、scoped 数据集增量物化）
+——属查询结构之外的缓存议题，**建议作为 R6，明确不在本任务范围**。
 
 ### 剩余风险
 
-- **L1（低危瞬态）**：Trends 先查 min/max epoch 再聚合（两次查询），WAL 并发写 + DST 边界下新行可能
-  瞬时落入末区间偏移桶，下次调用自愈；无安全/持久化影响。
-- **L2（低危瞬态）**：Requests 总数与分页为两次查询，WAL 并发写下 total 与当页行集可能瞬时不一致，
-  仅影响翻页边界、瞬时、自愈。
-- **R7 性能目标未达成（本次验证新增的高/中危发现）**：见上“性能测量 / 偏差”。实现正确兼容，但
-  status / requests / 六并发绝对延迟未达 R7，且六并发相对旧实现回归。已如实记录并 escalation；按
-  协调者决定不在本任务返工。
+- **L1（低危瞬态，既有）**：Trends 先查 min/max epoch 再聚合（两次查询），WAL 并发写 + DST 边界下
+  新行可能瞬时落入末区间偏移桶，下次调用自愈；无安全/持久化影响。
+- **L2（低危瞬态，既有）**：Requests 总数与分页为两次查询，WAL 并发写下 total 与当页行集可能瞬时
+  不一致，仅影响翻页边界、瞬时、自愈。（R4 曾实测 `COUNT(*) OVER()` 合并为净负优化 445 ms vs
+  166 ms，维持两查询结构。）
+- **L2（低危瞬态，R4 新增）**：CASE 惰性子查询在 requests-page 计划中因 SQLite 内层 flatten 被
+  复制最多 3 次（三处引用），每页约多 2 次/会话行的索引查找（页 50 行量级，实测 page 约 13 ms
+  无感）；count/Summary 等聚合路径无复制。
+- **R7 目标部分未达（既有发现延续）**：status 已逼近 100 ms（3 倍速折算约 110–140 ms），但六并发
+  仍超 300 ms 约 1.7–2.9 倍；两项回归已消除。已如实记录；六并发需跨请求物化（建议 R6），不在本任务。
 
 ## 整体分析（源站分析）
 
@@ -206,7 +276,7 @@ ON usage_requests(started_at DESC, id DESC);
 | 3 | 完成 | 筛选/scoped SQL 数据集和真实请求分页 | 差分与分页测试（6A 通过） |
 | 4 | 完成 | 全部统计接口使用专用 SQL 聚合 | 差分测试和查询计划（6A 通过） |
 | 5 | 完成 | 首屏一次状态请求和会话按需加载 | 前端源码/行为测试（6B2 通过） |
-| 6 | 完成（R7 未达标） | 全量回归、跨平台构建、生产与合成基准 | 见“实现状态”：验证全通过，但 R7 绝对性能目标未达成 |
+| 6 | 完成（R7 部分达标；已返工 R1–R5） | 全量回归、跨平台构建、生产与合成基准 | 见“实现状态”：验证全通过；返工消除两项回归并把 status 拉近目标；六并发仍超（需跨请求物化，建议 R6） |
 
 ## 需求
 
@@ -463,12 +533,15 @@ O(n log n) 或更好的索引/扫描算法，不执行二次方交叉连接。
   编译 `./cmd/server`（6/6 通过）。
 - [ ] 对生产数据库的只读副本/快照执行探针：本次无生产库只读副本，改以 60,332 行生产代表性
   合成数据集（seed=1）替代，并额外取优化前实现 `032aa80` 同机同库对照。
-- [x] 将实际证据回写两份规格并提交验证文档。
+- [x] 将实际证据回写两份规格并提交验证文档（含返工轮次 R1–R5：报告
+  `R1-index-diagnostics.md` … `R5-final-verification.md`；同会话 A/B 工具在
+  `internal/usage/ab_compare_test.go`）。
 
 #### 验证
 
 - [x] Go 与前端回归（`go test ./...` 全过；前端 269/269）
 - [x] Vet/build/diff 检查（均通过）
 - [x] 六个跨平台构建（6/6）
-- [x] 合成 6 万行证据（见“实现状态 / 性能测量”；R7 绝对目标未达成）
+- [x] 合成 6 万行证据（见“实现状态 / 性能测量”；返工 R1–R5 已完成：R7 的 status 逼近目标、
+  六并发仍超——需跨请求物化，建议 R6；两项回归均已消除）
 - [ ] 生产数据证据（无生产库只读副本，以合成代表性数据集替代；100 万行可选未执行）
