@@ -158,6 +158,7 @@ import {
   type SessionProject,
 } from '@/composables/useApi'
 import { useI18n } from '@/composables/useI18n'
+import { useSessionBrowserData } from '@/composables/useSessionBrowserData'
 import { useTheme } from '@/composables/useTheme'
 import SessionDetail from '@/components/SessionDetail.vue'
 import SessionOutline from '@/components/SessionOutline.vue'
@@ -178,14 +179,26 @@ const emit = defineEmits<{
   refreshed: [payload: { projects: SessionProject[]; sessions: SessionItem[] }]
 }>()
 
-const projects = ref<SessionProject[]>([...props.projects])
-const sessions = ref<SessionItem[]>([...props.sessions])
-const selectedProject = ref('')
+// 列表状态（projects/sessions/loading/error/selectedProject）由 useSessionBrowserData
+// 持有：每次 reload/selectProject 推进 generation，旧请求的成功或错误不会覆盖当前项目、
+// loading/error，也不会回写父级缓存（仅当 result.applied 时才 emit refreshed）。
+const {
+  projects,
+  sessions,
+  loading,
+  error,
+  selectedProject,
+  reload: reloadSessions,
+  selectProject: loadProjectSessions,
+} = useSessionBrowserData(api, () => t('sessions.load_failed'), {
+  projects: props.projects,
+  sessions: props.sessions,
+  loading: props.loading,
+  errorMessage: props.errorMessage,
+})
 const selectedSession = ref<SessionItem | null>(null)
 const detail = ref<SessionDetailResponse | null>(null)
 const cleanupHint = ref<SessionCleanupHint | null>(null)
-const loading = ref(props.loading)
-const error = ref(props.errorMessage || '')
 const showOutline = ref(false)
 const detailRef = ref<InstanceType<typeof SessionDetail> | null>(null)
 
@@ -258,38 +271,19 @@ watch(() => props.errorMessage, (value) => {
 })
 
 async function reload() {
-  error.value = ''
-  loading.value = true
-  try {
-    projects.value = await api.getSessionProjects()
-    await loadSessions()
-    emit('refreshed', { projects: projects.value, sessions: sessions.value })
-  } catch {
-    error.value = t('sessions.load_failed')
-  } finally {
-    loading.value = false
+  const result = await reloadSessions()
+  if (result.applied) {
+    emit('refreshed', { projects: result.projects, sessions: result.sessions })
   }
 }
 
 async function selectProject(path: string) {
-  selectedProject.value = path
   selectedSession.value = null
   detail.value = null
-  error.value = ''
-  loading.value = true
-  try {
-    await loadSessions()
-    emit('refreshed', { projects: projects.value, sessions: sessions.value })
-  } catch {
-    error.value = t('sessions.load_failed')
-  } finally {
-    loading.value = false
+  const result = await loadProjectSessions(path)
+  if (result.applied) {
+    emit('refreshed', { projects: result.projects, sessions: result.sessions })
   }
-}
-
-async function loadSessions() {
-  const page = await api.getSessionList({ project: selectedProject.value, page: 1, page_size: 100 })
-  sessions.value = page.sessions
 }
 
 async function selectSession(session: SessionItem) {

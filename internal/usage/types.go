@@ -1,6 +1,9 @@
 package usage
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 const (
 	UsageSourceProvider   = "provider"
@@ -16,6 +19,7 @@ const (
 
 	ParseStatusOK                = "ok"
 	ParseStatusMissing           = "missing"
+	ParseStatusInvalidValue      = "invalid_value"
 	ParseStatusUnsupportedFormat = "unsupported_format"
 	ParseStatusParseError        = "parse_error"
 	ParseStatusSkippedNon2xx     = "skipped_non_2xx"
@@ -25,6 +29,14 @@ const (
 	ErrorNetwork         = "network_error"
 	ErrorUpstreamTimeout = "upstream_timeout"
 	ErrorClientAborted   = "client_aborted"
+)
+
+// ErrNegativeTokenCount and ErrNegativeDuration are stable write-boundary
+// classifications. Their messages intentionally contain no SQL or request
+// details because callers may log them directly.
+var (
+	ErrNegativeTokenCount = errors.New("token count must be non-negative")
+	ErrNegativeDuration   = errors.New("duration must be non-negative")
 )
 
 type RequestRecord struct {

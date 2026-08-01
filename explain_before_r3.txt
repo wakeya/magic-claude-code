@@ -1,0 +1,198 @@
+=== RUN   TestUsageExplainDiagnostic
+    explain_diagnostic_test.go:179: 
+        ==== EXPLAIN QUERY PLAN diagnostics (rows=3000, seed=1) ====
+    explain_diagnostic_test.go:181: 
+        ---- endpoint: Summary/status ----
+    explain_diagnostic_test.go:186:   [summary-aggregate]
+                MATERIALIZE candidate
+                CO-ROUTINE (subquery-5)
+                SCAN d USING COVERING INDEX idx_usage_dedupe_candidates_session_priority
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                USE TEMP B-TREE FOR LAST 3 TERMS OF ORDER BY
+                SCAN (subquery-5)
+                SCAN r
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                BLOOM FILTER ON candidate (session_request_id=? AND candidate_rank=?)
+                SEARCH candidate USING AUTOMATIC PARTIAL COVERING INDEX (session_request_id=? AND candidate_rank=?) LEFT-JOIN
+    explain_diagnostic_test.go:187:   [summary-aggregate] costs: SCAN=3 TEMP_BTREE=1 AUTO_INDEX=1 SUBQUERY/CO-Routine=2 USING_INDEX=9 PK_SEARCH=0
+    explain_diagnostic_test.go:189:   >> Summary/status TOTAL: SCAN=3 TEMP_BTREE=1 AUTO_INDEX=1 SUBQUERY/CO-Routine=2 USING_INDEX=9 PK_SEARCH=0
+    explain_diagnostic_test.go:181: 
+        ---- endpoint: Requests ----
+    explain_diagnostic_test.go:186:   [requests-count]
+                MATERIALIZE candidate
+                CO-ROUTINE (subquery-5)
+                SCAN d USING COVERING INDEX idx_usage_dedupe_candidates_session_priority
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                USE TEMP B-TREE FOR LAST 3 TERMS OF ORDER BY
+                SCAN (subquery-5)
+                SCAN r
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                BLOOM FILTER ON candidate (session_request_id=? AND candidate_rank=?)
+                SEARCH candidate USING AUTOMATIC PARTIAL COVERING INDEX (session_request_id=? AND candidate_rank=?) LEFT-JOIN
+    explain_diagnostic_test.go:187:   [requests-count] costs: SCAN=3 TEMP_BTREE=1 AUTO_INDEX=1 SUBQUERY/CO-Routine=2 USING_INDEX=7 PK_SEARCH=0
+    explain_diagnostic_test.go:186:   [requests-page]
+                MATERIALIZE candidate
+                CO-ROUTINE (subquery-5)
+                SCAN d USING COVERING INDEX idx_usage_dedupe_candidates_session_priority
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                USE TEMP B-TREE FOR LAST 3 TERMS OF ORDER BY
+                SCAN (subquery-5)
+                SCAN r USING INDEX idx_usage_requests_started_id
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                BLOOM FILTER ON candidate (session_request_id=? AND candidate_rank=?)
+                SEARCH candidate USING AUTOMATIC PARTIAL COVERING INDEX (session_request_id=? AND candidate_rank=?) LEFT-JOIN
+    explain_diagnostic_test.go:187:   [requests-page] costs: SCAN=3 TEMP_BTREE=1 AUTO_INDEX=1 SUBQUERY/CO-Routine=2 USING_INDEX=10 PK_SEARCH=0
+    explain_diagnostic_test.go:189:   >> Requests TOTAL: SCAN=6 TEMP_BTREE=2 AUTO_INDEX=2 SUBQUERY/CO-Routine=4 USING_INDEX=17 PK_SEARCH=0
+    explain_diagnostic_test.go:181: 
+        ---- endpoint: Trends ----
+    explain_diagnostic_test.go:186:   [trends-range]
+                MATERIALIZE candidate
+                CO-ROUTINE (subquery-5)
+                SCAN d USING COVERING INDEX idx_usage_dedupe_candidates_session_priority
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                USE TEMP B-TREE FOR LAST 3 TERMS OF ORDER BY
+                SCAN (subquery-5)
+                SCAN r
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                BLOOM FILTER ON candidate (session_request_id=? AND candidate_rank=?)
+                SEARCH candidate USING AUTOMATIC PARTIAL COVERING INDEX (session_request_id=? AND candidate_rank=?) LEFT-JOIN
+    explain_diagnostic_test.go:187:   [trends-range] costs: SCAN=3 TEMP_BTREE=1 AUTO_INDEX=1 SUBQUERY/CO-Routine=2 USING_INDEX=8 PK_SEARCH=0
+    explain_diagnostic_test.go:186:   [trends-bucket]
+                MATERIALIZE candidate
+                CO-ROUTINE (subquery-6)
+                SCAN d USING COVERING INDEX idx_usage_dedupe_candidates_session_priority
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                USE TEMP B-TREE FOR LAST 3 TERMS OF ORDER BY
+                SCAN (subquery-6)
+                SCAN r
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                BLOOM FILTER ON candidate (session_request_id=? AND candidate_rank=?)
+                SEARCH candidate USING AUTOMATIC PARTIAL COVERING INDEX (session_request_id=? AND candidate_rank=?) LEFT-JOIN
+                USE TEMP B-TREE FOR GROUP BY
+    explain_diagnostic_test.go:187:   [trends-bucket] costs: SCAN=3 TEMP_BTREE=2 AUTO_INDEX=1 SUBQUERY/CO-Routine=2 USING_INDEX=9 PK_SEARCH=0
+    explain_diagnostic_test.go:189:   >> Trends TOTAL: SCAN=6 TEMP_BTREE=3 AUTO_INDEX=2 SUBQUERY/CO-Routine=4 USING_INDEX=17 PK_SEARCH=0
+    explain_diagnostic_test.go:181: 
+        ---- endpoint: Providers ----
+    explain_diagnostic_test.go:186:   [providers-aggregate]
+                CO-ROUTINE (subquery-4)
+                CO-ROUTINE (subquery-6)
+                MATERIALIZE candidate
+                CO-ROUTINE (subquery-7)
+                SCAN d USING COVERING INDEX idx_usage_dedupe_candidates_session_priority
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                USE TEMP B-TREE FOR LAST 3 TERMS OF ORDER BY
+                SCAN (subquery-7)
+                SCAN r USING INDEX idx_usage_requests_provider
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                BLOOM FILTER ON candidate (session_request_id=? AND candidate_rank=?)
+                SEARCH candidate USING AUTOMATIC PARTIAL COVERING INDEX (session_request_id=? AND candidate_rank=?) LEFT-JOIN
+                USE TEMP B-TREE FOR LAST 2 TERMS OF ORDER BY
+                SCAN (subquery-6)
+                SCAN (subquery-4)
+                USE TEMP B-TREE FOR GROUP BY
+                USE TEMP B-TREE FOR ORDER BY
+    explain_diagnostic_test.go:187:   [providers-aggregate] costs: SCAN=5 TEMP_BTREE=4 AUTO_INDEX=1 SUBQUERY/CO-Routine=6 USING_INDEX=10 PK_SEARCH=0
+    explain_diagnostic_test.go:189:   >> Providers TOTAL: SCAN=5 TEMP_BTREE=4 AUTO_INDEX=1 SUBQUERY/CO-Routine=6 USING_INDEX=10 PK_SEARCH=0
+    explain_diagnostic_test.go:181: 
+        ---- endpoint: Models ----
+    explain_diagnostic_test.go:186:   [models-aggregate]
+                CO-ROUTINE (subquery-4)
+                CO-ROUTINE (subquery-6)
+                MATERIALIZE candidate
+                CO-ROUTINE (subquery-7)
+                SCAN d USING COVERING INDEX idx_usage_dedupe_candidates_session_priority
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                USE TEMP B-TREE FOR LAST 3 TERMS OF ORDER BY
+                SCAN (subquery-7)
+                SCAN r USING INDEX idx_usage_requests_model
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                BLOOM FILTER ON candidate (session_request_id=? AND candidate_rank=?)
+                SEARCH candidate USING AUTOMATIC PARTIAL COVERING INDEX (session_request_id=? AND candidate_rank=?) LEFT-JOIN
+                USE TEMP B-TREE FOR LAST 2 TERMS OF ORDER BY
+                SCAN (subquery-6)
+                SCAN (subquery-4)
+                USE TEMP B-TREE FOR GROUP BY
+                USE TEMP B-TREE FOR ORDER BY
+    explain_diagnostic_test.go:187:   [models-aggregate] costs: SCAN=5 TEMP_BTREE=4 AUTO_INDEX=1 SUBQUERY/CO-Routine=6 USING_INDEX=10 PK_SEARCH=0
+    explain_diagnostic_test.go:189:   >> Models TOTAL: SCAN=5 TEMP_BTREE=4 AUTO_INDEX=1 SUBQUERY/CO-Routine=6 USING_INDEX=10 PK_SEARCH=0
+    explain_diagnostic_test.go:181: 
+        ---- endpoint: Coverage ----
+    explain_diagnostic_test.go:186:   [coverage-summary]
+                CO-ROUTINE (subquery-4)
+                CO-ROUTINE (subquery-6)
+                MATERIALIZE candidate
+                CO-ROUTINE (subquery-7)
+                SCAN d USING COVERING INDEX idx_usage_dedupe_candidates_session_priority
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                USE TEMP B-TREE FOR LAST 3 TERMS OF ORDER BY
+                SCAN (subquery-7)
+                SCAN r USING INDEX sqlite_autoindex_usage_requests_1
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                BLOOM FILTER ON candidate (session_request_id=? AND candidate_rank=?)
+                SEARCH candidate USING AUTOMATIC PARTIAL COVERING INDEX (session_request_id=? AND candidate_rank=?) LEFT-JOIN
+                USE TEMP B-TREE FOR ORDER BY
+                SCAN (subquery-6)
+                SCAN (subquery-4)
+                USE TEMP B-TREE FOR GROUP BY
+    explain_diagnostic_test.go:187:   [coverage-summary] costs: SCAN=5 TEMP_BTREE=3 AUTO_INDEX=1 SUBQUERY/CO-Routine=6 USING_INDEX=10 PK_SEARCH=0
+    explain_diagnostic_test.go:186:   [coverage-status]
+                MATERIALIZE candidate
+                CO-ROUTINE (subquery-5)
+                SCAN d USING COVERING INDEX idx_usage_dedupe_candidates_session_priority
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                USE TEMP B-TREE FOR LAST 3 TERMS OF ORDER BY
+                SCAN (subquery-5)
+                SCAN r USING INDEX idx_usage_requests_model
+                SEARCH r USING INDEX sqlite_autoindex_usage_requests_1 (id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                SEARCH t USING INDEX sqlite_autoindex_usage_tokens_1 (request_id=?)
+                BLOOM FILTER ON candidate (session_request_id=? AND candidate_rank=?)
+                SEARCH candidate USING AUTOMATIC PARTIAL COVERING INDEX (session_request_id=? AND candidate_rank=?) LEFT-JOIN
+                USE TEMP B-TREE FOR GROUP BY
+    explain_diagnostic_test.go:187:   [coverage-status] costs: SCAN=3 TEMP_BTREE=2 AUTO_INDEX=1 SUBQUERY/CO-Routine=2 USING_INDEX=10 PK_SEARCH=0
+    explain_diagnostic_test.go:189:   >> Coverage TOTAL: SCAN=8 TEMP_BTREE=5 AUTO_INDEX=2 SUBQUERY/CO-Routine=8 USING_INDEX=20 PK_SEARCH=0
+    explain_diagnostic_test.go:191: 
+        ==============================================================
+--- PASS: TestUsageExplainDiagnostic (0.09s)
+PASS
+ok  	magic-claude-code/internal/usage	0.093s

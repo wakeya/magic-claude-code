@@ -1,15 +1,31 @@
 package usage
 
 import (
+	"context"
 	"database/sql"
-	"fmt"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
+)
+
+// offsetStartedAtUnknown/AllCanonical/Present 是 Store.hasOffsetStartedAt 的三态值：
+// 库中是否存在不以 'Z' 结尾的 started_at 文本（历史脏库可能保留带时区偏移的
+// RFC3339 文本）。Unknown 仅在 Migrate 未完成时出现，增量候选查询保守按宽边界处理。
+const (
+	offsetStartedAtUnknown = iota
+	offsetStartedAtAllCanonical
+	offsetStartedAtPresent
 )
 
 type Store struct {
 	db *sql.DB
+	// hasOffsetStartedAt 缓存“库中是否存在非 Z 结尾的历史偏移 started_at 文本”的
+	// 迁移期检测结果（settings 持久化）。本系统所有写入经 Record → formatTime 恒输出
+	// canonical UTC（'Z' 结尾）文本，故该状态在运行期不会由 false 变 true：检测为
+	// 全 canonical 时增量候选查询可用窄 TEXT 粗滤边界（旧性能），否则放宽至覆盖任意
+	// 合法偏移。候选语义始终由 epoch 过滤与 Go 窗口判定决定，该缓存只影响索引扫描范围。
+	hasOffsetStartedAt atomic.Int32
 }
 
 func NewStore(db *sql.DB) *Store {
@@ -82,10 +98,65 @@ func (s *Store) Migrate() error {
 			return err
 		}
 	}
+	if err := s.migrateNonNegativeUsageValues(); err != nil {
+		return err
+	}
+	if err := s.migrateDedupeCandidates(); err != nil {
+		return err
+	}
+	if err := s.migrateCandidateRank(); err != nil {
+		return err
+	}
+	if err := s.migrateOffsetStartedAtMarker(); err != nil {
+		return err
+	}
+	return s.migrateUsageQueryIndexes()
+}
+
+// migrateNonNegativeUsageValues repairs rows written by versions that did not
+// enforce the usage value contract. It is idempotent and runs before candidate
+// backfill so historical negative values cannot participate in dedupe or SQL
+// aggregation.
+func (s *Store) migrateNonNegativeUsageValues() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	for _, stmt := range []string{
+		`UPDATE usage_tokens SET input_tokens = 0 WHERE input_tokens < 0`,
+		`UPDATE usage_tokens SET output_tokens = 0 WHERE output_tokens < 0`,
+		`UPDATE usage_tokens SET cache_creation_input_tokens = 0 WHERE cache_creation_input_tokens < 0`,
+		`UPDATE usage_tokens SET cache_read_input_tokens = 0 WHERE cache_read_input_tokens < 0`,
+		`UPDATE usage_requests SET duration_ms = 0 WHERE duration_ms < 0`,
+		`UPDATE usage_requests SET upstream_response_header_ms = 0 WHERE upstream_response_header_ms < 0`,
+		`UPDATE usage_requests SET time_to_first_byte_ms = 0 WHERE time_to_first_byte_ms < 0`,
+	} {
+		if _, err := tx.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func validateNonNegativeUsage(req RequestRecord, tok TokenRecord) error {
+	if tok.InputTokens < 0 || tok.OutputTokens < 0 ||
+		tok.CacheCreationInputTokens < 0 || tok.CacheReadInputTokens < 0 {
+		return ErrNegativeTokenCount
+	}
+	if (req.DurationMS != nil && *req.DurationMS < 0) ||
+		(req.UpstreamResponseHeaderMS != nil && *req.UpstreamResponseHeaderMS < 0) ||
+		(req.TimeToFirstByteMS != nil && *req.TimeToFirstByteMS < 0) {
+		return ErrNegativeDuration
+	}
 	return nil
 }
 
 func (s *Store) Record(req RequestRecord, tok TokenRecord) error {
+	if err := validateNonNegativeUsage(req, tok); err != nil {
+		return err
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -146,10 +217,16 @@ func (s *Store) Record(req RequestRecord, tok TokenRecord) error {
 	if err != nil {
 		return err
 	}
+	if err := s.maintainDedupeCandidatesTx(tx, req, tok); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
 func (s *Store) recordIfAbsent(req RequestRecord, tok TokenRecord) (bool, error) {
+	if err := validateNonNegativeUsage(req, tok); err != nil {
+		return false, err
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return false, err
@@ -214,6 +291,9 @@ func (s *Store) recordIfAbsent(req RequestRecord, tok TokenRecord) (bool, error)
 	if err != nil {
 		return false, err
 	}
+	if err := s.maintainDedupeCandidatesTx(tx, req, tok); err != nil {
+		return false, err
+	}
 	return true, tx.Commit()
 }
 
@@ -252,37 +332,36 @@ func (s *Store) ClearUsageData(resetSessionSync bool) (ClearResult, error) {
 	return result, nil
 }
 
+// Summary 在 scoped SQL 数据集上用 COUNT/SUM/MAX 聚合计算状态页/摘要所需统计，
+// 不再物化全宽请求行或在 Go 中逐行汇总。筛选、去重、口径由 buildScopedCTE 统一
+// 下推；hasUsage/isFailed/今日区间/覆盖率与最新请求时间的数值与空值语义与旧算法
+// 逐字段兼容（由 legacyOracleSummary 差分测试保证）。
 func (s *Store) Summary(filter Filter) (Summary, error) {
-	rows, err := s.queryRows(filter, false)
-	if err != nil {
-		return Summary{}, err
-	}
 	startOfToday, endOfToday, err := todayRange(filter)
 	if err != nil {
 		return Summary{}, err
 	}
+	query, args := buildSummaryQuery(filter, startOfToday, endOfToday)
 
 	var summary Summary
 	var withUsage int64
-	for _, row := range rows {
-		summary.ProviderRequestsTotal++
-		if hasUsage(row.TokenRecord) {
-			withUsage++
-			summary.TokenConsumptionTotal += tokenTotal(row.TokenRecord)
-		}
-		if isFailed(row.RequestRecord) {
-			summary.FailedRequests++
-		}
-		if summary.LastProviderRequest == nil || row.StartedAt.After(*summary.LastProviderRequest) {
-			started := row.StartedAt
-			summary.LastProviderRequest = &started
-		}
-		if !row.StartedAt.Before(startOfToday) && row.StartedAt.Before(endOfToday) {
-			summary.TodayProviderRequests++
-			if hasUsage(row.TokenRecord) {
-				summary.TodayTokenConsumption += tokenTotal(row.TokenRecord)
-			}
-		}
+	var lastStarted sql.NullString
+	if err := s.db.QueryRow(query, args...).Scan(
+		&summary.ProviderRequestsTotal,
+		&withUsage,
+		&summary.TokenConsumptionTotal,
+		&summary.FailedRequests,
+		&summary.TodayProviderRequests,
+		&summary.TodayTokenConsumption,
+		&lastStarted,
+	); err != nil {
+		return Summary{}, err
+	}
+	// scoped 数据集非空时 MAX 聚合必返回一个 started_at（可能为非法历史值，parseTime
+	// 容错为 Go 零值时间），对应旧实现“有行即非 nil”；空数据集 MAX 为 NULL 对应 nil。
+	if lastStarted.Valid {
+		started := parseTime(lastStarted.String)
+		summary.LastProviderRequest = &started
 	}
 	if summary.ProviderRequestsTotal > 0 {
 		summary.UsageCoverage = float64(withUsage) / float64(summary.ProviderRequestsTotal)
@@ -290,43 +369,77 @@ func (s *Store) Summary(filter Filter) (Summary, error) {
 	return summary, nil
 }
 
+// Trends 在 scoped SQL 数据集上用 GROUP BY 本地日期桶聚合计算每日趋势，不再物化
+// 全宽请求行或在 Go 中逐行分桶。桶边界先查询数据集有效时间戳的最小/最大整秒，再
+// 在 Go 中推导时区偏移区间（含夏令时切换，精确到秒），最后渲染为 SQL CASE：非法
+// 时间戳落入 Go 零值时间的本地日期标签，有效时间戳按偏移区间用
+// strftime('%Y-%m-%d', epoch+offset, 'unixepoch') 换算，与旧算法
+// StartedAt.In(loc).Format("2006-01-02") 逐秒等价。筛选、去重、口径由 buildScopedCTE
+// 统一下推；缺失桶不补零、桶字符串升序、UsageCoverage 由 withUsage/total 在 Go 中
+// 相除、空数据集返回非 nil 空切片（JSON []）的数值与空值语义与旧算法逐字段兼容
+// （由 legacyOracleTrends 差分测试保证）。
 func (s *Store) Trends(filter Filter) ([]TrendPoint, error) {
-	rows, err := s.queryRows(filter, false)
-	if err != nil {
-		return nil, err
-	}
 	loc, err := filterLocation(filter)
 	if err != nil {
 		return nil, err
 	}
-	groups := make(map[string]*trendAccumulator)
-	for _, row := range rows {
-		bucket := row.StartedAt.In(loc).Format("2006-01-02")
-		group := groups[bucket]
-		if group == nil {
-			group = &trendAccumulator{}
-			groups[bucket] = group
-		}
-		group.add(row)
+	rangeQuery, rangeArgs := buildTrendsRangeQuery(filter)
+	var minEpoch, maxEpoch sql.NullInt64
+	if err := s.db.QueryRow(rangeQuery, rangeArgs...).Scan(&minEpoch, &maxEpoch); err != nil {
+		return nil, err
 	}
-	out := make([]TrendPoint, 0, len(groups))
-	for bucket, group := range groups {
-		point := group.point
-		point.Bucket = bucket
+	intervals := trendsZoneIntervals(loc, minEpoch, maxEpoch)
+	query, args := buildTrendsQuery(filter, loc, intervals)
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]TrendPoint, 0)
+	for rows.Next() {
+		var point TrendPoint
+		var withUsage int64
+		if err := rows.Scan(
+			&point.Bucket,
+			&point.ProviderRequestsTotal,
+			&withUsage,
+			&point.InputTokens,
+			&point.OutputTokens,
+			&point.CacheCreationInputTokens,
+			&point.CacheReadInputTokens,
+			&point.TokenConsumptionTotal,
+			&point.FailedRequests,
+		); err != nil {
+			return nil, err
+		}
 		if point.ProviderRequestsTotal > 0 {
-			point.UsageCoverage = float64(group.withUsage) / float64(point.ProviderRequestsTotal)
+			point.UsageCoverage = float64(withUsage) / float64(point.ProviderRequestsTotal)
 		}
 		out = append(out, point)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Bucket < out[j].Bucket })
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
-func (s *Store) Requests(filter Filter) (RequestPage, error) {
-	all, err := s.queryRows(filter, false)
-	if err != nil {
-		return RequestPage{}, err
+// trendsZoneIntervals 由区间查询结果推导时区偏移区间：数据集没有有效时间戳时返回
+// 单一占位区间（桶表达式只会命中非法时间戳分支，偏移仅用于防御两次查询之间新插
+// 入的行）；上界延伸到当前时间，使区间覆盖两次查询之间可能出现的最新行。
+func trendsZoneIntervals(loc *time.Location, minEpoch, maxEpoch sql.NullInt64) []scopedZoneInterval {
+	if !minEpoch.Valid || !maxEpoch.Valid {
+		_, offset := time.Now().In(loc).Zone()
+		return []scopedZoneInterval{{offset: offset}}
 	}
+	upper := maxEpoch.Int64
+	if now := time.Now().Unix(); now > upper {
+		upper = now
+	}
+	return scopedZoneOffsetIntervals(loc, minEpoch.Int64, upper)
+}
+
+func (s *Store) Requests(filter Filter) (RequestPage, error) {
 	page := filter.Page
 	if page <= 0 {
 		page = 1
@@ -335,79 +448,210 @@ func (s *Store) Requests(filter Filter) (RequestPage, error) {
 	if pageSize <= 0 {
 		pageSize = 50
 	}
-	start := (page - 1) * pageSize
-	if start > len(all) {
-		start = len(all)
+
+	// 总数与分页都下推到 scoped SQL 数据集：COUNT(*) 计算去重+口径后的总数，
+	// LIMIT/OFFSET 只取当前页。禁止全量加载后在 Go 中切片。
+	countSQL, pageSQL, baseArgs := buildRequestsQueries(filter)
+
+	var total int64
+	if err := s.db.QueryRow(countSQL, baseArgs...).Scan(&total); err != nil {
+		return RequestPage{}, err
 	}
-	end := start + pageSize
-	if end > len(all) {
-		end = len(all)
+
+	args := make([]any, 0, len(baseArgs)+2)
+	args = append(args, baseArgs...)
+	args = append(args, pageSize, (page-1)*pageSize)
+	rows, err := s.db.Query(pageSQL, args...)
+	if err != nil {
+		return RequestPage{}, err
 	}
-	return RequestPage{Rows: all[start:end], Total: int64(len(all)), Page: page, PageSize: pageSize}, nil
+	defer rows.Close()
+
+	var pageRows []RequestRow
+	for rows.Next() {
+		var dedupeStatus, dedupeRequestID string
+		row, err := scanRequestRow(rows, &dedupeStatus, &dedupeRequestID)
+		if err != nil {
+			return RequestPage{}, err
+		}
+		row.DedupeStatus = dedupeStatus
+		row.DedupeRequestID = dedupeRequestID
+		pageRows = append(pageRows, row)
+	}
+	if err := rows.Err(); err != nil {
+		return RequestPage{}, err
+	}
+	// 与旧“全量加载后切片”路径保持 JSON 形状一致：scoped 数据集非空时，越界空页
+	// 仍返回 []（而非 null），只有真正零结果才返回 nil。
+	if total > 0 && pageRows == nil {
+		pageRows = []RequestRow{}
+	}
+	return RequestPage{Rows: pageRows, Total: total, Page: page, PageSize: pageSize}, nil
 }
 
+// Providers 在 scoped SQL 数据集上用 GROUP BY provider_id 聚合计算供应商维度统计，不再
+// 物化全宽请求行或在 Go 中逐行汇总。分组键、筛选、去重、口径由 buildScopedCTE 统一下推；
+// “首行”维度字段（provider_name/mapped_model）由 ROW_NUMBER 按旧 queryRows 的字符串序
+// （started_at DESC, id DESC）选取，失败分类/token 总和/覆盖率/平均耗时的数值与空值语义、
+// 主排序键（TotalRequests 降序）与旧算法逐字段兼容，分组同数由 provider_id 升序决胜
+// （旧不稳定排序下未定义，R1 允许确定化）；由 legacyOracleAggregate 差分测试保证。
 func (s *Store) Providers(filter Filter) ([]AggregateRow, error) {
-	return s.aggregate(filter, func(row RequestRow) (key, name string) {
-		return row.ProviderID, row.ProviderName
-	})
+	return s.aggregateSQL(filter, "r.provider_id", "r.provider_name")
 }
 
+// Models 在 scoped SQL 数据集上用 GROUP BY mapped_model 聚合计算模型维度统计，语义与
+// Providers 对称：分组键为 mapped_model，“首行”提供 provider_id/provider_name 维度字段。
 func (s *Store) Models(filter Filter) ([]AggregateRow, error) {
-	return s.aggregate(filter, func(row RequestRow) (key, name string) {
-		return row.MappedModel, row.MappedModel
-	})
+	return s.aggregateSQL(filter, "r.mapped_model", "r.mapped_model")
 }
 
-func (s *Store) aggregate(filter Filter, keyFn func(RequestRow) (string, string)) ([]AggregateRow, error) {
-	rows, err := s.queryRows(filter, false)
+// aggregateSQL 执行 buildAggregateQuery 生成的维度分组聚合查询并扫描为 []AggregateRow。
+// UsageCoverage 与 AverageDurationMS 在 Go 中用 withUsage/durationTotal 除以 total 计算，
+// 保留旧实现的浮点语义；total 为 0 时两者保持零值。空数据集返回非 nil 空切片（JSON []）。
+func (s *Store) aggregateSQL(filter Filter, groupColumn, nameColumn string) ([]AggregateRow, error) {
+	query, args := buildAggregateQuery(filter, groupColumn, nameColumn)
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
-	groups := make(map[string]*aggregateAccumulator)
-	for _, row := range rows {
-		key, name := keyFn(row)
-		group := groups[key]
-		if group == nil {
-			group = &aggregateAccumulator{row: AggregateRow{Name: name, ProviderID: row.ProviderID, ProviderName: row.ProviderName, MappedModel: row.MappedModel}}
-			groups[key] = group
+	defer rows.Close()
+
+	out := make([]AggregateRow, 0)
+	for rows.Next() {
+		var row AggregateRow
+		var groupKey string
+		var withUsage, durationTotal int64
+		if err := rows.Scan(
+			&groupKey,
+			&row.ProviderID,
+			&row.ProviderName,
+			&row.MappedModel,
+			&row.Name,
+			&row.TotalRequests,
+			&row.FailedRequests,
+			&row.TokenConsumptionTotal,
+			&withUsage,
+			&durationTotal,
+		); err != nil {
+			return nil, err
 		}
-		group.add(row)
-	}
-	out := make([]AggregateRow, 0, len(groups))
-	for _, group := range groups {
-		row := group.row
 		if row.TotalRequests > 0 {
-			row.UsageCoverage = float64(group.withUsage) / float64(row.TotalRequests)
-			row.AverageDurationMS = float64(group.durationTotal) / float64(row.TotalRequests)
+			row.UsageCoverage = float64(withUsage) / float64(row.TotalRequests)
+			row.AverageDurationMS = float64(durationTotal) / float64(row.TotalRequests)
 		}
 		out = append(out, row)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].TotalRequests > out[j].TotalRequests })
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
+// Coverage 在 scoped SQL 数据集上用 GROUP BY (provider_name, provider_api_url,
+// mapped_model, source_entrypoint) 聚合计算覆盖率分组统计，不再物化全宽请求行或在 Go
+// 中逐行汇总。分组键、筛选、去重、口径由 buildScopedCTE 统一下推；聚合只投影分组键与
+// 0/1 判定所需字段（不读取 user_agent/backend_url/token 计数/duration 等宽字段，R4）。
+// 输出边界 URL 脱敏（R5）在 Go 中完成：SQL 按原始 provider_api_url 分组后，Go 将脱敏
+// 后键相同的分组合并（历史脏数据中仅 userinfo/敏感 query 不同的 URL 脱敏后同组，与
+// 旧算法先脱敏再分组的语义逐字段一致），再汇总计数、解析状态分布与 last_seen 代表行。
+// last_seen 由 ROW_NUMBER 按“整秒 epoch + 9 位小数秒 + 原始 started_at 字符串 +
+// request_id”四级降序选取，复现旧算法按 started_at DESC, id DESC 迭代且严格 After 保留
+// 首个最大值的语义（含非法时间戳落入 Go 零值时间）。top_usage_parse_status 由 SQL 返回
+// 每组每状态计数、Go 用 topStatus 决胜（同数取字典序最小）。排序主键 LastSeenAt 降序
+// 与旧算法一致，同时间分组由分组键升序决胜（旧不稳定排序下未定义，R1 允许确定化）。
+// 空数据集返回非 nil 空切片（JSON []）。逐字段兼容由 legacyOracleCoverage 差分测试保证。
 func (s *Store) Coverage(filter Filter) ([]CoverageRow, error) {
-	rows, err := s.queryRows(filter, false)
+	summarySQL, statusSQL, args := buildCoverageQueries(filter)
+
+	// M-2：summary 与 status 两条查询必须在同一只读事务内执行（事务结束回滚，只发
+	// SELECT、不升级写锁、不阻塞并发 writer）。否则 WAL 下两次独立 db.Query 各自取得
+	// 不同 reader snapshot：写入恰在两次查询之间提交时，Total/WithoutUsage 分子分母
+	// 来自旧快照、usage_parse_status 状态分布混入新快照行（或新分组的解析状态被
+	// groups[key] 查找静默丢弃），返回结构不对应同一筛选结果。同一事务内 SQLite 为
+	// 所有语句共享同一 reader snapshot；快照在事务开始时建立，事务结束（Rollback）
+	// 即释放，不跨调用泄漏。由 TestCoverageSummaryStatusShareSnapshotUnderConcurrent
+	// WALWrite 锁定。
+	tx, err := s.db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}
-	groups := make(map[string]*coverageAccumulator)
-	for _, row := range rows {
-		key := strings.Join([]string{row.ProviderName, row.ProviderAPIURL, row.MappedModel, row.SourceEntrypoint}, "\x00")
+	defer tx.Rollback()
+
+	summaryRows, err := tx.Query(summarySQL, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer summaryRows.Close()
+
+	groups := make(map[string]*coverageMergeGroup)
+	for summaryRows.Next() {
+		var providerName, providerAPIURL, mappedModel, sourceEntrypoint string
+		var total, failed, withUsage int64
+		var lastSeenRaw, lastSeenID string
+		if err := summaryRows.Scan(
+			&providerName, &providerAPIURL, &mappedModel, &sourceEntrypoint,
+			&total, &failed, &withUsage, &lastSeenRaw, &lastSeenID,
+		); err != nil {
+			return nil, err
+		}
+		key := coverageSortKey(CoverageRow{
+			ProviderName:     providerName,
+			ProviderAPIURL:   RedactURL(providerAPIURL),
+			MappedModel:      mappedModel,
+			SourceEntrypoint: sourceEntrypoint,
+		})
 		group := groups[key]
 		if group == nil {
-			group = &coverageAccumulator{
+			group = &coverageMergeGroup{
 				row: CoverageRow{
-					ProviderName:     row.ProviderName,
-					ProviderAPIURL:   row.ProviderAPIURL,
-					MappedModel:      row.MappedModel,
-					SourceEntrypoint: row.SourceEntrypoint,
+					ProviderName:     providerName,
+					ProviderAPIURL:   RedactURL(providerAPIURL),
+					MappedModel:      mappedModel,
+					SourceEntrypoint: sourceEntrypoint,
 				},
 				parseStatuses: make(map[string]int64),
 			}
 			groups[key] = group
 		}
-		group.add(row)
+		group.row.TotalRequests += total
+		group.row.ErrorRequests += failed
+		group.row.SuccessRequests += total - failed
+		group.row.WithUsageRequests += withUsage
+		group.row.WithoutUsageRequests += total - withUsage
+		lastSeen := parseTime(lastSeenRaw)
+		if group.lastSeenID == "" || coverageLastSeenAfter(lastSeen, lastSeenRaw, lastSeenID, group.row.LastSeenAt, group.lastSeenRaw, group.lastSeenID) {
+			group.row.LastSeenAt = lastSeen
+			group.lastSeenRaw = lastSeenRaw
+			group.lastSeenID = lastSeenID
+		}
+	}
+	if err := summaryRows.Err(); err != nil {
+		return nil, err
+	}
+
+	statusRows, err := tx.Query(statusSQL, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer statusRows.Close()
+	for statusRows.Next() {
+		var providerName, providerAPIURL, mappedModel, sourceEntrypoint, status string
+		var count int64
+		if err := statusRows.Scan(&providerName, &providerAPIURL, &mappedModel, &sourceEntrypoint, &status, &count); err != nil {
+			return nil, err
+		}
+		key := coverageSortKey(CoverageRow{
+			ProviderName:     providerName,
+			ProviderAPIURL:   RedactURL(providerAPIURL),
+			MappedModel:      mappedModel,
+			SourceEntrypoint: sourceEntrypoint,
+		})
+		if group, ok := groups[key]; ok {
+			group.parseStatuses[status] += count
+		}
+	}
+	if err := statusRows.Err(); err != nil {
+		return nil, err
 	}
 
 	out := make([]CoverageRow, 0, len(groups))
@@ -420,51 +664,12 @@ func (s *Store) Coverage(filter Filter) ([]CoverageRow, error) {
 		out = append(out, row)
 	}
 	sort.Slice(out, func(i, j int) bool {
-		return out[i].LastSeenAt.After(out[j].LastSeenAt)
+		if !out[i].LastSeenAt.Equal(out[j].LastSeenAt) {
+			return out[i].LastSeenAt.After(out[j].LastSeenAt)
+		}
+		return coverageSortKey(out[i]) < coverageSortKey(out[j])
 	})
 	return out, nil
-}
-
-func (s *Store) queryRows(filter Filter, includePagination bool) ([]RequestRow, error) {
-	query := `SELECT
-		r.id, r.started_at, r.ended_at, r.duration_ms, r.upstream_response_header_ms, r.time_to_first_byte_ms,
-		r.status_code, r.error_type, r.error_message, r.method, r.request_path, r.backend_url,
-		r.provider_id, r.provider_name, r.provider_api_url, r.source_app, r.source_entrypoint, r.user_agent,
-		r.original_model, r.mapped_model, r.stream, r.request_bytes, r.response_bytes,
-		t.input_tokens, t.output_tokens, t.cache_creation_input_tokens, t.cache_read_input_tokens,
-		t.usage_source, t.usage_parse_status, t.usage_parse_error
-		FROM usage_requests r JOIN usage_tokens t ON t.request_id = r.id`
-	where, args := filterWhere(filter)
-	if where != "" {
-		query += " WHERE " + where
-	}
-	query += " ORDER BY r.started_at DESC, r.id DESC"
-	if includePagination && filter.PageSize > 0 {
-		page := filter.Page
-		if page <= 0 {
-			page = 1
-		}
-		query += fmt.Sprintf(" LIMIT %d OFFSET %d", filter.PageSize, (page-1)*filter.PageSize)
-	}
-
-	sqlRows, err := s.db.Query(query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer sqlRows.Close()
-
-	var rows []RequestRow
-	for sqlRows.Next() {
-		row, err := scanRequestRow(sqlRows)
-		if err != nil {
-			return nil, err
-		}
-		rows = append(rows, row)
-	}
-	if err := sqlRows.Err(); err != nil {
-		return nil, err
-	}
-	return applyStatsScope(rows, filter.StatsScope), nil
 }
 
 func filterWhere(filter Filter) (string, []any) {
@@ -515,21 +720,43 @@ func filterWhere(filter Filter) (string, []any) {
 	return strings.Join(parts, " AND "), args
 }
 
-func scanRequestRow(rows *sql.Rows) (RequestRow, error) {
+// rowScanner 是 *sql.Rows 与 *sql.Row 共同满足的最小扫描接口，便于 scanRequestRow
+// 在分页（多行）与单行查询间复用。
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+// requestRowSelectColumns 列出 scanRequestRow 读取的 usage_requests + usage_tokens
+// 字段，顺序与 scanRequestRow 的 Scan 一致。Requests 分页查询复用它，避免投影漂移。
+// Summary/Trends/Providers/Models/Coverage 均已改为 scoped SQL 专用窄投影聚合：
+// Coverage 只投影分组键与失败/有无 usage 判定字段（buildCoverageQueries），其余接口
+// 不读取宽行字段。
+const requestRowSelectColumns = `r.id, r.started_at, r.ended_at, r.duration_ms, r.upstream_response_header_ms, r.time_to_first_byte_ms,
+	r.status_code, r.error_type, r.error_message, r.method, r.request_path, r.backend_url,
+	r.provider_id, r.provider_name, r.provider_api_url, r.source_app, r.source_entrypoint, r.user_agent,
+	r.original_model, r.mapped_model, r.stream, r.request_bytes, r.response_bytes,
+	t.input_tokens, t.output_tokens, t.cache_creation_input_tokens, t.cache_read_input_tokens,
+	t.usage_source, t.usage_parse_status, t.usage_parse_error`
+
+// scanRequestRow 读取 requestRowSelectColumns 对应的核心字段并完成时间/状态/脱敏转换。
+// extras 追加在核心字段之后，用于在同一次 Scan 中读取调用方附加的列（如 scoped 重复标记）；
+// 不传 extras 时行为与历史聚合路径完全一致。
+func scanRequestRow(scanner rowScanner, extras ...any) (RequestRow, error) {
 	var row RequestRow
 	var startedAt string
 	var endedAt sql.NullString
 	var duration, header, firstByte, status sql.NullInt64
 	var stream int
-	err := rows.Scan(
+	dest := []any{
 		&row.ID, &startedAt, &endedAt, &duration, &header, &firstByte,
 		&status, &row.ErrorType, &row.ErrorMessage, &row.Method, &row.RequestPath, &row.BackendURL,
 		&row.ProviderID, &row.ProviderName, &row.ProviderAPIURL, &row.SourceApp, &row.SourceEntrypoint, &row.UserAgent,
 		&row.OriginalModel, &row.MappedModel, &stream, &row.RequestBytes, &row.ResponseBytes,
 		&row.InputTokens, &row.OutputTokens, &row.CacheCreationInputTokens, &row.CacheReadInputTokens,
 		&row.UsageSource, &row.UsageParseStatus, &row.UsageParseError,
-	)
-	if err != nil {
+	}
+	dest = append(dest, extras...)
+	if err := scanner.Scan(dest...); err != nil {
 		return RequestRow{}, err
 	}
 	row.StartedAt = parseTime(startedAt)
@@ -550,95 +777,12 @@ func scanRequestRow(rows *sql.Rows) (RequestRow, error) {
 	return row, nil
 }
 
-func applyStatsScope(rows []RequestRow, scope string) []RequestRow {
-	if scope == "" {
-		scope = StatsScopeEffective
-	}
-	markDuplicateSessionRows(rows)
-	out := rows[:0]
-	for _, row := range rows {
-		switch scope {
-		case StatsScopeRaw:
-			out = append(out, row)
-		case StatsScopeProvider:
-			if !isSessionLogRow(row) {
-				out = append(out, row)
-			}
-		case StatsScopeSessionLog:
-			if isSessionLogRow(row) {
-				out = append(out, row)
-			}
-		default:
-			if !isSessionLogRow(row) || row.DedupeStatus != DedupeStatusDuplicate {
-				out = append(out, row)
-			}
-		}
-	}
-	return out
-}
-
-func markDuplicateSessionRows(rows []RequestRow) {
-	providerIndex := buildProviderDuplicateIndex(rows)
-	for i := range rows {
-		if !isSessionLogRow(rows[i]) || rows[i].UsageParseStatus != ParseStatusOK {
-			continue
-		}
-		if candidateIndex, ok := duplicateProviderCandidate(rows[i], providerIndex); ok {
-			candidate := rows[candidateIndex]
-			rows[i].DedupeStatus = DedupeStatusDuplicate
-			rows[i].DedupeRequestID = candidate.ID
-		}
-	}
-}
-
-type duplicateCandidate struct {
-	rowIndex  int
-	startedAt time.Time
-}
-
 type duplicateIndexKey struct {
 	model                    string
 	inputTokens              int64
 	outputTokens             int64
 	cacheCreationInputTokens int64
 	cacheReadInputTokens     int64
-}
-
-func buildProviderDuplicateIndex(rows []RequestRow) map[duplicateIndexKey][]duplicateCandidate {
-	index := make(map[duplicateIndexKey][]duplicateCandidate)
-	for i, row := range rows {
-		if !isProviderUsageRow(row) {
-			continue
-		}
-		for _, key := range duplicateKeys(row) {
-			index[key] = append(index[key], duplicateCandidate{rowIndex: i, startedAt: row.StartedAt})
-		}
-	}
-	for key := range index {
-		sort.Slice(index[key], func(i, j int) bool {
-			return index[key][i].startedAt.Before(index[key][j].startedAt)
-		})
-	}
-	return index
-}
-
-func duplicateProviderCandidate(row RequestRow, index map[duplicateIndexKey][]duplicateCandidate) (int, bool) {
-	for _, key := range duplicateKeys(row) {
-		candidates := index[key]
-		if len(candidates) == 0 {
-			continue
-		}
-		start := row.StartedAt.Add(-10 * time.Minute)
-		end := row.StartedAt.Add(10 * time.Minute)
-		first := sort.Search(len(candidates), func(i int) bool {
-			return !candidates[i].startedAt.Before(start)
-		})
-		if first == len(candidates) || candidates[first].startedAt.After(end) {
-			continue
-		}
-		return candidates[first].rowIndex, true
-	}
-	return 0, false
 }
 
 func duplicateKeys(row RequestRow) []duplicateIndexKey {
@@ -683,67 +827,34 @@ func isSessionLogRow(row RequestRow) bool {
 	return row.UsageSource == UsageSourceSessionLog || row.SourceEntrypoint == "session_log" || row.ProviderID == "_session"
 }
 
-type coverageAccumulator struct {
+// coverageMergeGroup 是 Coverage 在 Go 中合并脱敏后分组键的中间状态：SQL 按原始
+// provider_api_url 分组，脱敏后键相同的原始分组（历史脏数据）在此汇总计数、解析状态
+// 分布与 last_seen 代表行。
+type coverageMergeGroup struct {
 	row           CoverageRow
 	parseStatuses map[string]int64
+	lastSeenRaw   string
+	lastSeenID    string
 }
 
-type trendAccumulator struct {
-	point     TrendPoint
-	withUsage int64
+// coverageSortKey 返回 Coverage 分组键（脱敏后的 provider_api_url 参与），与旧算法
+// \x00 连接分组键的语义一致，同时用作同 LastSeenAt 分组的确定性排序决胜键。
+func coverageSortKey(row CoverageRow) string {
+	return strings.Join([]string{row.ProviderName, row.ProviderAPIURL, row.MappedModel, row.SourceEntrypoint}, "\x00")
 }
 
-func (a *trendAccumulator) add(row RequestRow) {
-	a.point.ProviderRequestsTotal++
-	if isFailed(row.RequestRecord) {
-		a.point.FailedRequests++
+// coverageLastSeenAfter 返回候选代表行 (candTime, candRaw, candID) 是否应替换当前代表行
+// (curTime, curRaw, curID)：时间更晚者胜出；同一瞬时按原始 started_at 字符串降序、再按
+// request_id 降序决胜，复现旧算法在 started_at DESC, id DESC 迭代中以严格 After 保留
+// 首个最大值的行为。
+func coverageLastSeenAfter(candTime time.Time, candRaw, candID string, curTime time.Time, curRaw, curID string) bool {
+	if !candTime.Equal(curTime) {
+		return candTime.After(curTime)
 	}
-	if hasUsage(row.TokenRecord) {
-		a.withUsage++
-		a.point.InputTokens += row.InputTokens
-		a.point.OutputTokens += row.OutputTokens
-		a.point.CacheCreationInputTokens += row.CacheCreationInputTokens
-		a.point.CacheReadInputTokens += row.CacheReadInputTokens
-		a.point.TokenConsumptionTotal += tokenTotal(row.TokenRecord)
+	if candRaw != curRaw {
+		return candRaw > curRaw
 	}
-}
-
-type aggregateAccumulator struct {
-	row           AggregateRow
-	withUsage     int64
-	durationTotal int64
-}
-
-func (a *aggregateAccumulator) add(row RequestRow) {
-	a.row.TotalRequests++
-	if isFailed(row.RequestRecord) {
-		a.row.FailedRequests++
-	}
-	if hasUsage(row.TokenRecord) {
-		a.withUsage++
-		a.row.TokenConsumptionTotal += tokenTotal(row.TokenRecord)
-	}
-	if row.DurationMS != nil {
-		a.durationTotal += *row.DurationMS
-	}
-}
-
-func (a *coverageAccumulator) add(row RequestRow) {
-	a.row.TotalRequests++
-	if isFailed(row.RequestRecord) {
-		a.row.ErrorRequests++
-	} else {
-		a.row.SuccessRequests++
-	}
-	if hasUsage(row.TokenRecord) {
-		a.row.WithUsageRequests++
-	} else {
-		a.row.WithoutUsageRequests++
-		a.parseStatuses[row.UsageParseStatus]++
-	}
-	if row.StartedAt.After(a.row.LastSeenAt) {
-		a.row.LastSeenAt = row.StartedAt
-	}
+	return candID > curID
 }
 
 func todayRange(filter Filter) (time.Time, time.Time, error) {
