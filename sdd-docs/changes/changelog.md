@@ -10,19 +10,24 @@
 ## v0.19.0 (2026-07-30)
 
 ### Added
+- **用量查询性能优化**（#45）：六个用量统计接口（Summary/status、Requests、Trends、Providers、Models、Coverage）从"全量加载宽行 + Go 逐行聚合"改为基于 scoped SQL CTE 的 SQL 聚合（COUNT/SUM/GROUP BY 下推），新增 `usage_dedupe_candidates` 表（含持久 `candidate_rank`）做去重候选。完全兼容优化（接口/字段/排序/分页/时区/筛选、四种统计口径、去重指纹、URL 脱敏不变），由 test-only legacy oracle 差分锁定。60k 行同会话 A/B：Summary 1.36–1.58×、Requests 1.80–1.86×、Coverage 1.24–1.29×、六接口并发 1.28–1.31×；已通过 gpt-5.6 三轮只读终审（无条件 PASS）。
 - **AI 自动生成自定义额度脚本**（#37）：管理面板可根据目标 URL、DevTools 请求信息和响应样例生成 `({request, extractor})` 脚本；支持从现有 Provider 选择模型，兼容 Anthropic、OpenAI Chat Completions 和 OpenAI Responses 三种协议，并提供脚本样例、多轮修正与保存前自检警告。
 - **自定义脚本支持 form body 与第二密钥槽**（#37）：`ScriptRequest.BodyType: "form"` 使用 `application/x-www-form-urlencoded` 编码，嵌套对象自动 JSON 序列化；`{{apiKey}}`、`{{apiKey2}}` 等占位符可用于 JSON/form body 的任意字符串值。新增 `ScriptAPIKey2` 三态更新与前端密码输入，公开配置仅返回是否已配置。
 
 ### Changed
+- **前端用量看板加载优化**（#45）：dashboard 首屏只发起一次 `/api/status`（结果复用），sessions 列表改为懒加载（实际需要时才加载）。
 - **JavaScript 执行迁移到短生命周期 worker 子进程**（#42）：request 解析与 extractor 分别通过当前 `mcc` 二进制 re-exec 执行，父服务不再创建 goja runtime；HTTP 请求、占位符替换、秘密脱敏、同源校验和结果标准化继续留在父进程，现有脚本合同与配置格式不变。Linux/Windows worker 具备硬内存边界，macOS 在缺少已验证硬边界时 fail closed。
 
 ### Fixed
+- **用量看板前端竞态修复**（#45）：修复 dashboard 导航代次竞态、legacy `/providers/:id/usage` 重复 status 守卫、异步挂载卸载后 timer/listener 与旧响应泄漏、SessionBrowser 快速切换/刷新被旧请求覆盖等竞态。
+- **去重与聚合正确性**（#45）：修复增量去重对历史带时区偏移 `started_at` 的漏配（epoch 规范化）、Coverage summary/status 在 WAL 下双快照不一致（并入同一只读事务）、SQL token/duration 聚合的 int64 边界语义（明确数据范围 + driver 级边界测试）。
 - **脚本请求重定向保持 body 与 headers**（#40）：同源 307/308 重定向会重新发送原始 POST body，并恢复脚本 headers 与 form `Content-Type`，避免额度接口重定向后收到空请求。
 - **千问 Token Plan 百分比按已用比例换算**（#37）：`perXxxPercentage` 按 `0..1` 的已用比例乘以 100，修正五小时/七天利用率被误判的问题。
 - **前端静态资源缓存策略**（#37）：`index.html` 与 SPA fallback 使用 `no-cache`，带内容 hash 的 assets 使用一年 immutable 缓存，避免容器重建后仍加载旧前端。
 - **CC 2.1.220 Proxy 兼容端点**（#42）：本地处理 `GET/HEAD /api/hello` 连通性探针，以及 `GET /v1/environment_providers` 云环境列表（返回空列表）；写端点和未知端点继续由 fail-closed 守卫拦截。
 
 ### Security
+- **token/duration 非负契约**（#45）：写入边界（parser/SSE/Record/recordIfAbsent）拒绝负 token 计数与负 duration，历史负值以单一原子迁移事务归零，消除"最终和合法但中间累加溢出后抵消"导致 SQLite REAL 提升或 `SUM()` 报错与旧 Go 回绕不一致的路径；纯正向溢出为确定性显式错误。
 - **隔离脚本 OOM/崩溃影响面**（#40、#42）：保留超大 Array、无限循环和超长字符串的快速预检，同时以子进程作为真正的内存安全边界；worker 输入、stdout、stderr、执行时间和内存全部有界，资源限制初始化失败即拒绝执行，超时或取消会终止子进程。
 - **配置密钥不进入 JavaScript worker**（#42）：worker 请求不包含实际 placeholder values，密钥替换只在父进程 Go 层完成；extractor worker 仅额外接收有界的上游响应体。worker stderr、协议错误和异常 payload 不回显脚本、响应体或配置密钥。
 - **AI 生成 LLM 客户端 SSRF 加固**（#37、#42）：配置预检与实际拨号阶段双重校验目标 IP，阻断内置云元数据 IP 与 DNS rebinding，禁用 LLM HTTP 重定向；管理员配置的 loopback/私网 LLM 代理仍可使用。
