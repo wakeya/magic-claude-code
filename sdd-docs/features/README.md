@@ -241,6 +241,7 @@ Simple examples for each task are provided below; in practice, a more granular a
 | Custom Script Form Body & Additional Secret | `2026-07-27-custom-script-form-body/spec.md` | `2026-07-27-custom-script-form-body/spec_ZH.md` |
 | Custom Script AI Generate | — | `2026-07-27-custom-script-ai-generate/spec_ZH.md` |
 | JavaScript Worker Process Isolation | `2026-07-29-script-worker-isolation/spec.md` | `2026-07-29-script-worker-isolation/spec_ZH.md` |
+| DeepSeek Cache Usage Parsing Fix | `2026-08-03-deepseek-cache-usage-parsing/spec.md` | `2026-08-03-deepseek-cache-usage-parsing/spec_ZH.md` |
 
 ## 状态生命周期
 

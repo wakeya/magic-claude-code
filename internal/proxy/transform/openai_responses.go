@@ -279,9 +279,11 @@ func responsesFunctionCallToAnthropic(item map[string]any) map[string]any {
 }
 
 func responsesUsageToAnthropic(usage map[string]any) map[string]any {
-	out := defaultAnthropicUsage()
-	copyUsageField(out, usage, "input_tokens", "input_tokens")
-	copyUsageField(out, usage, "output_tokens", "output_tokens")
-	copyUsageField(out, usage, "cached_tokens", "cache_read_input_tokens")
-	return out
+	return normalizeOpenAIUsage(
+		usage,
+		[]string{"input_tokens", "prompt_tokens"},
+		[]string{"output_tokens", "completion_tokens"},
+		[]string{"cached_tokens", "input_tokens_details.cached_tokens", "prompt_tokens_details.cached_tokens", "cache_read_input_tokens", "prompt_cache_hit_tokens"},
+		[]string{"cache_creation_input_tokens", "input_tokens_details.cache_write_tokens", "prompt_tokens_details.cache_write_tokens"},
+	)
 }

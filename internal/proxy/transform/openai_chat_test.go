@@ -505,6 +505,104 @@ func TestOpenAIChatSSEToAnthropicSubtractsCacheTokensFromInputUsage(t *testing.T
 	}
 }
 
+func TestOpenAIChatToAnthropicUsesPromptCacheHitTokens(t *testing.T) {
+	input := []byte(`{
+		"id":"chatcmpl_deepseek",
+		"model":"deepseek-v4-flash",
+		"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+		"usage":{
+			"prompt_tokens":1000,
+			"completion_tokens":50,
+			"prompt_cache_hit_tokens":600,
+			"prompt_cache_miss_tokens":400
+		}
+	}`)
+
+	out, err := OpenAIChatToAnthropic(input)
+	if err != nil {
+		t.Fatalf("OpenAIChatToAnthropic() error = %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	usage := got["usage"].(map[string]any)
+	if usage["input_tokens"] != float64(400) || usage["cache_read_input_tokens"] != float64(600) {
+		t.Fatalf("DeepSeek cache usage = %#v", usage)
+	}
+}
+
+func TestOpenAIChatSSEToAnthropicUsesPromptCacheHitTokens(t *testing.T) {
+	input := []byte(
+		"data: {\"id\":\"chatcmpl_deepseek\",\"model\":\"deepseek-v4-flash\",\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n" +
+			"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1000,\"completion_tokens\":50,\"prompt_cache_hit_tokens\":600,\"prompt_cache_miss_tokens\":400}}\n\n" +
+			"data: [DONE]\n\n",
+	)
+
+	out, err := OpenAIChatSSEToAnthropic(input)
+	if err != nil {
+		t.Fatalf("OpenAIChatSSEToAnthropic() error = %v", err)
+	}
+	usage := parseSSEEvents(t, string(out))["message_delta"][0]["usage"].(map[string]any)
+	if usage["input_tokens"] != float64(400) || usage["cache_read_input_tokens"] != float64(600) {
+		t.Fatalf("DeepSeek SSE cache usage = %#v", usage)
+	}
+}
+
+func TestOpenAIChatToAnthropicPrefersCachedTokens(t *testing.T) {
+	input := []byte(`{
+		"model":"deepseek-v4-flash",
+		"choices":[{"message":{"role":"assistant","content":"ok"}}],
+		"usage":{
+			"prompt_tokens":1000,
+			"prompt_tokens_details":{"cached_tokens":300},
+			"prompt_cache_hit_tokens":600
+		}
+	}`)
+
+	out, err := OpenAIChatToAnthropic(input)
+	if err != nil {
+		t.Fatalf("OpenAIChatToAnthropic() error = %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	usage := got["usage"].(map[string]any)
+	if usage["input_tokens"] != float64(700) || usage["cache_read_input_tokens"] != float64(300) {
+		t.Fatalf("standard cache precedence = %#v", usage)
+	}
+}
+
+func TestOpenAIChatToAnthropicPreservesExplicitZeroCache(t *testing.T) {
+	input := []byte(`{
+		"model":"deepseek-v4-flash",
+		"choices":[{"message":{"role":"assistant","content":"ok"}}],
+		"usage":{
+			"prompt_tokens":1000,
+			"prompt_tokens_details":{"cached_tokens":0},
+			"prompt_cache_hit_tokens":600
+		}
+	}`)
+
+	out, err := OpenAIChatToAnthropic(input)
+	if err != nil {
+		t.Fatalf("OpenAIChatToAnthropic() error = %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	usage := got["usage"].(map[string]any)
+	if usage["input_tokens"] != float64(1000) {
+		t.Fatalf("explicit zero cache should not fall back = %#v", usage)
+	}
+	if _, ok := usage["cache_read_input_tokens"]; ok {
+		t.Fatalf("zero cache should not emit a positive cache field = %#v", usage)
+	}
+}
+
 func TestOpenAIChatSSEToAnthropicStreamsToolCallsByIndex(t *testing.T) {
 	input := []byte(
 		"data: {\"id\":\"chatcmpl_1\",\"model\":\"gpt-4o\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_0\",\"type\":\"function\",\"function\":{\"name\":\"first_tool\"}}]}}]}\n\n" +
