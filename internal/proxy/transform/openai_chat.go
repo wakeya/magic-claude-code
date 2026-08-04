@@ -783,29 +783,13 @@ func openAIChatFinishReasonToAnthropic(value any) string {
 }
 
 func openAIUsageToAnthropic(usage map[string]any) map[string]any {
-	out := defaultAnthropicUsage()
-	promptTokens := numberValue(usage["prompt_tokens"])
-	cacheReadTokens := numberValue(usage["cache_read_input_tokens"])
-	if details, ok := usage["prompt_tokens_details"].(map[string]any); ok {
-		cacheReadTokens = numberValue(details["cached_tokens"])
-	}
-	cacheCreationTokens := numberValue(usage["cache_creation_input_tokens"])
-	inputTokens := promptTokens - cacheReadTokens - cacheCreationTokens
-	if inputTokens < 0 {
-		inputTokens = 0
-	}
-	out["input_tokens"] = inputTokens
-	copyUsageField(out, usage, "completion_tokens", "output_tokens")
-	if details, ok := usage["prompt_tokens_details"].(map[string]any); ok {
-		copyUsageField(out, details, "cached_tokens", "cache_read_input_tokens")
-	}
-	if cacheReadTokens > 0 {
-		out["cache_read_input_tokens"] = cacheReadTokens
-	}
-	if cacheCreationTokens > 0 {
-		out["cache_creation_input_tokens"] = cacheCreationTokens
-	}
-	return out
+	return normalizeOpenAIUsage(
+		usage,
+		[]string{"prompt_tokens"},
+		[]string{"completion_tokens", "output_tokens"},
+		[]string{"prompt_tokens_details.cached_tokens", "cache_read_input_tokens", "prompt_cache_hit_tokens"},
+		[]string{"cache_creation_input_tokens", "prompt_tokens_details.cache_write_tokens", "input_tokens_details.cache_write_tokens"},
+	)
 }
 
 func defaultAnthropicUsage() map[string]any {

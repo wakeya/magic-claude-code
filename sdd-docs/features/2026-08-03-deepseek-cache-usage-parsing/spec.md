@@ -4,9 +4,9 @@ Local page: `internal/proxy/handler.go` (upstream response conversion entry), `i
 Proxy entry: `internal/proxy/handler.go` `ServeHTTP`, upstream SSE/non-stream response conversion paths
 Reference sources: [DeepSeek KV Cache](https://api-docs.deepseek.com/guides/kv_cache), [DeepSeek Chat Completion API](https://api-docs.deepseek.com/zh-cn/api/create-chat-completion/), pi `packages/ai/src/api/openai-completions.ts`
 Stack: Go 1.26 standard library and the existing `internal/proxy/transform` test suite
-Last updated: 2026-08-03
-Progress: 0 / 2 planned tasks (spec approved, implementation not started)
-Status: approved
+Last updated: 2026-08-04
+Progress: 2 / 2 planned tasks (implementation complete, tests passing, specs updated)
+Status: implemented
 
 ## Overall Analysis (Source Analysis)
 
@@ -40,15 +40,22 @@ Use the following cache-read precedence without double counting:
 - **In scope**: OpenAI Chat Completions and OpenAI Responses non-stream responses and SSE usage events; DeepSeek hit/miss fields; cache-field precedence; input-token arithmetic; synthetic unit tests; regression verification.
 - **Out of scope**: Anthropic-to-OpenAI request conversion, preserving `cache_control`, adding `prompt_cache_key`, session affinity, cache endpoint routing, model mapping, cache TTL, database schema, or frontend cache-ratio algorithms.
 
+## Related Issues / Follow-up Features
+
+### Real cache degradation caused by protocol conversion (independent follow-up, NOT in this branch)
+
+- MCC converts Anthropic Messages requests into OpenAI Chat Completions / Responses requests and does not preserve Anthropic `cache_control` markers, while DeepSeek's KV cache is keyed on the exact prompt prefix. After this parsing fix, pi and MCC agree on the usage the upstream reports; if a low hit ratio still persists, it is real upstream cache degradation caused by the request-protocol conversion (missing `cache_control`, altered prompt structure, no session affinity), not a usage-parsing defect.
+- Fixing that degradation — preserving `cache_control`, adding a prompt cache key, session affinity, or cache-aware endpoint routing — is an independent follow-up feature with its own design and is explicitly NOT implemented in this branch (`fix/deepseek-cache-usage-parsing`). This branch only fixes how the cache usage already returned by the upstream is parsed and converted.
+
 ## Development Checklist
 
-- [ ] Add `prompt_cache_hit_tokens` fallback tests for Chat non-stream and SSE responses.
-- [ ] Add `prompt_cache_hit_tokens` fallback tests for Responses non-stream and SSE responses.
-- [ ] Cover precedence when `cached_tokens` and `prompt_cache_hit_tokens` coexist, including an explicit zero.
-- [ ] Cover `prompt_cache_miss_tokens` as the uncached-input fallback and preserve no-cache behavior.
-- [ ] Run `go test ./internal/proxy/transform -count=1`.
-- [ ] Run `go test ./...`.
-- [ ] Update progress, checklist, and verification evidence in both specs after implementation.
+- [x] Add `prompt_cache_hit_tokens` fallback tests for Chat non-stream and SSE responses.
+- [x] Add `prompt_cache_hit_tokens` fallback tests for Responses non-stream and SSE responses.
+- [x] Cover precedence when `cached_tokens` and `prompt_cache_hit_tokens` coexist, including an explicit zero.
+- [x] Cover `prompt_cache_miss_tokens` as the uncached-input fallback and preserve no-cache behavior.
+- [x] Run `go test ./internal/proxy/transform -count=1`.
+- [x] Run `go test ./...`.
+- [x] Update progress, checklist, and verification evidence in both specs after implementation.
 
 ## Requirements
 
@@ -114,14 +121,14 @@ The same usage data, when processed through non-stream conversion and the final 
    - treat negative and unparseable values as absent and clamp final input tokens at zero.
 4. Make `openAIUsageToAnthropic` use the helper while preserving current `prompt_tokens_details.cached_tokens`, `cache_read_input_tokens`, and `cache_creation_input_tokens` compatibility.
 5. Re-run the targeted tests and confirm they pass.
-6. Commit the task implementation and tests with `fix: parse DeepSeek cache usage`.
+6. Commit the task implementation and tests with `fix: parse DeepSeek cache usage`. Tasks 1 and 2 were completed together in that single commit (see Implementation Record below).
 
 #### Verification
 
-- [ ] New tests fail first, proving the existing implementation omits the DeepSeek field.
-- [ ] Chat non-stream and SSE tests pass.
-- [ ] Existing `openai_chat_test.go` usage tests pass.
-- [ ] `go test ./internal/proxy/transform -count=1` passes.
+- [x] New tests fail first, proving the existing implementation omits the DeepSeek field.
+- [x] Chat non-stream and SSE tests pass.
+- [x] Existing `openai_chat_test.go` usage tests pass.
+- [x] `go test ./internal/proxy/transform -count=1` passes.
 
 ### Task 2: Fix Responses usage, run regressions, and update the specs
 
@@ -155,12 +162,33 @@ The same usage data, when processed through non-stream conversion and the final 
    git status --short
    ```
    Expected results: transform tests pass, all Go tests pass, `git diff --check` has no output, and no unrelated files are present.
-5. Update `spec.md` and `spec_ZH.md` with actual commands, results, completed tasks, and commit information; use `test: cover DeepSeek cache usage mapping` or the actual matching commit message.
+5. Update `spec.md` and `spec_ZH.md` with actual commands, results, completed tasks, and commit information; use `test: cover DeepSeek cache usage mapping` or the actual matching commit message. The actual single commit is `fix: parse DeepSeek cache usage` (see Implementation Record below).
 
 #### Verification
 
-- [ ] Responses non-stream and SSE tests fail first and then pass.
-- [ ] `go test ./internal/proxy/transform -count=1` passes.
-- [ ] `go test ./...` passes.
-- [ ] `git diff --check` passes, with no request-conversion, database, or frontend changes.
-- [ ] After implementation, update progress, checklist, and verification evidence in `spec.md` and `spec_ZH.md`.
+- [x] Responses non-stream and SSE tests fail first and then pass.
+- [x] `go test ./internal/proxy/transform -count=1` passes.
+- [x] `go test ./...` passes.
+- [x] `git diff --check` passes, with no request-conversion, database, or frontend changes.
+- [x] After implementation, update progress, checklist, and verification evidence in `spec.md` and `spec_ZH.md`.
+
+## Implementation Record (2026-08-04)
+
+Branch: `fix/deepseek-cache-usage-parsing`; single commit `fix: parse DeepSeek cache usage`.
+
+Files changed:
+- `internal/proxy/transform/usage.go` (new): shared `normalizeOpenAIUsage` helper implementing cache-field precedence (standard field first, DeepSeek `prompt_cache_hit_tokens` fallback, explicit zero preserved), input arithmetic (`total - cache_read - cache_creation`, `prompt_cache_miss_tokens` fallback, zero clamp), and validity handling (negative / unparseable values treated as absent).
+- `internal/proxy/transform/usage_test.go` (new): helper-level tests for miss fallback without total input, zero clamping, unparseable and negative cache values, and cache-creation subtraction.
+- `internal/proxy/transform/openai_chat.go`: `openAIUsageToAnthropic` delegates to the helper with paths `prompt_tokens_details.cached_tokens` → `cache_read_input_tokens` → `prompt_cache_hit_tokens`.
+- `internal/proxy/transform/openai_chat_test.go`: DeepSeek hit/miss non-stream and SSE tests, standard-field precedence, explicit zero.
+- `internal/proxy/transform/openai_responses.go`: `responsesUsageToAnthropic` delegates to the helper with paths `cached_tokens` / nested cached-token fields → `prompt_cache_hit_tokens`.
+- `internal/proxy/transform/openai_responses_test.go`: DeepSeek hit/miss non-stream and SSE tests, no-cache preservation, precedence, explicit zero.
+- `sdd-docs/features/2026-08-03-deepseek-cache-usage-parsing/spec.md` and `spec_ZH.md`: this record.
+
+Commands and results:
+- `go test ./internal/proxy/transform -count=1` → `ok`
+- `go test ./...` → `ok`
+- `git diff --check` → clean
+- `git status --short` → only the files listed above
+
+Task 1 and Task 2 were implemented together in the single commit above.

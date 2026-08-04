@@ -4,9 +4,9 @@
 代理入口：`internal/proxy/handler.go` 的 `ServeHTTP`、上游 SSE/非流式响应转换路径
 参考源站：[DeepSeek KV Cache](https://api-docs.deepseek.com/guides/kv_cache)、[DeepSeek Chat Completion API](https://api-docs.deepseek.com/zh-cn/api/create-chat-completion/)、pi 的 `packages/ai/src/api/openai-completions.ts`
 技术栈：Go 1.26 标准库、现有 `internal/proxy/transform` 测试体系
-最后更新：2026-08-03
-进度：0 / 2 计划任务（规格已确认，尚未实现）
-状态：approved
+最后更新：2026-08-04
+进度：2 / 2 计划任务（实现完成，测试通过，规格已回写）
+状态：implemented
 
 ## 整体分析（源站分析）
 
@@ -40,15 +40,22 @@ pi 已经兼容 DeepSeek 的 `prompt_cache_hit_tokens`，因此会出现 pi 显�
 - **在范围内**：OpenAI Chat Completions 和 OpenAI Responses 的普通响应、SSE usage 事件；DeepSeek hit/miss 字段解析；缓存字段优先级；输入 token 计算；合成单元测试；回归验证。
 - **不在范围内**：修改 Anthropic→OpenAI 请求转换、保留 `cache_control`、增加 `prompt_cache_key`、session affinity、缓存 endpoint 路由、模型映射、缓存 TTL、数据库 schema 或前端命中率展示算法。
 
+## 关联问题/后续特性
+
+### 协议转换导致的真实缓存下降（独立后续特性，不在本分支实现）
+
+- MCC 将 Anthropic Messages 请求转换为 OpenAI Chat Completions / Responses 请求，不保留 Anthropic 的 `cache_control` 标记，而 DeepSeek 的 KV 缓存以精确 prompt 前缀为 key。本解析修复完成后，pi 与 MCC 对上游返回的 usage 将保持一致；若命中率仍然偏低，则是请求协议转换导致的真实上游缓存下降（缺少 `cache_control`、prompt 结构变化、无 session affinity），并非 usage 统计解析缺陷。
+- 修复该下降（如保留 `cache_control`、增加 prompt cache key、session affinity 或缓存感知的 endpoint 路由）属于独立后续特性，需要单独设计，明确不在本分支（`fix/deepseek-cache-usage-parsing`）实现。本分支只修复上游已返回缓存 usage 的解析与转换。
+
 ## 开发检查清单
 
-- [ ] 为 Chat Completions 普通响应和 SSE 响应增加 `prompt_cache_hit_tokens` 回退测试。
-- [ ] 为 Responses 普通响应和 SSE 响应增加 `prompt_cache_hit_tokens` 回退测试。
-- [ ] 覆盖 `cached_tokens` 与 `prompt_cache_hit_tokens` 同时存在时的优先级，以及显式零值。
-- [ ] 覆盖 `prompt_cache_miss_tokens` 用于未缓存输入计算，以及无缓存字段时的旧行为。
-- [ ] 运行 `go test ./internal/proxy/transform -count=1`。
-- [ ] 运行 `go test ./...`。
-- [ ] 实现后回写本文件和 `spec.md` 的进度、检查清单和验证证据。
+- [x] 为 Chat Completions 普通响应和 SSE 响应增加 `prompt_cache_hit_tokens` 回退测试。
+- [x] 为 Responses 普通响应和 SSE 响应增加 `prompt_cache_hit_tokens` 回退测试。
+- [x] 覆盖 `cached_tokens` 与 `prompt_cache_hit_tokens` 同时存在时的优先级，以及显式零值。
+- [x] 覆盖 `prompt_cache_miss_tokens` 用于未缓存输入计算，以及无缓存字段时的旧行为。
+- [x] 运行 `go test ./internal/proxy/transform -count=1`。
+- [x] 运行 `go test ./...`。
+- [x] 实现后回写本文件和 `spec.md` 的进度、检查清单和验证证据。
 
 ## 需求
 
@@ -114,14 +121,14 @@ input_tokens = max(total_input_tokens - cache_read_input_tokens - cache_creation
    - 负值和不可解析值按缺失处理，最终输入 token不低于 0。
 4. 让 `openAIUsageToAnthropic` 使用该辅助逻辑，保留当前 `prompt_tokens_details.cached_tokens`、`cache_read_input_tokens` 和 `cache_creation_input_tokens` 兼容行为。
 5. 运行上述定向测试，确认新增用例通过。
-6. 提交本任务的实现与测试，提交信息使用 `fix: parse DeepSeek cache usage`。
+6. 提交本任务的实现与测试，提交信息使用 `fix: parse DeepSeek cache usage`。任务 1 与任务 2 合并为同一次提交完成（见下文“实现记录”）。
 
 #### 验证
 
-- [ ] 新增测试先失败，证明现有实现确实遗漏 DeepSeek 字段。
-- [ ] Chat 普通响应和 SSE 测试通过。
-- [ ] 既有 `openai_chat_test.go` usage 测试通过。
-- [ ] `go test ./internal/proxy/transform -count=1` 通过。
+- [x] 新增测试先失败，证明现有实现确实遗漏 DeepSeek 字段。
+- [x] Chat 普通响应和 SSE 测试通过。
+- [x] 既有 `openai_chat_test.go` usage 测试通过。
+- [x] `go test ./internal/proxy/transform -count=1` 通过。
 
 ### 任务 2：修复 Responses usage、回归验证并回写规格
 
@@ -155,12 +162,33 @@ input_tokens = max(total_input_tokens - cache_read_input_tokens - cache_creation
    git status --short
    ```
    预期：transform 测试通过、全量 Go 测试通过、`git diff --check` 无输出，未出现无关文件。
-5. 在 `spec.md` 与本文件回写实际测试命令、结果、完成任务和提交信息；提交信息使用 `test: cover DeepSeek cache usage mapping` 或与实际提交保持一致。
+5. 在 `spec.md` 与本文件回写实际测试命令、结果、完成任务和提交信息；提交信息使用 `test: cover DeepSeek cache usage mapping` 或与实际提交保持一致。实际提交为单次提交 `fix: parse DeepSeek cache usage`（见下文“实现记录”）。
 
 #### 验证
 
-- [ ] Responses 普通响应和 SSE 测试先失败后通过。
-- [ ] `go test ./internal/proxy/transform -count=1` 通过。
-- [ ] `go test ./...` 通过。
-- [ ] `git diff --check` 通过，且 diff 不包含请求转换、数据库或前端改动。
-- [ ] 实现完成后回写 `spec.md` 与 `spec_ZH.md` 的进度、检查清单和实际验证证据。
+- [x] Responses 普通响应和 SSE 测试先失败后通过。
+- [x] `go test ./internal/proxy/transform -count=1` 通过。
+- [x] `go test ./...` 通过。
+- [x] `git diff --check` 通过，且 diff 不包含请求转换、数据库或前端改动。
+- [x] 实现完成后回写 `spec.md` 与 `spec_ZH.md` 的进度、检查清单和实际验证证据。
+
+## 实现记录（2026-08-04）
+
+分支：`fix/deepseek-cache-usage-parsing`；单次提交 `fix: parse DeepSeek cache usage`。
+
+变更文件：
+- `internal/proxy/transform/usage.go`（新增）：共享 `normalizeOpenAIUsage` 辅助函数，实现缓存字段优先级（标准字段优先、DeepSeek `prompt_cache_hit_tokens` 回退、显式零值保留）、输入 token 计算（`total - cache_read - cache_creation`、`prompt_cache_miss_tokens` 回退、钳制为 0）以及有效性处理（负数/不可解析值按缺失处理）。
+- `internal/proxy/transform/usage_test.go`（新增）：辅助函数级测试，覆盖无总输入时的 miss 回退、钳制为 0、不可解析/负值缓存字段、缓存写入扣除。
+- `internal/proxy/transform/openai_chat.go`：`openAIUsageToAnthropic` 改用辅助函数，路径为 `prompt_tokens_details.cached_tokens` → `cache_read_input_tokens` → `prompt_cache_hit_tokens`。
+- `internal/proxy/transform/openai_chat_test.go`：DeepSeek hit/miss 普通响应与 SSE 测试、标准字段优先级、显式零值。
+- `internal/proxy/transform/openai_responses.go`：`responsesUsageToAnthropic` 改用辅助函数，路径为 `cached_tokens` / 嵌套 cached-token 字段 → `prompt_cache_hit_tokens`。
+- `internal/proxy/transform/openai_responses_test.go`：DeepSeek hit/miss 普通响应与 SSE 测试、无缓存字段行为保持、优先级、显式零值。
+- `sdd-docs/features/2026-08-03-deepseek-cache-usage-parsing/spec.md` 与本文件：本记录。
+
+命令与结果：
+- `go test ./internal/proxy/transform -count=1` → `ok`
+- `go test ./...` → `ok`
+- `git diff --check` → 无输出
+- `git status --short` → 仅包含上述文件
+
+任务 1 与任务 2 合并为上述单次提交完成。

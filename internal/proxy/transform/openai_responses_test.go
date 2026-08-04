@@ -185,3 +185,132 @@ func TestOpenAIResponsesSSEToAnthropicEmitsAnthropicEvents(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenAIResponsesToAnthropicUsesPromptCacheHitTokens(t *testing.T) {
+	input := []byte(`{
+		"id":"resp_deepseek",
+		"model":"deepseek-v4-flash",
+		"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],
+		"usage":{
+			"input_tokens":1000,
+			"output_tokens":50,
+			"prompt_cache_hit_tokens":600,
+			"prompt_cache_miss_tokens":400
+		}
+	}`)
+
+	out, err := OpenAIResponsesToAnthropic(input)
+	if err != nil {
+		t.Fatalf("OpenAIResponsesToAnthropic() error = %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	usage := got["usage"].(map[string]any)
+	if usage["input_tokens"] != float64(400) || usage["cache_read_input_tokens"] != float64(600) {
+		t.Fatalf("DeepSeek Responses cache usage = %#v", usage)
+	}
+}
+
+func TestOpenAIResponsesSSEToAnthropicUsesPromptCacheHitTokens(t *testing.T) {
+	input := []byte(
+		"event: response.output_text.delta\ndata: {\"delta\":\"ok\"}\n\n" +
+			"event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":1000,\"output_tokens\":50,\"prompt_cache_hit_tokens\":600,\"prompt_cache_miss_tokens\":400}}}\n\n",
+	)
+
+	out, err := OpenAIResponsesSSEToAnthropic(input)
+	if err != nil {
+		t.Fatalf("OpenAIResponsesSSEToAnthropic() error = %v", err)
+	}
+	got := string(out)
+	if !strings.Contains(got, `"input_tokens":400`) || !strings.Contains(got, `"cache_read_input_tokens":600`) {
+		t.Fatalf("DeepSeek Responses SSE cache usage missing:\n%s", got)
+	}
+}
+
+func TestOpenAIResponsesToAnthropicKeepsUncachedUsageWithoutCacheFields(t *testing.T) {
+	input := []byte(`{
+		"id":"resp_plain",
+		"model":"gpt-4.1",
+		"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],
+		"usage":{"input_tokens":1000,"output_tokens":50}
+	}`)
+
+	out, err := OpenAIResponsesToAnthropic(input)
+	if err != nil {
+		t.Fatalf("OpenAIResponsesToAnthropic() error = %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	usage := got["usage"].(map[string]any)
+	if usage["input_tokens"] != float64(1000) || usage["output_tokens"] != float64(50) {
+		t.Fatalf("no-cache usage = %#v", usage)
+	}
+	if _, ok := usage["cache_read_input_tokens"]; ok {
+		t.Fatalf("no cache fields must not invent a cache read = %#v", usage)
+	}
+}
+
+func TestOpenAIResponsesToAnthropicPrefersCachedTokens(t *testing.T) {
+	input := []byte(`{
+		"id":"resp_deepseek",
+		"model":"deepseek-v4-flash",
+		"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],
+		"usage":{
+			"input_tokens":1000,
+			"output_tokens":50,
+			"cached_tokens":300,
+			"prompt_cache_hit_tokens":600
+		}
+	}`)
+
+	out, err := OpenAIResponsesToAnthropic(input)
+	if err != nil {
+		t.Fatalf("OpenAIResponsesToAnthropic() error = %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	usage := got["usage"].(map[string]any)
+	if usage["input_tokens"] != float64(700) || usage["cache_read_input_tokens"] != float64(300) {
+		t.Fatalf("cached_tokens precedence = %#v", usage)
+	}
+}
+
+func TestOpenAIResponsesToAnthropicPreservesExplicitZeroCache(t *testing.T) {
+	input := []byte(`{
+		"id":"resp_deepseek",
+		"model":"deepseek-v4-flash",
+		"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],
+		"usage":{
+			"input_tokens":1000,
+			"output_tokens":50,
+			"cached_tokens":0,
+			"prompt_cache_hit_tokens":600
+		}
+	}`)
+
+	out, err := OpenAIResponsesToAnthropic(input)
+	if err != nil {
+		t.Fatalf("OpenAIResponsesToAnthropic() error = %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	usage := got["usage"].(map[string]any)
+	if usage["input_tokens"] != float64(1000) {
+		t.Fatalf("explicit zero cache should not fall back = %#v", usage)
+	}
+	if _, ok := usage["cache_read_input_tokens"]; ok {
+		t.Fatalf("zero cache should not emit a positive cache field = %#v", usage)
+	}
+}
