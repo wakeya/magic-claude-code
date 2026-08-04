@@ -126,7 +126,7 @@ func usageNumber(value any) (float64, bool) {
 	default:
 		return 0, false
 	}
-	if number < 0 || math.IsNaN(number) || math.IsInf(number, 0) {
+	if number < 0 || math.Signbit(number) || math.IsNaN(number) || math.IsInf(number, 0) {
 		return 0, false
 	}
 	return number, true

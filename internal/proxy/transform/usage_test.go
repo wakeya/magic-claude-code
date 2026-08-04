@@ -1,6 +1,9 @@
 package transform
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestNormalizeOpenAIUsageUsesPromptCacheMissTokensWithoutTotalInput(t *testing.T) {
 	usage := normalizeOpenAIUsage(
@@ -56,6 +59,25 @@ func TestNormalizeOpenAIUsageFallsThroughUnparseableStandardCacheField(t *testin
 
 	if usage["input_tokens"] != float64(400) || usage["cache_read_input_tokens"] != float64(600) {
 		t.Fatalf("unparseable fallback usage = %#v", usage)
+	}
+}
+
+func TestNormalizeOpenAIUsageTreatsNegativeZeroCacheAsAbsent(t *testing.T) {
+	usage := normalizeOpenAIUsage(
+		map[string]any{
+			"prompt_tokens":            float64(1000),
+			"prompt_tokens_details":    map[string]any{"cached_tokens": math.Copysign(0, -1)},
+			"prompt_cache_hit_tokens":  float64(600),
+			"prompt_cache_miss_tokens": float64(400),
+		},
+		[]string{"prompt_tokens"},
+		nil,
+		[]string{"prompt_tokens_details.cached_tokens", "cache_read_input_tokens", "prompt_cache_hit_tokens"},
+		nil,
+	)
+
+	if usage["input_tokens"] != float64(400) || usage["cache_read_input_tokens"] != float64(600) {
+		t.Fatalf("negative zero cache usage = %#v", usage)
 	}
 }
 
